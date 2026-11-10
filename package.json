@@ -6,7 +6,7 @@
   "main": "src/app.mjs",
   "scripts": {
     "start": "node src/app.mjs",
-    "test": "node src/selftest.mjs",
+    "test": "node src/selftest.mjs && node --test",
     "capture": "node tools/capture-credentials.mjs",
     "sync-config": "node tools/sync-config.mjs",
     "sync-art": "node tools/sync-art.mjs"

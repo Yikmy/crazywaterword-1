@@ -1,4 +1,5 @@
 import { normalize } from './worlds.mjs';
+import { redact } from './security.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -63,42 +64,66 @@ function responseNameOf(name) {
   return `${name.slice(0, -'Request'.length)}Response`;
 }
 
-// Fires the whole entry set in one burst, exactly as the client does, then waits for the
-// responses. Nothing is sent sequentially: the server tolerates the burst and answering
-// one at a time would take a minute of wall clock.
-export async function collectState(client, protocol, { timeout = 15000, onResult = null } = {}) {
-  const ok = {};
-  const failed = {};
-  const waiting = [];
-
-  for (const signal of ENTRY_SIGNALS) {
-    if (protocol[signal.name]) client.send(signal.name, signal.body || {});
-  }
-
-  for (const query of ENTRY_QUERIES) {
-    const response = responseNameOf(query.name);
-    if (!protocol[query.name] || !protocol[response]) {
-      failed[query.name] = `no protocol type for ${protocol[query.name] ? response : query.name}`;
-      continue;
+// Preserve the exact decoded response separately from the existing numeric business view.
+// JSON has no int64 type: unsafe integers are decimal strings, safe integers stay numbers.
+export function toSnapshotJson(value) {
+  const seen = new WeakSet();
+  const int32 = (part) => Number.isInteger(part) && part >= -2147483648 && part <= 4294967295;
+  function copy(item) {
+    if (typeof item === 'bigint') return item.toString();
+    if (typeof item === 'function' || typeof item === 'symbol') return undefined;
+    if (item === null || typeof item !== 'object') return item;
+    if (item instanceof Date) return Number.isNaN(item.getTime()) ? null : item.toISOString();
+    if (int32(item.low) && int32(item.high) &&
+        (item.unsigned === undefined || typeof item.unsigned === 'boolean') &&
+        Object.keys(item).every((key) => ['low', 'high', 'unsigned'].includes(key))) {
+      const bits = (BigInt(item.high >>> 0) << 32n) | BigInt(item.low >>> 0);
+      const exact = item.unsigned === true ? bits : BigInt.asIntN(64, bits);
+      return exact >= BigInt(Number.MIN_SAFE_INTEGER) && exact <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(exact) : exact.toString();
     }
-    waiting.push(
-      client
-        .request(query.name, query.body || {}, response, timeout)
-        .then((body) => {
-          ok[query.name] = normalize(body);
-          if (onResult) onResult(query.name, body, null);
-        })
-        .catch((error) => {
-          failed[query.name] = error.message;
-          if (onResult) onResult(query.name, null, error);
-        }),
-    );
+    if (seen.has(item)) return '[Circular]';
+    seen.add(item);
+    const result = Array.isArray(item) ? [] : {};
+    for (const [key, entry] of Object.entries(item)) {
+      Object.defineProperty(result, key, { value: copy(entry), enumerable: true, configurable: true, writable: true });
+    }
+    seen.delete(item);
+    return result;
   }
-
-  await Promise.all(waiting);
-  return { ok, failed };
+  return copy(value);
 }
 
+// Concurrent refreshes on one connection share work; account connections stay independent.
+const collections = new WeakMap();
+export function collectState(client, protocol, { timeout = 15000, onResult = null } = {}) {
+  const existing = collections.get(client);
+  if (existing) { if (onResult) existing.listeners.add(onResult); return existing.promise; }
+  const job = { listeners: new Set(onResult ? [onResult] : []), promise: null };
+  job.promise = Promise.resolve().then(async () => {
+    const ok = {}, failed = {}, outcomes = {}, raw = {};
+    const notify = (name, body, error) => { for (const listener of job.listeners) { try { listener(name, body, error); } catch {} } };
+    // ENTRY_SIGNALS remain protocol evidence; data refresh never sends them.
+    await Promise.all(ENTRY_QUERIES.map(async (query) => {
+      const response = responseNameOf(query.name);
+      const startedAt = new Date().toISOString();
+      const finish = (status, error = null) => { outcomes[query.name] = { status, response, startedAt, updatedAt: new Date().toISOString(), error }; };
+      if (!protocol[query.name] || !protocol[response]) {
+        const reason = 'no protocol type for ' + (protocol[query.name] ? response : query.name);
+        failed[query.name] = reason; finish('NOT_EXECUTED', reason); notify(query.name, null, new Error(reason)); return;
+      }
+      try {
+        const body = await client.request(query.name, query.body || {}, response, timeout);
+        raw[query.name] = toSnapshotJson(body);
+        ok[query.name] = normalize(body); finish('SUCCESS'); notify(query.name, body, null);
+      } catch (error) {
+        const reason = redact({ login: client.login, error: error?.message || 'query failed' }).error;
+        failed[query.name] = reason; finish('FAILED', reason); notify(query.name, null, new Error(reason));
+      }
+    }));
+    return { ok, failed, outcomes, raw };
+  }).finally(() => { if (collections.get(client) === job) collections.delete(client); });
+  collections.set(client, job); return job.promise;
+}
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
 // Turns the raw response bodies into the picture a player would describe. Every number
@@ -120,7 +145,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
   const claimable = (list) =>
     tasksDone(list).filter((task) => !task.rewardClaimed).length;
 
-  return {
+  const view = {
     resources: asArray(q.AllResourceRequest?.list).map((entry) => ({
       res: entry.res,
       amount: entry.amount,
@@ -205,12 +230,23 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     cargo: asArray(q.CargoShipsRequest?.ship).length,
     fish: q.FishEncyclopediaRequest ?? null,
   };
+  const failures = state.failed || {};
+  const sources = { resources: "AllResourceRequest", items: "AllItemRequest", heroes: "AllHeroRequest", afk: "AfkInfoRequest", clickGold: "AfkInfoRequest", daily: "DailyTaskInfoRequest", achievements: "AchievementInfoRequest", mainTask: "MainTaskInfoRequest", email: "EmailBoxRequest", buildings: "OnWaterRequest", water: "OnWaterRequest", resFields: "MyResFieldsRequest", fleets: "MyFleetsRequest", guild: "AllGuildAbstractionRequest", counters: "CounterInfoRequest", recruit: "RecruitInfoRequest", antiques: "AllAntiqueRequest", pets: "AllPetRequest", equips: "EquipsRequest", pirates: "AllPirateRequest", worldBoss: "WorldBossInfoRequest", season: "SeasonRankInfoRequest", week: "WeekInfoRequest", monthCard: "MonthCardRequest", guide: "GuideInfoRequest", cargo: "CargoShipsRequest", fish: "FishEncyclopediaRequest" };
+  for (const [field, name] of Object.entries(sources)) if (Object.hasOwn(failures, name)) view[field] = null;
+  if (view.heroes && Object.hasOwn(failures, "GetFormationRequest")) view.heroes.formation = null;
+  if (view.heroes && Object.hasOwn(failures, "AppointInfoRequest")) view.heroes.appointed = null;
+  view.availability = Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, { status: state.outcomes?.[name]?.status || (Object.hasOwn(failures, name) ? "FAILED" : Object.hasOwn(q, name) ? "SUCCESS" : "UNKNOWN"), error: failures[name] ?? null, updatedAt: state.outcomes?.[name]?.updatedAt ?? null }]));
+  return view;
 }
 
 const clock = (seconds) => (seconds ? new Date(seconds * 1000).toLocaleString() : '-');
 
 // One renderer, shared by the CLI and the console, so both always agree.
 export function formatState(view) {
+  const unknown = "未知（读取失败）";
+  const failed = Object.entries(view.availability || {}).filter(([, item]) => item.status === "FAILED" || item.status === "NOT_EXECUTED").map(([name]) => name);
+  view = { ...view, resources: view.resources || [], items: view.items || { kinds: unknown, total: unknown, top: [] }, heroes: view.heroes || { count: unknown, power: unknown, list: [], formation: [] }, buildings: view.buildings || [], water: view.water || {}, guild: view.guild || [], counters: view.counters || [] };
+  view.heroes = { ...view.heroes, formation: view.heroes.formation || [] };
   const lines = [];
   lines.push(`资源:`);
   for (const entry of view.resources) lines.push(`  ${entry.name ? `${entry.name} ` : ''}res=${entry.res} amount=${entry.amount}`);
@@ -249,6 +285,12 @@ export function formatState(view) {
   lines.push(`藏品 ${view.antiques?.count ?? 0} 件 大师lv${view.antiques?.masterLv ?? '-'} | 宠物 ${view.pets} | 装备 ${view.equips} | 月卡 ${JSON.stringify(view.monthCard)}`);
   lines.push(`新手引导: ${JSON.stringify(view.guide)} | 主线 ${JSON.stringify(view.mainTask)}`);
   if (view.fish) lines.push(`鱼类图鉴: ${JSON.stringify(view.fish)}`);
-  return lines.join('\n');
+  const prefixes = { AllResourceRequest: "资源:", OnWaterRequest: "水上建筑", MyResFieldsRequest: "世界:", MyFleetsRequest: "世界:", CargoShipsRequest: "世界:", AllPirateRequest: "世界:", AllGuildAbstractionRequest: "公会候选:", CounterInfoRequest: "每日计数:", RecruitInfoRequest: "招募:", AllAntiqueRequest: "藏品 ", AllPetRequest: "藏品 ", EquipsRequest: "藏品 ", MonthCardRequest: "藏品 " };
+  for (const name of failed) {
+    const prefix = prefixes[name];
+    if (prefix) { const index = lines.findIndex((line) => line.startsWith(prefix)); if (index >= 0) lines[index] = prefix + " " + unknown; }
+  }
+  if (failed.length) lines.push("读取失败/未执行: " + failed.join(", "));
+  return lines.join("\n");
 }
 

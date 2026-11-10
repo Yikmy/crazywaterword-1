@@ -468,9 +468,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   checked += 1;
 }
 
-// PromptResponse 不带我们发出去的 seq，只能按发送顺序认领。英雄升级这类没有配套 Response
-// 的请求靠 sendWatch 守着 prompt；若归属错了，一条和英雄无关的 prompt 会拒掉当时在飞的
-// AllHeroRequest，整个养成运行就变成 400。
+// PromptResponse 不带关联 id。多个候选时保留请求并报告歧义，不能按发送顺序猜测归属。
 {
   const client = new GameClient({ url: 'wss://example.invalid/ws', protocol });
   const fake = (name, order) => {
@@ -479,26 +477,31 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     return { state, entry: { name, responseName: `${name.slice(0, -7)}Response`, order, timer: null, resolve: settle('resolve'), reject: settle('reject') } };
   };
 
-  // 先发的是被观察的升级请求，后发的是在飞的查询：prompt 归升级请求，查询必须活着。
+  const ambiguities = [];
+  client.on('promptAmbiguous', (event) => ambiguities.push(event));
+  // 多个候选均保留，不把升级失败提示错误归因到查询。
   const watch = fake('HeroSkillLevelUpRequest', 0);
   const query = fake('AllHeroRequest', 1);
   client.watchers.push(watch.entry);
   client.pending.push(query.entry);
   client.attributePrompt({ style: 1, prompt: 5, args: ['upgrade condition unmet'] });
-  assert.equal(watch.state.settled, 'reject', 'a prompt belongs to the watched send');
-  assert.equal(watch.state.error.request, 'HeroSkillLevelUpRequest');
+  assert.equal(watch.state.settled, null, 'ambiguous prompt must not reject the watcher');
+  assert.deepEqual(ambiguities[0].requests, ['AllHeroRequest', 'HeroSkillLevelUpRequest']);
+  assert.equal(client.watchers.length, 1, 'ambiguous watcher remains tracked');
   assert.equal(query.state.settled, null, 'an unrelated in-flight request must not be rejected');
   assert.equal(client.pending.length, 1, 'the in-flight request stays pending');
 
-  // 没有观察者时，prompt 仍然按老办法落到最后一条在飞请求上。
+  // 唯一候选仍然立即得到明确拒绝。
   client.pending.length = 0;
+  client.watchers.length = 0;
+  const singleClient = new GameClient({ url: 'wss://example.invalid/ws', protocol });
   const only = fake('ArenaChallengeRequest', 2);
-  client.pending.push(only.entry);
-  client.attributePrompt({ args: ['no chance left'] });
-  assert.equal(only.state.settled, 'reject', 'without a watcher the newest pending entry takes the prompt');
-  assert.equal(client.pending.length, 0);
+  singleClient.pending.push(only.entry);
+  singleClient.attributePrompt({ args: ['no chance left'] });
+  assert.equal(only.state.settled, 'reject', 'the only outstanding candidate takes the prompt');
+  assert.equal(singleClient.pending.length, 0);
 
-  // 在飞请求比观察者发得更早时，它就比观察者更该认领这条 prompt。
+  // 调换先后顺序也不能消除归属歧义。
   client.pending.length = 0;
   client.watchers.length = 0;
   const older = fake('DrawAfkRewardRequest', 3);
@@ -506,8 +509,11 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   client.pending.push(older.entry);
   client.watchers.push(later.entry);
   client.attributePrompt({ args: ['too early'] });
-  assert.equal(older.state.settled, 'reject', 'the oldest outstanding send wins');
-  assert.equal(later.state.settled, null, 'the newer watcher keeps waiting');
+  assert.equal(older.state.settled, null, 'send order does not establish correlation');
+  assert.equal(later.state.settled, null, 'the watcher keeps waiting');
+  assert.equal(ambiguities.length, 2);
+  assert.equal(client.pending.length, 1);
+  assert.equal(client.watchers.length, 1);
   checked += 1;
 }
 

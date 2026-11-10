@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { validateCredentials } from './security.mjs';
 
 // 账号身份就是微信 openId：同一个号反复抓包，抓到的还是同一条记录，只是凭证被刷新。
 // 一条记录 = 一份能登录的凭证 + 一点人类可读的标记（昵称、等级、区服）。
@@ -17,7 +18,7 @@ function emptyStore() {
 }
 
 export function accountId(credential) {
-  const id = credential?.login?.eworldParams?.openId;
+  const id = (credential?.login || credential?.body)?.eworldParams?.openId;
   return typeof id === 'string' && id ? id : null;
 }
 
@@ -33,6 +34,7 @@ export function toCredential(account) {
 }
 
 export function accountFromCredential(credential, { label = null, now = new Date().toISOString() } = {}) {
+  validateCredentials(credential);
   const id = accountId(credential);
   if (!id) throw new Error('这份凭证里没有 login.eworldParams.openId，认不出是哪个账号');
   const url = credential.url || credential.wsUrl;

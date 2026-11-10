@@ -1,296 +1,235 @@
-// 本机 MITM 代理：解 TLS 后把游戏网关的 WebSocket 帧读出来，抓到 LoginRequest 就回调。
-//
-// 做成工厂是因为两个地方都要用它：命令行抓包工具（tools/capture-credentials.mjs）和
-// 网页控制台（src/capture.mjs）。代理本身不碰文件、不碰注册表，只负责监听与解密；
-// 「装证书、改系统代理、回滚」这些系统改动由调用方负责。
-import fs from 'node:fs';
-import path from 'node:path';
+// Loopback proxy: only explicitly allowed game hosts are decrypted.
+// OS proxy settings, trust installation and credential persistence belong to callers.
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
+
 import { pathToFileURL } from 'node:url';
-import { leafFor, isInstalled } from './mitm-ca.mjs';
-import { loadProtocol } from '../src/proto.mjs';
-import { createCodec } from '../src/codec.mjs';
+import { leafFor } from './mitm-ca.mjs';
+import { redact, redactText } from '../src/security.mjs';
 
-// 与控制台默认端口分开：控制台 17321，代理 17322。
 export const DEFAULT_PROXY_PORT = Number(process.env.CW_PROXY_PORT ?? 17322);
-const codec = createCodec(loadProtocol());
+export const DEFAULT_ALLOWED_HOSTS = Object.freeze(['dhyaoj-gate.khlgamen.com']);
 
-export function decodeWsFrame(bytes) {
+let defaultCodecPromise;
+function gameCodec() {
+  defaultCodecPromise ??= Promise.all([import('../src/proto.mjs'), import('../src/codec.mjs')])
+    .then(([{ loadProtocol }, { createCodec }]) => createCodec(loadProtocol()));
+  return defaultCodecPromise;
+}
+export function decodeWsFrame(bytes, codec = null) {
   if (bytes.length < 12) return null;
   try {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const nameLength = view.getInt8(9);
-    if (nameLength <= 0 || nameLength > 127 || 10 + nameLength + 1 > bytes.length) return null;
-    return codec.decode(bytes);
-  } catch {
-    return null;
-  }
+    const length = view.getInt8(9);
+    if (length <= 0 || length > 127 || 11 + length > bytes.length) return null;
+    return codec ? codec.decode(bytes) : null;
+  } catch { return null; }
 }
-
-function makeFrameReader(onMessage) {
-  let buffer = Buffer.alloc(0);
-  let fragments = [];
+function frameReader(onFrame) {
+  let buffer = Buffer.alloc(0), fragments = [];
   return (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      if (buffer.length < 2) return;
-      const fin = (buffer[0] & 0x80) !== 0;
-      const opcode = buffer[0] & 0x0f;
-      const masked = (buffer[1] & 0x80) !== 0;
-      let length = buffer[1] & 0x7f;
-      let offset = 2;
-      if (length === 126) {
-        if (buffer.length < 4) return;
-        length = buffer.readUInt16BE(2);
-        offset = 4;
-      } else if (length === 127) {
-        if (buffer.length < 10) return;
-        length = Number(buffer.readBigUInt64BE(2));
-        offset = 10;
-      }
-      let mask = null;
-      if (masked) {
-        if (buffer.length < offset + 4) return;
-        mask = buffer.subarray(offset, offset + 4);
-        offset += 4;
-      }
+    while (buffer.length >= 2) {
+      const fin = Boolean(buffer[0] & 0x80), opcode = buffer[0] & 15, masked = Boolean(buffer[1] & 0x80);
+      let length = buffer[1] & 127, offset = 2;
+      if (length === 126) { if (buffer.length < 4) return; length = buffer.readUInt16BE(2); offset = 4; }
+      if (length === 127) { if (buffer.length < 10) return; const wide = buffer.readBigUInt64BE(2); if (wide > 16777216n) { buffer = Buffer.alloc(0); fragments = []; return; } length = Number(wide); offset = 10; }
+      if (length > 16777216) { buffer = Buffer.alloc(0); fragments = []; return; }
+      const mask = masked ? buffer.subarray(offset, offset + 4) : null;
+      if (masked) offset += 4;
       if (buffer.length < offset + length) return;
       let payload = buffer.subarray(offset, offset + length);
-      if (mask) {
-        payload = Buffer.from(payload);
-        for (let i = 0; i < payload.length; i += 1) payload[i] ^= mask[i % 4];
-      }
+      if (masked) { payload = Buffer.from(payload); for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4]; }
       buffer = buffer.subarray(offset + length);
-      if (opcode === 0x8) {
-        onMessage({ opcode, payload });
-        return;
-      }
-      if (opcode === 0x9 || opcode === 0xa) continue;
+      if (opcode === 8) return;
+      if (opcode === 9 || opcode === 10) continue;
       fragments.push(payload);
-      if (fin) {
-        onMessage({ opcode: 1, payload: Buffer.concat(fragments) });
-        fragments = [];
-      }
+      if (fin) { onFrame(Buffer.concat(fragments)); fragments = []; }
     }
   };
 }
+function hosts(values) {
+  if (!Array.isArray(values)) throw new Error('allowedHosts must be an array of exact host names');
+  return new Set(values.map((value) => {
+    const host = String(value).toLowerCase();
+    if (!host || host.includes('*') || !/^[a-z0-9.-]+$/.test(host) || host.includes('..') || host.startsWith('.') || host.endsWith('.')) throw new Error('allowedHosts requires exact host names without wildcards');
+    return host;
+  }));
+}
+function authority(value) {
+  const url = new URL('https://' + value);
+  if (!value || [' ', '/', '?', '#', '@'].some((char) => value.includes(char)) || url.username || url.password) throw new Error('invalid CONNECT authority');
+  const port = Number(url.port || 443);
+  if (port < 1 || port > 65535) throw new Error('invalid CONNECT port');
+  const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+  return { host: host.toLowerCase(), port, secure: true };
+}
 
-// onLogin 收到 { url, name, body, rawFrameHex }，只会在本次运行里触发一次。
-// onFrame 可选，用来把下行帧也记下来（调试用）。
-export function createProxy({ port = DEFAULT_PROXY_PORT, onLogin, onFrame, log = () => {}, interceptPorts } = {}) {
-  const intercept = new Set(interceptPorts ?? (process.env.CW_INTERCEPT_PORTS ?? '443').split(',').map((text) => Number(text.trim())));
-  const tlsServers = new Map();
-  const liveSockets = new Set();
-  let captured = false;
-  let started = false;
-
-  const httpServer = http.createServer(onRequest);
-  httpServer.on('upgrade', onUpgrade);
-  httpServer.on('connect', onConnect);
-  httpServer.on('connection', (socket) => {
-    liveSockets.add(socket);
-    socket.on('close', () => liveSockets.delete(socket));
-  });
-
-  function handleLogin(url, name, body, rawFrame) {
-    if (captured) return;
-    captured = true;
-    try {
-      onLogin?.({ url, name, body: JSON.parse(JSON.stringify(body)), rawFrameHex: Buffer.from(rawFrame).toString('hex') });
-    } catch (error) {
-      log('capture', `处理登录包失败: ${error.message}`);
+// onLogin is the dedicated credential sink; onFrame and log always receive redacted copies.
+export function createProxy({
+  port = DEFAULT_PROXY_PORT, allowedHosts = DEFAULT_ALLOWED_HOSTS, interceptPorts = [443],
+  leafProvider = leafFor, upstreamCa, codec = null, onLogin, onFrame, log = () => {},
+} = {}) {
+  const allowed = hosts(allowedHosts);
+  const ports = new Set(interceptPorts);
+  if ([...ports].some((value) => !Number.isInteger(value) || value < 1 || value > 65535)) throw new Error('invalid intercepted port');
+  const sockets = new Set(), requests = new Set(), tlsServers = new Map(), secrets = new Set();
+  let listenPromise = null, stopPromise = null, stopping = false, captured = false, actualPort = port, generation = 0;
+  const remember = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, entry] of Object.entries(value)) {
+      if (/token|sign|open.?id|authorization|cookie|password|secret|framehex/i.test(key) && (typeof entry === 'string' || typeof entry === 'number')) { if (String(entry)) secrets.add(String(entry)); }
+      else if (entry && typeof entry === 'object') remember(entry);
     }
-  }
+  };
+  const safeLog = (kind, message) => { try { log(kind, redactText(message, [...secrets])); } catch { /* observers cannot break forwarding */ } };
+  const track = (socket) => { sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket)); return socket; };
+  const server = http.createServer(onRequest);
+  server.on('connection', track);
+  server.on('connect', onConnect);
+  server.on('upgrade', onUpgrade);
+  server.on('clientError', (_error, socket) => socket.destroy());
 
-  function attachWebSocketLogging(socket, direction, context) {
-    const reader = makeFrameReader(({ opcode, payload }) => {
-      if (opcode === 0x8) {
-        log('ws', `${context} 连接关闭`);
-        return;
-      }
-      const decoded = decodeWsFrame(payload);
-      if (decoded && direction === 'up' && decoded.name === 'LoginRequest') handleLogin(context, decoded.name, decoded.body, payload);
+  function inspect(socket, direction, context) {
+    const epoch = generation;
+    const current = () => !stopping && generation === epoch;
+    let queue = Promise.resolve();
+    const inspectFrame = async (bytes) => {
+      if (!current()) return;
+      const decoded = decodeWsFrame(bytes, codec ? await codec : await gameCodec());
+      if (!current()) return;
       if (!decoded) return;
-      if (direction === 'up') log('ws', `${context} 上行 ${decoded.name} seq=${decoded.seq}`);
-      else log('ws', `${context} 下行 ${decoded.name} seq=${decoded.seq}`);
-      onFrame?.({ direction, context, name: decoded.name, seq: decoded.seq, body: decoded.body });
-    });
-    socket.on('data', reader);
+      remember(decoded.body);
+      if (direction === 'up' && decoded.name === 'LoginRequest') {
+        const rawFrameHex = bytes.toString('hex'); secrets.add(rawFrameHex);
+        if (!captured) {
+          captured = true;
+          Promise.resolve().then(() => { if (current()) return onLogin?.({ url: context, name: decoded.name, body: structuredClone(decoded.body), rawFrameHex }); })
+            .catch((error) => safeLog('capture', '处理登录包失败: ' + error.message));
+        }
+      }
+      safeLog('ws', direction + ' ' + decoded.name + ' seq=' + decoded.seq);
+      if (!current()) return;
+      try { Promise.resolve(onFrame?.(redact({ direction, context, name: decoded.name, seq: decoded.seq, body: decoded.body }, [...secrets]))).catch((error) => safeLog('frame', error.message)); }
+      catch (error) { safeLog('frame', error.message); }
+    };
+    socket.on('data', frameReader((bytes) => { queue = queue.then(() => inspectFrame(bytes)).catch((error) => safeLog('decode', error.message)); }));
   }
-
-  function tlsServerFor(host, targetPort) {
-    const key = `${host}:${targetPort}`;
+  function tlsServer(target) {
+    const key = target.host + ':' + target.port;
     if (tlsServers.has(key)) return tlsServers.get(key);
-    const { cert, key: keyPem } = leafFor(host);
-    const server = tls.createServer({ cert, key: keyPem }, (socket) => {
-      socket._target = { host, port: targetPort };
-      httpServer.emit('connection', socket);
+    const leaf = leafProvider(target.host);
+    // key is a file path in leafFor(); only keyPem contains a usable TLS private key.
+    const inner = tls.createServer({ cert: leaf.cert, key: leaf.keyPem }, (socket) => {
+      track(socket); socket._target = target; server.emit('connection', socket);
     });
-    server.on('tlsClientError', (error) => log('tls', `${key} 客户端错误: ${error.message}`));
-    tlsServers.set(key, server);
-    return server;
+    inner.on('tlsClientError', (error) => safeLog('tls', error.message));
+    tlsServers.set(key, inner); return inner;
   }
-
-  function onConnect(req, clientSocket, head) {
-    const [host, portText] = req.url.split(':');
-    const targetPort = Number(portText || 443);
-    const key = `${host}:${targetPort}`;
-    log('connect', key);
-    clientSocket.on('error', () => {});
-
-    // 只解密我们要的端口，其它流量原样隧道转发，免得影响无关程序。
-    if (!intercept.has(targetPort)) {
-      const upstream = net.connect(targetPort, host, () => {
-        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (head && head.length) upstream.write(head);
-        clientSocket.pipe(upstream);
-        upstream.pipe(clientSocket);
-      });
-      upstream.on('error', () => clientSocket.destroy());
-      clientSocket.on('close', () => upstream.destroy());
+  function onConnect(req, client, head) {
+    if (stopping) { client.destroy(); return; }
+    let target; try { target = authority(req.url); } catch { client.end('HTTP/1.1 400 Bad Request\r\n\r\n'); return; }
+    safeLog('connect', target.host + ':' + target.port);
+    if (!allowed.has(target.host) || !ports.has(target.port)) {
+      const upstream = track(net.connect({ host: target.host, port: target.port }, () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.length) upstream.write(head);
+        client.pipe(upstream); upstream.pipe(client);
+      }));
+      upstream.once('error', () => client.destroy());
+      client.once('close', () => upstream.destroy()); upstream.once('close', () => client.destroy());
       return;
     }
-
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    if (head && head.length) clientSocket.unshift(head);
-    tlsServerFor(host, targetPort).emit('connection', clientSocket);
+    try {
+      const inner = tlsServer(target);
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) client.unshift(head);
+      inner.emit('connection', client);
+    } catch (error) { safeLog('tls', error.message); client.destroy(); }
   }
-
+  function targetFor(req) {
+    if (req.socket._target) return { target: req.socket._target, requestPath: req.url };
+    const url = new URL(req.url);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('unsupported proxy URL');
+    return { target: { host: url.hostname.toLowerCase(), port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)), secure: url.protocol === 'https:' }, requestPath: url.pathname + url.search };
+  }
+  function upstream(target, req, requestPath, callback) {
+    remember(req.headers);
+    const request = (target.secure ? https : http).request({
+      hostname: target.host, port: target.port, path: requestPath, method: req.method,
+      headers: req.headers, servername: net.isIP(target.host) ? undefined : target.host,
+      rejectUnauthorized: true, ...(upstreamCa ? { ca: upstreamCa } : {}),
+    }, callback);
+    requests.add(request); request.once('close', () => requests.delete(request)); request.on('socket', track);
+    return request;
+  }
   function onRequest(req, res) {
-    let target = req.socket._target;
-    let requestPath = req.url;
-    if (!target && /^https?:\/\//i.test(req.url)) {
-      const url = new URL(req.url);
-      target = { host: url.hostname, port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)) };
-      requestPath = `${url.pathname}${url.search}`;
-    }
-    if (!target) {
-      res.writeHead(502);
-      res.end('proxy: no target');
-      return;
-    }
-    const secure = target.port !== 80;
-    const transport = secure ? https : http;
-    log('http', `${req.method} ${secure ? 'https' : 'http'}://${target.host}:${target.port}${requestPath}`);
-
-    const upstream = transport.request({
-      host: target.host,
-      port: target.port,
-      path: requestPath,
-      method: req.method,
-      headers: req.headers,
-      servername: target.host,
-      rejectUnauthorized: false,
-    }, (upstreamRes) => {
-      res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
-      upstreamRes.pipe(res);
-    });
-    upstream.on('error', (error) => {
-      log('http', `上游出错: ${error.message}`);
-      if (!res.headersSent) res.writeHead(502);
-      res.end();
-    });
-    req.pipe(upstream);
+    if (stopping) { res.writeHead(503); res.end(); return; }
+    let found; try { found = targetFor(req); } catch { res.writeHead(502); res.end(); return; }
+    const { target, requestPath } = found;
+    // Ordinary HTTP traffic is forwarded without inspecting headers or bodies.
+    const request = upstream(target, req, requestPath, (response) => { res.writeHead(response.statusCode, response.headers); response.pipe(res); });
+    request.on('error', (error) => { safeLog('http', '上游出错: ' + error.message); if (!res.headersSent) res.writeHead(502); res.end(); });
+    res.once('close', () => request.destroy()); req.pipe(request);
   }
-
-  function onUpgrade(req, clientSocket, head) {
+  function onUpgrade(req, client, head) {
     const target = req.socket._target;
-    if (!target) {
-      clientSocket.destroy();
-      return;
-    }
-    const secure = target.port !== 80;
-    const transport = secure ? https : http;
-    const scheme = secure ? 'wss' : 'ws';
-    const context = `${scheme}://${target.host}:${target.port}${req.url}`;
-    log('upgrade', context);
-
-    const upstream = transport.request({
-      host: target.host,
-      port: target.port,
-      path: req.url,
-      method: 'GET',
-      headers: req.headers,
-      servername: target.host,
-      rejectUnauthorized: false,
+    if (stopping || !target || !allowed.has(target.host) || !ports.has(target.port)) { client.destroy(); return; }
+    const context = 'wss://' + target.host + ':' + target.port + req.url;
+    remember(req.headers); safeLog('upgrade', context);
+    const request = upstream(target, req, req.url);
+    request.on('upgrade', (response, upstreamSocket, upstreamHead) => {
+      track(upstreamSocket);
+      client.write('HTTP/1.1 101 Switching Protocols\r\n' + Object.entries(response.headers).map(([key, value]) => key + ': ' + value).join('\r\n') + '\r\n\r\n');
+      inspect(upstreamSocket, 'down', context); inspect(client, 'up', context);
+      // The upgrade's head bytes arrived before data listeners were attached.
+      if (head.length) { client.emit('data', head); upstreamSocket.write(head); }
+      if (upstreamHead.length) { upstreamSocket.emit('data', upstreamHead); client.write(upstreamHead); }
+      client.once('close', () => upstreamSocket.destroy()); upstreamSocket.once('close', () => client.destroy());
+      client.pipe(upstreamSocket); upstreamSocket.pipe(client);
     });
-    upstream.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
-      const headers = Object.entries(upstreamRes.headers)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join('\r\n');
-      clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${headers}\r\n\r\n`);
-      if (head && head.length) upstreamSocket.write(head);
-      if (upstreamHead && upstreamHead.length) clientSocket.write(upstreamHead);
-
-      attachWebSocketLogging(upstreamSocket, 'down', context);
-      attachWebSocketLogging(clientSocket, 'up', context);
-
-      clientSocket.on('error', () => upstreamSocket.destroy());
-      upstreamSocket.on('error', () => clientSocket.destroy());
-      clientSocket.on('close', () => upstreamSocket.destroy());
-      upstreamSocket.on('close', () => clientSocket.destroy());
-      clientSocket.pipe(upstreamSocket);
-      upstreamSocket.pipe(clientSocket);
-    });
-    upstream.on('error', (error) => {
-      log('upgrade', `上游出错: ${error.message}`);
-      clientSocket.destroy();
-    });
-    upstream.end();
+    request.on('response', (response) => { response.resume(); client.destroy(); });
+    request.on('error', (error) => { safeLog('upgrade', '上游出错: ' + error.message); client.destroy(); });
+    client.once('close', () => request.destroy()); request.end();
   }
-
   return {
-    port,
-    get captured() {
-      return captured;
-    },
+    get port() { return actualPort; },
+    get captured() { return captured; },
+    get socketCount() { return sockets.size; },
     listen() {
-      if (started) return Promise.resolve();
-      started = true;
-      if (!isInstalled()) log('warn', '当前用户根存储里没有本工具的 CA，请先安装再抓包');
-      return new Promise((resolve, reject) => {
-        httpServer.once('error', reject);
-        httpServer.listen(port, '127.0.0.1', () => {
-          httpServer.removeListener('error', reject);
-          log('start', `代理监听 127.0.0.1:${port}`);
-          resolve();
-        });
+      if (stopPromise) return stopPromise.then(() => this.listen());
+      if (listenPromise) return listenPromise;
+      stopping = false; captured = false; generation += 1;
+      const task = new Promise((resolve, reject) => {
+        const failed = (error) => { server.off('listening', ready); reject(error); };
+        const ready = () => { server.off('error', failed); actualPort = server.address().port; safeLog('start', '代理监听 127.0.0.1:' + actualPort); resolve(); };
+        server.once('error', failed); server.once('listening', ready);
+        try { server.listen(port, '127.0.0.1'); } catch (error) { server.off('error', failed); server.off('listening', ready); reject(error); }
       });
+      listenPromise = task;
+      task.catch(() => { if (listenPromise === task) listenPromise = null; });
+      return task;
     },
-    // httpServer.close() 会等活连接自己结束，所以还要把连接都断掉。
-    async stop() {
-      if (!started) return;
-      started = false;
-      const closed = new Promise((resolve) => httpServer.close(() => resolve()));
-      for (const socket of liveSockets) socket.destroy();
-      liveSockets.clear();
-      for (const server of tlsServers.values()) server.close();
-      tlsServers.clear();
-      await closed;
+    stop() {
+      if (stopPromise) return stopPromise;
+      stopping = true; generation += 1;
+      const task = (async () => {
+        if (listenPromise) await listenPromise.catch(() => {});
+        const done = server.listening ? new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) : Promise.resolve();
+        for (const request of requests) request.destroy(); requests.clear();
+        for (const socket of sockets) socket.destroy(); sockets.clear(); tlsServers.clear();
+        await done; listenPromise = null;
+      })();
+      stopPromise = task;
+      task.finally(() => { if (stopPromise === task) stopPromise = null; }).catch(() => {});
+      return task;
     },
   };
 }
 
-// 直接跑就起一个独立代理，把抓到的登录包写到 data/credentials.json。
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  const out = path.resolve(import.meta.dirname, '../data/credentials.json');
-  const logFile = path.resolve(import.meta.dirname, '../data/capture.log');
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  const stream = fs.createWriteStream(logFile, { flags: 'a' });
-  const log = (kind, message) => {
-    const line = `${new Date().toISOString()} [${kind}] ${message}`;
-    console.log(line);
-    stream.write(`${line}\n`);
-  };
-  const proxy = createProxy({
-    log,
-    onLogin: ({ url, body, rawFrameHex }) => {
-      fs.writeFileSync(out, JSON.stringify({ url, login: body, loginFrameHex: rawFrameHex, source: 'mitm', capturedAt: new Date().toISOString() }, null, 2));
-      log('capture', `已保存登录凭证 -> ${out}`);
-    },
-  });
-  proxy.listen();
+  process.stderr.write('Use tools/capture-credentials.mjs; standalone proxy credential persistence is disabled.\n');
+  process.exitCode = 1;
 }

@@ -34,10 +34,14 @@ export function isSeqNoInRange(seq, right) {
 }
 
 export class GameClient extends EventEmitter {
-  constructor({ url = DEFAULT_GATEWAY, protocol, login = null } = {}) {
+  constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket } = {}) {
     super();
     this.url = url;
     this.login = login;
+    this.WebSocketImpl = WebSocketImpl;
+    this.loginPromise = null;
+    this.loginAttempt = null;
+    this.loginResponse = null;
     this.codec = createCodec(protocol);
     this.state = 'IDLE';
     this.socket = null;
@@ -51,13 +55,15 @@ export class GameClient extends EventEmitter {
     this.latencyMs = 0;
     this.serverClockOffsetMs = 0;
     this.pending = [];
+    this.lateResponses = new Set();
+    this.promptUncertain = false;
     this.watchers = [];
     this.sendOrder = 0;
     this.stopping = false;
   }
 
   get connected() {
-    return this.socket !== null && this.socket.readyState === 1;
+    return this.state === 'READY' && this.socket !== null && this.socket.readyState === 1;
   }
 
   setState(state, detail) {
@@ -65,85 +71,109 @@ export class GameClient extends EventEmitter {
     this.emit('state', { state, detail });
   }
 
-  async connect(loginBody = this.login, { timeout = LOGIN_TIMEOUT_MS } = {}) {
-    if (this.connected) throw new Error('already connected');
+  // One login owns one socket; all callers share it until it settles.
+  connect(loginBody = this.login, { timeout = LOGIN_TIMEOUT_MS } = {}) {
+    if (this.loginPromise) return this.loginPromise;
+    if (this.state === 'READY' && this.connected) return Promise.resolve(this.loginResponse);
     this.stopping = false;
+    const attempt = { resolve: null, reject: null, timer: null };
+    const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
+    this.loginPromise = promise;
+    this.loginAttempt = attempt;
     this.setState('CONNECTING', this.url);
-
-    const socket = new WebSocket(this.url);
-    socket.binaryType = 'arraybuffer';
-    this.socket = socket;
-
-    const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
-
-    const body = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error('login timeout'));
+    if (this.loginAttempt !== attempt) return promise;
+    try {
+      const socket = new this.WebSocketImpl(this.url);
+      socket.binaryType = 'arraybuffer';
+      this.socket = socket;
+      const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
+      const current = () => this.loginAttempt === attempt && this.socket === socket;
+      attempt.timer = setTimeout(() => {
+        if (current()) this.finishConnection('FAILED', new Error('login timeout'), 'loginTimeout');
       }, timeout);
-      const cleanup = () => {
-        clearTimeout(timer);
-        socket.onopen = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.onmessage = null;
-      };
       socket.onopen = () => {
-        this.emit('frame', { dir: 'out', name: 'LoginRequest', seq: this.sendSeqNo, bytes: frame });
-        socket.send(frame);
+        if (!current()) return;
+        try {
+          this.emit('frame', { dir: 'out', name: 'LoginRequest', seq: this.sendSeqNo, bytes: frame });
+          socket.send(frame);
+        } catch (error) {
+          this.finishConnection('FAILED', error, 'loginSendFailed');
+        }
       };
       socket.onerror = () => {
-        cleanup();
-        reject(new Error('socket error during login'));
+        if (current()) this.finishConnection('FAILED', new Error('socket error during login'), 'loginSocketError');
       };
-      socket.onclose = (event) => {
-        cleanup();
-        reject(new Error(`socket closed during login: ${event.code} ${event.reason || ''}`));
-      };
+      socket.onclose = (event) => { if (current()) this.onClose(event); };
       socket.onmessage = (event) => {
-        let decoded;
+        if (!current()) return;
         try {
-          decoded = this.codec.decode(event.data);
+          const decoded = this.codec.decode(event.data);
+          if (decoded.name !== 'LoginResponse') throw new Error('unexpected auth reply: ' + decoded.name);
+          const body = decoded.body;
+          if (body.result !== 0) {
+            const error = new Error('login rejected: result=' + body.result + ' ' + (body.errorMessage || ''));
+            error.loginResponse = body;
+            this.finishConnection('REJECTED', error, 'loginRejected');
+            return;
+          }
+          clearTimeout(attempt.timer);
+          attempt.timer = null;
+          this.sendSeqNo = body.initSeqNo ?? 0;
+          this.recvSeqNo = null;
+          this.nextAckSeqNo = null;
+          this.lastResponseAt = Date.now();
+          this.loginResponse = body;
+          socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
+          socket.onclose = (closed) => { if (this.socket === socket) this.onClose(closed); };
+          socket.onerror = () => {
+            if (this.socket !== socket) return;
+            const error = new Error('socket error');
+            this.finishConnection('FAILED', error, 'socketError');
+            if (this.listenerCount('error')) this.emit('error', error);
+          };
+          socket.onopen = null;
+          this.lastPingTimestamp = 0;
+          this.setState('READY', 'player=' + (body.playerInfo?.nickname ?? '') + ' initSeqNo=' + body.initSeqNo);
+          if (!current()) return;
+          this.sendPing(Date.now());
+          if (!current()) return;
+          this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS);
+          this.loginAttempt = null;
+          this.loginPromise = null;
+          attempt.resolve(body);
+          this.emit('login', body);
         } catch (error) {
-          cleanup();
-          reject(error);
-          return;
+          if (this.socket === socket) this.finishConnection('FAILED', error, 'loginFailed');
         }
-        cleanup();
-        if (decoded.name !== 'LoginResponse') {
-          reject(new Error(`unexpected auth reply: ${decoded.name}`));
-          return;
-        }
-        resolve(decoded.body);
       };
-    }).catch((error) => {
-      this.socket = null;
-      this.setState('FAILED', error.message);
-      throw error;
-    });
-
-    if (body.result !== 0) {
-      this.socket = null;
-      this.setState('REJECTED', `result=${body.result} ${body.errorMessage || ''}`);
-      const error = new Error(`login rejected: result=${body.result} ${body.errorMessage || ''}`);
-      error.loginResponse = body;
-      throw error;
+    } catch (error) {
+      this.finishConnection('FAILED', error, 'connectFailed');
     }
+    return promise;
+  }
 
-    this.sendSeqNo = body.initSeqNo ?? 0;
-    this.recvSeqNo = null;
+  // Every terminal path releases resources before publishing its final state.
+  finishConnection(state, error, reason = state.toLowerCase()) {
+    const attempt = this.loginAttempt;
+    this.loginAttempt = null;
+    this.loginPromise = null;
+    this.loginResponse = null;
+    this.lateResponses.clear();
+    this.promptUncertain = false;
+    if (attempt) clearTimeout(attempt.timer);
+    if (this.tickTimer !== null) clearInterval(this.tickTimer);
+    if (this.ackTimer !== null) clearTimeout(this.ackTimer);
+    this.tickTimer = null;
+    this.ackTimer = null;
     this.nextAckSeqNo = null;
-
-    socket.onmessage = (event) => this.onMessage(event.data);
-    socket.onclose = (event) => this.onClose(event);
-    socket.onerror = () => this.emit('error', new Error('socket error'));
-
-    this.setState('READY', `player=${body.playerInfo?.nickname ?? ''} initSeqNo=${body.initSeqNo}`);
     this.lastPingTimestamp = 0;
-    this.sendPing(Date.now());
-    this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS);
-    this.emit('login', body);
-    return body;
+    for (const entry of [...this.pending.splice(0), ...this.watchers.splice(0)]) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    this.discardSocket(reason);
+    this.setState(state, error?.message);
+    attempt?.reject(error);
   }
 
   bumpSeqNo() {
@@ -168,63 +198,89 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
-  request(name, body, responseName = `${name.slice(0, -7)}Response`, timeout = 15000) {
-    return new Promise((resolve, reject) => {
-      const entry = { name, responseName, resolve, reject, timer: null, order: this.sendOrder };
-      entry.timer = setTimeout(() => {
-        this.pending = this.pending.filter((item) => item !== entry);
-        reject(new Error(`timeout waiting for ${responseName} (sent ${name})`));
-      }, timeout);
-      this.pending.push(entry);
-      this.sendOrder += 1;
-      try {
-        this.send(name, body);
-      } catch (error) {
-        clearTimeout(entry.timer);
-        this.pending = this.pending.filter((item) => item !== entry);
-        reject(error);
-      }
-    });
+  request(name, body, responseName = name.slice(0, -7) + 'Response', timeout = 15000) {
+    // Responses carry no request id: only equivalent requests can share one response.
+    let key;
+    try {
+      key = Array.from(this.codec.encode(name, 0, body || {})).join(',');
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (this.lateResponses.has(responseName)) {
+      const error = new Error('previous request timed out; response is still uncorrelated: ' + responseName);
+      error.code = 'RESPONSE_UNCERTAIN';
+      return Promise.reject(error);
+    }
+    const existing = this.pending.find((entry) => entry.responseName === responseName);
+    if (existing) {
+      if (existing.name === name && existing.key === key) return existing.promise;
+      const error = new Error('conflicting request already waiting for ' + responseName);
+      error.code = 'RESPONSE_CONFLICT';
+      return Promise.reject(error);
+    }
+    const entry = { name, responseName, key, timer: null, order: this.sendOrder++, promise: null };
+    entry.promise = new Promise((resolve, reject) => Object.assign(entry, { resolve, reject }));
+    entry.timer = setTimeout(() => {
+      this.pending = this.pending.filter((item) => item !== entry);
+      this.lateResponses.add(responseName);
+      this.promptUncertain = true;
+      entry.reject(new Error('timeout waiting for ' + responseName + ' (sent ' + name + ')'));
+    }, timeout);
+    this.pending.push(entry);
+    try {
+      this.send(name, body);
+    } catch (error) {
+      clearTimeout(entry.timer);
+      this.pending = this.pending.filter((item) => item !== entry);
+      entry.reject(error);
+    }
+    return entry.promise;
   }
 
-  // 有一部分请求服务端没有配套的 *Response，成功时静默，失败时只推一条 PromptResponse。
-  // 这类请求用 sendWatch：发送后守着 prompt 一小段时间，守到了就是被拒，没守到就当作成功。
+  // No paired response exists for these sends. An unambiguous prompt rejects it.
   sendWatch(name, body, { window = 350 } = {}) {
-    const order = this.sendOrder;
-    this.sendOrder += 1;
-    const seq = this.send(name, body);
-    return new Promise((resolve, reject) => {
-      const watcher = { name, order, resolve, reject, timer: null };
+    const watcher = { name, order: this.sendOrder++, timer: null };
+    const promise = new Promise((resolve, reject) => Object.assign(watcher, { resolve, reject }));
+    this.watchers.push(watcher);
+    try {
+      const seq = this.send(name, body);
       watcher.timer = setTimeout(() => {
         this.watchers = this.watchers.filter((item) => item !== watcher);
-        resolve({ sent: seq, name });
+        if (watcher.ambiguousPrompt) {
+          const error = new Error('uncorrelated server prompt while waiting for ' + name);
+          error.code = 'AMBIGUOUS_PROMPT';
+          watcher.reject(error);
+        } else {
+          watcher.resolve({ sent: seq, name });
+        }
       }, window);
-      this.watchers.push(watcher);
-    });
+    } catch (error) {
+      this.watchers = this.watchers.filter((item) => item !== watcher);
+      watcher.reject(error);
+    }
+    return promise;
   }
 
-  // PromptResponse 不带我们发出去的 seq，只能按顺序认领：服务端按请求到达顺序应答，
-  // 所以一条 prompt 属于「最早那条还没被应答的发送」。若那条刚好是 sendWatch 发出的，
-  // 就归它；否则才是某个在飞的 request()。
+  // PromptResponse has no correlation id. Multiple candidates must not be guessed.
   attributePrompt(body) {
-    const reason = (body?.args ?? []).join(' ') || `prompt=${body?.prompt}`;
-    const error = new Error(`server prompt: ${reason}`);
-    error.prompt = body;
-    const pendingEntry = this.pending.length ? this.pending[this.pending.length - 1] : null;
-    const watcher = this.watchers.length && (!pendingEntry || this.watchers[0].order < pendingEntry.order) ? this.watchers[0] : null;
-    if (watcher) {
-      this.watchers = this.watchers.filter((item) => item !== watcher);
-      clearTimeout(watcher.timer);
-      error.request = watcher.name;
-      watcher.reject(error);
+    const candidates = [...this.pending, ...this.watchers];
+    if (candidates.length !== 1 || this.promptUncertain) {
+      if (candidates.length > 1 || this.promptUncertain) {
+        this.promptUncertain = true;
+        for (const entry of candidates) entry.ambiguousPrompt = true;
+        this.emit('promptAmbiguous', { requests: candidates.map((entry) => entry.name) });
+      }
       return;
     }
-    if (pendingEntry) {
-      this.pending.splice(this.pending.length - 1, 1);
-      clearTimeout(pendingEntry.timer);
-      error.request = pendingEntry.name;
-      pendingEntry.reject(error);
-    }
+    const entry = candidates[0];
+    const reason = (body?.args ?? []).join(' ') || 'prompt=' + body?.prompt;
+    const error = new Error('server prompt: ' + reason);
+    error.prompt = body;
+    error.request = entry.name;
+    this.pending = this.pending.filter((item) => item !== entry);
+    this.watchers = this.watchers.filter((item) => item !== entry);
+    clearTimeout(entry.timer);
+    entry.reject(error);
   }
 
   sendPing(timestamp) {
@@ -263,10 +319,12 @@ export class GameClient extends EventEmitter {
     this.emit('message', { seq, name, body });
 
     if (name === 'ResendFailed') {
+      this.finishConnection('FAILED', new Error('resend failed'), 'resendFailed');
       this.emit('fatal', { reason: 'ResendFailed', seqNo: body.seqNo });
       return;
     }
     if (name === 'SCChannelExpired') {
+      this.finishConnection('EXPIRED', new Error('channel expired'), 'channelExpired');
       this.emit('fatal', { reason: 'SCChannelExpired', detail: body.reason });
       return;
     }
@@ -275,6 +333,10 @@ export class GameClient extends EventEmitter {
     if (name === 'PromptResponse') {
       this.emit('prompt', body);
       this.attributePrompt(body);
+      return;
+    }
+    if (this.lateResponses.delete(name)) {
+      this.emit('drop', { reason: 'lateResponse', name, seq });
       return;
     }
     const index = this.pending.findIndex((item) => item.responseName === name);
@@ -316,7 +378,11 @@ export class GameClient extends EventEmitter {
       this.ackTimer = setTimeout(() => {
         this.ackTimer = null;
         if (this.nextAckSeqNo !== null) {
-          this.sendNoSeq('Ack', { seqNo: this.nextAckSeqNo });
+          try {
+            this.sendNoSeq('Ack', { seqNo: this.nextAckSeqNo });
+          } catch (error) {
+            this.finishConnection('FAILED', error, 'ackSendFailed');
+          }
           this.nextAckSeqNo = null;
         }
       }, ACK_DELAY_MS);
@@ -334,11 +400,14 @@ export class GameClient extends EventEmitter {
         if (this.lastPingTimestamp > 0) {
           if (now - this.lastPingTimestamp > PING_TIMEOUT_MS) {
             this.emit('warn', 'ping timeout');
-            this.lastPingTimestamp = 0;
-            this.discardSocket('pingTimeout');
+            this.finishConnection('FAILED', new Error('ping timeout'), 'pingTimeout');
           }
         } else {
-          this.sendPing(now);
+          try {
+            this.sendPing(now);
+          } catch (error) {
+            this.finishConnection('FAILED', error, 'pingSendFailed');
+          }
         }
       }
     }
@@ -374,26 +443,14 @@ export class GameClient extends EventEmitter {
   }
 
   onClose(event) {
-    this.socket = null;
+    const error = new Error('socket closed: ' + (event?.code ?? '') + ' ' + (event?.reason || ''));
+    this.finishConnection(this.stopping ? 'STOPPED' : 'CLOSED', error, 'socketClosed');
     this.emit('close', { code: event?.code, reason: event?.reason });
-    if (!this.stopping) this.setState('CLOSED', `code=${event?.code ?? ''}`);
   }
 
   stop() {
     this.stopping = true;
-    if (this.tickTimer !== null) clearInterval(this.tickTimer);
-    if (this.ackTimer !== null) clearTimeout(this.ackTimer);
-    this.tickTimer = null;
-    this.ackTimer = null;
-    for (const entry of this.pending.splice(0)) {
-      clearTimeout(entry.timer);
-      entry.reject(new Error('client stopped'));
-    }
-    for (const watcher of this.watchers.splice(0)) {
-      clearTimeout(watcher.timer);
-      watcher.reject(new Error('client stopped'));
-    }
-    this.discardSocket('stop');
-    this.setState('STOPPED');
+    if (!this.socket && !this.loginAttempt && ['FAILED', 'CLOSED', 'REJECTED', 'EXPIRED', 'STOPPED'].includes(this.state)) return;
+    this.finishConnection('STOPPED', new Error('client stopped'), 'stop');
   }
 }

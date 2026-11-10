@@ -6,19 +6,24 @@ import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
-import { collectState, summarize, formatState } from './game.mjs';
-import { getConfig, APPID } from './config.mjs';
+import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
+import { exploreSnapshot } from './data-catalog.mjs';
+import { getConfig, APPID, RESOURCE } from './config.mjs';
+import { defaultOrderRules, validateOrderRules, ORDER_RULE_TYPES, evaluateOrders } from './order-rules.mjs';
+import { loadOrderRules, saveOrderRules } from './order-rules-store.mjs';
+import { createStageRunner, defaultStageConfig, validateStageConfig, MAINLINE_CHALLENGE, MAINLINE_SIDE_AUTHORIZATION, resolveMainlineChallengeSide } from './stages.mjs';
 import { qrSvg } from './vendor/qrcode.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
-import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
+import { surveyDailies, runDailies, formatSurvey, DAILY_DRIVERS, CHEST_TABLE } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { runLoop, formatLoopRound } from './loop.mjs';
 import { runAction } from './actions.mjs';
-import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
+import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon } from './art.mjs';
 
+import { redact, redactText, validateCredentials } from './security.mjs';
 const LOG_LIMIT = 400;
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
 const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
@@ -31,20 +36,24 @@ const STATE_TEXT = {
   REJECTED: '服务器拒绝登录',
   CLOSED: '连接已断开',
   STOPPED: '已停止',
+  EXPIRED: '登录已失效',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321 }) {
-  const protocol = loadProtocol();
+export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock } = {}) {
+  const protocol = suppliedProtocol ?? loadProtocol();
+  let closed = false;
+  let closingPromise = null;
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
+  const knownSecrets = new Set();
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
   };
 
   function emit(session, level, message, extra) {
-    const entry = { t: Date.now(), level, message, extra, account: session?.id ?? null };
+    const entry = redact({ t: Date.now(), level, message, extra, account: session?.id ?? null }, secrets());
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
@@ -59,12 +68,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   // 协议层细节（帧、序号、字节数、原始 JSON）只落盘，不进运行记录。
   let traceStream = null;
   function trace(session, line) {
+    line = redactText(line, secrets());
     const text = `${new Date().toISOString()} [${session.id.slice(0, 8)}] ${line}\n`;
     if (process.env.CW_DEBUG === '1') process.stdout.write(text);
     try {
       if (!traceStream) {
-        fs.mkdirSync(path.dirname(TRACE_PATH), { recursive: true });
-        traceStream = fs.createWriteStream(TRACE_PATH, { flags: 'a' });
+        fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+        traceStream = fs.createWriteStream(tracePath, { flags: 'a' });
       }
       traceStream.write(text);
     } catch {
@@ -76,8 +86,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     return {
       id,
       client: null,
+      unwire: null,
       player: null,
+      state: 'IDLE', generation: 0, abort: new AbortController(),
+      connectionPromise: null, collectionPromise: null, loginResponse: null,
+      snapshot: null, snapshotAt: null, snapshotStale: false,
       busy: null,
+      stageRunner: null, stageClient: null,
       log: [],
       loop: {
         running: false,
@@ -96,18 +111,73 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     return sessions.get(id);
   }
 
-  function wire(session, instance) {
-    instance.on('state', ({ state, detail }) => emit(session, 'state', STATE_TEXT[state] ?? state, detail ? { detail } : undefined));
-    instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`));
-    instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, 400)}`));
-    instance.on('pong', ({ latencyMs, offsetMs }) => trace(session, `pong ${latencyMs}ms offset=${offsetMs}ms`));
-    instance.on('drop', ({ name, reason }) => emit(session, 'warn', `漏收了一条 ${name} 的应答（${reason}），本轮跳过`));
-    instance.on('warn', (message) => emit(session, 'warn', message === 'ping timeout' ? '服务器心跳超时，连接可能已经断了' : message));
-    instance.on('fatal', ({ reason }) => emit(session, 'error', reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`));
-    instance.on('error', (error) => emit(session, 'error', error.message));
-    instance.on('close', () => emit(session, 'state', '连接已断开'));
+  function secrets() {
+    let accounts = [];
+    try { accounts = loadStore().accounts; } catch { /* retain secrets already known if the store is damaged */ }
+    for (const account of accounts) {
+      for (const value of [account.login?.eworldParams?.token, account.login?.eworldParams?.sign, account.loginFrameHex]) {
+        if (typeof value === 'string' && value) knownSecrets.add(value);
+      }
+    }
+    return [...knownSecrets];
   }
 
+  function cancelSession(session, state = 'STOPPED') {
+    if (state === 'STOPPED' || state === 'IDLE') session.stageRunner?.stop('账号已断开或会话已重置');
+    else session.stageRunner?.fail(new Error('账号连接异常：' + state));
+    session.generation += 1;
+    session.abort.abort();
+    session.loop.stop.aborted = true;
+    session.loop.running = false;
+    const instance = session.client;
+    session.unwire?.();
+    session.unwire = null;
+    session.client = null;
+    session.player = null;
+    session.loginResponse = null;
+    session.connectionPromise = null;
+    session.collectionPromise = null;
+    session.busy = null;
+    session.snapshotStale = Boolean(session.snapshot);
+    session.state = state;
+    instance?.stop();
+  }
+
+  function activeTask(signal, task) {
+    // Observe task even if it synchronously emitted FAILED and aborted the session.
+    const observed = Promise.resolve(task);
+    if (signal.aborted) return observed.then(() => { throw new Error('账号任务已取消'); }, (error) => { throw error; });
+    let cancel;
+    const stopped = new Promise((_, reject) => {
+      cancel = () => reject(new Error('账号任务已取消'));
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+    return Promise.race([observed, stopped]).finally(() => signal.removeEventListener('abort', cancel));
+  }
+
+  function assertCurrent(session, generation, instance) {
+    if (closed || sessions.get(session.id) !== session || session.generation !== generation || session.client !== instance) throw new Error('账号任务已取消');
+  }
+
+  function wire(session, instance) {
+    const current = () => session.client === instance;
+    const handlers = [];
+    const on = (name, handler) => { handlers.push([name, handler]); instance.on(name, handler); };
+    session.unwire = () => { for (const [name, handler] of handlers) instance.off(name, handler); };
+    on('state', ({ state, detail }) => {
+      if (!current()) return;
+      session.state = state;
+      if (['FAILED', 'REJECTED', 'CLOSED', 'EXPIRED', 'STOPPED'].includes(state)) cancelSession(session, state);
+      emit(session, 'state', STATE_TEXT[state] ?? state, detail ? { detail } : undefined);
+    });
+    on('frame', ({ dir, name, seq, bytes }) => { if (current()) trace(session, (dir === 'out' ? '->' : '<-') + ' [' + name + '] seq=' + seq + ' ' + bytes.byteLength + 'B'); });
+    on('message', ({ seq, name, body }) => { if (current()) trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
+    on('pong', ({ latencyMs, offsetMs }) => { if (current()) trace(session, 'pong ' + latencyMs + 'ms offset=' + offsetMs + 'ms'); });
+    on('warn', (message) => { if (current()) emit(session, 'warn', message); });
+    on('promptAmbiguous', () => { if (current()) emit(session, 'warn', '收到无法确定请求归属的服务端提示，未匹配到任何请求'); });
+    on('fatal', ({ reason }) => { if (current()) emit(session, 'error', '连接失效：' + reason); });
+    on('error', (error) => { if (current()) emit(session, 'error', error.message); });
+  }
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
   function persistIdentity(account, player) {
     try {
@@ -123,26 +193,70 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
   }
 
-  async function connect(session, account) {
-    if (session.client?.connected) throw new Error('这个账号已经连上了');
-    const client = new GameClient({ url: account.url, protocol });
-    wire(session, client);
-    session.client = client;
-    session.player = null;
-    const response = await client.connect(account.login);
-    session.player = response.playerInfo || null;
-    persistIdentity(account, session.player);
-    const role = describeRole(session.player);
-    emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知'} lv${role?.level ?? '?'}`);
-    return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
+  function connect(session, account) {
+    if (closed) return Promise.reject(new Error('控制台已关闭'));
+    if (session.connectionPromise) return session.connectionPromise;
+    if (session.client?.connected && session.state === 'READY') return Promise.resolve(session.loginResponse);
+    validateCredentials(account);
+    cancelSession(session, 'IDLE');
+    session.abort = new AbortController();
+    const generation = session.generation;
+    const instance = clientFactory({ url: account.url, protocol });
+    session.client = instance;
+    session.state = 'CONNECTING';
+    wire(session, instance);
+    const task = Promise.resolve().then(async () => {
+      assertCurrent(session, generation, instance);
+      const response = await activeTask(session.abort.signal, instance.connect(account.login));
+      assertCurrent(session, generation, instance);
+      session.player = response.playerInfo || null;
+      session.loginResponse = response;
+      session.state = 'READY';
+      persistIdentity(account, session.player);
+      emit(session, 'info', '已进入游戏：' + (describeRole(session.player)?.nickname ?? '未知'));
+      return response;
+    }).catch((error) => {
+      if (session.generation === generation && session.client === instance) cancelSession(session, 'FAILED');
+      throw error;
+    }).finally(() => { if (session.connectionPromise === task) session.connectionPromise = null; });
+    session.connectionPromise = task;
+    return task;
   }
 
-  async function ensureConnected(session, account) {
-    if (session.client?.connected) return session.client;
-    await connect(session, account);
+  async function ensureConnected(session) {
+    if (session.connectionPromise) await session.connectionPromise;
+    if (!session.client?.connected || session.state !== 'READY') {
+      const error = new Error('账号未连接，请先显式连接');
+      error.statusCode = 409;
+      throw error;
+    }
     return session.client;
   }
 
+  function refresh(session, account) {
+    if (session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
+      const error = new Error('自动闯关或未决战斗期间不能完整采集；已有缓存仍可浏览');
+      error.statusCode = 409; return Promise.reject(error);
+    }
+    if (session.collectionPromise) return session.collectionPromise;
+    const generation = session.generation;
+    const signal = session.abort.signal;
+    const task = Promise.resolve().then(async () => {
+      const instance = await ensureConnected(session);
+      assertCurrent(session, generation, instance);
+      session.busy = '采集只读状态';
+      const result = await activeTask(signal, collect(instance, protocol, { timeout: 15000 }));
+      assertCurrent(session, generation, instance);
+      session.snapshot = result;
+      session.snapshotAt = new Date().toISOString();
+      session.snapshotStale = false;
+      return overview(session, account);
+    }).finally(() => {
+      if (session.collectionPromise === task) { session.collectionPromise = null; session.busy = null; }
+    });
+    session.collectionPromise = task;
+    return task;
+  }
   // 每个请求都带 ?account=<id>；不给就是当前选中的那个账号。
   function resolve(url) {
     const store = loadStore();
@@ -154,7 +268,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   function accountStatus(session) {
     return {
       connected: Boolean(session.client?.connected),
-      state: session.client?.snapshot?.().state ?? 'IDLE',
+      state: session.state,
       busy: session.busy,
       looping: session.loop.running,
     };
@@ -170,50 +284,166 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   // ---- 只读汇总 -------------------------------------------------------------
 
-  async function overview(session, account) {
-    const instance = await ensureConnected(session, account);
-    const { ok, failed } = await collectState(instance, protocol, { timeout: 15000 });
+  function overview(session, account) {
+    const state = session.snapshot ?? { ok: {}, failed: {} };
+    const { ok, failed } = state;
     const config = loadConfigSafe();
-    const view = summarize({ ok }, { config });
+    const view = summarize(state, { config });
     const daily = view.daily;
     return {
       account: describeAccount(account, { active: account.id === loadStore().activeId }),
       status: accountStatus(session),
       player: describeRole(session.player),
-      resources: view.resources.map((entry) => ({ ...entry, icon: resourceIcon(entry.res) })),
+      accountId: account.id, updatedAt: session.snapshotAt, snapshotStale: session.snapshotStale,
+      snapshotStatus: !session.snapshot ? 'NOT_COLLECTED' : Object.keys(failed).length ? (Object.keys(ok).length ? 'PARTIAL' : 'FAILED') : 'SUCCESS',
+      failed, outcomes: state.outcomes ?? {}, availability: view.availability ?? {},
+      resources: (view.resources ?? []).map((entry) => ({ ...entry, icon: resourceIcon(entry.res) })),
       items: {
-        ...view.items,
-        top: view.items.top.map((item) => ({ itemId: item.itemId, num: item.num, icon: itemIcon(item.itemId) })),
+        ...view.items, kinds: session.snapshot ? view.items?.kinds ?? null : null, total: session.snapshot ? view.items?.total ?? null : null,
+        top: (view.items?.top ?? []).map((item) => ({ itemId: item.itemId, num: item.num, icon: itemIcon(item.itemId) })),
       },
       claimable: {
-        mainTask: view.mainTask ? 1 : 0,
-        daily: daily?.claimable ?? 0,
-        achievement: view.achievements?.claimable ?? 0,
-        email: view.email?.unclaimed ?? 0,
-        afk: view.afk ? Math.max((view.afk.level ?? 0) - (view.afk.rewardedLevel ?? 0), 0) : 0,
+        mainTask: Object.hasOwn(ok, 'MainTaskInfoRequest') ? (view.mainTask ? 1 : 0) : null,
+        daily: daily?.claimable ?? null,
+        achievement: view.achievements?.claimable ?? null,
+        email: view.email?.unclaimed ?? null,
+        afk: view.afk ? Math.max((view.afk.level ?? 0) - (view.afk.rewardedLevel ?? 0), 0) : null,
       },
       afk: view.afk,
       heroes: {
-        count: view.heroes.count,
-        power: view.heroes.power,
-        list: view.heroes.list.slice(0, 12).map((hero) => ({ ...hero, icon: heroCard(hero.heroId) ?? heroIcon(hero.heroId) })),
+        count: session.snapshot ? view.heroes?.count ?? null : null,
+        power: session.snapshot ? view.heroes?.power ?? null : null,
+        list: (view.heroes?.list ?? []).slice(0, 12).map((hero) => ({ ...hero, icon: heroCard(hero.heroId) ?? heroIcon(hero.heroId) })),
       },
       water: view.water,
       resFields: view.resFields,
       monthCard: view.monthCard,
       unreadable: Object.keys(failed),
-      text: formatState(view),
+      text: session.snapshot ? formatState(view) : '尚未采集；请先连接，再手动刷新',
+    };
+  }
+
+  function cachedClient(session, dependencies) {
+    if (!session.snapshot) throw new Error('尚无快照，请先连接并手动刷新');
+    for (const request of dependencies) {
+      if (!Object.hasOwn(session.snapshot.ok, request)) throw new Error(request + ' 未获取成功：' + (session.snapshot.failed[request] ?? '未采集'));
+    }
+    const snapshot = session.snapshot;
+    const errors = new Map();
+    return { errors, request: async (name, body = {}) => {
+      const query = ENTRY_QUERIES.find((entry) => entry.name === name);
+      let error = null;
+      if (!Object.hasOwn(snapshot.ok, name)) error = name + ' 未获取成功：' + (snapshot.failed[name] ?? '未采集');
+      else if (!query || JSON.stringify(body) !== JSON.stringify(query.body ?? {})) error = name + ' 快照请求参数不匹配，未执行新请求';
+      if (error) { errors.set(name, error); throw new Error(error); }
+      return snapshot.ok[name];
+    } };
+  }
+
+
+  // Reuse surveyWorld's order/experience/stock parsing through the cache only.
+  function orderSource(snapshot, name) {
+    const outcome = snapshot?.outcomes?.[name];
+    const body = snapshot?.ok?.[name];
+    let status = outcome?.status ?? (Object.hasOwn(snapshot?.failed ?? {}, name) ? 'FAILED' : body ? 'SUCCESS' : 'NOT_EXECUTED');
+    const missingBody = !body || typeof body !== 'object' || Array.isArray(body);
+    if (status === 'SUCCESS' && missingBody) status = 'FAILED';
+    return { status, body, raw: snapshot?.raw?.[name] ?? body,
+      error: outcome?.error ?? snapshot?.failed?.[name] ?? (missingBody ? '缓存响应缺失' : null), updatedAt: outcome?.updatedAt ?? null };
+  }
+  function orderItems(snapshot, config) {
+    const options = new Map();
+    const resourceRows = config?.tables?.ResourceCfg?.data ?? [];
+    const add = (id, source) => {
+      if (typeof id !== 'string' || !id.trim()) return;
+      const name = resourceRows.find((row) => row.id === id)?.show_name ?? id;
+      const previous = options.get(id);
+      options.set(id, { id, name, source: previous ? previous.source + '; ' + source : source });
+    };
+    for (const row of config?.tables?.WorkerOrderCfg?.data ?? []) add(row.itemId, 'WorkerOrderCfg.itemId');
+    const items = orderSource(snapshot, 'AllItemRequest').raw?.items;
+    for (const row of Array.isArray(items) ? items : []) add(row?.itemId ?? row?.id, 'AllItemResponse.items[].itemId/id');
+    const orders = orderSource(snapshot, 'OnWaterRequest').raw?.workerOrder;
+    for (const order of Array.isArray(orders) ? orders : []) {
+      for (const row of Array.isArray(order?.requirements) ? order.requirements : []) add(row?.id, 'OnWaterResponse.workerOrder[].requirements[].id');
+    }
+    return [...options.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  }
+  const itemSourceNote = '规则匹配配置或响应中的原始物品 ID；显示名称不参与匹配。无单独名称定义时显示 ID。';
+  function safeQuantity(value) {
+    if (typeof value === 'string' && /^\d+$/.test(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(value);
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  async function previewOrderRules(session, policy) {
+    const snapshot = session?.snapshot;
+    const base = { updatedAt: session?.snapshotAt ?? null, stale: session?.snapshotStale ?? false, itemSourceNote,
+      simulationNote: '只读模拟，不会执行游戏操作。各订单独立使用同一库存，未跨订单预留库存。' };
+    const water = orderSource(snapshot, 'OnWaterRequest');
+    if (water.status !== 'SUCCESS' || !Array.isArray(water.raw?.workerOrder)) {
+      return { ...base, status: 'UNKNOWN', error: water.error ?? '没有可用的居民订单缓存或订单字段缺失，请通过原有刷新流程获取快照', orders: [] };
+    }
+    let survey;
+    try {
+      // Do not let a failed source's old body enter surveyWorld's combined stock.
+      const readable = { ...snapshot, ok: Object.fromEntries(Object.entries(snapshot.ok ?? {}).filter(([name]) => orderSource(snapshot, name).status === 'SUCCESS')), failed: snapshot.failed ?? {} };
+      survey = await surveyWorld(cachedClient({ snapshot: readable }, ['OnWaterRequest']), protocol, { config: loadConfigSafe(), player: session?.player });
+    } catch {
+      return { ...base, status: 'UNKNOWN', error: '已有订单解析无法处理当前缓存，请检查数据探索器中的 OnWaterResponse', orders: [] };
+    }
+    const inventory = new Map(survey.stock);
+    const itemData = orderSource(snapshot, 'AllItemRequest');
+    const resourceData = orderSource(snapshot, 'AllResourceRequest');
+    let itemsKnown = itemData.status === 'SUCCESS' && Array.isArray(itemData.raw?.items) && Boolean(protocol.AllItemRequest && protocol.AllItemResponse);
+    let resourcesKnown = resourceData.status === 'SUCCESS' && Array.isArray(resourceData.raw?.list) && Boolean(protocol.AllResourceRequest && protocol.AllResourceResponse);
+    const invalidItems = new Set();
+    for (const row of Array.isArray(itemData.raw?.items) ? itemData.raw.items : []) {
+      const id = row?.itemId ?? row?.id;
+      if (typeof id !== 'string' || !id.trim()) { itemsKnown = false; continue; }
+      if (itemData.status !== 'SUCCESS' || safeQuantity(row.num ?? row.count) === null) invalidItems.add(id);
+    }
+    for (const row of Array.isArray(resourceData.raw?.list) ? resourceData.raw.list : []) {
+      if (!Number.isSafeInteger(row?.res)) { resourcesKnown = false; continue; }
+      const id = RESOURCE[row.res] ?? String(row.res);
+      if (resourceData.status !== 'SUCCESS' || safeQuantity(row.amount) === null) invalidItems.add(id);
+    }
+    const resources = new Set(Object.values(RESOURCE));
+    for (const row of Array.isArray(resourceData.raw?.list) ? resourceData.raw.list : []) {
+      if (Number.isSafeInteger(row?.res)) resources.add(RESOURCE[row.res] ?? String(row.res));
+    }
+    const orders = survey.orders.map((order, index) => {
+      const raw = water.raw.workerOrder[index];
+      const valid = Array.isArray(raw?.requirements) && raw.requirements.length > 0
+        && raw.requirements.every((need) => typeof need?.id === 'string' && need.id.trim() && safeQuantity(need.num) !== null && safeQuantity(need.num) > 0);
+      return { ...order, requirements: valid ? order.requirements : null };
+    });
+    for (const order of orders) {
+      for (const need of order.requirements ?? []) {
+        if (!(resources.has(need.id) ? resourcesKnown : itemsKnown) || invalidItems.has(need.id)
+            || (inventory.has(need.id) && safeQuantity(inventory.get(need.id)) === null)) inventory.set(need.id, null);
+      }
+    }
+    const results = evaluateOrders(orders, inventory, policy);
+    return { ...base, status: 'SUCCESS', error: null,
+      orders: orders.map((order, index) => {
+        const totals = new Map();
+        for (const need of order.requirements ?? []) totals.set(need.id, (totals.get(need.id) ?? 0) + need.num);
+        return { order, result: results[index], inventoryFacts: [...totals].map(([id, required]) => {
+          const available = inventory.has(id) ? inventory.get(id) : 0;
+          return { id, required: Number.isSafeInteger(required) ? required : null, available,
+            missing: available === null || !Number.isSafeInteger(required) ? null : Math.max(0, required - available) };
+        }) };
+      }),
     };
   }
 
   async function tasks(session, account) {
-    const instance = await ensureConnected(session, account);
+    const instance = cachedClient(session, ["MainTaskInfoRequest","AchievementInfoRequest","OnWaterRequest"]);
     const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe() });
     return { ...survey, text: formatTaskPlan(survey) };
   }
 
   async function world(session, account) {
-    const instance = await ensureConnected(session, account);
+    const instance = cachedClient(session, ["OnWaterRequest","AllItemRequest","AllResourceRequest","MyResFieldsRequest","MyFleetsRequest"]);
     const config = loadConfigSafe();
     const survey = await surveyWorld(instance, protocol, { config, player: session.player });
     const plan = planWorld(survey, { config });
@@ -226,7 +456,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const fields = { ...survey.resFields, text: formatFieldReport(survey, map) };
     return {
       population: `${survey.population}/${survey.maxPopulation}`,
-      factories: survey.factories.map((b) => ({ buildingId: b.buildingId, type: b.type, level: b.level, queue: (b.factory.factoryQ ?? []).length, auto: b.factory.autoProductId ?? null, icon: buildingIcon(b.type) })),
+      factories: survey.factories.map((b) => ({ buildingId: b.buildingId, type: b.type, level: b.level, queue: Array.isArray(b.factory.factoryQ) ? b.factory.factoryQ.length : null, auto: b.factory.autoProductId ?? null, icon: buildingIcon(b.type) })),
       orders: survey.orders.map((order) => ({
         ...order,
         requirements: order.requirements.map((need) => ({ ...need, icon: materialIcon(need.id) })),
@@ -247,7 +477,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   async function heroes(session, account) {
-    const instance = await ensureConnected(session, account);
+    const instance = cachedClient(session, ["AllHeroRequest","AllItemRequest"]);
     const heroList = await instance.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
     const itemList = await instance.request('AllItemRequest', {}, 'AllItemResponse', 15000);
     const counts = new Map();
@@ -269,9 +499,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   async function dailies(session, account) {
-    const instance = await ensureConnected(session, account);
-    const survey = await surveyDailies(instance, protocol, { config: loadConfigSafe(), player: session.player });
-    return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, gift: survey.gift, ruby: survey.ruby, text: formatSurvey(survey) };
+    const instance = cachedClient(session, ["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"]);
+    const config = loadConfigSafe();
+    const survey = await surveyDailies(instance, protocol, { config, player: session.player });
+    survey.tasks = survey.tasks.map((entry) => {
+      if (entry.status === 'done') return entry;
+      const missing = (DAILY_DRIVERS[entry.task.id]?.probes ?? []).map(([name]) => instance.errors.get(name)).filter(Boolean);
+      return missing.length ? { task: entry.task, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
+    });
+    const chestsUnavailable = Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
+    if (chestsUnavailable) survey.chests = null;
+    const text = formatSurvey(survey) + (chestsUnavailable ? '\n' + chestsUnavailable : '');
+    return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
   }
 
   // ---- 抓包与扫码 -----------------------------------------------------------
@@ -315,29 +554,141 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     return { id: account.id };
   }
 
+  // STEP 4-B1 releases only the evidence-backed mainline adapter. Explicit null still disables it.
+  // HTTP/config cannot supply an adapter or authorize another battle mode.
+  const stageSideAvailable = typeof stageSideResolver === 'function';
+  const stageUnavailableReason = 'SIDE_UNVERIFIED：当前没有已授权的主线阵营适配器；开战已阻止';
+  function stageView(id, session) {
+    return { accountId: id, available: stageSideAvailable, unavailableReason: stageSideAvailable ? null : stageUnavailableReason,
+      battleMode: MAINLINE_CHALLENGE,
+      sideAuthorization: stageSideResolver === resolveMainlineChallengeSide ? MAINLINE_SIDE_AUTHORIZATION : null,
+      defaults: { ...defaultStageConfig(), interStageDelay: { minSeconds: 10, maxSeconds: 11 } },
+      runner: session?.stageRunner?.getStatus() ?? { runId: null, state: 'IDLE', running: false,
+        currentStage: session?.player?.mainlineStage ?? null, nextStage: null, attempts: 0, consecutiveFailures: 0,
+        lastResult: null, retryAt: null, nextStageAt: null, history: [], stopReason: null, stopKind: null, error: null,
+        uncertain: false, inFlight: false, config: defaultStageConfig() } };
+  }
   // ---- 路由 -----------------------------------------------------------------
 
   async function handle(req, res, body) {
     const parsed = new URL(req.url, 'http://localhost');
     const route = `${req.method} ${parsed.pathname}`;
     const json = (value, code = 200) => {
-      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(value));
+      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(redact(value, secrets())));
     };
     const jsonBody = () => JSON.parse(body || '{}');
     const needConfirm = (payload) => {
       if (payload.confirm !== true) throw new Error('这个操作会改动游戏里的状态，需要先确认');
     };
-    const longRunning = /^(GET|POST) \/api\/(heroes|dailies|tasks|world|overview|loop)(\/|$)/.test(route);
     let scoped = null;
     // 所有账号相关的路由都先过这里：拿到账号、对应会话，长请求再挂个忙碌标记。
     const scoped_ = (url) => {
       const found = resolve(url);
       scoped = found.session;
-      if (longRunning) found.session.busy = route;
       return found;
     };
     try {
+      if (closed) { json({ error: '控制台已关闭' }, 503); return; }
+      const allowed = new Set([
+        'GET /', 'GET /api/art/index', 'GET /api/events', 'GET /api/accounts', 'GET /api/accounts/credential',
+        'POST /api/accounts/active', 'POST /api/accounts/label', 'POST /api/accounts/remove',
+        'POST /api/connect', 'POST /api/disconnect', 'POST /api/refresh', 'GET /api/overview',
+        'GET /api/heroes', 'GET /api/dailies', 'GET /api/tasks', 'GET /api/world', 'GET /api/worlds',
+        'GET /api/loop', 'GET /api/snapshot/export', 'GET /api/data-explorer',
+        // Local settings/simulation only; game mutation stays blocked.
+        'GET /api/order-rules', 'POST /api/order-rules', 'POST /api/order-rules/preview',
+      ]);
+      // Keep the existing read-only policy intact. Stage start has a separate,
+      // explicit mutation gate below; no generic game Action route is opened.
+      const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
+      if (!allowed.has(route) && !stageRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
+        json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
+        return;
+      }
+      if (stageRoute) {
+        const id = parsed.searchParams.get('account');
+        if (!id) { json({ error: '必须指定账号 ID' }, 400); return; }
+        if (!loadStore().accounts.some((account) => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        const session = sessions.get(id);
+        scoped = session ?? null;
+        if (route === 'GET /api/stages') { json(stageView(id, session)); return; }
+        if (route === 'POST /api/stages/stop') {
+          session?.stageRunner?.stop('用户主动停止');
+          json(stageView(id, session)); return;
+        }
+        const payload = jsonBody();
+        needConfirm(payload);
+        const config = validateStageConfig(payload.config);
+        if (!config.enabled) { json({ error: '自动闯关配置未启用', code: 'STAGES_DISABLED' }, 409); return; }
+        if (!stageSideAvailable) { json({ error: stageUnavailableReason, code: 'SIDE_UNVERIFIED' }, 409); return; }
+        if (!session || !session.client?.connected || session.state !== 'READY') {
+          json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return;
+        }
+        if (session.collectionPromise || session.busy || session.loop?.running) {
+          json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
+        }
+        const instance = session.client;
+        // GameClient can coalesce identical requests; never attach a new run to an old battle.
+        if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size) {
+          json({ error: '连接存在未决请求或归属不确定，请先重新连接', code: 'RESPONSE_UNCERTAIN' }, 409); return;
+        }
+        if (!session.stageRunner || session.stageClient !== instance) {
+          const generation = session.generation;
+          session.stageClient = instance;
+          session.stageRunner = createStageRunner({ client: instance, player: session.player, protocol,
+            resolvePlayerSide: stageSideResolver, battleMode: MAINLINE_CHALLENGE, clock: stageClock, signal: session.abort.signal,
+            isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance,
+            onUpdate: (status) => {
+              if (sessions.get(id) !== session || session.generation !== generation || session.client !== instance) return;
+              if (status.lastResult) session.snapshotStale = Boolean(session.snapshot);
+              emit(session, 'stages', '自动闯关：' + status.state, { runId: status.runId, stage: status.currentStage, attempts: status.attempts });
+            } });
+        }
+        session.stageRunner.start(config, { allowMutate: true });
+        json(stageView(id, session)); return;
+      }
+      if (route === 'POST /api/refresh') {
+        const { account, session } = scoped_(parsed);
+        json(await refresh(session, account));
+        return;
+      }
+      if (route === 'GET /api/order-rules' || route === 'POST /api/order-rules' || route === 'POST /api/order-rules/preview') {
+        const id = parsed.searchParams.get('account');
+        if (!id) { json({ error: '必须指定账号 ID' }, 400); return; }
+        if (!loadStore().accounts.some((account) => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        const session = sessions.get(id);
+        if (route === 'GET /api/order-rules') {
+          json({ accountId: id, ...loadOrderRules(id), defaults: defaultOrderRules(), ruleTypes: ORDER_RULE_TYPES,
+            items: orderItems(session?.snapshot, loadConfigSafe()), itemSourceNote });
+        } else if (route === 'POST /api/order-rules') {
+          json({ accountId: id, ...saveOrderRules(id, jsonBody().config) });
+        } else {
+          const policy = validateOrderRules(jsonBody().config);
+          const preview = await previewOrderRules(session, policy);
+          if (!loadStore().accounts.some((account) => account.id === id) || sessions.get(id) !== session) {
+            json({ error: '账号已删除或会话已切换，请重新读取' }, 409); return;
+          }
+          json({ accountId: id, ...preview });
+        }
+        return;
+      }
+      if (route === 'GET /api/data-explorer') {
+        // Browsing never allocates a Runtime: exact account identity, existing cache only.
+        const id = parsed.searchParams.get('account');
+        if (!id) { json({ error: '必须指定账号 ID' }, 400); return; }
+        const account = loadStore().accounts.find((entry) => entry.id === id);
+        if (!account) { json({ error: '没有这个账号' }, 404); return; }
+        const session = sessions.get(account.id);
+        json({ accountId: account.id, updatedAt: session?.snapshotAt ?? null, stale: session?.snapshotStale ?? false,
+          ...exploreSnapshot(session?.snapshot, { domain: parsed.searchParams.get('domain'), config: loadConfigSafe(), updatedAt: session?.snapshotAt ?? null }) });
+        return;
+      }
+      if (route === 'GET /api/snapshot/export') {
+        const { account, session } = scoped_(parsed);
+        json({ accountId: account.id, updatedAt: session.snapshotAt, stale: session.snapshotStale, snapshot: session.snapshot });
+        return;
+      }
       if (route === 'GET /') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(PAGE);
@@ -367,7 +718,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         });
         res.account = parsed.searchParams.get('account');
         streams.add(res);
-        req.on('close', () => streams.delete(res));
+        res.on('close', () => streams.delete(res));
+        res.flushHeaders();
         return;
       }
 
@@ -387,7 +739,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const store = loadStore();
         const account = pickAccount(store, parsed.searchParams.get('account'));
         if (!account) throw new Error('没有这个账号');
-        json(parsed.searchParams.get('reveal') === '1' ? revealAccount(account) : describeAccount(account, { active: account.id === store.activeId }));
+        json(describeAccount(account, { active: account.id === store.activeId }));
         return;
       }
       if (route === 'POST /api/accounts/active') {
@@ -419,6 +771,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const store = loadStore();
         const account = pickAccount(store, payload.id);
         if (!account) throw new Error('没有这个账号');
+        const removedSession = sessions.get(account.id);
+        if (removedSession) cancelSession(removedSession, 'STOPPED');
         removeAccount(store, account.id);
         saveStore(store);
         sessions.delete(account.id);
@@ -436,9 +790,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'POST /api/disconnect') {
         const { session } = scoped_(parsed);
-        session.client?.stop();
-        session.client = null;
-        session.player = null;
+        cancelSession(session, 'STOPPED');
         json({ ok: true });
         return;
       }
@@ -508,6 +860,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/worlds') {
         const { account, session } = scoped_(parsed);
+        const stage = session.stageRunner?.getStatus();
+        if (stage?.running || stage?.inFlight) {
+          json({ error: '自动闯关或未决战斗期间不能查询区服；已有缓存仍可浏览', code: 'STAGE_BUSY' }, 409); return;
+        }
         const instance = await ensureConnected(session, account);
         json({ ...(await listWorlds(instance)), currentPlayer: describeRole(session.player) });
         return;
@@ -678,7 +1034,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       json({ error: 'not found' }, 404);
     } catch (error) {
       emit(scoped, 'error', error.message);
-      json({ error: error.message }, 400);
+      json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, error.statusCode ?? 400);
     } finally {
       if (scoped && scoped.busy === route) scoped.busy = null;
     }
@@ -707,16 +1063,30 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   return {
     server,
     listen: () =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
+        server.once('error', reject);
         server.listen(port, host, () => {
           emit(null, 'info', `控制台已启动 http://${host}:${port}`);
           resolve(`http://${host}:${port}`);
         });
       }),
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => {
+      if (closingPromise) return closingPromise;
+      closed = true;
+      const httpClosed = server.listening
+        ? new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+        : Promise.resolve();
+      for (const session of sessions.values()) cancelSession(session, 'STOPPED');
+      sessions.clear();
+      for (const stream of streams) stream.end();
+      streams.clear();
+      const traceClosed = traceStream ? new Promise((resolve) => traceStream.end(resolve)) : Promise.resolve();
+      closingPromise = Promise.all([httpClosed, traceClosed]).then(() => undefined);
+      return closingPromise;
+    },
     emit,
     sessions,
-    captureState: () => capture,
+    captureState,
   };
 }
 
