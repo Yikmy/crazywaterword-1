@@ -1,7 +1,10 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createOperationService } from './operation-service.mjs';
+import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
+import { GAMEPLAY_MODULES } from './function-registry.mjs';
+import { createStageFunction } from './stage-function.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -126,14 +129,44 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   const operationCsrf = randomUUID();
-  const operations = createOperationService({ protocol, getConfig: loadConfigSafe, loadRules: loadOrderRules,
+  const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
+  const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:stageFunction}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
     history: createExecutionHistory({ secrets }), ...operationOptions });
 
+  const workflowRunners=new Map();
+  const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets});
+  function prepareStageRunner(session) {
+    const id=session.id, instance=session.client;
+        if (!session.stageRunner || session.stageClient !== instance) {
+          const generation = session.generation;
+          session.stageClient = instance;
+          session.stageRunner = createStageRunner({ client: instance, player: session.player, protocol,
+            formationFacts:()=>operations.formationContext(id).facts, formationModuleConfig:()=>operations.formationContext(id).moduleConfig,
+            resolvePlayerSide: stageSideResolver, battleMode: MAINLINE_CHALLENGE, clock: stageClock, signal: session.abort.signal,
+            isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance,
+            onUpdate: (status) => {
+              if (sessions.get(id) !== session || session.generation !== generation || session.client !== instance) return;
+              if (status.lastResult) session.snapshotStale = Boolean(session.snapshot);
+              emit(session, 'stages', '自动闯关：' + status.state, { runId: status.runId, stage: status.currentStage, attempts: status.attempts });
+            } });
+        }
+    return session.stageRunner;
+  }
+  function workflowView(id) { return {accountId:id,csrfToken:operationCsrf,graphs:workflowStore.list(id),examples:exampleWorkflows(operations.modules),status:workflowRunners.get(id)?.getStatus()??{status:'IDLE',running:false},history:workflowStore.history(id)}; }
+  function workflowRunner(id) {
+    if(!workflowRunners.has(id))workflowRunners.set(id,createWorkflowRunner({operations,getSession:accountId=>sessions.get(accountId),modules:operations.modules,
+      isCurrent:(session,generation,client)=>!closed&&sessions.get(id)===session&&session.generation===generation&&session.client===client&&session.state==='READY',
+      claim:(accountId,runId)=>operations.claimWorkflow(sessions.get(accountId),runId),
+      onUpdate:status=>workflowStore.record(id,status)}));
+    return workflowRunners.get(id);
+  }
   function cancelSession(session, state = 'STOPPED') {
+    workflowRunners.get(session.id)?.stop();
     operations.stop(session.id);
     if (state === 'STOPPED' || state === 'IDLE') session.stageRunner?.stop('账号已断开或会话已重置');
     else session.stageRunner?.fail(new Error('账号连接异常：' + state));
     session.generation += 1;
+    session.workflowOwner = null;
     session.abort.abort();
     session.loop.stop.aborted = true;
     session.loop.running = false;
@@ -242,7 +275,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   function refresh(session, account) {
-    if (operations.running(session.id) || session.busy?.startsWith('operations:') || session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
+    if (operations.running(session.id) || (session.busy?.startsWith('operations:') || session.workflowOwner) || session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
       const error = new Error('自动闯关或未决战斗期间不能完整采集；已有缓存仍可浏览');
       error.statusCode = 409; return Promise.reject(error);
     }
@@ -611,11 +644,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       // explicit mutation gate below; no generic game Action route is opened.
       const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
       const operationRoute = new Set(['GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
-      if (!allowed.has(route) && !stageRoute && !operationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
+      const gameplayRoute=new Set(['GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
+      if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
       }
-      if (operationRoute) {
+      if (operationRoute || gameplayRoute) {
         // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
         const expectedPort = server.address()?.port;
         const acceptedHosts = new Set([host + ':' + expectedPort]);
@@ -627,6 +661,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const id = parsed.searchParams.get('account');
         if (!id) { json({ error: '必须指定精确账号 ID' }, 400); return; }
         if (!loadStore().accounts.some(account => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        if (route === 'GET /api/gameplay') { json({...operations.moduleView(id,parsed.searchParams.get('module')),csrfToken:operationCsrf});return; }
+        if (route === 'GET /api/workflows') { json(workflowView(id));return; }
         if (route === 'GET /api/operations') { json({ ...operations.view(id), csrfToken: operationCsrf }); return; }
         if (route === 'GET /api/operations/production-policy') { json(operations.productionPolicy(id)); return; }
         if (route === 'GET /api/operations/history') { json(operations.history(id, parsed.searchParams.get('runId'))); return; }
@@ -637,6 +673,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         if (Buffer.byteLength(body) > 65536) { json({ error: '执行请求过大' }, 413); return; }
         const payload = jsonBody();
+        const fields = keys => {if(!payload || typeof payload!=='object' || Array.isArray(payload) || Object.keys(payload).some(key=>!keys.includes(key)))throw Object.assign(new Error('玩法请求包含未知字段'),{statusCode:400});};
+        if (route==='POST /api/gameplay/config') {fields(['module','config']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
+        if (route==='POST /api/workflows/save') {fields(['graph']);workflowStore.save(id,payload.graph);json(workflowView(id));return;}
+        if (route==='POST /api/workflows/simulate') {fields(['graph']);json({accountId:id,...simulateWorkflow(payload.graph,{modules:operations.modules})});return;}
+        if (route==='POST /api/workflows/stop') {fields([]);workflowRunners.get(id)?.stop();operations.stop(id);await workflowRunners.get(id)?.settle();json(workflowView(id));return;}
+        if (route==='POST /api/workflows/resume') {fields([]);const runner=workflowRunner(id);if(runner.getStatus().status!=='AWAITING_AUTHORIZATION')throw Object.assign(new Error('工作流没有待核对批次'),{statusCode:409});runner.resume().catch(cause=>emit(sessions.get(id),'error',cause.message));await Promise.resolve();json(workflowView(id));return;}
         if (route === 'POST /api/operations/production-policy') { json(operations.saveProductionPolicy(id, payload)); return; }
         if (route === 'POST /api/operations/stop') {
           if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw new Error('停止操作不接受额外字段');
@@ -644,6 +686,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         const session = sessions.get(id); scoped = session ?? null;
         if (!session?.client?.connected || session.state !== 'READY') { json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return; }
+        if (route==='POST /api/gameplay/survey') {fields(['module','parameters']);json({...await operations.surveyModule(session,payload.module,payload.parameters??{}),csrfToken:operationCsrf});return;}
+        if (route==='POST /api/workflows/start') {fields(['graph']);validateWorkflow(payload.graph,{modules:operations.modules});const runner=workflowRunner(id);if(runner.getStatus().running)throw Object.assign(new Error('账号工作流正在运行'),{code:'WORKFLOW_BUSY',statusCode:409});runner.start(id,payload.graph).catch(cause=>emit(session,'error',cause.message));await Promise.resolve();json(workflowView(id));return;}
         if (route === 'POST /api/operations/survey') {
           if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw new Error('采集操作不接受额外字段');
           json(await operations.survey(session)); return;
@@ -675,24 +719,36 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
         }
         if (operations.running(id) || operations.blocked(id)) { json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return; }
-        const instance = session.client;
+        const instance = session.client, generation = session.generation;
         // GameClient can coalesce identical requests; never attach a new run to an old battle.
         if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
           json({ error: '连接存在未决请求或归属不确定，请先重新连接', code: 'RESPONSE_UNCERTAIN' }, 409); return;
         }
-        if (!session.stageRunner || session.stageClient !== instance) {
-          const generation = session.generation;
-          session.stageClient = instance;
-          session.stageRunner = createStageRunner({ client: instance, player: session.player, protocol,
-            resolvePlayerSide: stageSideResolver, battleMode: MAINLINE_CHALLENGE, clock: stageClock, signal: session.abort.signal,
-            isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance,
-            onUpdate: (status) => {
-              if (sessions.get(id) !== session || session.generation !== generation || session.client !== instance) return;
-              if (status.lastResult) session.snapshotStale = Boolean(session.snapshot);
-              emit(session, 'stages', '自动闯关：' + status.state, { runId: status.runId, stage: status.currentStage, attempts: status.attempts });
-            } });
+        const formationEvidence=await operations.assertFormationReady(session,config.formation);
+        // Formation preflight yields and releases its own lock. Recheck synchronously
+        // before starting the original Runner so another task cannot enter that gap.
+        if (closed || sessions.get(id) !== session || session.generation !== generation || session.client !== instance
+          || !instance.connected || session.state !== 'READY' || session.abort?.signal.aborted) {
+          json({ error: '阵容检查期间账号会话已切换或失效', code: 'CANCELLED' }, 409); return;
         }
-        session.stageRunner.start(config, { allowMutate: true });
+        const stageStatus = session.stageClient === instance ? session.stageRunner?.getStatus() : null;
+        if (session.collectionPromise || session.busy || session.workflowOwner || session.loop?.running) {
+          json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
+        }
+        if (operations.running(id) || operations.blocked(id)) {
+          json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return;
+        }
+        if (stageStatus?.running || stageStatus?.inFlight) {
+          json({ error: '该账号已有闯关或未决战斗', code: 'STAGE_BUSY' }, 409); return;
+        }
+        if (stageStatus?.uncertain) {
+          json({ error: '上次战斗结果不确定，请先明确重新连接同步关卡', code: 'RESULT_UNCERTAIN' }, 409); return;
+        }
+        if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
+          json({ error: '连接或主线存在未决结果，禁止启动新主线', code: 'RESPONSE_UNCERTAIN' }, 409); return;
+        }
+        prepareStageRunner(session);
+        session.stageRunner.start(config, { allowMutate: true, formationEvidence });
         json(stageView(id, session)); return;
       }
       if (route === 'POST /api/refresh') {
@@ -1146,7 +1202,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       for (const stream of streams) stream.end();
       streams.clear();
       const traceClosed = traceStream ? new Promise((resolve) => traceStream.end(resolve)) : Promise.resolve();
-      closingPromise = Promise.all([httpClosed, traceClosed, ...operationTasks]).then(() => undefined);
+      closingPromise = Promise.all([httpClosed, traceClosed, ...operationTasks, ...[...workflowRunners.values()].map(runner=>runner.settle())]).then(() => undefined);
       return closingPromise;
     },
     emit,
