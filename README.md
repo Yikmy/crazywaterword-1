@@ -1,5 +1,7 @@
 # crazywaterword
 
+PHASE 3 已加入阵容、联盟、博物馆、世界宝藏、舰队与海战规则的受控 Function，以及可视化有限 Workflow。所有新玩法默认关闭，ACTION 仍需具体计划与单次授权；未知业务语义保持阻塞。当前仅完成离线/合成验证，详见 [PHASE 3 验收报告](docs/PHASE_3_ACCEPTANCE.md) 与 [能力增量](docs/PHASE_3_CAPABILITY_DELTA.md)。
+
 当前 Web Console 保留显式登录、只读采集、本地账号管理及独立主线 Stage 门控。PHASE 2 增加居民订单、城市建设和生产的具体批次预览、预算授权与执行历史；旧通用游戏写路由、自动循环和网页抓包入口继续关闭。本次交付仅做离线验证，详见 [PHASE 2 验收报告](docs/PHASE_2_ACCEPTANCE.md)。
 
 微信小游戏《疯狂水世界》的**协议侧挂机工具**：不开游戏界面，直接用游戏自己的 WebSocket 协议完成
