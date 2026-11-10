@@ -327,6 +327,13 @@ export class GameClient extends EventEmitter {
     return promise;
   }
 
+  // A typed acknowledgement is insufficient when the authoritative post-read failed.
+  markUnverifiedWrite(name, body) {
+    const key = Array.from(this.codec.encode(name, 0, body || {})).join(',');
+    this.uncertainWrites.add(key);
+    return key;
+  }
+
   // Only a caller that re-read and verified the effect may release this write.
   confirmWatchedWrite(name, body) {
     const key = Array.from(this.codec.encode(name, 0, body || {})).join(',');
