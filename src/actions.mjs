@@ -5,6 +5,8 @@
 // from guessing. Requests whose response type does not exist in the protocol table are
 // answered by a push or a generic OkResponse instead, so they are sent fire-and-forget.
 
+import { assertExecutionActive, awaitExecution, operationResult } from './execution.mjs';
+
 // SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）。本工具只允许 2。
 export const SPEED_UP_ITEM_TYPE = 2;
 
@@ -15,11 +17,35 @@ export const DAILY_GIFT_PACK_IDS = ['礼包1', '礼包2', '礼包3'];
 
 // repeated int32 参数：接受 "1,2,3" 或 1 或 [1,2,3]。
 function indexList(value) {
-  if (Array.isArray(value)) return value.map(Number);
-  return String(value ?? '')
-    .split(',')
-    .map((part) => Number(part.trim()))
-    .filter((n) => Number.isFinite(n));
+  const values = Array.isArray(value) ? value : String(value ?? '').split(',');
+  if (!values.length || values.some((part) => !['string', 'number'].includes(typeof part) || String(part).trim() === '')) {
+    throw new Error('index must contain int32 values');
+  }
+  const numbers = values.map(Number);
+  if (numbers.some((number) => !Number.isInteger(number) || number < -2147483648 || number > 2147483647)) {
+    throw new Error('index must contain int32 values');
+  }
+  return numbers;
+}
+
+function positiveInt32(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0 || number > 2147483647) throw new Error('useNum must be a positive int32');
+  return number;
+}
+
+function stringList(value, { required = false } = {}) {
+  if (value == null) {
+    if (required) throw new Error('missing parameter: buildingId');
+    return [];
+  }
+  const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [value];
+  if (values.some((part) => !['string', 'number'].includes(typeof part) || (typeof part === 'number' && !Number.isFinite(part)))) {
+    throw new Error('IDs must be strings or finite numbers');
+  }
+  const strings = values.map((part) => String(part).trim()).filter(Boolean);
+  if (required && !strings.length) throw new Error('missing parameter: buildingId');
+  return strings;
 }
 
 export const ACTIONS = {
@@ -60,7 +86,7 @@ export const ACTIONS = {
     mutate: true,
     desc: '收取指定建筑的产物',
     params: ['buildingId'],
-    body: ({ buildingId }) => ({ buildingId }),
+    body: ({ buildingId }) => ({ buildingId: stringList(buildingId, { required: true }) }),
   },
   buildingFinish: {
     request: 'FinishUpgradeBuildingRequest',
@@ -211,7 +237,7 @@ export const ACTIONS = {
     mutate: true,
     desc: '花加速器缩短建造时间；type=2 是加速器，钻石(1)与广告(3)本工具不用',
     params: ['buildingId', 'useNum'],
-    body: ({ buildingId, useNum }) => ({ buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: Number(useNum) } }),
+    body: ({ buildingId, useNum }) => ({ buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: positiveInt32(useNum) } }),
   },
   speedUpProduce: {
     request: 'SpeedUpFactoryProduceRequest',
@@ -222,7 +248,7 @@ export const ACTIONS = {
     body: ({ buildingId, index, useNum }) => ({
       buildingId,
       index: Number(index),
-      speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: Number(useNum) },
+      speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: positiveInt32(useNum) },
     }),
   },
   challengeField: {
@@ -233,7 +259,7 @@ export const ACTIONS = {
     params: ['gridIdx'],
     body: ({ gridIdx, fleetBuildingIds }) => ({
       resFieldGridIdx: Number(gridIdx),
-      fleetBuildingIds: String(fleetBuildingIds).split(',').map((s) => s.trim()).filter(Boolean),
+      fleetBuildingIds: stringList(fleetBuildingIds),
     }),
   },
   giveUpField: {
@@ -245,6 +271,33 @@ export const ACTIONS = {
     body: ({ gridIdx }) => ({ resFieldGridIdx: Number(gridIdx) }),
   },
 };
+
+// D6 is a hard boundary: an opt-in never authorizes diamonds or paid packs.
+// Use request semantics as well as cost metadata; a forged ready label is insufficient.
+export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
+  const request = action.request;
+  const body = action.body ?? {};
+  const costs = action.costs ?? [];
+  const hasRuby = Array.isArray(costs) && costs.some((item) => ['RUBY', '钻石', '4'].includes(String(item?.id ?? item?.[0])));
+  const fail = (code, message) => { const error = new Error(message); error.code = code; throw error; };
+  if (hasRuby || request === 'DiscountShopBuyRequest' || (request === 'ClickGoldRequest' && body.free !== true)
+    || (request === 'GotFreeDailyPackRequest' && body.packId !== FREE_DAILY_PACK_ID)
+    || /Buy|Paid|Charge|Coupon/.test(request ?? '') || /钻石|RUBY|付费礼包/i.test(action.cost ?? '')
+    || (body.speedUp && body.speedUp.type !== SPEED_UP_ITEM_TYPE)) {
+    fail('D6_FORBIDDEN', 'D6 禁止钻石消费和付费礼包');
+  }
+  if (action.paid || action.needsPaid) {
+    if (!allowPaid) fail('PAID_NOT_ALLOWED', '需要付费，未开 allowPaid');
+    fail('D6_FORBIDDEN', 'D6 禁止付费动作');
+  }
+  if (request === 'DrawAfkRewardRequest' && body.useAdvCard) fail('COST_UNKNOWN', '广告卡成本未经确认');
+  const known = Object.values(ACTIONS).some((entry) => entry.request === request)
+    || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
+  if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {
+    fail('COST_UNKNOWN', '动作成本未知，拒绝执行');
+  }
+  return action;
+}
 
 export function listActions() {
   return Object.entries(ACTIONS).map(([id, action]) => ({
@@ -278,17 +331,18 @@ export function buildBody(action, params = {}) {
 
 // Runs one action. Mutating calls are refused unless the caller explicitly opts in, so a
 // stray command line cannot change the account by accident.
-export async function runAction(client, protocol, id, params = {}, { allowMutate = false, timeout = 15000 } = {}) {
+export async function runAction(client, protocol, id, params = {}, options = {}) {
+  const { allowMutate = false, timeout = 15000 } = options;
   const action = assertAllowed(id, { allowMutate });
   const body = buildBody(action, params);
+  assertPaymentAllowed({ ...action, body }, options);
+  assertExecutionActive(client, options);
   if (!protocol[action.request]) throw new Error(`protocol has no type ${action.request}`);
-
-  if (action.response && protocol[action.response]) {
-    const response = await client.request(action.request, body, action.response, timeout);
-    return { id, sent: action.request, response: action.response, body: response };
+  if (action.response) {
+    if (!protocol[action.response]) throw new Error(`protocol has no type ${action.response}`);
+    const response = await awaitExecution(client.request(action.request, body, action.response, timeout, { mutate: true, signal: options.signal }), client, options);
+    return operationResult('SUCCESS', { id, sent: action.request, response: action.response, body: response });
   }
-  // 没有配套 Response 的写请求：成功时服务端一声不吭，被拒时只推 PromptResponse，
-  // 所以守着窗口听一下，守到就算失败（见 src/client.mjs 的 attributePrompt）。
-  await client.sendWatch(action.request, body, { window: 400 });
-  return { id, sent: action.request, response: null, body: null };
+  await awaitExecution(client.sendWatch(action.request, body, { window: 400, signal: options.signal }), client, options);
+  return operationResult('UNKNOWN', { id, sent: action.request, response: null, body: null });
 }

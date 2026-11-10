@@ -9,6 +9,10 @@
 //         且 HeroSkillUpCfg[品质_目标等级].costArr[槽位] 的道具够
 // 服务端是否接受仍以实际回包为准，这里只保证"发出去的一定是客户端也会发的"。
 
+import { assertPaymentAllowed } from './actions.mjs';
+import { ResourceLedger, resourceCosts, safeResourceQuantity, validateResources } from './resource-ledger.mjs';
+import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
+
 export const HERO_EXP_ITEM = '英雄经验';
 
 const QUALITY_CONSUME = {
@@ -59,13 +63,13 @@ export function skillLevelMinStar(config, slot, targetLevel) {
 }
 
 // itemNum: (itemId) => number，直接吃 AllItemRequest 的结果。
-export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null }) {
+export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null, ledger = new ResourceLedger(itemNum) }) {
   const { byLevel, starByStar, heroById, skillUp } = buildIndex(config);
   const maxLevel = maxHeroLevelFor(playerLevel, config);
   const maxStar = maxHeroStar(config);
   const steps = [];
   const notes = [];
-  let expLeft = itemNum(HERO_EXP_ITEM);
+  const reservedBefore = new Map(ledger.reserved);
 
   const picked = heroes.filter((hero) => !heroIds || heroIds.includes(hero.heroId));
   // 升星优先给战力最高的英雄，万能碎片有限时这个顺序更划算。
@@ -84,23 +88,26 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
     }
     let cost = 0;
     let count = 0;
+    const callCosts = [];
     for (let target = level + 1; target <= maxLevel; target += 1) {
       const row = byLevel.get(target);
       if (!row) break;
       if (row.reqPlayerLv > playerLevel) break;
-      if (cost + row.exp > expLeft) break;
-      cost += row.exp;
+      const amount = safeResourceQuantity(row.exp);
+      if (amount === null || ledger.available(HERO_EXP_ITEM) === null
+          || cost + amount > ledger.available(HERO_EXP_ITEM)) break;
+      cost += amount;
       count += 1;
+      callCosts.push([{ id: HERO_EXP_ITEM, num: amount }]);
     }
     if (count > 0) {
-      steps.push({ kind: 'level', heroId: hero.heroId, from: level, to: level + count, count, exp: cost });
-      expLeft -= cost;
+      const costs = [{ id: HERO_EXP_ITEM, num: cost }];
+      if (ledger.reserve(costs)) steps.push({ kind: 'level', heroId: hero.heroId, from: level, to: level + count, count, exp: cost, costs, callCosts });
     }
   }
 
   // 碎片是全局库存，多个英雄抢同一批万能碎片，所以预算要在英雄之间共享。
-  const fragBudget = new Map();
-  const fragLeft = (item) => (fragBudget.has(item) ? fragBudget.get(item) : itemNum(item));
+  const fragLeft = (item) => ledger.available(item);
 
   for (const hero of byPower) {
     const cfg = heroById.get(hero.heroId);
@@ -122,14 +129,15 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
     while (star < maxStar) {
       const row = starByStar.get(star + 1);
       if (!row) break;
-      const need = row[key] ?? 0;
+      const need = safeResourceQuantity(row[key]);
+      if (need === null || fragLeft(ownItem) === null) break;
       const ownAvailable = fragLeft(ownItem) - ownUsed;
       const fromOwn = Math.min(ownAvailable, need);
       const fromUniversal = need - fromOwn;
       if (fromUniversal > 0) {
         if (!universalItem) break;
         const universalAvailable = fragLeft(universalItem) - (sameItem ? ownUsed : 0) - universalUsed;
-        if (universalAvailable < fromUniversal) break;
+        if (fragLeft(universalItem) === null || universalAvailable < fromUniversal) break;
         universalUsed += fromUniversal;
         usedUniversal = true;
       }
@@ -139,8 +147,9 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
       gained.push({ to: star, fragments: need, own: fromOwn });
     }
     if (gained.length) {
-      if (ownUsed > 0) fragBudget.set(ownItem, fragLeft(ownItem) - ownUsed);
-      if (universalUsed > 0) fragBudget.set(universalItem, fragLeft(universalItem) - universalUsed);
+      const costs = [{ id: ownItem, num: ownUsed }];
+      if (universalUsed > 0) costs.push({ id: universalItem, num: universalUsed });
+      if (!ledger.reserve(costs)) continue;
       // 一次升星只涨一星，所以每颗星都是一条独立请求，执行时也会一条一条发。
       for (const entry of gained) {
         // universal=true 表示允许用万能碎片补差额，和客户端里那个"自动兑换"开关等价。
@@ -154,6 +163,8 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
           own: entry.own,
           total,
           universal: entry.own < entry.fragments,
+          costs: resourceCosts([{ id: ownItem, num: entry.own },
+            ...(entry.fragments > entry.own ? [{ id: universalItem, num: entry.fragments - entry.own }] : [])]),
         });
       }
       if (usedUniversal) notes.push(`${hero.heroId}: 升星共用掉 ${universalUsed} 个万能碎片`);
@@ -165,8 +176,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
   for (const hero of heroes) starAfter.set(hero.heroId, hero.star ?? 0);
   for (const step of steps) if (step.kind === 'star') starAfter.set(step.heroId, step.to);
 
-  const bookBudget = new Map();
-  const bookLeft = (item) => (bookBudget.has(item) ? bookBudget.get(item) : itemNum(item));
+  const bookLeft = (item) => ledger.available(item);
 
   for (const hero of picked) {
     const cfg = heroById.get(hero.heroId);
@@ -190,53 +200,64 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
         }
         const row = skillUp.get(`${cfg.quality}_${target}`);
         const cost = row?.costArr?.[slot];
-        if (!cost || !cost.length) break;
-        const [item, num] = cost;
-        if (bookLeft(item) < num) {
+        if (!Array.isArray(cost) || cost.length !== 2) break;
+        const [item, rawNum] = cost;
+        const num = safeResourceQuantity(rawNum);
+        if (!ledger.canReserve([[item, num]])) {
           notes.push(`${hero.heroId} 技能${slot + 1}: 还差 ${item} ${num - bookLeft(item)}`);
           break;
         }
-        bookBudget.set(item, bookLeft(item) - num);
-        steps.push({ kind: 'skill', heroId: hero.heroId, slot, from: cur, to: target, item, num });
+        ledger.reserve([[item, num]]);
+        steps.push({ kind: 'skill', heroId: hero.heroId, slot, from: cur, to: target, item, num, costs: [{ id: item, num }] });
         cur = target;
       }
     }
   }
 
-  return { steps, notes, maxLevel, maxStar };
+  return { steps, notes, maxLevel, maxStar, reserved: [...ledger.reserved].map(([id, n]) => [id, n - (reservedBefore.get(id) ?? 0)]).filter(([, n]) => n > 0) };
 }
 
 // 逐条执行。HeroLevelUpRequest 一次只升一级，服务端没有批量接口，所以英雄升级会被展开成多次请求。
-export async function runHeroPlan(client, protocol, plan, { allowMutate = false, timeout = 15000, onStep } = {}) {
+export async function runHeroPlan(client, protocol, plan, {
+  allowMutate = false, timeout = 15000, budget = { ledger: null }, signal, stop, onStep,
+} = {}) {
   if (!allowMutate) throw new Error('英雄养成会改变账号状态，需要 --yes');
   const results = [];
-  // 同一英雄的同一类操作一旦被服务端拒了，后面的同类步骤必然同样被拒，直接跳过不再骚扰服务端。
   const blocked = new Set();
+  const options = { signal, stop };
   for (const step of plan.steps) {
     const key = `${step.kind}|${step.heroId}`;
     if (blocked.has(key)) {
-      const entry = { step, ok: false, skipped: true, error: '同类操作已被服务端拒绝，跳过' };
-      results.push(entry);
-      onStep?.(entry);
-      continue;
+      const entry = operationResult('NOT_EXECUTED', { step, skipped: true, error: '同类操作已被服务端拒绝，跳过' });
+      results.push(entry); onStep?.(entry); continue;
     }
     const calls = step.kind === 'level' ? step.count : 1;
     for (let i = 0; i < calls; i += 1) {
-      const body = buildHeroBody(step);
+      let entry;
       try {
-        const outcome = await sendHero(client, protocol, step, body, timeout);
-        const entry = { step, ok: true, ...outcome };
-        results.push(entry);
-        onStep?.(entry);
+        assertExecutionActive(client, options);
+        const request = step.kind === 'level' ? 'HeroLevelUpRequest' : step.kind === 'star' ? 'HeroStarUpRequest' : step.kind === 'skill' ? 'HeroSkillLevelUpRequest' : null;
+        if (!request || !protocol[request]) throw Object.assign(new Error('英雄动作协议或类型缺失'), { code: 'NOT_EXECUTED' });
+        const body = buildHeroBody(step);
+        try { assertPaymentAllowed({ request, body, costs: step.costs }); }
+        catch (error) { throw Object.assign(error, { code: 'NOT_EXECUTED' }); }
+        const costs = step.kind === 'level' ? step.callCosts?.[i] ?? (calls === 1 ? step.costs : null) : step.costs;
+        await validateResources(client, protocol, costs, {
+          timeout, budget, signal, stop, assertActive: () => assertExecutionActive(client, options),
+        });
+        assertExecutionActive(client, options);
+        const outcome = await awaitExecution(sendHero(client, protocol, step, body, timeout, { signal }), client, options);
+        entry = operationResult(outcome.response ? 'SUCCESS' : 'UNKNOWN', { step, ...outcome });
       } catch (error) {
-        blocked.add(key);
-        const entry = { step, ok: false, error: error.message };
-        results.push(entry);
-        onStep?.(entry);
-        break;
+        const status = executionOutcome(error);
+        if (status === 'REJECTED') blocked.add(key);
+        entry = operationResult(status, { step, error: error.message });
       }
-      // sendWatch 自己就有观察窗口，这里只留一点间隔，避免连发太密。
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      results.push(entry); onStep?.(entry);
+      if (stopsExecution(entry)) return results;
+      if (!entry.ok) break;
+      try { await executionDelay(80, options); }
+      catch (error) { results.push(operationResult(executionOutcome(error), { step, error: error.message })); return results; }
     }
   }
   return results;
@@ -250,19 +271,20 @@ function buildHeroBody(step) {
 }
 
 // 只有 HeroStarUpRequest 在协议表里有配套的 Response，升级和技能走推送（SCUpdateHero），
-// 成功时服务端一声不吭，被拒时只推 PromptResponse，所以用 sendWatch 守一小段时间。
-async function sendHero(client, protocol, step, body, timeout) {
+// 短观察窗口无法确认最终提交；未观察到拒绝仍返回 UNKNOWN 并停止后续写操作。
+async function sendHero(client, protocol, step, body, timeout, { signal } = {}) {
   const request = step.kind === 'level'
     ? 'HeroLevelUpRequest'
     : step.kind === 'star'
       ? 'HeroStarUpRequest'
       : 'HeroSkillLevelUpRequest';
-  if (!protocol[request]) throw new Error(`protocol has no type ${request}`);
+  if (!protocol[request]) throw Object.assign(new Error(`protocol has no type ${request}`), { code: 'NOT_EXECUTED' });
   if (request === 'HeroStarUpRequest') {
-    const response = await client.request(request, body, 'HeroStarUpResponse', timeout);
+    if (!protocol.HeroStarUpResponse) throw Object.assign(new Error('protocol has no type HeroStarUpResponse'), { code: 'NOT_EXECUTED' });
+    const response = await client.request(request, body, 'HeroStarUpResponse', timeout, { mutate: true, signal });
     return { response: 'HeroStarUpResponse', body: response };
   }
-  const watched = await client.sendWatch(request, body, { window: 300 });
+  const watched = await client.sendWatch(request, body, { window: 300, signal });
   return { response: null, body: watched };
 }
 

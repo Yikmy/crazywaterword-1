@@ -236,3 +236,102 @@ test('prompt ambiguity survives watcher expiry and cannot reject a later lone re
   assert.equal(env.client.pending.length, 1);
   socket.receive('ReadResponse', { value: 'certain' }); assert.deepEqual(await read, { value: 'certain' });
 });
+test('a quiet watcher is UNKNOWN and cannot dispatch the same unresolved write again', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  const outcome = await env.client.sendWatch('WatchRequest', { id: 7 }, { window: 1 });
+  assert.equal(outcome.status, 'UNKNOWN');
+  assert.equal(outcome.ok, null);
+  assert.equal(env.client.watchers.length, 0);
+  await assert.rejects(env.client.sendWatch('WatchRequest', { id: 7 }), { code: 'WRITE_UNCERTAIN' });
+  assert.equal(socket.sent.filter((frame) => frame.name === 'WatchRequest').length, 1);
+  // Even a new transport cannot make the earlier write's effect known.
+  env.client.stop(); await ready(env);
+  await assert.rejects(env.client.sendWatch('WatchRequest', { id: 7 }), { code: 'WRITE_UNCERTAIN' });
+});
+
+test('watcher cancellation releases its timer and listener while retaining unknown dispatch', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  const controller = new AbortController();
+  const pending = assert.rejects(env.client.sendWatch('WatchRequest', { id: 8 }, { window: 10000, signal: controller.signal }), { code: 'CANCELLED' });
+  controller.abort(); await pending;
+  assert.equal(env.client.watchers.length, 0);
+  assert.equal(env.client.uncertainWrites.size, 1);
+  socket.receive('PromptResponse', { args: ['late refusal'] });
+  assert.equal(env.client.promptUncertain, true);
+  await assert.rejects(env.client.sendWatch('WatchRequest', { id: 8 }), { code: 'WRITE_UNCERTAIN' });
+});
+
+test('synchronous transport termination while dispatching a watcher cannot recreate its timer', async () => {
+  const env = setup(); const socket = await ready(env);
+  const controller = new AbortController(); let watcher;
+  const send = socket.send.bind(socket);
+  socket.send = (frame) => {
+    send(frame);
+    if (codec.decode(frame).name === 'WatchRequest') {
+      watcher = env.client.watchers[0]; env.client.stop();
+    }
+  };
+  await assert.rejects(env.client.sendWatch('WatchRequest', {}, { window: 10000, signal: controller.signal }), /client stopped/);
+  assert.equal(watcher.timer, null);
+  assert.equal(env.client.uncertainWrites.size, 1);
+  assert.equal(env.client.watchers.length, 0);
+});
+
+test('a synchronous definitive prompt does not leave an unknown-write lock or watchdog', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  const send = socket.send.bind(socket); let watcher;
+  socket.send = (frame) => {
+    send(frame);
+    if (codec.decode(frame).name === 'WatchRequest') {
+      watcher = env.client.watchers[0];
+      socket.receive('PromptResponse', { args: ['definite rejection'] });
+    }
+  };
+  await assert.rejects(env.client.sendWatch('WatchRequest', {}, { window: 10000 }), /server prompt/);
+  assert.equal(watcher.timer, null); assert.equal(env.client.uncertainWrites.size, 0);
+  await assert.rejects(env.client.sendWatch('WatchRequest', {}, { window: 10000 }), /server prompt/);
+});
+
+test('abort from a frame observer prevents socket dispatch', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  const controller = new AbortController();
+  env.client.on('frame', ({ name }) => { if (name === 'WatchRequest') controller.abort(); });
+  await assert.rejects(env.client.sendWatch('WatchRequest', {}, { signal: controller.signal }), { code: 'CANCELLED' });
+  assert.equal(socket.sent.filter((frame) => frame.name === 'WatchRequest').length, 0);
+  assert.equal(env.client.uncertainWrites.size, 0);
+});
+
+test('only an explicit state verification releases the matching watched write', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); await ready(env);
+  await env.client.sendWatch('WatchRequest', { id: 1 }, { window: 1 });
+  await env.client.sendWatch('WatchRequest', { id: 2 }, { window: 1 });
+  assert.equal(env.client.uncertainWrites.size, 2);
+  assert.equal(env.client.confirmWatchedWrite('WatchRequest', { id: 1 }), true);
+  assert.equal(env.client.uncertainWrites.size, 1);
+  await assert.rejects(env.client.sendWatch('WatchRequest', { id: 2 }), { code: 'WRITE_UNCERTAIN' });
+  env.client.confirmWatchedWrite('WatchRequest', { id: 2 });
+  assert.equal(env.client.uncertainWrites.size, 0);
+  assert.equal(env.client.promptUncertain, false);
+});
+
+test('typed writes retain unknown fingerprints across close and reconnect, reads remain reusable', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  const pending = assert.rejects(env.client.request('WriteRequest', { id: 9 }, 'WriteResponse', 10000, { mutate: true }), /socket closed/);
+  socket.end(); await pending;
+  assert.equal(env.client.uncertainWrites.size, 1);
+  const nextSocket = await ready(env);
+  await assert.rejects(env.client.request('WriteRequest', { id: 9 }, 'WriteResponse', 10000, { mutate: true }), { code: 'WRITE_UNCERTAIN' });
+  const reading = env.client.request('ReadRequest', {}, 'ReadResponse');
+  nextSocket.receive('ReadResponse', { id: 1 });
+  assert.deepEqual(await reading, { id: 1 });
+  assert.equal(nextSocket.sent.some((frame) => frame.name === 'WriteRequest'), false);
+});
+
+test('a typed write timeout remains locked even after its late response has been discarded', async (t) => {
+  const env = setup(); t.after(() => env.client.stop()); const socket = await ready(env);
+  await assert.rejects(env.client.request('WriteRequest', {}, 'WriteResponse', 1, { mutate: true }), { code: 'RESPONSE_TIMEOUT' });
+  socket.receive('WriteResponse', { result: 0 });
+  assert.equal(env.client.lateResponses.size, 0);
+  await assert.rejects(env.client.request('WriteRequest', {}, 'WriteResponse', 1, { mutate: true }), { code: 'WRITE_UNCERTAIN' });
+  assert.equal(socket.sent.filter((frame) => frame.name === 'WriteRequest').length, 1);
+});

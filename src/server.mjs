@@ -630,7 +630,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         const instance = session.client;
         // GameClient can coalesce identical requests; never attach a new run to an old battle.
-        if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size) {
+        if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
           json({ error: '连接存在未决请求或归属不确定，请先重新连接', code: 'RESPONSE_UNCERTAIN' }, 409); return;
         }
         if (!session.stageRunner || session.stageClient !== instance) {
@@ -892,6 +892,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const steps = [];
         const results = await runHeroPlan(instance, protocol, plan, {
           allowMutate: true,
+          signal: session.abort.signal,
           timeout: 8000,
           onStep: (entry) => {
             const step = entry.step;
@@ -914,6 +915,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const started = Date.now();
         const results = await runDailies(instance, protocol, survey, {
           allowMutate: true,
+          signal: session.abort.signal,
+          config,
           allowPaid: payload.paid === true,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `日常「${entry.title}」跳过：${entry.reason}`);
@@ -937,6 +940,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const survey = await tasks(session, account);
         const results = await runTasks(instance, protocol, survey, {
           allowMutate: true,
+          signal: session.abort.signal,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `任务「${entry.step.label}」跳过：${entry.error}`);
             else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `领取 ${entry.step.label}` : `领取 ${entry.step.label} 失败：${entry.error}`);
@@ -957,6 +961,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true });
         const { results } = await runWorld(instance, protocol, plan, {
           allowMutate: true,
+          signal: session.abort.signal,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `海面「${entry.step.label}」跳过：${entry.error}`);
             else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `海面 ${entry.step.label}` : `海面 ${entry.step.label} 失败：${entry.error}`);
@@ -988,6 +993,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         loop.history = [];
         loop.error = null;
         loop.stop = { aborted: false };
+        const generation = session.generation;
+        const current = () => sessions.get(session.id) === session && session.generation === generation && session.client === instance;
         emit(session, 'info', `自动挂机开始：${loop.rounds} 轮，每轮间隔 ${payload.everySeconds ?? 60} 秒`);
         runLoop(instance, protocol, {
           config,
@@ -999,24 +1006,34 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           allowSpeedUp: payload.speedUp === true,
           allowReroll: payload.reroll === true,
           stop: loop.stop,
+          signal: session.abort.signal,
           onRound: (summary) => {
+            if (!current()) return;
             loop.completed = summary.round;
             loop.history.push(summary);
             if (loop.history.length > 50) loop.history.shift();
             emit(session, 'info', formatLoopRound(summary));
           },
           onStep: (entry) => {
+            if (!current()) return;
             const label = entry.step?.label ?? entry.title ?? entry.id;
             if (entry.skipped) return;
             emit(session, entry.ok ? 'info' : 'error', entry.ok ? `循环[${entry.phase}] ${label}` : `循环[${entry.phase}] ${label} 失败：${entry.error}`);
           },
         })
-          .then(() => emit(session, 'info', '自动挂机结束'))
+          .then((result) => {
+            if (!current()) return;
+            loop.status = result.status;
+            loop.error = result.error;
+            emit(session, result.status === 'SUCCESS' ? 'info' : 'warn', '自动挂机结束：' + result.status);
+          })
           .catch((error) => {
+            if (!current()) return;
             loop.error = error.message;
             emit(session, 'error', `自动挂机中止：${error.message}`);
           })
           .finally(() => {
+            if (!current()) return;
             loop.running = false;
           });
         json({ ok: true, running: true });

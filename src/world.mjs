@@ -16,6 +16,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalize } from './worlds.mjs';
+import { assertPaymentAllowed } from './actions.mjs';
+import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, validateResources } from './resource-ledger.mjs';
+import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
 
 export const SPEED_UP_ITEM = '加速器';
 export const SPEED_UP_ITEM_TYPE = 2;
@@ -23,9 +26,15 @@ const STOCK_PARAM = '产品存量初始上限';
 const SLOTS_PARAM = '制造位上限';
 const POPULATION_PARAM = '初始人口上限';
 
-// 客户端 Resource 枚举：1=EXP 3=GOLD 4=RUBY 5=ARENA_POINT 6=LEAGUE_POINT。
-// AllResourceResponse.list[].res 是数字，配置表的消耗项写的是名字，两边靠这张表对齐。
-const RESOURCE_NAMES = { 1: 'EXP', 3: 'GOLD', 4: 'RUBY', 5: 'ARENA_POINT', 6: 'LEAGUE_POINT' };
+function knownCosts(entries) {
+  try { return resourceCosts(entries); } catch { return null; }
+}
+
+function orderCosts(entries) {
+  if (!Array.isArray(entries) || !entries.length || entries.some((entry) => typeof entry?.id !== 'string'
+    || !entry.id.trim() || !Number.isSafeInteger(entry.num) || entry.num <= 0)) return null;
+  return knownCosts(entries);
+}
 
 function rowsOf(config, name) {
   return config?.tables?.[name]?.data ?? [];
@@ -74,13 +83,18 @@ export function topLevel(config, buildingType) {
 }
 
 // 只读探测：一次拉齐海面状态、库存、资源田、舰队。
-export async function surveyWorld(client, protocol, { config = null, player = null, timeout = 8000 } = {}) {
+export async function surveyWorld(client, protocol, { config = null, player = null, timeout = 8000, signal, stop } = {}) {
+  const options = { signal, stop };
   const get = async (name) => {
+    assertExecutionActive(client, options);
     const responseName = `${name.slice(0, -7)}Response`;
     if (!protocol[name] || !protocol[responseName]) return null;
     try {
-      return normalize(await client.request(name, {}, responseName, timeout));
-    } catch {
+      const body = await awaitExecution(client.request(name, {}, responseName, timeout), client, options);
+      assertExecutionActive(client, options);
+      return normalize(body);
+    } catch (error) {
+      if (executionOutcome(error) === 'CANCELLED') throw error;
       return null;
     }
   };
@@ -95,10 +109,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
   ]);
 
   // 道具和资源合到一张库存表里，消耗项的 id 有的是道具名（木材）、有的是资源名（GOLD）。
-  const stock = new Map();
-  const addStock = (id, num) => stock.set(id, (stock.get(id) ?? 0) + Number(num ?? 0));
-  for (const item of itemList?.items ?? []) addStock(item.itemId ?? item.id, item.num ?? item.count);
-  for (const entry of resourceList?.list ?? []) addStock(RESOURCE_NAMES[entry.res] ?? String(entry.res), entry.amount);
+  const stock = stockFromResponses(itemList, resourceList);
 
   const resolveType = makeTypeResolver(config);
   const notes = [];
@@ -133,10 +144,12 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
   const have = (id) => stock.get(id) ?? 0;
 
   const orders = (water.workerOrder ?? []).map((raw) => {
-    const requirements = (raw.requirements ?? []).map((r) => ({ id: r.id, num: Number(r.num ?? 0) }));
+    const requirements = Array.isArray(raw.requirements)
+      ? raw.requirements.map((r) => ({ id: r?.id, num: safeResourceQuantity(r?.num) })) : [];
     const missing = requirements
-      .map((r) => ({ id: r.id, num: Math.max(0, r.num - have(r.id)) }))
-      .filter((r) => r.num > 0);
+      .map((r) => ({ id: r.id, num: r.num === null || safeResourceQuantity(have(r.id)) === null
+        ? null : Math.max(0, r.num - have(r.id)) }))
+      .filter((r) => r.num === null || r.num > 0);
     // 订单经验：特殊订单看 WorkerSpecOrderCfg（times 就是 textId），普通订单按需求项累加。
     let rewardExp = null;
     if (raw.isSpecial) {
@@ -148,8 +161,9 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       for (const r of requirements) {
         const row = orderCfg.get(r.id);
         const exp = (row?.reward ?? []).find((x) => x[0] === 'EXP')?.[1];
-        if (exp === undefined) known = false;
-        else total += Number(exp) * r.num;
+        const unitExp = safeResourceQuantity(exp);
+        if (unitExp === null || r.num === null || !Number.isSafeInteger(unitExp * r.num + total)) known = false;
+        else total += unitExp * r.num;
       }
       rewardExp = known ? total : null;
     }
@@ -172,6 +186,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     now: Math.floor(Date.now() / 1000),
     player,
     stock,
+    stockReliable: Array.isArray(itemList?.items) && Array.isArray(resourceList?.list),
     have,
     buildings,
     factories,
@@ -198,13 +213,13 @@ export function planWorld(survey, {
   minOrderExp = 0,
   maxUpgrades = 2,
   maxBuilds = 5,
+  ledger = new ResourceLedger(survey.stockReliable === false ? null : survey.stock ?? survey.have),
 } = {}) {
   const { now, have } = survey;
   const actions = [];
   const notes = [];
-  const reserved = new Map();
-  const reserve = (id, num) => reserved.set(id, (reserved.get(id) ?? 0) + Number(num ?? 0));
-  const free = (id) => have(id) - (reserved.get(id) ?? 0);
+  const reservedBefore = new Map(ledger.reserved);
+  const free = (id) => ledger.available(id);
 
   // 1. 收成品：工厂走 GainFactoryProduce，非工厂建筑的囤积产物一次性批量收。
   for (const b of survey.factories) {
@@ -266,8 +281,9 @@ export function planWorld(survey, {
       notes.push(`${b.buildingId} 建造要等级 ${row.playerLevel}，当前 ${survey.player?.level ?? 1}，先推主线`);
       continue;
     }
-    const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
-    if (!consume.every((c) => free(c.id) >= c.num)) {
+    const consume = knownCosts(row.consume);
+    if (consume === null) { notes.push(`${b.buildingId} 材料成本未知，跳过`); continue; }
+    if (!ledger.canReserve(consume)) {
       const short = consume.filter((c) => free(c.id) < c.num).map((c) => `${c.id} ${free(c.id)}/${c.num}`).join(' ');
       notes.push(`${b.buildingId} 建造材料不足（${short}），不买材料，等下一轮`);
       continue;
@@ -275,25 +291,35 @@ export function planWorld(survey, {
     builds.push({ building: b, row, consume });
   }
   builds.sort((a, b) => a.row.playerLevel - b.row.playerLevel || a.building.buildingId.localeCompare(b.building.buildingId));
-  for (const u of builds.slice(0, maxBuilds)) {
-    for (const c of u.consume) reserve(c.id, c.num);
+  let built = 0;
+  for (const u of builds) {
+    if (built >= maxBuilds) { notes.push(`${u.building.buildingId} 本轮建造额度用完，下一轮再建`); continue; }
+    if (!ledger.reserve(u.consume)) { notes.push(`${u.building.buildingId} 建造材料已预留，等待下一轮`); continue; }
+    built += 1;
     actions.push({
       kind: 'build',
+      costs: resourceCosts(u.consume),
       request: 'BuildBuildingRequest',
       response: null,
       body: { buildingId: u.building.buildingId },
       label: `建造 ${u.building.buildingId}（需等级 ${u.row.playerLevel}）`,
     });
   }
-  for (const u of builds.slice(maxBuilds)) notes.push(`${u.building.buildingId} 本轮建造额度用完，下一轮再建`);
 
   // 4. 交居民订单：材料齐就交；不齐时按开关决定要不要拒绝重刷。
+  const submittedOrders = new Set();
+  const invalidOrders = new Set();
   for (const order of survey.orders) {
-    const buildable = order.missing.every((m) => free(m.id) >= m.num);
+    const requirements = orderCosts(order.requirements);
+    if (requirements === null) {
+      invalidOrders.add(order); notes.push(`订单 #${order.index} 需求数量缺失或不可靠，跳过`); continue;
+    }
+    const buildable = ledger.reserve(requirements);
     if (buildable) {
-      for (const r of order.requirements) reserve(r.id, r.num);
+      submittedOrders.add(order);
       actions.push({
         kind: 'finishOrder',
+        costs: requirements,
         request: 'FinishWorkerOrderRequest',
         response: 'FinishWorkerOrderResponse',
         body: { index: order.index },
@@ -301,7 +327,7 @@ export function planWorld(survey, {
       });
       continue;
     }
-    const short = order.missing.map((m) => `${m.id} ${free(m.id)}/${m.num}`).join(' ');
+    const short = (order.requirements ?? []).filter((m) => free(m.id) === null || free(m.id) < m.num).map((m) => `${m.id} ${free(m.id) ?? '?'}/${m.num}`).join(' ');
     if (!allowReroll) {
       notes.push(`订单 #${order.index} 材料不足（${short}），未开 --reroll，保留`);
     } else if ((order.rewardExp ?? 0) < minOrderExp) {
@@ -320,8 +346,10 @@ export function planWorld(survey, {
   // 5. 排产：按订单缺口挑配方，缺得多的先产；已设自动生产的工厂不覆盖。
   const demand = new Map();
   for (const order of survey.orders) {
-    for (const m of order.missing) demand.set(m.id, (demand.get(m.id) ?? 0) + m.num);
+    if (submittedOrders.has(order) || invalidOrders.has(order)) continue;
+    for (const m of order.requirements ?? []) demand.set(m.id, (demand.get(m.id) ?? 0) + m.num);
   }
+  for (const [id, total] of demand) demand.set(id, Math.max(0, total - (free(id) ?? 0)));
   const produceRows = rowsOf(config, 'BuildingProduceCfg');
   for (const b of survey.factories) {
     if (b.factory.autoProductId) {
@@ -333,16 +361,17 @@ export function planWorld(survey, {
     const cand = produceRows
       .filter((row) => row.buildType === b.type && row.unlockLevel <= b.level)
       .filter((row) => !queue.some((job) => job.productId === row.itemId))
-      .filter((row) => have(row.itemId) < survey.stockCap)
-      .filter((row) => (row.costItem ?? []).every(([id, n]) => free(id) >= n));
+      .filter((row) => ledger.available(row.itemId) !== null && have(row.itemId) < survey.stockCap)
+      .filter((row) => ledger.canReserve(row.costItem));
     if (cand.length === 0) continue;
     // 订单缺口的先产，其余按产出时间短的先产（早点回本）。
     const score = (row) => (demand.get(row.itemId) ?? 0) * 1e6 - row.produceTime;
     const best = cand.sort((a, b2) => score(b2) - score(a))[0];
-    for (const [id, n] of best.costItem ?? []) reserve(id, n);
+    if (!ledger.reserve(best.costItem)) continue;
     const need = demand.get(best.itemId) ?? 0;
     actions.push({
       kind: 'startProduce',
+      costs: resourceCosts(best.costItem),
       request: 'StartFactoryProduceRequest',
       response: null,
       body: { buildingId: b.buildingId, productId: best.itemId },
@@ -365,36 +394,40 @@ export function planWorld(survey, {
     }
     if (row.playerLevel > (survey.player?.level ?? 1)) continue;
     if (row.curPeople > survey.population) continue;
-    const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
-    if (!consume.every((c) => free(c.id) >= c.num)) continue;
+    const consume = knownCosts(row.consume);
+    if (consume === null) { notes.push(`${b.buildingId} 材料成本未知，跳过`); continue; }
+    if (!ledger.canReserve(consume)) continue;
     upgrades.push({ building: b, row, consume, costTime: row.costTime ?? 0 });
   }
   upgrades.sort((a, b) => a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
-  const picked = upgrades.slice(0, maxUpgrades);
-  for (const u of picked) {
-    for (const c of u.consume) reserve(c.id, c.num);
+  let upgraded = 0;
+  for (const u of upgrades) {
+    if (upgraded >= maxUpgrades) { notes.push(`${u.building.buildingId} 本轮升级额度用完，下一轮再升`); continue; }
+    if (!ledger.reserve(u.consume)) { notes.push(`${u.building.buildingId} 升级材料已预留，等待下一轮`); continue; }
+    upgraded += 1;
     actions.push({
       kind: 'upgrade',
+      costs: resourceCosts(u.consume),
       request: 'UpgradeBuildingRequest',
       response: null,
       body: { buildingId: u.building.buildingId },
       label: `升级 ${u.building.buildingId} ${u.building.level}->${u.building.level + 1}（${u.costTime}s，人口 ${u.row.curPeople}）`,
     });
   }
-  const held = upgrades.slice(maxUpgrades);
-  for (const u of held) notes.push(`${u.building.buildingId} 本轮升级额度用完，下一轮再升`);
 
   // 7. 加速：只花「加速器」，而且只对真的在等的建造/生产用。
   if (allowSpeedUp) {
-    const speeders = Number(have(SPEED_UP_ITEM));
+    const speeders = free(SPEED_UP_ITEM) ?? 0;
     let left = speeders;
     for (const b of survey.buildings) {
       if (b.buildFinishTime <= now) continue;
       const minutes = Math.ceil((b.buildFinishTime - now) / 60);
       if (minutes <= 0 || left <= 0) continue;
       const useNum = Math.max(1, Math.min(minutes, left));
+      if (!ledger.reserve([{ id: SPEED_UP_ITEM, num: useNum }])) continue;
       left -= useNum;
       actions.push({
+        costs: [{ id: SPEED_UP_ITEM, num: useNum }],
         kind: 'speedUpUpgrade',
         request: 'SpeedUpUpgradeBuildingRequest',
         response: null,
@@ -408,8 +441,10 @@ export function planWorld(survey, {
         const minutes = Math.ceil((job.finishTime - now) / 60);
         if (minutes <= 0) continue;
         const useNum = Math.max(1, Math.min(minutes, left));
+        if (!ledger.reserve([{ id: SPEED_UP_ITEM, num: useNum }])) continue;
         left -= useNum;
         actions.push({
+          costs: [{ id: SPEED_UP_ITEM, num: useNum }],
           kind: 'speedUpProduce',
           request: 'SpeedUpFactoryProduceRequest',
           response: null,
@@ -421,7 +456,7 @@ export function planWorld(survey, {
     if (left === speeders) notes.push(`${SPEED_UP_ITEM} 有 ${speeders} 个，但没有等待中的建造或生产`);
   }
 
-  return { actions, notes, reserved: [...reserved].filter(([, n]) => n > 0) };
+  return { actions, notes, reserved: [...ledger.reserved].map(([id, n]) => [id, n - (reservedBefore.get(id) ?? 0)]).filter(([, n]) => n > 0) };
 }
 
 export function stepKey(step) {
@@ -436,38 +471,61 @@ export async function runWorld(client, protocol, plan, {
   window = 400,
   timeout = 15000,
   rejected = new Set(),
+  budget = { ledger: null },
+  signal,
+  stop,
   onStep,
 } = {}) {
   if (!allowMutate) throw new Error('海面自动化会改变账号状态，需要 --yes');
   const results = [];
   const blocked = new Set();
+  const options = { signal, stop };
+  const spending = new Set(['BuildBuildingRequest', 'UpgradeBuildingRequest', 'FinishWorkerOrderRequest',
+    'StartFactoryProduceRequest', 'SpeedUpUpgradeBuildingRequest', 'SpeedUpFactoryProduceRequest']);
   for (const step of plan.actions) {
     const key = stepKey(step);
     let entry;
-    if (rejected.has(key)) entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };
-    else if (blocked.has(step.kind)) entry = { step, ok: false, skipped: true, error: `同类动作已失败，本轮不再尝试` };
-    else if (!protocol[step.request]) entry = { step, ok: false, error: `协议表里没有 ${step.request}` };
-    else {
-      try {
-        if (step.response && protocol[step.response]) {
-          const body = await client.request(step.request, step.body, step.response, timeout);
-          entry = { step, ok: true, body };
-        } else {
-          // 没有配套 Response：静默即成功，回包是 PromptResponse 就是被拒。
-          const sent = await client.sendWatch(step.request, step.body, { window });
-          entry = { step, ok: true, sent };
+    try {
+      assertExecutionActive(client, options);
+      if (rejected.has(key)) entry = operationResult('NOT_EXECUTED', { step, skipped: true, error: '刚被服务端拒过，跳过' });
+      else if (blocked.has(step.kind)) entry = operationResult('NOT_EXECUTED', { step, skipped: true, error: '同类动作已失败，本轮不再尝试' });
+      else if (!protocol[step.request]) entry = operationResult('NOT_EXECUTED', { step, error: `协议表里没有 ${step.request}` });
+      else if (step.response && !protocol[step.response]) entry = operationResult('NOT_EXECUTED', { step, error: `协议表里没有 ${step.response}` });
+      else {
+        try { assertPaymentAllowed(step); }
+        catch (error) { throw Object.assign(error, { code: 'NOT_EXECUTED' }); }
+        if (spending.has(step.request) || step.costs !== undefined) {
+          await validateResources(client, protocol, step.costs, {
+            timeout, budget, signal, stop, assertActive: () => assertExecutionActive(client, options),
+          });
+          assertExecutionActive(client, options);
         }
-      } catch (error) {
-        rejected.add(key);
-        blocked.add(step.kind);
-        entry = { step, ok: false, error: error.message };
+        if (step.response && protocol[step.response]) {
+          const body = await awaitExecution(client.request(step.request, step.body, step.response, timeout, { mutate: true, signal }), client, options);
+          entry = operationResult('SUCCESS', { step, body });
+        } else {
+          const sent = await awaitExecution(client.sendWatch(step.request, step.body, { window, signal }), client, options);
+          // A quiet observation window is not evidence of a committed write.
+          entry = operationResult('UNKNOWN', { step, sent });
+        }
       }
+    } catch (error) {
+      const status = executionOutcome(error);
+      if (status === 'REJECTED') { rejected.add(key); blocked.add(step.kind); }
+      entry = operationResult(status, { step, error: error.message });
     }
     results.push(entry);
     onStep?.(entry);
-    if (entry.ok) await new Promise((resolve) => setTimeout(resolve, 300));
+    if (stopsExecution(entry)) break;
+    if (entry.ok) {
+      try { await executionDelay(300, options); }
+      catch (error) {
+        results.push(operationResult(executionOutcome(error), { step, error: error.message }));
+        break;
+      }
+    }
   }
-  return { results, rejected, blocked: [...blocked] };
+  return { results, rejected, blocked: [...blocked], budget };
 }
 
 // --- 资源田 ------------------------------------------------------------------

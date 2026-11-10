@@ -58,6 +58,7 @@ export class GameClient extends EventEmitter {
     this.lateResponses = new Set();
     this.promptUncertain = false;
     this.watchers = [];
+    this.uncertainWrites = new Set();
     this.sendOrder = 0;
     this.stopping = false;
   }
@@ -169,6 +170,8 @@ export class GameClient extends EventEmitter {
     this.lastPingTimestamp = 0;
     for (const entry of [...this.pending.splice(0), ...this.watchers.splice(0)]) {
       clearTimeout(entry.timer);
+      entry.cleanup?.();
+      if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(entry.key);
       entry.reject(error);
     }
     this.discardSocket(reason);
@@ -181,11 +184,18 @@ export class GameClient extends EventEmitter {
     return this.sendSeqNo;
   }
 
-  send(name, body) {
+  send(name, body, { signal, onDispatch } = {}) {
     if (!this.connected) throw new Error('not connected');
     const seq = this.bumpSeqNo();
     const frame = this.codec.encode(name, seq, body || {});
     this.emit('frame', { dir: 'out', name, seq, bytes: frame, body });
+    if (signal?.aborted) {
+      const error = new Error('execution cancelled before dispatch');
+      error.code = 'CANCELLED';
+      throw error;
+    }
+    if (!this.connected) throw new Error('not connected');
+    onDispatch?.(seq);
     this.socket.send(frame);
     return seq;
   }
@@ -198,12 +208,22 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
-  request(name, body, responseName = name.slice(0, -7) + 'Response', timeout = 15000) {
+  request(name, body, responseName = name.slice(0, -7) + 'Response', timeout = 15000, { mutate = false, signal } = {}) {
     // Responses carry no request id: only equivalent requests can share one response.
     let key;
     try {
       key = Array.from(this.codec.encode(name, 0, body || {})).join(',');
     } catch (error) {
+      return Promise.reject(error);
+    }
+    if (signal?.aborted) {
+      const error = new Error('execution cancelled before dispatch');
+      error.code = 'CANCELLED';
+      return Promise.reject(error);
+    }
+    if (mutate && this.uncertainWrites.has(key)) {
+      const error = new Error('previous write remains unverified: ' + name);
+      error.code = 'WRITE_UNCERTAIN';
       return Promise.reject(error);
     }
     if (this.lateResponses.has(responseName)) {
@@ -218,18 +238,22 @@ export class GameClient extends EventEmitter {
       error.code = 'RESPONSE_CONFLICT';
       return Promise.reject(error);
     }
-    const entry = { name, responseName, key, timer: null, order: this.sendOrder++, promise: null };
+    const entry = { name, responseName, key, mutate, timer: null, order: this.sendOrder++, promise: null };
     entry.promise = new Promise((resolve, reject) => Object.assign(entry, { resolve, reject }));
     entry.timer = setTimeout(() => {
       this.pending = this.pending.filter((item) => item !== entry);
       this.lateResponses.add(responseName);
+      if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(key);
       this.promptUncertain = true;
-      entry.reject(new Error('timeout waiting for ' + responseName + ' (sent ' + name + ')'));
+      const error = new Error('timeout waiting for ' + responseName + ' (sent ' + name + ')');
+      error.code = 'RESPONSE_TIMEOUT';
+      entry.reject(error);
     }, timeout);
     this.pending.push(entry);
     try {
-      this.send(name, body);
+      this.send(name, body, { signal, onDispatch: (seq) => { entry.sent = seq; } });
     } catch (error) {
+      if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(key);
       clearTimeout(entry.timer);
       this.pending = this.pending.filter((item) => item !== entry);
       entry.reject(error);
@@ -237,35 +261,84 @@ export class GameClient extends EventEmitter {
     return entry.promise;
   }
 
-  // No paired response exists for these sends. An unambiguous prompt rejects it.
-  sendWatch(name, body, { window = 350 } = {}) {
-    const watcher = { name, order: this.sendOrder++, timer: null };
+  // Silence proves dispatch only. Keep an unresolved fingerprint so the same
+  // write cannot be re-sent after timeout, cancellation or reconnection.
+  sendWatch(name, body, { window = 350, signal } = {}) {
+    if (signal?.aborted) {
+      const error = new Error('execution cancelled');
+      error.code = 'CANCELLED';
+      return Promise.reject(error);
+    }
+    let key;
+    try { key = Array.from(this.codec.encode(name, 0, body || {})).join(','); }
+    catch (error) { return Promise.reject(error); }
+    if (this.uncertainWrites.has(key) || this.watchers.some((entry) => entry.key === key)) {
+      const error = new Error('previous write remains unverified: ' + name);
+      error.code = 'WRITE_UNCERTAIN';
+      return Promise.reject(error);
+    }
+    const watcher = { name, key, mutate: true, order: this.sendOrder++, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(watcher, { resolve, reject }));
+    const cleanup = () => {
+      watcher.settled = true;
+      signal?.removeEventListener('abort', cancel);
+    };
+    const uncertain = () => {
+      if (watcher.sent !== undefined) {
+        this.uncertainWrites.add(key);
+      }
+    };
+    const cancel = () => {
+      if (watcher.settled) return;
+      this.watchers = this.watchers.filter((entry) => entry !== watcher);
+      clearTimeout(watcher.timer);
+      cleanup();
+      uncertain();
+      const error = new Error('execution cancelled; dispatched write is unverified');
+      error.code = 'CANCELLED';
+      watcher.reject(error);
+    };
+    watcher.cleanup = cleanup;
     this.watchers.push(watcher);
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
-      const seq = this.send(name, body);
+      this.send(name, body, { signal, onDispatch: (seq) => { watcher.sent = seq; } });
+      // Synchronous prompts, close and abort callbacks already settled this watcher.
+      if (watcher.settled) return promise;
+      if (signal?.aborted) { cancel(); return promise; }
       watcher.timer = setTimeout(() => {
-        this.watchers = this.watchers.filter((item) => item !== watcher);
+        this.watchers = this.watchers.filter((entry) => entry !== watcher);
+        cleanup();
+        uncertain();
         if (watcher.ambiguousPrompt) {
           const error = new Error('uncorrelated server prompt while waiting for ' + name);
           error.code = 'AMBIGUOUS_PROMPT';
           watcher.reject(error);
         } else {
-          watcher.resolve({ sent: seq, name });
+          watcher.resolve({ sent: watcher.sent, name, status: 'UNKNOWN', ok: null });
         }
       }, window);
     } catch (error) {
-      this.watchers = this.watchers.filter((item) => item !== watcher);
+      this.watchers = this.watchers.filter((entry) => entry !== watcher);
+      cleanup();
+      uncertain();
       watcher.reject(error);
     }
     return promise;
   }
 
+  // Only a caller that re-read and verified the effect may release this write.
+  confirmWatchedWrite(name, body) {
+    const key = Array.from(this.codec.encode(name, 0, body || {})).join(',');
+    return this.uncertainWrites.delete(key);
+  }
+
   // PromptResponse has no correlation id. Multiple candidates must not be guessed.
   attributePrompt(body) {
     const candidates = [...this.pending, ...this.watchers];
-    if (candidates.length !== 1 || this.promptUncertain) {
-      if (candidates.length > 1 || this.promptUncertain) {
+    const uncertain = this.promptUncertain || this.uncertainWrites.size > 0;
+    if (candidates.length !== 1 || uncertain) {
+      if (candidates.length > 1 || uncertain) {
         this.promptUncertain = true;
         for (const entry of candidates) entry.ambiguousPrompt = true;
         this.emit('promptAmbiguous', { requests: candidates.map((entry) => entry.name) });
@@ -280,6 +353,7 @@ export class GameClient extends EventEmitter {
     this.pending = this.pending.filter((item) => item !== entry);
     this.watchers = this.watchers.filter((item) => item !== entry);
     clearTimeout(entry.timer);
+    entry.cleanup?.();
     entry.reject(error);
   }
 

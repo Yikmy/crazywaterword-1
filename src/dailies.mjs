@@ -15,7 +15,9 @@
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
 import { normalize } from './worlds.mjs';
-import { FREE_DAILY_PACK_ID } from './actions.mjs';
+import { FREE_DAILY_PACK_ID, assertPaymentAllowed } from './actions.mjs';
+import { safeResourceQuantity, stockFromResponses } from './resource-ledger.mjs';
+import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution, executionDelay } from './execution.mjs';
 
 export const TASK_TITLES = {
   1001: '登录游戏',
@@ -38,7 +40,6 @@ export const TASK_TITLES = {
 };
 
 const RECRUIT_ITEM = '抽卡券';
-const RUBY = 4;
 const RESOURCE_RUBY = '钻石';
 
 export function describeDailyTask(task, config) {
@@ -56,13 +57,21 @@ export const CHEST_TABLE = { daily: 'DailyActivityRewardCfg', weekly: 'WeeklyAct
 // 哪几档现在能领：活跃度够了、而且服务端没记在已领列表里。
 // 四个季节的门槛与档位号完全一样（只有第 5 档的奖励不同），所以领哪几档不用挑季节；
 // 只有要显示「第 5 档给什么」时才需要知道季节，那一步交给界面，不在这里猜。
-export function chestTiers(config, { kind = 'daily', activity = 0, claimed = [], season = null } = {}) {
-  const rows = config?.tables?.[CHEST_TABLE[kind] ?? CHEST_TABLE.daily]?.data ?? [];
+function validClaimedTiers(claimed) {
+  return Array.isArray(claimed) && claimed.every((id) => Number.isSafeInteger(id) && id > 0);
+}
+function validChestRow(row) {
+  return Number.isSafeInteger(row?.id) && row.id > 0 && Number.isSafeInteger(row.activity) && row.activity >= 0;
+}
+export function chestTiers(config, { kind = 'daily', activity = null, claimed = [], season = null } = {}) {
+  if (!['daily', 'weekly'].includes(kind) || !Number.isSafeInteger(activity) || activity < 0 || !validClaimedTiers(claimed)) return [];
+  const rows = config?.tables?.[CHEST_TABLE[kind]]?.data ?? [];
+  if (!Array.isArray(rows)) return [];
   const use = season == null ? rows : rows.filter((row) => row.season === season);
-  const taken = new Set(claimed ?? []);
+  const taken = new Set(claimed);
   const byId = new Map();
   for (const row of use) {
-    if (taken.has(row.id) || Number(activity) < Number(row.activity)) continue;
+    if (!validChestRow(row) || taken.has(row.id) || activity < row.activity) continue;
     if (!byId.has(row.id)) byId.set(row.id, { id: row.id, activity: row.activity, reward: row.reward });
   }
   return [...byId.values()].sort((a, b) => a.activity - b.activity);
@@ -70,10 +79,16 @@ export function chestTiers(config, { kind = 'daily', activity = 0, claimed = [],
 
 // 从一次 DailyTaskInfoResponse 算出要发的两个请求。两个都没有可领档位时返回空动作表。
 export function planChests(daily, config) {
-  const day = { activity: daily?.dailyActivity ?? 0, claimed: daily?.dailyRewardClaimed ?? [] };
-  const week = { activity: daily?.weeklyActivity ?? 0, claimed: daily?.weeklyRewardClaimed ?? [] };
-  const dailyTiers = chestTiers(config, { ...day, kind: 'daily' });
-  const weeklyTiers = chestTiers(config, { ...week, kind: 'weekly' });
+  const state = (activityField, claimedField) => {
+    const activity = explicitCount(daily, activityField);
+    const claimed = daily?.[claimedField];
+    const known = activity !== null && validClaimedTiers(claimed);
+    return { activity, claimed: validClaimedTiers(claimed) ? claimed : [], status: known ? 'known' : 'unknown' };
+  };
+  const day = state('dailyActivity', 'dailyRewardClaimed');
+  const week = state('weeklyActivity', 'weeklyRewardClaimed');
+  const dailyTiers = day.status === 'known' ? chestTiers(config, { ...day, kind: 'daily' }) : [];
+  const weeklyTiers = week.status === 'known' ? chestTiers(config, { ...week, kind: 'weekly' }) : [];
   const actions = [];
   if (dailyTiers.length > 0) {
     actions.push({
@@ -101,10 +116,12 @@ export function planChests(daily, config) {
 }
 
 // 下一档的门槛，界面上用来解释「为什么现在没得领」。
-function nextThreshold(config, kind, { activity = 0, claimed = [] }) {
-  const rows = config?.tables?.[CHEST_TABLE[kind] ?? CHEST_TABLE.daily]?.data ?? [];
+function nextThreshold(config, kind, { activity = null, claimed = [], status } = {}) {
+  if (status === 'unknown' || !Number.isSafeInteger(activity) || activity < 0 || !validClaimedTiers(claimed)) return null;
+  const rows = config?.tables?.[CHEST_TABLE[kind]]?.data ?? [];
+  if (!Array.isArray(rows)) return null;
   return rows
-    .filter((row) => !claimed.includes(row.id) && Number(row.activity) > Number(activity))
+    .filter((row) => validChestRow(row) && !claimed.includes(row.id) && row.activity > activity)
     .reduce((min, row) => (min == null || row.activity < min ? row.activity : min), null);
 }
 
@@ -116,11 +133,16 @@ function nextThreshold(config, kind, { activity = 0, claimed = [] }) {
 //
 // 面板里另外三个（礼包1/2/3）要走充值，"合并礼包" 要先买过前三个才可领，都不在本工具范围内。
 export function planDailyGift(response) {
-  const drawn = response?.drawnPack ?? [];
-  const available = !drawn.includes(FREE_DAILY_PACK_ID);
+  // The real codec requires heroId and initializes omitted repeated fields to [].
+  // An empty decoded list is valid; a malformed plain object without the list is unknown.
+  const drawn = response?.drawnPack;
+  const known = Array.isArray(drawn) && drawn.every((id) => typeof id === 'string')
+    && typeof response?.heroId === 'string' && response.heroId.trim().length > 0;
+  const available = known && !drawn.includes(FREE_DAILY_PACK_ID);
   return {
-    drawn,
-    freeAvailable: available,
+    drawn: known ? drawn : null,
+    status: known ? available ? 'ready' : 'done' : 'unknown',
+    freeAvailable: known ? available : null,
     resetTime: response?.resetTime ?? null,
     actions: available
       ? [{
@@ -134,6 +156,27 @@ export function planDailyGift(response) {
   };
 }
 
+// An omitted protobuf int32 inherits zero; only an explicit field is a fact.
+function explicitCount(value, key) {
+  return value && Object.hasOwn(value, key) && typeof value[key] === 'number'
+    && Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : null;
+}
+// The CLI reward preview and the reward executor share the same explicit-state gate.
+export function claimableDailyTasks(daily) {
+  return (Array.isArray(daily?.dailyTask) ? daily.dailyTask : []).filter((task) => {
+    const id = explicitCount(task, 'id');
+    const progress = explicitCount(task, 'progress');
+    const target = explicitCount(task, 'targetProgress');
+    return id !== null && id > 0 && progress !== null && target !== null && target > 0
+      && progress >= target && Object.hasOwn(task, 'rewardClaimed') && task.rewardClaimed === false;
+  });
+}
+
+function configuredCount(config, name) {
+  const matches = (config?.tables?.OfflineParamCfg?.data ?? []).filter((row) => row.paramName === name);
+  return matches.length === 1 ? explicitCount(matches[0], 'paramValue') : null;
+}
+
 // 每个驱动声明它要的只读前置请求，框架统一批量取一遍。
 export const DAILY_DRIVERS = {
   1002: {
@@ -144,17 +187,20 @@ export const DAILY_DRIVERS = {
       const info = probe('RecruitInfoRequest')?.hero;
       const remaining = Math.max(0, task.targetProgress - task.progress);
       if (remaining === 0) return { status: 'done' };
+      const freeEnd = explicitCount(info, 'freeEndTimeSeconds');
+      if (freeEnd === null || !Number.isFinite(now) || now < 0) return { status: 'unknown', reason: '免费招募状态缺失或不可靠' };
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
-      if (info && info.freeEndTimeSeconds <= now) {
+      if (freeEnd <= now) {
         actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', cost: '免费次数', note: '免费招募' });
       }
-      const tickets = items.get(RECRUIT_ITEM) ?? 0;
-      const singles = Math.min(remaining - actions.length, tickets);
+      const tickets = items instanceof Map ? safeResourceQuantity(items.has(RECRUIT_ITEM) ? items.get(RECRUIT_ITEM) : 0) : null;
+      const singles = tickets === null ? 0 : Math.min(remaining - actions.length, tickets);
       for (let i = 0; i < singles; i += 1) {
         actions.push({ request: 'RecruitStartRequest', body: { way: 2 }, response: 'RecruitStartResponse', cost: `${RECRUIT_ITEM} x1`, note: '单抽' });
       }
       if (actions.length === 0) {
+        if (tickets === null) return { status: 'unknown', reason: '招募券库存缺失或不可靠' };
         return { status: 'blocked', reason: `免费次数未好，且没有${RECRUIT_ITEM}（需要 ${remaining} 次）` };
       }
       if (actions.length < remaining) {
@@ -224,11 +270,12 @@ export const DAILY_DRIVERS = {
     evaluate({ task, probe, config, ruby }) {
       if (task.progress >= task.targetProgress) return { status: 'done' };
       const info = probe('ClickGoldInfoRequest')?.info;
-      if (!info) return { status: 'blocked', reason: '拿不到点金信息' };
-      const param = (name) => (config?.tables?.OfflineParamCfg?.data ?? []).find((row) => row.paramName === name)?.paramValue ?? 0;
+      const freeTimes = explicitCount(info, 'freeTimes');
+      const freeMax = configuredCount(config, '免费点金次数');
+      if (freeTimes === null || freeMax === null || freeTimes > freeMax) return { status: 'unknown', reason: '免费点金次数或配置缺失、无效' };
       const remaining = task.targetProgress - task.progress;
       // 免费次数上限来自 OfflineParamCfg.免费点金次数，付费单价来自 点金价格（单位钻石）。
-      const freeLeft = Math.max(0, param('免费点金次数') - (info.freeTimes ?? 0));
+      const freeLeft = freeMax - freeTimes;
       if (freeLeft > 0) {
         // 免费点金客户端永远是 times:1 一次一发，服务端不接受免费模式下的多连。
         const count = Math.min(freeLeft, remaining);
@@ -238,8 +285,14 @@ export const DAILY_DRIVERS = {
         }
         return { status: 'ready', actions };
       }
-      const price = param('点金价格');
-      const paidLeft = Math.max(0, (info.maxPaidTimes ?? 0) - (info.paidTimes ?? 0));
+      const price = configuredCount(config, '点金价格');
+      const paidTimes = explicitCount(info, 'paidTimes');
+      const maxPaidTimes = explicitCount(info, 'maxPaidTimes');
+      if (price === null || price <= 0 || paidTimes === null || maxPaidTimes === null || paidTimes > maxPaidTimes
+        || safeResourceQuantity(ruby) === null || !Number.isSafeInteger(price * remaining)) {
+        return { status: 'unknown', reason: '付费点金成本或次数未知；D6 禁止执行' };
+      }
+      const paidLeft = maxPaidTimes - paidTimes;
       if (paidLeft < remaining) return { status: 'blocked', reason: `免费次数用完，付费上限只剩 ${paidLeft} 次` };
       if (price * remaining > ruby) return { status: 'blocked', reason: `付费点金要 ${price * remaining} 钻石，当前 ${ruby}` };
       // 付费点金扣的是钻石（RUBY），必须显式开 allowPaid。
@@ -258,16 +311,25 @@ export const DAILY_DRIVERS = {
     evaluate({ task, probe, ruby }) {
       if (task.progress >= task.targetProgress) return { status: 'done' };
       const shop = probe('DiscountShopRequest');
-      const items = (shop?.shopItem ?? []).filter((item) => !item.isBuy);
+      if (!Array.isArray(shop?.shopItem)) return { status: 'unknown', reason: '折扣商店状态未知' };
+      const items = shop.shopItem.filter((item) => item.isBuy === false);
       if (!items.length) return { status: 'blocked', reason: '折扣商店没有可买商品' };
-      // 客户端价格 = floor(price * discount)，付的是钻石。
-      const cheapest = items
-        .map((item) => ({ ...item, realPrice: Math.floor(item.price * item.discount) }))
+      // Price is dynamic server data; no DiscountShopCfg exists in recovered config.
+      // Missing/default/invalid fields cannot establish a known cost.
+      if (items.some((item) => !Object.hasOwn(item, 'price') || !Object.hasOwn(item, 'discount')
+        || !Number.isFinite(item.price) || item.price < 0 || !Number.isFinite(item.discount)
+        || item.discount <= 0 || item.discount > 1 || !Number.isInteger(item.id))) {
+        return { status: 'unknown', reason: '商品价格或折扣未知，拒绝购买' };
+      }
+      const cheapest = items.map((item) => ({ ...item, realPrice: Math.floor(item.price * item.discount) }))
         .sort((a, b) => a.realPrice - b.realPrice)[0];
+      if (!Number.isSafeInteger(cheapest.realPrice) || !Number.isFinite(ruby)) return { status: 'unknown', reason: '商品成本或钻石余额未知' };
       if (cheapest.realPrice > ruby) return { status: 'blocked', reason: `最便宜的一件要 ${cheapest.realPrice} 钻石，当前 ${ruby}` };
       return {
-        status: 'ready',
-        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: `购买商品 ${cheapest.id}` }],
+        status: 'paid',
+        reason: 'D6 禁止钻石消费；allowPaid 不能解除此限制',
+        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: 'DiscountShopBuyResponse', paid: true, needsPaid: true,
+          cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: `购买商品 ${cheapest.id}` }],
       };
     },
   },
@@ -356,27 +418,33 @@ function lowPower(power) {
 }
 
 // 只读调研：跑一遍前置请求，给出每个日常任务能不能做、要发什么。
-export async function surveyDailies(client, protocol, { config = null, player = null, timeout = 8000 } = {}) {
-  const daily = await client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
+export async function surveyDailies(client, protocol, options = {}) {
+  const { config = null, player = null, timeout = 8000 } = options;
+  const query = (name, body, response, duration = timeout) => dailyQuery(client, name, body, response, { ...options, timeout: duration });
+  const daily = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
   const tasks = (daily.dailyTask ?? []).map((task) => describeDailyTask(task, config));
-  const itemList = await client.request('AllItemRequest', {}, 'AllItemResponse', timeout);
-  const items = new Map();
-  for (const item of itemList.items ?? []) {
-    const id = item.itemId ?? item.id;
-    items.set(id, (items.get(id) ?? 0) + Number(item.num ?? item.count ?? 0));
-  }
-  const resourceList = await client.request('AllResourceRequest', {}, 'AllResourceResponse', timeout);
-  const ruby = Number((resourceList.list ?? []).find((entry) => entry.res === RUBY)?.amount ?? 0);
+  const itemList = await query('AllItemRequest', {}, 'AllItemResponse', timeout);
+  // Preserve invalid/missing quantities rather than coercing null or protobuf defaults to zero.
+  const items = Array.isArray(itemList?.items) ? stockFromResponses({ items: itemList.items.map((item) => ({
+    itemId: item.itemId ?? item.id,
+    num: Object.hasOwn(item, 'num') ? item.num : Object.hasOwn(item, 'count') ? item.count : null,
+  })) }, { list: [] }) : null;
+  const resourceList = await query('AllResourceRequest', {}, 'AllResourceResponse', timeout);
+  const resourceStock = Array.isArray(resourceList?.list) ? stockFromResponses({ items: [] }, resourceList) : null;
+  const ruby = resourceStock ? resourceStock.has('RUBY') ? resourceStock.get('RUBY') : 0 : null;
 
   const cache = new Map();
+  const probeFailures = new Map();
   const fetchProbe = async (name, body) => {
     const key = `${name}|${JSON.stringify(body)}`;
     if (cache.has(key)) return cache.get(key);
     const responseName = `${name.slice(0, -7)}Response`;
     let value = null;
     try {
-      value = await client.request(name, body ?? {}, responseName, timeout);
-    } catch {
+      value = await query(name, body ?? {}, responseName, timeout);
+    } catch (error) {
+      assertExecutionActive(client, options);
+      probeFailures.set(name, error.message);
       value = null;
     }
     cache.set(key, value);
@@ -408,6 +476,11 @@ export async function surveyDailies(client, protocol, { config = null, player = 
       evaluations.push({ task, status: 'unknown', reason: '没有对应的驱动' });
       continue;
     }
+    const failedProbe = (driver.probes ?? []).find(([name]) => probeFailures.has(name));
+    if (failedProbe) {
+      evaluations.push({ task, status: 'unknown', reason: probeFailures.get(failedProbe[0]), actions: [] });
+      continue;
+    }
     let verdict;
     try {
       verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player }));
@@ -419,123 +492,146 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   let gift = null;
   if (protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
     try {
-      gift = planDailyGift(await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout));
+      gift = planDailyGift(await query('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout));
     } catch {
+      assertExecutionActive(client, options);
       // 这个面板取不到不影响任务本身，如实留空比编一个状态好。
       gift = null;
     }
   }
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config };
+  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player };
 }
 
-// 发一条动作，带 Response 的等回包，没有配套 Response 的靠 sendWatch 看有没有被 PromptResponse 打回来。
-async function sendAction(client, protocol, action, timeout) {
-  if (action.response && protocol[action.response]) {
-    return client.request(action.request, action.body, action.response, timeout);
+async function dailyQuery(client, name, body, response, options, mutate = false) {
+  assertExecutionActive(client, options);
+  return awaitExecution(client.request(name, body, response, options.timeout ?? 15000, { mutate, signal: options.signal }), client, options);
+}
+
+// A quiet watch window proves only that no rejection arrived in that window.
+async function sendAction(client, protocol, action, options, verify) {
+  assertPaymentAllowed(action, options);
+  assertExecutionActive(client, options);
+  if (!protocol[action.request] || (action.response && !protocol[action.response])) {
+    return operationResult('NOT_EXECUTED', { skipped: true, reason: '缺少已声明的协议类型' });
   }
-  await client.sendWatch(action.request, action.body, { window: 400 });
-  return null;
+  if (action.response) {
+    const body = await dailyQuery(client, action.request, action.body, action.response, options, true);
+    return operationResult(body == null ? 'UNKNOWN' : 'SUCCESS', { body });
+  }
+  await awaitExecution(client.sendWatch(action.request, action.body, { window: 400, signal: options.signal }), client, options);
+  if (verify && await verify()) {
+    client.confirmWatchedWrite?.(action.request, action.body);
+    return operationResult('SUCCESS');
+  }
+  return operationResult('UNKNOWN');
 }
 
-// 有付费动作时必须显式开 allowPaid，否则默认只做免费的部分。
-//
-// claimRewards 走的是「收尾」：驱动动作发完服务端才更新完成数，所以这里重新问一次
-// DailyTaskInfoResponse，先把达标任务的奖励领了（奖励里的活跃度会把活跃度顶上去），
-// 再领活跃度宝箱。少了这一步，任务做完了奖励还挂在服务端上。
-export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep } = {}) {
+const actionKey = (id, action) => `${id}:${action.request}:${JSON.stringify(action.body)}`;
+function paymentFailure(error) {
+  return ['D6_FORBIDDEN', 'PAID_NOT_ALLOWED', 'COST_UNKNOWN'].includes(error.code);
+}
+function failedOutcome(error) {
+  return operationResult(paymentFailure(error) ? 'NOT_EXECUTED' : executionOutcome(error), {
+    error: error.message, code: error.code, ...(paymentFailure(error) ? { skipped: true, reason: error.message } : {}),
+  });
+}
+
+export async function runDailies(client, protocol, survey, options = {}) {
+  const { allowMutate = false, claimRewards = true, onStep, rejected = new Set() } = options;
   if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
+  const settings = { ...options, config: options.config ?? survey.config, player: options.player ?? survey.player };
   const results = [];
+  const report = (outcome) => { results.push(outcome); onStep?.(outcome); };
   for (const entry of survey.tasks) {
-    if (!entry.actions?.length) continue;
-    if (entry.status === 'paid' && !allowPaid) {
-      results.push({ id: entry.task.id, skipped: true, reason: '需要付费，未开 allowPaid' });
-      onStep?.({ id: entry.task.id, title: entry.task.title, skipped: true, reason: '需要付费' });
-      continue;
-    }
-    for (const action of entry.actions) {
+    for (const action of entry.actions ?? []) {
+      const key = actionKey(entry.task.id, action);
+      if (rejected.has(key)) continue;
+      let outcome;
       try {
-        const body = await sendAction(client, protocol, action, timeout);
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
-        results.push(outcome);
-        onStep?.(outcome);
+        assertExecutionActive(client, settings);
+        // Enforce D6 before doing even a refresh for a forbidden planned action.
+        assertPaymentAllowed({ ...action, paid: action.paid || entry.status === 'paid' }, settings);
+        // Reuse the same survey/driver to check current server state and config before each write.
+        const fresh = await surveyDailies(client, protocol, settings);
+        const current = fresh.tasks.find((item) => item.task.id === entry.task.id);
+        const next = current?.actions?.find((item) => item.request === action.request && JSON.stringify(item.body) === JSON.stringify(action.body));
+        if (!next || !['ready', 'partial'].includes(current.status)) {
+          outcome = operationResult('NOT_EXECUTED', { skipped: true, reason: current?.reason ?? '计划已失效，执行前复核未通过' });
+        } else {
+          outcome = await sendAction(client, protocol, next, settings);
+        }
       } catch (error) {
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: false, error: error.message };
-        results.push(outcome);
-        onStep?.(outcome);
-        break;
+        outcome = failedOutcome(error);
       }
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      report({ id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ...outcome });
+      if (outcome.status === 'REJECTED') { rejected.add(key); break; }
+      if (stopsExecution(outcome)) return results;
+      if (outcome.skipped) break;
+      try { await executionDelay(400, settings); }
+      catch (error) { report(failedOutcome(error)); return results; }
     }
   }
   if (claimRewards) {
-    // 服务端的完成数是异步落库的，动作刚发完就问会读到旧值。
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    results.push(...await claimDailies(client, protocol, { config: config ?? survey.config, timeout, onStep }));
+    try {
+      await executionDelay(1000, settings);
+      results.push(...await claimDailies(client, protocol, { ...settings, rejected }));
+    } catch (error) { report(failedOutcome(error)); }
   }
   return results;
 }
 
-// 收尾两连：先领达标任务的奖励，再领活跃度宝箱。
-export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep } = {}) {
+export async function claimDailies(client, protocol, options = {}) {
+  const { config = null, onStep, rejected = new Set() } = options;
+  if (!options.allowMutate) throw new Error('领取日常奖励会改变账号状态，需要 --yes');
   const results = [];
   if (!protocol.DailyTaskInfoRequest || !protocol.DailyTaskInfoResponse) return results;
-
-  const report = (outcome) => {
-    results.push(outcome);
-    onStep?.(outcome);
+  const query = (name, body, response) => dailyQuery(client, name, body, response, options);
+  const report = (outcome) => { results.push(outcome); onStep?.(outcome); };
+  const perform = async (id, title, action, verify) => {
+    const key = actionKey(id, action);
+    if (rejected.has(key)) return false;
+    let outcome;
+    try { outcome = await sendAction(client, protocol, action, options, verify); }
+    catch (error) { outcome = failedOutcome(error); }
+    report({ id, title, request: action.request, note: action.note, ...outcome });
+    if (outcome.status === 'REJECTED') rejected.add(key);
+    return stopsExecution(outcome);
   };
-
-  const after = await client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
-  const claimable = (after.dailyTask ?? []).filter((task) => task.progress >= task.targetProgress && !task.rewardClaimed);
-  for (const task of claimable) {
-    const title = TASK_TITLES[task.id] ?? String(task.id);
-    const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', body: { id: task.id }, note: `领任务奖励（${title}）` };
-    try {
-      const body = await sendAction(client, protocol, action, timeout);
-      report({ id: task.id, title, request: action.request, note: action.note, ok: true, body });
-    } catch (error) {
-      report({ id: task.id, title, request: action.request, note: action.note, ok: false, error: error.message });
+  try {
+    const after = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+    const claimable = claimableDailyTasks(after);
+    for (const task of claimable) {
+      const title = TASK_TITLES[task.id] ?? String(task.id);
+      const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', body: { id: task.id }, cost: '无', note: `领任务奖励（${title}）` };
+      if (await perform(task.id, title, action)) return results;
+      await executionDelay(300, options);
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
-
-  // 任务奖励刚加过活跃度，所以宝箱要按新活跃度重新算一次，否则会漏掉刚好够到的档位。
-  const fresh = await client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
-  const { actions } = planChests(fresh, config);
-  for (const action of actions) {
-    const title = action.request === 'DrawWeeklyRewardRequest' ? '周活跃宝箱' : '日常活跃宝箱';
-    try {
-      const body = await sendAction(client, protocol, action, timeout);
-      report({ id: 'activityChest', title, request: action.request, note: action.note, ok: true, body });
-    } catch (error) {
-      report({ id: 'activityChest', title, request: action.request, note: action.note, ok: false, error: error.message });
+    const fresh = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+    for (const action of planChests(fresh, config).actions) {
+      const weekly = action.request === 'DrawWeeklyRewardRequest';
+      const title = weekly ? '周活跃宝箱' : '日常活跃宝箱';
+      const field = weekly ? 'weeklyRewardClaimed' : 'dailyRewardClaimed';
+      if (await perform('activityChest', title, action, async () => {
+        const latest = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+        return validClaimedTiers(latest?.[field]) && action.body.index.every((index) => latest[field].includes(index));
+      })) return results;
+      await executionDelay(300, options);
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
-
-  // 每日精选的免费赠礼。GotFreeDailyPackRequest 没有配套 Response，所以发完要重新问一次
-  // DailyGiftPackResponse 确认 drawnPack 里真的多了「赠礼」——只看「没被 prompt 打回」不算成功。
-  if (protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
-    const before = await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout);
-    const plan = planDailyGift(before);
-    if (plan.actions.length > 0) {
-      const action = plan.actions[0];
-      try {
-        await sendAction(client, protocol, action, timeout);
-        const after = await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout);
-        const ok = (after.drawnPack ?? []).includes(FREE_DAILY_PACK_ID);
-        report({ id: 'freeDailyPack', title: '每日免费赠礼', request: action.request, note: action.note, ok, body: ok ? null : { drawnPack: after.drawnPack } });
-        if (!ok) report({ id: 'freeDailyPack', title: '每日免费赠礼', request: action.request, note: action.note, ok: false, error: '服务端没有把它记进 drawnPack' });
-      } catch (error) {
-        report({ id: 'freeDailyPack', title: '每日免费赠礼', request: action.request, note: action.note, ok: false, error: error.message });
-      }
+    if (protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
+      const before = await query('DailyGiftPackRequest', {}, 'DailyGiftPackResponse');
+      const action = planDailyGift(before).actions[0];
+      if (action) await perform('freeDailyPack', '每日免费赠礼', action, async () => {
+        const latest = await query('DailyGiftPackRequest', {}, 'DailyGiftPackResponse');
+        return planDailyGift(latest).status === 'done';
+      });
     }
-  }
+  } catch (error) { report(failedOutcome(error)); }
   return results;
 }
 
 // 活跃奖励那两行：没得领的时候也要说清楚差多少，否则看不出是「领完了」还是「没在领」。
 function chestLine(name, chest) {
+  if (chest.status === 'unknown') return `活跃奖励 ${name} 状态未知，未生成领取计划`;
   const claimed = chest.claimed.length ? chest.claimed.join('/') : '无';
   if (chest.tiers.length) {
     return `活跃奖励 ${name} ${chest.activity} 活跃 · 已领 ${claimed} · 可领 第 ${chest.tiers.map((tier) => tier.id).join('/')} 档`;
@@ -559,7 +655,7 @@ export function formatSurvey(survey) {
     lines.push(chestLine('周', survey.chests.weekly));
   }
   if (survey.gift) {
-    lines.push(survey.gift.freeAvailable
+    lines.push(survey.gift.status === 'unknown' ? '每日赠礼 状态未知，未生成领取计划' : survey.gift.freeAvailable
       ? `每日赠礼 未领 · 可领（免费，${FREE_DAILY_PACK_ID}）`
       : `每日赠礼 已领（${FREE_DAILY_PACK_ID}）`);
   }

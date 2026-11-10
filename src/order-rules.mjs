@@ -147,8 +147,18 @@ export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(
   return result;
 }
 
-// Each order sees the same snapshot. No reservation or resource consumption occurs.
-export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules()) {
+// The default remains the existing independent, read-only preview. A composed plan
+// injects its shared resource ledger; no network, clock or Action dependency is added.
+export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules(), { ledger = null } = {}) {
   if (!Array.isArray(orders)) return [evaluateOrder(null, inventory, rulesConfig)];
-  return orders.map((order) => evaluateOrder(order, inventory, rulesConfig));
+  return orders.map((order) => {
+    const ids = Array.isArray(order?.requirements) ? order.requirements.map((row) => row?.id) : [];
+    const result = evaluateOrder(order, ledger ? ledger.inventory(ids) : inventory, rulesConfig);
+    if (ledger && result.decision === 'RECOMMEND_SUBMIT' && !ledger.reserve(order.requirements)) {
+      result.decision = 'NEEDS_REVIEW';
+      result.inventory = { status: 'UNKNOWN', missing: [], explanation: '共享资源预算无法预留，停止提交建议' };
+      result.explanation.push(result.inventory.explanation);
+    }
+    return result;
+  });
 }

@@ -9,6 +9,8 @@
 // PromptResponse，所以一律走 client.sendWatch()，见 docs/gameplay.md 第 11.3 节。
 
 import { normalize } from './worlds.mjs';
+import { safeResourceQuantity } from './resource-ledger.mjs';
+import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
 
 // 客户端 TaskUtil.taskProgress 的第二组：目标值取 params[1]（params[0] 是物品名或类型名）。
 const TARGET_FROM_PARAM1 = new Set([
@@ -58,11 +60,16 @@ export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0 } = {}) {
 }
 
 // 只读探测：把三类任务和每日订单档位都拉一遍，算出每一条能不能领。
-export async function surveyTasks(client, protocol, { config = null, water = null, timeout = 8000 } = {}) {
-  const main = normalize(await client.request('MainTaskInfoRequest', {}, 'MainTaskInfoResponse', timeout));
-  const achievement = normalize(await client.request('AchievementInfoRequest', {}, 'AchievementInfoResponse', timeout));
+export async function surveyTasks(client, protocol, { config = null, water = null, timeout = 8000, signal, stop } = {}) {
+  const options = { signal, stop };
+  const request = async (...args) => {
+    assertExecutionActive(client, options);
+    return awaitExecution(client.request(...args), client, options);
+  };
+  const main = normalize(await request('MainTaskInfoRequest', {}, 'MainTaskInfoResponse', timeout));
+  const achievement = normalize(await request('AchievementInfoRequest', {}, 'AchievementInfoResponse', timeout));
   // 每日订单档位要 OnWaterResponse；调用方手里已经有了就传进来，省一次往返。
-  const waterBody = normalize(water ?? (await client.request('OnWaterRequest', {}, 'OnWaterResponse', timeout)));
+  const waterBody = normalize(water ?? (await request('OnWaterRequest', {}, 'OnWaterResponse', timeout)));
 
   const mainCfg = indexBy(config, 'MainTaskCfg', 'taskId');
   const branchCfg = indexBy(config, 'BranchTaskCfg', 'taskId');
@@ -79,11 +86,12 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       taskId: main.task.taskId,
       type: row?.type ?? null,
       desc: formatDesc(row),
-      progress: main.task.progress ?? 0,
+      progress: safeResourceQuantity(main.task.progress),
       target,
       claimed: main.task.rewardClaimed === true,
     };
-    if (mainView.claimed) notes.push(`主线 ${mainView.taskId} 已领过`);
+    if (mainView.progress === null || !Number.isSafeInteger(target) || target <= 0 || !Object.hasOwn(main.task, 'rewardClaimed') || typeof main.task.rewardClaimed !== 'boolean') notes.push(`主线 ${mainView.taskId} 状态未知，跳过`);
+    else if (mainView.claimed) notes.push(`主线 ${mainView.taskId} 已领过`);
     else if (target === null) notes.push(`主线 ${mainView.taskId} 目标值算不出（type=${mainView.type}），跳过`);
     else if (mainView.progress < target) notes.push(`主线 ${mainView.taskId} 进度 ${mainView.progress}/${target}，还不能领`);
     else {
@@ -108,10 +116,11 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       taskId: task.taskId,
       type: row?.type ?? null,
       desc: formatDesc(row),
-      progress: task.progress ?? 0,
+      progress: safeResourceQuantity(task.progress),
       target,
     };
-    if (target === null) notes.push(`支线 ${task.taskId} 目标值算不出（type=${view.type}），跳过`);
+    if (view.progress === null || !Number.isSafeInteger(target) || target <= 0) notes.push(`支线 ${task.taskId} 状态未知，跳过`);
+    else if (target === null) notes.push(`支线 ${task.taskId} 目标值算不出（type=${view.type}），跳过`);
     else if (view.progress < target) notes.push(`支线 ${task.taskId} 进度 ${view.progress}/${target}，还不能领`);
     else {
       plan.push({
@@ -131,11 +140,12 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
   for (const task of achievement.task ?? []) {
     const view = {
       id: task.id,
-      progress: task.progress ?? 0,
-      target: task.targetProgress ?? null,
+      progress: safeResourceQuantity(task.progress),
+      target: safeResourceQuantity(task.targetProgress),
       claimed: task.rewardClaimed === true,
     };
-    if (view.claimed) notes.push(`成就 ${task.id} 已领过`);
+    if (view.progress === null || !Number.isSafeInteger(view.target) || view.target <= 0 || !Object.hasOwn(task, 'rewardClaimed') || typeof task.rewardClaimed !== 'boolean') notes.push(`成就 ${task.id} 状态未知，跳过`);
+    else if (view.claimed) notes.push(`成就 ${task.id} 已领过`);
     else if (view.target === null) notes.push(`成就 ${task.id} 没有 targetProgress，跳过`);
     else if (view.progress < view.target) notes.push(`成就 ${task.id} 进度 ${view.progress}/${view.target}，还不能领`);
     else {
@@ -176,36 +186,34 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
   return { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
 }
 
-// 逐条领取。同一条被服务端拒过就记下来，本轮之后不再重发——否则循环模式里会每轮骚扰一次。
-export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep } = {}) {
+// 逐条领取；调用方持有 rejected 跨轮记忆。静默窗口结束是 UNKNOWN，停止后续写操作。
+export async function runTasks(client, protocol, survey, {
+  allowMutate = false, window = 400, onStep, rejected = new Set(), signal, stop,
+} = {}) {
   if (!allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
+  const options = { signal, stop };
   const results = [];
-  const rejected = new Set();
   for (const step of survey.plan) {
     const key = `${step.kind}:${step.id}`;
-    if (rejected.has(key)) {
-      const entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };
-      results.push(entry);
-      onStep?.(entry);
-      continue;
-    }
-    if (!protocol[step.request]) {
-      const entry = { step, ok: false, error: `协议表里没有 ${step.request}` };
-      results.push(entry);
-      onStep?.(entry);
-      continue;
-    }
+    let entry;
     try {
-      const sent = await client.sendWatch(step.request, step.body, { window });
-      const entry = { step, ok: true, sent };
-      results.push(entry);
-      onStep?.(entry);
+      assertExecutionActive(client, options);
+      if (rejected.has(key)) {
+        entry = operationResult('NOT_EXECUTED', { step, skipped: true, error: '刚被服务端拒过，跳过' });
+      } else if (!protocol[step.request]) {
+        entry = operationResult('NOT_EXECUTED', { step, error: `协议表里没有 ${step.request}` });
+      } else {
+        const sent = await awaitExecution(client.sendWatch(step.request, step.body, { window, signal }), client, options);
+        entry = operationResult('UNKNOWN', { step, sent, error: '请求已发送，尚未验证服务端最终状态' });
+      }
     } catch (error) {
-      rejected.add(key);
-      const entry = { step, ok: false, error: error.message };
-      results.push(entry);
-      onStep?.(entry);
+      const status = executionOutcome(error);
+      if (status === 'REJECTED') rejected.add(key);
+      entry = operationResult(status, { step, error: error.message });
     }
+    results.push(entry);
+    onStep?.(entry);
+    if (stopsExecution(entry)) break;
   }
   return results;
 }
@@ -213,17 +221,18 @@ export async function runTasks(client, protocol, survey, { allowMutate = false, 
 export function formatTaskPlan(survey) {
   const lines = [];
   const mark = (ok) => (ok ? '可领' : '  ');
+  const planned = (kind, id) => (survey.plan ?? []).some((step) => step.kind === kind && step.id === id);
   if (survey.main) {
     const m = survey.main;
     const target = m.target === null ? '?' : m.target;
-    lines.push(`${mark(!m.claimed && m.progress >= (m.target ?? Infinity))} 主线 ${String(m.taskId).padEnd(6)}${m.type ?? ''} ${m.progress}/${target}${m.claimed ? ' 已领' : ''}`);
+    lines.push(`${mark(planned('main', m.taskId))} 主线 ${String(m.taskId).padEnd(6)}${m.type ?? ''} ${m.progress}/${target}${m.claimed ? ' 已领' : ''}`);
   }
   for (const b of survey.branch) {
     const target = b.target === null ? '?' : b.target;
-    lines.push(`${mark(b.target !== null && b.progress >= b.target)} 支线 ${String(b.taskId).padEnd(6)}${b.type ?? ''} ${b.progress}/${target}`);
+    lines.push(`${mark(planned('branch', b.taskId))} 支线 ${String(b.taskId).padEnd(6)}${b.type ?? ''} ${b.progress}/${target}`);
   }
   for (const a of survey.achievement) {
-    lines.push(`${mark(!a.claimed && a.progress >= (a.target ?? Infinity))} 成就 ${String(a.id).padEnd(6)}${a.progress}/${a.target ?? '?'}${a.claimed ? ' 已领' : ''}`);
+    lines.push(`${mark(planned('achievement', a.id))} 成就 ${String(a.id).padEnd(6)}${a.progress}/${a.target ?? '?'}${a.claimed ? ' 已领' : ''}`);
   }
   const o = survey.orderOfTheDay;
   lines.push(`${mark(o.claimable)} 订单 今日 ${o.orderNum} 单，已领档位 ${o.rewardedNum}，下一档 ${o.tier ?? '无'}`);

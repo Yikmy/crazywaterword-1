@@ -215,7 +215,7 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
         let original;
         try {
           original = Promise.resolve(client.request('ChallengeStageRequest',
-            { stage: progress }, 'ChallengeStageResponse', 15000));
+            { stage: progress }, 'ChallengeStageResponse', 15000, { mutate: true, signal }));
         } catch (error) {
           if (pendingRequest === sentinel) pendingRequest = null;
           throw error;
