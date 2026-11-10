@@ -1,3 +1,4 @@
+import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT } from './gameplay-page.mjs';
 // This same guard is embedded in the browser and exercised by the offline tests.
 export function createAccountViewGuard() {
   let account = null;
@@ -151,6 +152,7 @@ export const PAGE = `<!doctype html>
     <button data-tab="production">生产管理</button>
     <button data-tab="operations-history">执行历史</button>
     <button data-tab="stages">自动闯关</button>
+    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="workflow">工作流</button>
     <button data-tab="idle">任务与海面</button>
     <button data-tab="heroes">英雄</button>
     <button data-tab="dailies">日常</button>
@@ -288,6 +290,7 @@ export const PAGE = `<!doctype html>
     <div id="stages-availability" class="warn" role="status">尚未读取运行条件。</div>
     <div class="bar">
       <label><input id="stages-enabled" type="checkbox"> 启用本次自动闯关</label>
+      <label><input id="stages-formation-enabled" type="checkbox"> 启用已授权验证阵容</label><label>阵型模板 <input id="stages-formation-preset" type="number" min="1" placeholder="阵型模板 ID"></label><p class="dim">先在阵容页面预览、授权保存并完成复读；启动前再次核对。</p>
       <label>最高目标关卡 <input id="stages-max-stage" type="number" min="1" step="1" placeholder="留空不限制" aria-label="最高目标关卡"></label>
       <label>重试间隔（秒） <input id="stages-retry-delay" type="number" min="0" step="1" value="10" aria-label="重试间隔秒数"></label>
       <label>最大总尝试次数 <input id="stages-max-attempts" type="number" min="1" step="1" placeholder="留空不限制" aria-label="最大总尝试次数"></label>
@@ -390,6 +393,7 @@ export const PAGE = `<!doctype html>
     <div id="cap-box"></div>
     </div>
   </section>
+${GAMEPLAY_HTML}
 </main>
 
 <div id="modal" class="hidden">
@@ -502,6 +506,7 @@ function selectAccount(id) {
   resetOrderRules();
   resetStages();
   resetOperations();
+  resetGameplay();
   for (const id of ['who', 'res', 'items', 'hero-strip', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
   $('sync-info').textContent = '尚未采集，请先连接账号并刷新数据';
   $('cred-show').disabled = false;
@@ -974,10 +979,11 @@ function renderOperations(data) {
 }
 async function operationMutation(path, payload, scope) {
   viewGuard.assert(scope);
-  if (!scope.account || !operationsData?.csrfToken) throw new Error('请先读取本账号运行状态。');
-  if (!['/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy'].includes(path)) throw new Error('未开放此批次操作');
+  const csrfToken = (operationsData?.accountId === scope.account ? operationsData.csrfToken : null) || gameplayCsrfToken();
+  if (!scope.account || !csrfToken) throw new Error('请先读取本账号运行状态。');
+  if (!['/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop'].includes(path)) throw new Error('未开放此批次操作');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
-  const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': operationsData.csrfToken }, body: JSON.stringify(payload) });
+  const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json().catch(() => ({})); viewGuard.assert(scope);
   if (!response.ok) throw new Error(data.error || response.statusText);
   if (data.accountId != null && data.accountId !== scope.account) throw new Error('操作账号不匹配');
@@ -1141,10 +1147,11 @@ function stageReason(value) {
 function resetStages() {
   stagesData = null; stagesActionPending = false;
   $('stages-enabled').checked = false;
+  $('stages-formation-enabled').checked=false; $('stages-formation-preset').value='';
   $('stages-retry-delay').value = '10';
   $('stages-max-attempts').value = ''; $('stages-max-stage').value = '';
   $('stages-start').disabled = true; $('stages-stop').disabled = true;
-  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage']) $(id).disabled = false;
+  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = false;
   $('stages-availability').textContent = '尚未读取运行条件。';
   $('stages-hint').textContent = '';
   $('stages-status').textContent = '选择账号后读取已有运行状态。';
@@ -1163,6 +1170,7 @@ function stageConfig() {
   const delay = stagesData?.runner?.config?.interStageDelay || stagesData?.defaults?.interStageDelay;
   if (delay) config.interStageDelay = { minSeconds: delay.minSeconds, maxSeconds: delay.maxSeconds };
   if (typeof stagesData?.runner?.config?.stopOnDefeat === 'boolean') config.stopOnDefeat = stagesData.runner.config.stopOnDefeat;
+  if ($('stages-formation-enabled').checked) config.formation={enabled:true,presetId:integer('stages-formation-preset')};
   return config;
 }
 function stageControls() {
@@ -1170,7 +1178,7 @@ function stageControls() {
   const busy = stagesActionPending || runner.running === true || runner.inFlight === true || operationsLocked();
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
-  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage']) $(id).disabled = busy;
+  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = busy;
 }
 function updateStageCountdown() {
   const runner = stagesData?.runner;
@@ -1188,6 +1196,7 @@ function renderStages(data) {
   if (initial) {
     const config = runner.config || data.defaults || { enabled: false, retryDelaySeconds: 10 };
     $('stages-enabled').checked = config.enabled === true;
+    $('stages-formation-enabled').checked=config.formation?.enabled===true; $('stages-formation-preset').value=config.formation?.presetId==null?'':String(config.formation.presetId);
     $('stages-retry-delay').value = String(config.retryDelaySeconds ?? 10);
     $('stages-max-attempts').value = config.maxAttempts == null ? '' : String(config.maxAttempts);
     $('stages-max-stage').value = config.maxStage == null ? '' : String(config.maxStage);
@@ -1206,6 +1215,7 @@ function renderStages(data) {
     ['停止原因', stageReason(runner.stopReason) || stageReason(runner.error) || '-'], ['未决开战', runner.inFlight ? '仍在等待旧请求结束，禁止新开战' : runner.uncertain ? '结果不确定，禁止再次开战' : '无'],
     ['错误分类', runner.error?.code || '-'], ['错误时间', runner.error?.at ? when(runner.error.at) : '-'],
   ]) { box.appendChild(el('div', 'k', name)); box.appendChild(el('div', 'v', String(value))); }
+  if (runner.battleAnalysis) { const detail=el('details'), title=el('summary',null,'本场战斗分析与推荐（仅BT_MAINLINE）'); detail.appendChild(title); detail.appendChild(el('pre',null,JSON.stringify(runner.battleAnalysis,null,2))); box.appendChild(detail); }
   const history = clear($('stages-history'));
   for (const entry of runner.history || []) {
     const row = el('div', 'acct');
@@ -1460,6 +1470,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     activeTab = button.dataset.tab;
     document.querySelectorAll('#tabs button').forEach((other) => other.classList.toggle('on', other === button));
     for (const section of document.querySelectorAll('main > section')) section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
+    gameplayActivate(button.dataset.tab);
     if (button.dataset.tab === 'account') renderAccounts();
     if (button.dataset.tab === 'explorer') refreshExplorer();
     if (button.dataset.tab === 'order-rules' && !orderRulesDraft) loadOrderRules();
@@ -1478,6 +1489,7 @@ async function boot() {
 boot();
 setInterval(async () => {
   await refreshOverview();
+  await gameplayPoll(activeTab);
   if (activeTab === 'stages' || stagesData?.runner?.running || stagesData?.runner?.inFlight) { updateStageCountdown(); await refreshStages(); }
   if (OPERATIONS_TABS.has(activeTab) || operationsData?.status?.running) await refreshOperations();
 }, 3000);
@@ -1706,6 +1718,7 @@ function table(headers, rows) {
   return box;
 }
 
+${GAMEPLAY_SCRIPT}
 </script>
 </body>
 </html>`;
