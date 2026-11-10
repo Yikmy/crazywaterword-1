@@ -140,7 +140,7 @@ function candidate(facts, parameters, { moduleConfig = defaultConfig } = {}) {
       heroPositions = ordered.map((heroId, i) => ({ heroId, pos: { ...layout.positions[i] } }));
     }
     if (!heroPositions || heroPositions.some(r => !layout.positions.some(p => p.x === r.pos.x && p.y === r.pos.y))) reason = '目标站位不属于该阵型或存在重复';
-    else { after = { heroPositions, presetId, ...(own(before, 'petUid') ? { petUid: before.petUid } : {}) }; if (same(before, after)) reason = '阵容没有变化'; }
+    else { after = { heroPositions, presetId, ...(own(before, 'petUid') ? { petUid: before.petUid } : {}) }; if (same(before, after) && !(own(parameters, 'presetId') && own(parameters, 'heroPositions'))) reason = '阵容没有变化；需要明确完整站位后重新应用'; }
   }
   const beforeState = canonical(before), expectedState = canonical(after);
   const identity = beforeState ? hash({ formation: beforeState, targetLayout: layout, maxHeroes: facts?.catalog?.maxHeroes,

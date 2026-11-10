@@ -235,3 +235,15 @@ test('restore is a new explicit approved plan preserving the old full team and c
   assert.notEqual(restored.actionId, operation.actionId);
   assert.equal(verifyFormation(restored, fresh, { ...fresh, formation: restored.expectedState }, { formation: restored.expectedState }).confirmed, true);
 });
+
+test('explicit complete current formation can be re-applied through a new typed save and authoritative read', async () => {
+  const { result } = await facts();
+  const parameters = { presetId: result.formation.presetId, heroPositions: structuredClone(result.formation.heroPositions) };
+  const operation = plan(result, parameters).actions[0];
+  assert.ok(operation); assert.equal(operation.action.request, 'SaveFormationRequest');
+  assert.deepEqual(operation.expectedState, operation.beforeState);
+  assert.deepEqual(operation.costs, []);
+  assert.equal(verifyFormation(operation, result, result, { formation: structuredClone(result.formation) }).confirmed, true);
+  assert.equal(verifyFormation(operation, result, result, {}).confirmed, false);
+  assert.equal(plan(result, { presetId: 1 }).actions.length, 1, 'career sorting can still change current positions');
+});
