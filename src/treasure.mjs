@@ -54,7 +54,7 @@ function opening(facts, config) {
 function buildCandidates(facts, { config = facts.config, parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   parametersOf(parameters); const opts = validateTreasureConfig(moduleConfig), unit = configuredCost(config, '进攻宝藏消耗汽油');
   const selected = stringIds(parameters.fleetBuildingIds);
-  const idle = (facts.fleets ?? []).filter(fleet => fleet.state === 1 && fleet.treasureLootUid === 0 && !fleet.repairing && fleet.durability !== null && fleet.maxDura > 0 && fleet.durability / fleet.maxDura >= opts.minimumDurabilityRatio);
+  const idle = (facts.fleets ?? []).filter(fleet => fleet.state === 1 && fleet.autoFight?.isOn === false && fleet.treasureLootUid === 0 && !fleet.repairing && fleet.durability !== null && fleet.maxDura > 0 && fleet.durability / fleet.maxDura >= opts.minimumDurabilityRatio);
   const picks = selected ? selected.map(id => (facts.fleets ?? []).find(fleet => fleet.buildingId === id)) : idle.slice().sort((a, b) => a.buildingId.localeCompare(b.buildingId)).slice(0, opts.maxFleets);
   const ids = picks.filter(Boolean).map(fleet => fleet.buildingId);
   return (facts.treasures ?? []).filter(target => parameters.uid === undefined || parameters.uid === target.uid).map(target => {

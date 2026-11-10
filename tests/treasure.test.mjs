@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { treasureModule, treasureView, planTreasure, verifyTreasure, surveyTreasure } from '../src/treasure.mjs';
 const config={tables:{WorldParamCfg:{data:[{paramName:'进攻宝藏消耗汽油',paramValue:500}]},GameplayOpenCfg:{data:[{gameplay:'世界宝藏',openDays:[3,1,1]}]}}};
 const enabled={enabled:true,dispatch:true};
-function facts(){return {now:300000,config,player:{worldId:2001000000},parameters:{},stockReliable:true,stock:new Map([['汽油',2000]]),fleetReliable:true,treasureReliable:true,statsReliable:true,protocolReady:true,todayRewardTimes:0,totalRewardTimes:3,season:{reliable:true,startTime:100000,endTime:1000000},fleets:[{buildingId:'fleet-a',state:1,durability:1900,maxDura:2000,treasureLootUid:0,repairing:null}],treasures:[{uid:7,color:5,ownerGuildIdx:0,ownerFleetNum:0,progress:0,gridIdx:1}]};}
+function facts(){return {now:300000,config,player:{worldId:2001000000},parameters:{},stockReliable:true,stock:new Map([['汽油',2000]]),fleetReliable:true,treasureReliable:true,statsReliable:true,protocolReady:true,todayRewardTimes:0,totalRewardTimes:3,season:{reliable:true,startTime:100000,endTime:1000000},fleets:[{buildingId:'fleet-a',state:1,durability:1900,maxDura:2000,treasureLootUid:0,repairing:null,autoFight:{isOn:false,todayTimes:0}}],treasures:[{uid:7,color:5,ownerGuildIdx:0,ownerFleetNum:0,progress:0,gridIdx:1}]};}
 function candidate(f=facts(),extra={}){return treasureView(f,{moduleConfig:enabled,...extra}).candidates[0];}
 test('treasure defaults disabled and explicit selection required',()=>{
  const f=facts();assert.equal(treasureModule.defaultConfig.enabled,false);assert.equal(treasureView(f).candidates[0].decision,'BLOCKED');assert.deepEqual(planTreasure(f,{moduleConfig:enabled}).actions,[]);
@@ -41,3 +42,6 @@ test('selected treasure UID queries authoritative rank and defence without any w
  assert.equal(surveyed.targetDetails.uid,7);assert.equal(surveyed.targetDetails.rankReliable,true);assert.equal(surveyed.targetDetails.defenceReliable,true);assert.equal(surveyed.targetDetails.rank[0].playerId,'9007199254740993');assert.equal(candidate(surveyed,{parameters:{uid:7}}).decision,'READY');
  surveyed.targetDetails.defence.push({name:'synthetic defender'});assert.equal(candidate(surveyed,{parameters:{uid:7}}).reason,'DEFENCE_PRESENT');surveyed.targetDetails.defenceReliable=false;assert.equal(candidate(surveyed,{parameters:{uid:7}}).reason,'TARGET_DETAILS_UNRELIABLE');
 });
+
+test('treasure dispatch refuses enabled or unknown automatic fighting even during idle',()=>{for(const autoFight of [{isOn:true},null,undefined,{}]){const f=facts();f.fleets[0].autoFight=autoFight;assert.equal(candidate(f).decision,'BLOCKED');assert.deepEqual(planTreasure(f,{moduleConfig:enabled,selections:[candidate(f).actionId]}).actions,[])}});
+test('treasure execution fresh plan refuses newly enabled or missing auto fight before any request',async()=>{for(const autoFight of [{isOn:true},null]){const f=facts();f.parameters={uid:7,fleetBuildingIds:['fleet-a']};f.targetDetails={uid:7,rankReliable:true,defenceReliable:true,rank:[],defence:[]};const operation=candidate(f,{parameters:f.parameters});assert.equal(operation.decision,'READY');f.fleets[0].autoFight=autoFight;let requests=0;const client={connected:true,request(){requests++;throw Error('must not query')},sendWatch(){requests++;throw Error('must not dispatch')}};const result=await executeBusinessOperation(client,{},operation,{adapter:{...treasureModule,survey:async()=>f},moduleConfig:enabled,allowMutate:true});assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(requests,0)}});
