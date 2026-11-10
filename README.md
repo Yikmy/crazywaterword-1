@@ -1,6 +1,6 @@
 # crazywaterword
 
-当前 MVP 0.1 Web Console 只允许显式登录、只读采集和本地账号管理；游戏写操作、自动循环和网页抓包入口已禁用。以下历史业务命令仍保留。登录抓包链已提供隔离回归，真实账号与真实 Windows 代理/证书恢复尚未验证。
+当前 Web Console 保留显式登录、只读采集、本地账号管理及独立主线 Stage 门控。PHASE 2 增加居民订单、城市建设和生产的具体批次预览、预算授权与执行历史；旧通用游戏写路由、自动循环和网页抓包入口继续关闭。本次交付仅做离线验证，详见 [PHASE 2 验收报告](docs/PHASE_2_ACCEPTANCE.md)。
 
 微信小游戏《疯狂水世界》的**协议侧挂机工具**：不开游戏界面，直接用游戏自己的 WebSocket 协议完成
 日常任务、领奖、英雄养成、海面世界的收成品/排产/交单/建造/升级，并附带一个本地网页控制台。
@@ -334,3 +334,33 @@ node tools/selftest-registry.mjs
 ## 许可
 
 ISC（见 `package.json`）。`src/vendor/qrcode.mjs` 为第三方单文件，保留其原始版权头。
+
+
+## PHASE 2：订单与城市受控执行
+
+使用「居民订单策略」保存账号规则，再在「居民订单执行」「城市建设」「生产管理」中读取状态并点击只读探测。勾选具体操作后生成计划，检查操作依据、总材料预算和过期时间，再明确授权执行。计划有效期五分钟；授权绑定账号、Session 代次、规则、配置、生产策略、批次、具体操作和预算，单次使用。
+
+Manual 每批一项；Hybrid 的订单提交逐单授权、刷新可组成具体批次；Automatic 只执行本次选定和授权的清单。新订单和新计划必须重新授权，没有跨批次或无限期后台执行权限。生产策略按账号保存，默认禁用，可限定产品、仅订单缺口及每批上限；推荐选择仍需预览和授权。策略与缺口会在执行前重新检查。
+
+订单、建筑与生产的规划共用一个 `ResourceLedger`；执行共用独立的保守账本，每次消耗前重读余额，旧快照和新收取不会补回已预留预算。同一账号与 Stage、完整采集互斥，不同账号可并行，已有缓存可继续浏览。请求响应与业务成功分开记录，只有权威复读确认目标变化才能成功。停止仅阻止后续操作；已发送未确认的操作保留 UNKNOWN、预算和指纹，不自动重试。
+
+本地文件 `data/production-policy.json`、`data/execution-history.json` 均被 Git 忽略。历史采用原子替换，发送前及每步结果后持久化，包含脱敏的前后状态、规则轨迹、库存、预留和复核结果。异常退出后仅恢复查看，未决批次继续阻止新写入及 Stage，不自动恢复执行；损坏文件保留并阻断执行。暂无用于清除未决的网页按钮，应保留证据等待人工复核，不能删除历史来绕过保护。
+
+生产日报按上海日期汇总本工具历史中已确认的生产开始/收取次数，仅在产出减少与可靠库存增加数量一致时统计收取材料。它不代表游戏完整全天产量。免费刷新配额/冷却缺少可靠来源时，REFRESH 仅显示建议，执行保持禁用；MIN_GOLD 继续缺少可靠金币奖励来源。钻石、付费礼包及开发者凭证限制不变。
+
+新增接口均要求精确 `?account=<id>`：
+
+| 接口 | 用途 |
+|---|---|
+| `GET /api/operations` | 缓存视图、运行状态、当前页面 CSRF 上下文；不连接或查询游戏 |
+| `POST /api/operations/survey` | 在已有 READY Session 上显式只读采集 |
+| `POST /api/operations/plan` | 仅接收模块、模式和候选 actionId，生成服务端计划 |
+| `POST /api/operations/authorize` | 精确确认 batchId、planHash、操作列表和预算，返回单次许可 |
+| `POST /api/operations/execute` | 使用当前批次的单次许可启动执行 |
+| `POST /api/operations/stop` | 停止后续操作，保留已发送操作证据 |
+| `GET /api/operations/history` | 按账号查看历史及本工具当日统计；支持 runId 筛选 |
+| `GET/POST /api/operations/production-policy` | 读取或原子保存本地账号生产策略 |
+
+新增 POST 同时校验 Host、同源 Origin、JSON 和页面 CSRF 请求头；`confirm:true` 不能单独授权。没有开放 Request 或 Action 通用入口。
+
+能力映射和原始 Inventory 的增量见 [PHASE 2 Capability Delta](docs/PHASE_2_CAPABILITY_DELTA.md)。原始 Master Development Plan 对应工作区的 `docs/baseline.md`，执行状态见验收报告；用户提供的原始输入文件保留在工作区，不混入功能提交。本阶段结束后等待验收，不自动开始 PHASE 3。

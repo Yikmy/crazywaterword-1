@@ -138,7 +138,7 @@ export const PAGE = `<!doctype html>
     <button id="connect" class="primary">连接</button>
     <button id="disconnect">断开</button>
     <button id="refresh-data">刷新数据</button>
-    <span class="dim">数据浏览只读 · 闯关独立授权</span>
+    <span class="dim">数据浏览只读 · 业务批次独立授权</span>
     <span id="busy" class="dim"></span>
     <span id="hint" class="warn"></span>
   </div>
@@ -146,6 +146,10 @@ export const PAGE = `<!doctype html>
     <button data-tab="overview" class="on">总览</button>
     <button data-tab="explorer">数据探索器</button>
     <button data-tab="order-rules">居民订单策略</button>
+    <button data-tab="orders-execution">居民订单执行</button>
+    <button data-tab="city">城市建设</button>
+    <button data-tab="production">生产管理</button>
+    <button data-tab="operations-history">执行历史</button>
     <button data-tab="stages">自动闯关</button>
     <button data-tab="idle">任务与海面</button>
     <button data-tab="heroes">英雄</button>
@@ -226,6 +230,56 @@ export const PAGE = `<!doctype html>
         <div id="order-preview-list"></div>
       </div>
     </div>
+  </section>
+  <section id="tab-orders-execution" class="hidden">
+    <h2>居民订单执行</h2>
+    <p class="dim">使用本账号已保存的居民订单策略。策略编辑与缓存模拟仍在「居民订单策略」；这里生成共享预算的执行批次。</p>
+    <div id="ops-orders">尚未探测居民订单。</div>
+  </section>
+  <section id="tab-city" class="hidden">
+    <h2>城市建设</h2>
+    <p class="dim">选择具体建筑操作，可与订单及生产共用一个批次预算。材料未知或条件不满足的建筑不会提供执行选项。</p>
+    <div id="ops-city">尚未探测建筑。</div>
+  </section>
+  <section id="tab-production" class="hidden">
+    <h2>生产管理</h2>
+    <p class="dim">生产策略按账号保存在本地，仅限制 Automatic 本批次候选；保存配置不会启动生产。每批仍须预览与明确授权。</p>
+    <div class="bar"><button id="production-policy-load">读取本地生产策略</button><button id="production-policy-save" disabled>保存本账号策略</button><button id="production-select-recommended" disabled>选择本次推荐生产</button></div>
+    <div class="bar">
+      <label><input id="production-policy-enabled" type="checkbox" disabled> 启用本批次自动生产策略</label>
+      <label><input id="production-policy-shortages" type="checkbox" disabled checked> 仅生产当前订单缺口</label>
+      <label>产品 ID <input id="production-policy-products" placeholder="逗号分隔；留空不限定" disabled></label>
+      <label>每批最大操作数 <input id="production-policy-limit" type="number" min="1" max="100" step="1" value="10" disabled></label>
+    </div>
+    <div id="production-policy-source" class="dim">尚未读取本账号策略。</div><div id="production-policy-hint" class="warn" role="status"></div>
+    <div id="ops-production">尚未探测工厂。</div>
+    <h2>库存与生产缺口</h2><div id="ops-stock"></div>
+    <h2>当日本工具验证收取记录</h2>
+    <p class="dim">仅统计本工具持久历史中 SUCCESS 且复读 CONFIRMED 的操作。开始生产只计操作次数；收取材料仅汇总可靠数量。无法还原游戏当日全部产量。</p>
+    <div id="ops-production-report">读取执行历史后显示。</div>
+  </section>
+  <section id="tab-operations-history" class="hidden">
+    <h2>执行历史</h2>
+    <p class="dim">按当前账号保存的历史证据，不代表当前实时游戏状态。UNKNOWN 保留未决状态，不能作为失败重试。</p>
+    <div class="bar"><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
+    <div id="ops-history">尚未读取历史。</div>
+  </section>
+  <section id="operations-batch" class="hidden">
+    <h2>本批次操作</h2>
+    <div class="bar">
+      <button id="ops-load">读取已有运行状态</button>
+      <button id="ops-survey" class="primary" disabled>探测最新订单与城市</button>
+      <label>执行方式 <select id="ops-mode"><option value="Manual">Manual · 逐项</option><option value="Hybrid">Hybrid · 筛选后授权</option><option value="Automatic">Automatic · 本批次</option></select></label>
+    </div>
+    <div id="ops-mode-note" class="dim"></div>
+    <div id="ops-status" class="kv">选择账号后读取运行状态。</div>
+    <div id="ops-hint" class="warn" role="status"></div>
+    <div id="ops-notes" class="warn"></div>
+    <h2>已选操作</h2><div id="ops-selected">尚未选择。</div>
+    <div class="bar"><button id="ops-plan" disabled>生成本批次预览</button><button id="ops-clear">清除选择</button><button id="ops-authorize-execute" class="primary" disabled>授权并执行此预览</button><button id="ops-stop" class="danger" disabled>停止当前批次</button></div>
+    <div id="ops-plan-meta" class="dim">先选择操作并生成预览，再授权执行。</div>
+    <h2>批次总资源预算</h2><div id="ops-budget">尚未生成预览。</div>
+    <h2>计划与结果</h2><div id="ops-plan-actions"></div>
   </section>
   <section id="tab-stages" class="hidden">
     <h2>自动闯关</h2>
@@ -363,6 +417,11 @@ const seen = new Set();
 let explorerData = null, explorerScope = null, explorerRequest = null;
 let orderRulesData = null, orderRulesDraft = null, orderRulesRevision = 0, orderRuleSequence = 0;
 let stagesData = null, stagesActionPending = false, activeTab = 'overview';
+let operationsData = null, operationsPlan = null, operationsPending = false, operationsReadable = false;
+let operationsRevision = 0, operationsViewKey = null;
+let productionPolicyData = null, productionPolicyDraft = null, productionPolicyDirty = false, productionPolicyPending = false;
+const operationSelections = new Set();
+const OPERATIONS_TABS = new Set(['orders-execution', 'city', 'production', 'operations-history']);
 const READ_POSTS = new Set(['/api/connect', '/api/disconnect', '/api/refresh', '/api/accounts/active', '/api/accounts/label', '/api/accounts/remove', '/api/order-rules', '/api/order-rules/preview']);
 async function call(path, options, scope = viewGuard.capture()) {
   viewGuard.assert(scope);
@@ -429,8 +488,8 @@ function renderAccountSelect() {
   box.value = current || '';
   $('connect').disabled = snapshot.connected || !current;
   $('disconnect').disabled = !snapshot.connected && snapshot.state !== 'CONNECTING';
-  $('refresh-data').disabled = !snapshot.connected || Boolean(stagesData?.runner?.running || stagesData?.runner?.inFlight);
-  stageControls();
+  $('refresh-data').disabled = !snapshot.connected || Boolean(stagesData?.runner?.running || stagesData?.runner?.inFlight || operationsLocked());
+  stageControls(); operationControls();
 }
 function selectAccount(id) {
   current = id || null;
@@ -442,6 +501,7 @@ function selectAccount(id) {
   resetExplorer();
   resetOrderRules();
   resetStages();
+  resetOperations();
   for (const id of ['who', 'res', 'items', 'hero-strip', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
   $('sync-info').textContent = '尚未采集，请先连接账号并刷新数据';
   $('cred-show').disabled = false;
@@ -749,6 +809,330 @@ $('order-rule-add').onclick = () => {
     orderRulesDraft.rules.push({ id, priority: orderRulesDraft.rules.length + 1, type, enabled: true, params: orderRuleParams(type), onFail: 'KEEP' });
   });
 };
+// Operations use a narrow batch capability; ordinary READ_POSTS is unchanged.
+function operationsLocked() { return operationsData?.status?.running === true || operationsData?.status?.blocked === true; }
+function operationRows() {
+  const orders = operationsData?.view?.orders;
+  return [...(Array.isArray(orders) ? orders : orders?.rows || []), ...(operationsData?.view?.city?.candidates || [])];
+}
+function operationTarget(target) { return typeof target === 'string' ? target : Object.entries(target || {}).map(([key, value]) => key + '=' + value).join(' · '); }
+function operationTitle(row) { return row.label || row.actionType + ' · ' + operationTarget(row.target); }
+function operationCosts(costs) { return Array.isArray(costs) ? costs.length ? costs.map((cost) => cost.id + ' × ' + (cost.num ?? '未知')).join('；') : '无资源消耗' : '成本未知'; }
+function operationValidBudget(budget) { return Array.isArray(budget) && budget.every((cost) => typeof cost.id === 'string' && cost.id && Number.isSafeInteger(cost.num) && cost.num >= 0); }
+function operationPlanLive() {
+  const plan = operationsPlan;
+  const expiry = typeof plan?.expiresAt === 'number' ? plan.expiresAt : Date.parse(plan?.expiresAt || '');
+  return Boolean(plan && !plan.consumed && plan.accountId === current && plan.batchId && plan.planHash && Array.isArray(plan.actions) && plan.actions.length && plan.actions.every((action) => operationValidBudget(action.costs)) && operationValidBudget(plan.resourceBudget) && Number.isFinite(expiry) && expiry > Date.now());
+}
+function operationModeError(rows) {
+  const mode = $('ops-mode').value || 'Manual';
+  if (!rows.length) return '请先选择具体操作。';
+  if (mode === 'Manual' && rows.length !== 1) return 'Manual 每次只授权一个具体操作，请逐项预览。';
+  if (mode === 'Hybrid' && rows.some((row) => row.actionType === 'SUBMIT') && rows.length !== 1) return 'Hybrid 提交订单需逐单预览授权；刷新可选择本批次多单。';
+  if (mode === 'Automatic' && rows.some((row) => row.actionType === 'startProduce')) {
+    if (productionPolicyDirty || !operationsData?.view?.productionPolicy?.enabled) return 'Automatic 生产需要先保存启用的本账号策略，再探测本次推荐。';
+    const recommended = new Set(operationsData.view.productionRecommendations || []);
+    if (rows.some((row) => row.actionType === 'startProduce' && !recommended.has(row.actionId))) return 'Automatic 只允许本账号当前策略推荐的具体生产操作，请重新探测并选择。';
+  }
+  return '';
+}
+function invalidateOperationPlan() {
+  operationsRevision += 1; operationsPlan = null;
+  $('ops-plan-meta').textContent = '选择或模式已变化，请重新生成本批次预览。';
+  $('ops-budget').textContent = '尚未生成预览。'; clear($('ops-plan-actions'));
+}
+function resetOperations() {
+  operationsData = null; operationsPlan = null; operationsPending = false; operationsReadable = false; operationsViewKey = null;
+  operationSelections.clear(); operationsRevision += 1; $('ops-mode').value = 'Manual';
+  productionPolicyData = null; productionPolicyDraft = null; productionPolicyDirty = false; productionPolicyPending = false;
+  $('production-policy-enabled').checked = false; $('production-policy-shortages').checked = true;
+  $('production-policy-products').value = ''; $('production-policy-limit').value = '10';
+  $('production-policy-source').textContent = '尚未读取本账号策略。'; $('production-policy-hint').textContent = '';
+  for (const id of ['ops-orders', 'ops-city', 'ops-production', 'ops-stock', 'ops-notes', 'ops-hint', 'ops-history-hint', 'ops-plan-actions']) clear($(id));
+  $('ops-status').textContent = '选择账号后读取已有运行状态。';
+  $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
+  $('ops-budget').textContent = '尚未生成预览。'; $('ops-plan-meta').textContent = '先选择操作并生成预览，再授权执行。';
+  renderOperationSelection(); operationControls();
+}
+function operationControls() {
+  const status = operationsData?.status || {};
+  const locked = operationsLocked() || Boolean(stagesData?.runner?.running || stagesData?.runner?.inFlight);
+  const ready = Boolean(current && snapshot.connected && snapshot.state === 'READY' && operationsData?.csrfToken && operationsReadable && !productionPolicyPending);
+  const selected = operationRows().filter((row) => operationSelections.has(row.actionId));
+  $('ops-load').disabled = !current || operationsPending;
+  $('ops-survey').disabled = !ready || operationsPending || locked;
+  $('ops-plan').disabled = !ready || operationsPending || locked || Boolean(operationModeError(selected));
+  $('ops-authorize-execute').disabled = !ready || operationsPending || locked || !operationPlanLive();
+  $('ops-stop').disabled = !current || operationsPending || status.running !== true || !operationsData?.csrfToken;
+  $('ops-mode').disabled = operationsPending || productionPolicyPending || status.running === true;
+  $('ops-clear').disabled = operationsPending || productionPolicyPending || status.running === true;
+  const policyBusy = productionPolicyPending || operationsPending || locked;
+  $('production-policy-load').disabled = !current || productionPolicyPending;
+  $('production-policy-save').disabled = !current || !operationsData?.csrfToken || !productionPolicyDraft || policyBusy;
+  for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit']) $(id).disabled = !productionPolicyDraft || policyBusy;
+  $('production-select-recommended').disabled = !ready || policyBusy || productionPolicyDirty || !operationsData?.view?.productionPolicy?.enabled || !(operationsData?.view?.productionRecommendations || []).length;
+  const mode = $('ops-mode').value || 'Manual';
+  $('ops-mode-note').textContent = mode === 'Manual' ? 'Manual：逐单或逐项查看决策并授权。KEEP / REVIEW 保持不执行。' : mode === 'Hybrid' ? 'Hybrid：用户选择的刷新可组成批次；订单提交逐单授权。' : 'Automatic：仅执行本次明确选择与授权的操作列表；新订单、新计划必须重新授权，不自动循环。';
+}
+function renderOperationSelection() {
+  const box = clear($('ops-selected'));
+  const selected = operationRows().filter((row) => operationSelections.has(row.actionId));
+  for (const row of selected) box.appendChild(el('div', null, operationTitle(row) + ' · ' + operationCosts(row.costs)));
+  if (!selected.length) box.textContent = '尚未选择。';
+  const error = operationModeError(selected);
+  if (selected.length && error) box.appendChild(el('div', 'warn', error));
+  operationControls();
+}
+function operationChoice(row, container) {
+  const label = el('label', 'bar'); const input = el('input'); input.type = 'checkbox'; input.dataset.actionId = row.actionId || '';
+  input.checked = operationSelections.has(row.actionId);
+  input.disabled = !row.actionId || row.executable === false || operationsPending || productionPolicyPending || operationsLocked();
+  input.onchange = () => {
+    if (input.disabled) return;
+    if (input.checked) operationSelections.add(row.actionId); else operationSelections.delete(row.actionId);
+    invalidateOperationPlan(); renderOperationSelection();
+  };
+  label.appendChild(input); label.appendChild(document.createTextNode(operationTitle(row) + ' · ' + operationCosts(row.costs)));
+  container.appendChild(label);
+  if (row.blockedReason) container.appendChild(el('div', 'warn', row.blockedReason));
+}
+function renderOperationCandidates() {
+  const view = operationsData?.view;
+  const orders = clear($('ops-orders')), city = clear($('ops-city')), production = clear($('ops-production')), stock = clear($('ops-stock'));
+  if (!view) {
+    for (const box of [orders, city, production, stock]) box.textContent = '尚未探测；读取已有运行状态不会向游戏发送查询。';
+    return;
+  }
+  const rows = Array.isArray(view.orders) ? view.orders : view.orders?.rows || [];
+  for (const row of rows) {
+    const card = el('div', 'order-preview-card'), before = row.beforeState || {};
+    card.appendChild(el('h3', null, '订单 #' + (row.target?.index ?? before.index ?? '?') + ' · ' + (row.decision || 'REVIEW')));
+    card.appendChild(el('div', null, '需求：' + operationCosts(before.requirements) + ' · 经验：' + (before.rewardExp ?? '未知')));
+    for (const rule of row.ruleResult?.ruleResults || []) card.appendChild(el('div', rule.status === 'UNKNOWN' || rule.status === 'FAIL' ? 'warn' : 'dim', '优先级 ' + rule.priority + ' · ' + rule.id + ' · ' + rule.status + '：' + rule.explanation));
+    for (const reason of row.ruleResult?.explanation || []) card.appendChild(el('div', null, reason));
+    if (row.ruleResult?.inventory) card.appendChild(el('div', 'dim', '库存检查：' + row.ruleResult.inventory.status + ' · ' + (row.ruleResult.inventory.explanation || '')));
+    card.appendChild(el('div', 'dim', '探测库存：' + operationCosts(row.resourceBefore)));
+    if (row.actionType === 'KEEP' || row.actionType === 'REVIEW' || !row.actionId) card.appendChild(el('div', 'warn', row.blockedReason || '保留或等待人工检查，不产生游戏写操作。'));
+    else operationChoice(row, card);
+    orders.appendChild(card);
+  }
+  if (!rows.length) orders.textContent = '当前没有可解析的居民订单。';
+  const data = view.city || {}, candidates = data.candidates || [];
+  for (const building of data.buildings || []) {
+    const card = el('div', 'order-preview-card'); card.appendChild(el('h3', null, building.buildingId + ' · ' + (building.type || '类型未知') + ' · lv' + (building.level ?? '?')));
+    card.appendChild(el('div', null, '当前状态：' + (building.status || '未知')));
+    card.appendChild(el('div', 'dim', '升级条件：' + (typeof building.upgradeConditions === 'string' ? building.upgradeConditions : JSON.stringify(building.upgradeConditions ?? '未知'))));
+    card.appendChild(el('div', null, '材料需求：' + operationCosts(building.materialCosts)));
+    card.appendChild(el('div', 'dim', '操作后预期：' + JSON.stringify(building.expectedState ?? '未知')));
+    const actions = candidates.filter((row) => row.target?.buildingId === building.buildingId && !['startProduce', 'gainFactory', 'speedUpProduce'].includes(row.actionType));
+    for (const row of actions) operationChoice(row, card);
+    if (!actions.length) card.appendChild(el('div', building.reliable === false ? 'warn' : 'dim', building.reliable === false ? '成本或状态不可靠，暂不允许执行。' : '当前没有满足条件的建筑操作；请查看升级条件与探测说明。'));
+    city.appendChild(card);
+  }
+  if (!city.childElementCount) city.textContent = '当前没有建筑数据。';
+  for (const factory of data.factories || []) {
+    const card = el('div', 'order-preview-card'); card.appendChild(el('h3', null, factory.buildingId + ' · ' + (factory.type || '工厂') + ' · lv' + (factory.level ?? '?')));
+    card.appendChild(el('div', null, '当前状态：' + (factory.status || '未知') + ' · 自动生产产品：' + (factory.autoProductId || '未设置')));
+    card.appendChild(el('div', null, '生产槽位：' + (factory.slotCapacity ?? '未知') + ' · 空闲槽位：' + (factory.freeSlots ?? '未知')));
+    card.appendChild(el('div', null, '可收取成品：' + JSON.stringify(factory.finishedProducts ?? '未知')));
+    const queue = factory.queue || [];
+    card.appendChild(table(['队列位置', '产品', '剩余秒数', '完成时间'], queue.map((job) => [job.idx ?? '?', job.productId || '未知', job.remainingSeconds ?? '未知', job.finishTime ? when(job.finishTime * 1000) : '未知'])));
+    if (!queue.length) card.appendChild(el('div', 'dim', '当前队列为空。'));
+    for (const recipe of factory.recipes || []) card.appendChild(el('div', 'dim', '配方 ' + recipe.productId + ' · 解锁等级 ' + (recipe.unlockLevel ?? '?') + ' · 用时 ' + (recipe.produceTime ?? '?') + ' 秒 · ' + operationCosts(recipe.costs)));
+    const actions = candidates.filter((row) => row.target?.buildingId === factory.buildingId && ['startProduce', 'gainFactory', 'speedUpProduce'].includes(row.actionType));
+    for (const row of actions) operationChoice(row, card);
+    if (!actions.length) card.appendChild(el('div', 'dim', '当前没有可靠可执行的生产操作；道具加速仅在成本已知时提供。'));
+    production.appendChild(card);
+  }
+  if (!production.childElementCount) production.textContent = '当前没有工厂数据。';
+  stock.appendChild(table(['库存材料', '可靠数量'], (data.stock || []).map((item) => [item.id, item.num ?? '未知'])));
+  if (!data.stock?.length) stock.appendChild(el('div', 'dim', '库存未知或为空，以探测结果为准。'));
+  const shortages = view.productionShortages;
+  if (shortages?.reliable === true && Array.isArray(shortages.items)) {
+    stock.appendChild(el('h3', null, '可靠生产缺口汇总'));
+    stock.appendChild(table(['材料', '订单需求', '现有库存', '在产数量', '待收成品', '剩余缺口'], shortages.items.map((item) => [item.id, item.required, item.inventory, item.inProgress, item.finished, item.missing])));
+    if (!shortages.items.length) stock.appendChild(el('div', 'dim', '当前可靠汇总无缺口条目。'));
+  } else stock.appendChild(el('div', 'warn', 'UNKNOWN · 生产缺口未知：库存、订单或生产队列数据不完整，不按 0 处理。'));
+  for (const note of shortages?.notes || []) stock.appendChild(el('div', 'dim', typeof note === 'string' ? note : JSON.stringify(note)));
+  const notes = clear($('ops-notes'));
+  if (view.source) notes.appendChild(el('div', 'dim', view.source));
+  if (view.surveyedAt) notes.appendChild(el('div', 'dim', '探测时间：' + when(view.surveyedAt) + '；缓存不代表实时状态。'));
+  for (const note of [...(data.notes || []), ...(view.notes || [])]) notes.appendChild(el('div', null, typeof note === 'string' ? note : JSON.stringify(note)));
+}
+function renderOperations(data) {
+  if (data.accountId !== current) throw new Error('操作状态账号不匹配，已忽略响应');
+  const key = JSON.stringify(data.view || null);
+  const samePlan = operationPlanLive() && data.lastPlan?.accountId === current && data.lastPlan?.batchId === operationsPlan.batchId && data.lastPlan?.planHash === operationsPlan.planHash;
+  if (operationsViewKey !== null && key !== operationsViewKey && !samePlan) { operationSelections.clear(); invalidateOperationPlan(); }
+  operationsViewKey = key;
+  operationsData = { ...data, csrfToken: data.csrfToken || operationsData?.csrfToken }; operationsReadable = true;
+  if (data.view?.productionPolicy && !productionPolicyDirty && !productionPolicyPending) renderProductionPolicy({ accountId: current, config: data.view.productionPolicy, source: '本账号当前策略', warning: data.view.productionPolicyWarning || null });
+  const status = data.status || {}, box = clear($('ops-status'));
+  const labels = { IDLE: '未运行', SURVEY: '探测', PLAN: '规划', RESOURCE_PREFLIGHT: '资源复核', AUTHORIZATION: '待授权', EXECUTING: '执行中', VERIFY: '结果复读', SUCCESS: '成功', FAILED: '失败', UNKNOWN: 'UNKNOWN · 结果未知，禁止自动重试', CANCELLED: '已取消', RATE_LIMITED: '服务器限频，已停止' };
+  for (const [name, value] of [['状态', labels[status.finalStatus] || status.finalStatus || '未知'], ['执行批次', status.runId || '无'], ['停止原因', status.stopReason || '无'], ['未决保护', status.blocked ? '存在未决写操作，禁止重复执行。' : '无']]) { box.appendChild(el('div', 'k', name)); box.appendChild(el('div', 'v', value)); }
+  renderOperationCandidates(); renderOperationSelection(); renderAccountSelect();
+}
+async function operationMutation(path, payload, scope) {
+  viewGuard.assert(scope);
+  if (!scope.account || !operationsData?.csrfToken) throw new Error('请先读取本账号运行状态。');
+  if (!['/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy'].includes(path)) throw new Error('未开放此批次操作');
+  const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
+  const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': operationsData.csrfToken }, body: JSON.stringify(payload) });
+  const data = await response.json().catch(() => ({})); viewGuard.assert(scope);
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  if (data.accountId != null && data.accountId !== scope.account) throw new Error('操作账号不匹配');
+  return data;
+}
+async function refreshOperations() {
+  if (!current || operationsPending) return;
+  const scope = viewGuard.begin('operations');
+  try { const data = await call('/api/operations', undefined, scope); renderOperations(data); $('ops-hint').textContent = ''; }
+  catch (error) { if (viewGuard.current(scope)) { operationsReadable = false; $('ops-hint').textContent = '读取失败：' + error.message; operationControls(); } }
+}
+function renderOperationPlan(plan) {
+  $('ops-plan-meta').textContent = '待授权 · 批次 ' + plan.batchId + ' · ' + plan.mode + ' · ' + plan.actions.length + ' 项 · 有效至 ' + when(plan.expiresAt) + '。只授权下列计划与资源预算。';
+  const box = clear($('ops-plan-actions'));
+  for (const row of plan.actions) {
+    const card = el('div', 'order-preview-card'); card.appendChild(el('h3', null, operationTitle(row)));
+    card.appendChild(el('div', null, '预留资源：' + operationCosts(row.costs)));
+    card.appendChild(el('div', 'dim', '预期状态：' + JSON.stringify(row.expectedState ?? '执行后复读核验')));
+    const details = el('details'); details.appendChild(el('summary', null, '计划依据与执行前状态')); details.appendChild(el('pre', null, JSON.stringify(row.beforeState, null, 2))); card.appendChild(details); box.appendChild(card);
+  }
+  for (const note of plan.notes || []) box.appendChild(el('div', 'warn', typeof note === 'string' ? note : JSON.stringify(note)));
+  const budget = clear($('ops-budget'));
+  budget.appendChild(table(['材料', '本批次总预留'], plan.resourceBudget.map((cost) => [cost.id, cost.num ?? '未知'])));
+  if (!plan.resourceBudget.length) budget.appendChild(el('div', 'dim', '本批次无资源消耗；状态修改仍需授权。'));
+  if (!operationValidBudget(plan.resourceBudget)) budget.appendChild(el('div', 'warn', '存在未知资源成本，禁止授权。'));
+  operationControls();
+}
+$('ops-load').onclick = refreshOperations;
+$('ops-mode').onchange = () => { invalidateOperationPlan(); renderOperationSelection(); };
+$('ops-clear').onclick = () => { if (operationsPending) return; operationSelections.clear(); invalidateOperationPlan(); renderOperationCandidates(); renderOperationSelection(); };
+$('ops-survey').onclick = async () => {
+  if ($('ops-survey').disabled) return;
+  const scope = viewGuard.begin('operations'); operationsPending = true; operationControls();
+  operationSelections.clear(); invalidateOperationPlan(); $('ops-hint').textContent = '正在只读探测最新状态 ...';
+  try { renderOperations(await operationMutation('/api/operations/survey', {}, scope)); $('ops-hint').textContent = '探测完成；请选择具体操作。'; }
+  catch (error) { if (viewGuard.current(scope)) { operationsReadable = false; $('ops-hint').textContent = '探测失败：' + error.message; } }
+  finally { if (viewGuard.current(scope)) { operationsPending = false; renderOperationCandidates(); operationControls(); } }
+};
+$('ops-plan').onclick = async () => {
+  if ($('ops-plan').disabled) return;
+  const selected = operationRows().filter((row) => operationSelections.has(row.actionId));
+  const error = operationModeError(selected); if (error) { $('ops-hint').textContent = error; return; }
+  const scope = viewGuard.begin('operations'); const revision = operationsRevision; operationsPending = true; operationControls();
+  const hasOrders = selected.some((row) => ['SUBMIT', 'REFRESH'].includes(row.actionType));
+  const module = hasOrders ? selected.every((row) => ['SUBMIT', 'REFRESH'].includes(row.actionType)) ? 'orders' : 'combined' : 'city';
+  $('ops-hint').textContent = '正在生成共享预算预览 ...';
+  try {
+    const data = await operationMutation('/api/operations/plan', { module, mode: $('ops-mode').value || 'Manual', selections: selected.map((row) => row.actionId) }, scope);
+    if (operationsRevision !== revision) return;
+    const plan = data.plan || data;
+    if (plan.accountId !== scope.account || !Array.isArray(plan.actions) || !Array.isArray(plan.resourceBudget)) throw new Error('计划账号或结构无效');
+    operationsPlan = plan; renderOperationPlan(plan); $('ops-hint').textContent = '预览完成，尚未授权或执行。';
+  } catch (error) { if (viewGuard.current(scope)) { invalidateOperationPlan(); $('ops-hint').textContent = '预览失败：' + error.message; } }
+  finally { if (viewGuard.current(scope)) { operationsPending = false; operationControls(); } }
+};
+$('ops-authorize-execute').onclick = async () => {
+  if ($('ops-authorize-execute').disabled || !operationPlanLive()) return;
+  const plan = operationsPlan, scope = viewGuard.begin('operations');
+  const text = '为账号 ' + scope.account + ' 授权本批次 ' + plan.batchId + '（' + plan.mode + '）？' + String.fromCharCode(10) + plan.actions.map(operationTitle).join(String.fromCharCode(10)) + String.fromCharCode(10) + '总资源消耗：' + operationCosts(plan.resourceBudget) + String.fromCharCode(10) + '只执行本批次具体列表；新订单或新计划需重新授权。未知结果立即停止。';
+  if (!window.confirm(text)) return;
+  viewGuard.assert(scope); operationsPending = true; operationControls(); $('ops-hint').textContent = '正在授权此计划与总预算 ...';
+  try {
+    const permit = await operationMutation('/api/operations/authorize', { batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map((row) => row.actionId), resourceBudget: plan.resourceBudget, confirm: true }, scope);
+    if (permit.batchId !== plan.batchId || typeof permit.permitId !== 'string' || !permit.permitId || operationsPlan !== plan) throw new Error('授权与当前批次不匹配');
+    plan.consumed = true;
+    const result = await operationMutation('/api/operations/execute', { batchId: plan.batchId, permitId: permit.permitId }, scope);
+    const status = typeof result.status === 'object' ? result.status : { running: result.status === 'EXECUTING', runId: result.runId, finalStatus: result.status || 'EXECUTING', blocked: false, stopReason: null };
+    renderOperations({ ...operationsData, status }); $('ops-plan-meta').textContent = '此预览已授权使用；再次执行必须生成新预览并重新授权。'; $('ops-hint').textContent = '本批次已提交。结果以服务端复读和持久历史为准。';
+  } catch (error) { if (viewGuard.current(scope)) { plan.consumed = true; $('ops-hint').textContent = '执行停止：' + error.message + '；请读取运行状态与历史，禁止重复发送。'; } }
+  finally { if (viewGuard.current(scope)) { operationsPending = false; renderOperationCandidates(); operationControls(); } }
+};
+$('ops-stop').onclick = async () => {
+  if ($('ops-stop').disabled) return;
+  const scope = viewGuard.begin('operations'); operationsPending = true; operationControls();
+  try { const result = await operationMutation('/api/operations/stop', {}, scope); renderOperations({ ...operationsData, ...(result.status ? result : { status: result }) }); $('ops-hint').textContent = '已停止后续操作；已发出的请求无法撤销，未决保护继续保留。'; }
+  catch (error) { if (viewGuard.current(scope)) $('ops-hint').textContent = '停止失败：' + error.message; }
+  finally { if (viewGuard.current(scope)) { operationsPending = false; operationControls(); } }
+};
+function renderProductionPolicy(data) {
+  if (data.accountId !== current || !data.config) throw new Error('生产策略账号或配置无效');
+  if (productionPolicyData && JSON.stringify(productionPolicyData.config) !== JSON.stringify(data.config)) invalidateOperationPlan();
+  productionPolicyData = data; productionPolicyDraft = JSON.parse(JSON.stringify(data.config)); productionPolicyDirty = false;
+  $('production-policy-enabled').checked = data.config.enabled === true; $('production-policy-shortages').checked = data.config.onlyShortages === true;
+  $('production-policy-products').value = (data.config.productIds || []).join(', '); $('production-policy-limit').value = String(data.config.maxOperations ?? 10);
+  $('production-policy-source').textContent = '本地账号策略 · ' + (data.source || '本账号配置') + (data.warning ? ' · ' + data.warning : '');
+  operationControls();
+}
+async function refreshProductionPolicy() {
+  if (!current || productionPolicyPending) return;
+  const scope = viewGuard.begin('production-policy'); productionPolicyPending = true; operationControls();
+  try { const data = await call('/api/operations/production-policy', undefined, scope); renderProductionPolicy(data); $('production-policy-hint').textContent = '仅本地配置；未向游戏发送操作。'; }
+  catch (error) { if (viewGuard.current(scope)) { productionPolicyData = null; productionPolicyDraft = null; $('production-policy-hint').textContent = '读取失败：' + error.message; } }
+  finally { if (viewGuard.current(scope)) { productionPolicyPending = false; operationControls(); } }
+}
+function editProductionPolicy() {
+  if (!productionPolicyDraft || productionPolicyPending || operationsPending || operationsLocked()) return;
+  productionPolicyDraft = { version: 1, enabled: $('production-policy-enabled').checked, onlyShortages: $('production-policy-shortages').checked,
+    productIds: $('production-policy-products').value.split(/[,，]/).map((id) => id.trim()).filter(Boolean), maxOperations: Number($('production-policy-limit').value) };
+  productionPolicyDirty = true; invalidateOperationPlan(); renderOperationSelection(); $('production-policy-hint').textContent = '有未保存修改；保存后请重新探测本批次推荐。';
+}
+$('production-policy-load').onclick = refreshProductionPolicy;
+for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit']) $(id).onchange = editProductionPolicy;
+for (const id of ['production-policy-products', 'production-policy-limit']) $(id).oninput = editProductionPolicy;
+$('production-policy-save').onclick = async () => {
+  if ($('production-policy-save').disabled) return;
+  const config = productionPolicyDraft;
+  if (!Number.isSafeInteger(config.maxOperations) || config.maxOperations < 1 || config.maxOperations > 100 || new Set(config.productIds).size !== config.productIds.length) { $('production-policy-hint').textContent = '每批操作数须为 1–100 的整数，产品 ID 不可重复。'; return; }
+  const scope = viewGuard.begin('production-policy'); productionPolicyPending = true; operationControls();
+  try {
+    const data = await operationMutation('/api/operations/production-policy', { config }, scope); renderProductionPolicy(data);
+    operationSelections.clear(); invalidateOperationPlan();
+    if (operationsData?.view) { operationsData = { ...operationsData, view: { ...operationsData.view, productionPolicy: data.config, productionRecommendations: [] } }; operationsViewKey = JSON.stringify(operationsData.view); }
+    renderOperationCandidates(); renderOperationSelection(); $('production-policy-hint').textContent = '本账号策略已保存。请重新探测；未启动生产或创建游戏写授权。';
+  } catch (error) { if (viewGuard.current(scope)) $('production-policy-hint').textContent = '保存失败：' + error.message; }
+  finally { if (viewGuard.current(scope)) { productionPolicyPending = false; operationControls(); } }
+};
+$('production-select-recommended').onclick = () => {
+  if ($('production-select-recommended').disabled) return;
+  const recommended = new Set(operationsData.view.productionRecommendations || []);
+  for (const row of operationRows()) if (row.actionType === 'startProduce') operationSelections.delete(row.actionId);
+  for (const row of operationRows()) if (row.actionType === 'startProduce' && row.executable !== false && recommended.has(row.actionId)) operationSelections.add(row.actionId);
+  invalidateOperationPlan(); renderOperationCandidates(); renderOperationSelection(); $('ops-hint').textContent = '已选择本次推荐的具体生产操作，尚未授权；请生成批次预览。';
+};
+function renderOperationHistory(data) {
+  const box = clear($('ops-history')), report = clear($('ops-production-report'));
+  const runs = data.runs || [];
+  for (const run of runs) {
+    const card = el('details', 'order-preview-card'); card.appendChild(el('summary', null, (run.runId || '?') + ' · ' + run.module + ' · ' + run.mode + ' · ' + run.finalStatus + (run.recovered ? ' · 进程恢复记录' : '')));
+    card.appendChild(el('div', 'dim', '开始 ' + when(run.startedAt) + ' · 结束 ' + (run.finishedAt ? when(run.finishedAt) : '未完成') + ' · 停止原因 ' + (run.stopReason || '无')));
+    card.appendChild(el('div', null, '授权范围：' + JSON.stringify(run.authorizationSummary ?? null)));
+    card.appendChild(el('div', null, '本批次预算：' + operationCosts(run.resourceBudget)));
+    for (const action of run.actions || []) {
+      const actionBox = el('details', 'order-preview-card'); actionBox.appendChild(el('summary', null, action.actionType + ' · ' + operationTarget(action.target) + ' · ' + (typeof action.result === 'string' ? action.result : action.result?.status || action.requestStatus || '未知')));
+      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
+    }
+    box.appendChild(card);
+  }
+  if (!box.childElementCount) box.textContent = '本账号尚无持久执行记录。';
+  const daily = data.dailyReport;
+  if (daily?.coverage === 'tool-verified-only') {
+    report.appendChild(el('div', 'dim', '本工具验证收取记录 · ' + (daily.date || '当日') + ' · ' + (daily.timeZone || '服务器时区') + ' · 游戏完整产量未知。'));
+    report.appendChild(el('div', null, '已确认开始生产操作：' + (daily.startedOperations ?? 0) + ' 次；已确认收取操作：' + (daily.collectedOperations ?? 0) + ' 次。'));
+    report.appendChild(table(['已验证收取材料', '可靠数量'], (daily.collected || []).map((item) => [item.id, item.num])));
+    if (!daily.collected?.length) report.appendChild(el('div', 'dim', '尚无可靠收取数量；操作次数不作为材料产量。'));
+    for (const note of daily.notes || []) report.appendChild(el('div', 'dim', typeof note === 'string' ? note : JSON.stringify(note)));
+  } else report.textContent = '尚未提供当日本工具已复核汇总；游戏完整产量未知。';
+}
+async function refreshOperationHistory() {
+  if (!current) return;
+  const scope = viewGuard.begin('operations-history'); $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
+  try { const data = await call('/api/operations/history', undefined, scope); if (data.accountId !== scope.account) throw new Error('历史账号不匹配'); renderOperationHistory(data); $('ops-history-hint').textContent = ''; }
+  catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
+}
+$('ops-history-load').onclick = refreshOperationHistory;
+
 // Stage mutations have their own narrow authorization path; READ_POSTS stays read-only.
 function stageReason(value) {
   if (typeof value === 'string') return value;
@@ -783,7 +1167,7 @@ function stageConfig() {
 }
 function stageControls() {
   const runner = stagesData?.runner || {};
-  const busy = stagesActionPending || runner.running === true || runner.inFlight === true;
+  const busy = stagesActionPending || runner.running === true || runner.inFlight === true || operationsLocked();
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
   for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage']) $(id).disabled = busy;
@@ -1080,6 +1464,10 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     if (button.dataset.tab === 'explorer') refreshExplorer();
     if (button.dataset.tab === 'order-rules' && !orderRulesDraft) loadOrderRules();
     if (button.dataset.tab === 'stages') refreshStages();
+    $('operations-batch').classList.toggle('hidden', !OPERATIONS_TABS.has(activeTab));
+    if (OPERATIONS_TABS.has(activeTab)) refreshOperations();
+    if (activeTab === 'operations-history' || activeTab === 'production') refreshOperationHistory();
+    if (activeTab === 'production' && !productionPolicyDirty) refreshProductionPolicy();
   };
 });
 async function boot() {
@@ -1091,6 +1479,7 @@ boot();
 setInterval(async () => {
   await refreshOverview();
   if (activeTab === 'stages' || stagesData?.runner?.running || stagesData?.runner?.inFlight) { updateStageCountdown(); await refreshStages(); }
+  if (OPERATIONS_TABS.has(activeTab) || operationsData?.status?.running) await refreshOperations();
 }, 3000);
 function num(v) {
   if (v == null || typeof v !== 'object') return v;
