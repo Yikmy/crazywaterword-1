@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createOperationService } from './operation-service.mjs';
+import { createExecutionHistory } from './execution-history.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -39,7 +42,7 @@ const STATE_TEXT = {
   EXPIRED: '登录已失效',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock, operationOptions = {} } = {}) {
   const protocol = suppliedProtocol ?? loadProtocol();
   let closed = false;
   let closingPromise = null;
@@ -122,7 +125,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     return [...knownSecrets];
   }
 
+  const operationCsrf = randomUUID();
+  const operations = createOperationService({ protocol, getConfig: loadConfigSafe, loadRules: loadOrderRules,
+    history: createExecutionHistory({ secrets }), ...operationOptions });
+
   function cancelSession(session, state = 'STOPPED') {
+    operations.stop(session.id);
     if (state === 'STOPPED' || state === 'IDLE') session.stageRunner?.stop('账号已断开或会话已重置');
     else session.stageRunner?.fail(new Error('账号连接异常：' + state));
     session.generation += 1;
@@ -234,7 +242,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   function refresh(session, account) {
-    if (session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
+    if (operations.running(session.id) || session.busy?.startsWith('operations:') || session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
       const error = new Error('自动闯关或未决战斗期间不能完整采集；已有缓存仍可浏览');
       error.statusCode = 409; return Promise.reject(error);
     }
@@ -602,9 +610,47 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       // Keep the existing read-only policy intact. Stage start has a separate,
       // explicit mutation gate below; no generic game Action route is opened.
       const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
-      if (!allowed.has(route) && !stageRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
+      const operationRoute = new Set(['GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
+      if (!allowed.has(route) && !stageRoute && !operationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
+      }
+      if (operationRoute) {
+        // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
+        const expectedPort = server.address()?.port;
+        const acceptedHosts = new Set([host + ':' + expectedPort]);
+        if (host === '127.0.0.1') acceptedHosts.add('localhost:' + expectedPort);
+        if (!acceptedHosts.has(req.headers.host) || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)
+          || req.headers['sec-fetch-site'] === 'cross-site') {
+          json({ error: '执行接口仅允许同源请求', code: 'ORIGIN_REQUIRED' }, 403); return;
+        }
+        const id = parsed.searchParams.get('account');
+        if (!id) { json({ error: '必须指定精确账号 ID' }, 400); return; }
+        if (!loadStore().accounts.some(account => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        if (route === 'GET /api/operations') { json({ ...operations.view(id), csrfToken: operationCsrf }); return; }
+        if (route === 'GET /api/operations/production-policy') { json(operations.productionPolicy(id)); return; }
+        if (route === 'GET /api/operations/history') { json(operations.history(id, parsed.searchParams.get('runId'))); return; }
+        const csrf = req.headers['x-cw-csrf'];
+        if (req.headers.origin !== 'http://' + req.headers.host || typeof csrf !== 'string' || Buffer.byteLength(csrf) !== Buffer.byteLength(operationCsrf)
+          || !timingSafeEqual(Buffer.from(csrf), Buffer.from(operationCsrf)) || !/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) {
+          json({ error: '缺少当前页面同源执行授权上下文', code: 'CSRF_REQUIRED' }, 403); return;
+        }
+        if (Buffer.byteLength(body) > 65536) { json({ error: '执行请求过大' }, 413); return; }
+        const payload = jsonBody();
+        if (route === 'POST /api/operations/production-policy') { json(operations.saveProductionPolicy(id, payload)); return; }
+        if (route === 'POST /api/operations/stop') {
+          if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw new Error('停止操作不接受额外字段');
+          json(operations.stop(id)); return;
+        }
+        const session = sessions.get(id); scoped = session ?? null;
+        if (!session?.client?.connected || session.state !== 'READY') { json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return; }
+        if (route === 'POST /api/operations/survey') {
+          if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw new Error('采集操作不接受额外字段');
+          json(await operations.survey(session)); return;
+        }
+        if (route === 'POST /api/operations/plan') { json(await operations.plan(session, payload)); return; }
+        if (route === 'POST /api/operations/authorize') { json(operations.authorize(session, payload)); return; }
+        if (route === 'POST /api/operations/execute') { json(operations.execute(session, payload)); return; }
       }
       if (stageRoute) {
         const id = parsed.searchParams.get('account');
@@ -628,6 +674,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (session.collectionPromise || session.busy || session.loop?.running) {
           json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
         }
+        if (operations.running(id) || operations.blocked(id)) { json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return; }
         const instance = session.client;
         // GameClient can coalesce identical requests; never attach a new run to an old battle.
         if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
@@ -1093,17 +1140,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const httpClosed = server.listening
         ? new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
         : Promise.resolve();
+      const operationTasks = [...sessions.keys()].map(id => operations.settle(id));
       for (const session of sessions.values()) cancelSession(session, 'STOPPED');
       sessions.clear();
       for (const stream of streams) stream.end();
       streams.clear();
       const traceClosed = traceStream ? new Promise((resolve) => traceStream.end(resolve)) : Promise.resolve();
-      closingPromise = Promise.all([httpClosed, traceClosed]).then(() => undefined);
+      closingPromise = Promise.all([httpClosed, traceClosed, ...operationTasks]).then(() => undefined);
       return closingPromise;
     },
     emit,
     sessions,
     captureState,
+    operations,
   };
 }
 
