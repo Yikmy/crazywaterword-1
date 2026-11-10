@@ -292,6 +292,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   }
   if (request === 'DrawAfkRewardRequest' && body.useAdvCard) fail('COST_UNKNOWN', '广告卡成本未经确认');
   const known = Object.values(ACTIONS).some((entry) => entry.request === request)
+    || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {
     fail('COST_UNKNOWN', '动作成本未知，拒绝执行');

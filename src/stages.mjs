@@ -1,5 +1,6 @@
 import { randomUUID, randomInt as cryptoRandomInt } from 'node:crypto';
 import { redact } from './security.mjs';
+import { battleAnalysis, parseFormation } from './formation.mjs';
 
 const own = (value, name) => value !== null && typeof value === 'object' && Object.hasOwn(value, name);
 const positive = (value) => Number.isSafeInteger(value) && value > 0;
@@ -37,20 +38,26 @@ export function resolveMainlineChallengeSide(response, _player, context) {
   return MAINLINE_SIDE_AUTHORIZATION.playerSide;
 }
 
+export function defaultStageFormationConfig() { return { enabled: false, presetId: null }; }
+
 export function defaultStageConfig() {
   return { enabled: false, retryDelaySeconds: 10, maxAttempts: null, maxStage: null };
 }
 export function validateStageConfig(value) {
   // Optional for old API/UI callers: omitted stopOnDefeat retains the retry policy.
-  const keys = ['enabled', 'retryDelaySeconds', 'maxAttempts', 'maxStage', 'stopOnDefeat', 'interStageDelay'];
+  const keys = ['enabled', 'retryDelaySeconds', 'maxAttempts', 'maxStage', 'stopOnDefeat', 'interStageDelay', 'formation'];
   const delay = value?.interStageDelay;
+  const formation = value?.formation;
+  const validFormation = !own(value, 'formation') || (formation !== null && typeof formation === 'object' && !Array.isArray(formation) &&
+    Object.keys(formation).length === 2 && own(formation, 'enabled') && own(formation, 'presetId') && typeof formation.enabled === 'boolean' &&
+    (formation.presetId === null || stageNumber(formation.presetId)) && (!formation.enabled || stageNumber(formation.presetId)));
   const validSeconds = (seconds) => Number.isFinite(seconds) && seconds >= 0 && seconds <= 86400 && Number.isSafeInteger(seconds * 1000);
   const validDelay = !own(value, 'interStageDelay') || (delay !== null && typeof delay === 'object' && !Array.isArray(delay) &&
     Object.keys(delay).length === 2 && own(delay, 'minSeconds') && own(delay, 'maxSeconds') &&
     validSeconds(delay.minSeconds) && validSeconds(delay.maxSeconds) && delay.minSeconds <= delay.maxSeconds);
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some((key) => !keys.includes(key)) || typeof value.enabled !== 'boolean' ||
-      (own(value, 'stopOnDefeat') && typeof value.stopOnDefeat !== 'boolean') || !validDelay ||
+      (own(value, 'stopOnDefeat') && typeof value.stopOnDefeat !== 'boolean') || !validDelay || !validFormation ||
       !Number.isFinite(value.retryDelaySeconds) || value.retryDelaySeconds < 0 || value.retryDelaySeconds > 86400 ||
       (value.maxAttempts !== null && !positive(value.maxAttempts)) ||
       (value.maxStage !== null && !stageNumber(value.maxStage))) {
@@ -59,7 +66,8 @@ export function validateStageConfig(value) {
   return { enabled: value.enabled, retryDelaySeconds: value.retryDelaySeconds,
     maxAttempts: value.maxAttempts, maxStage: value.maxStage,
     ...(own(value, 'stopOnDefeat') ? { stopOnDefeat: value.stopOnDefeat } : {}),
-    ...(own(value, 'interStageDelay') ? { interStageDelay: { ...delay } } : {}) };
+    ...(own(value, 'interStageDelay') ? { interStageDelay: { ...delay } } : {}),
+    ...(own(value, 'formation') ? { formation: { ...formation } } : {}) };
 }
 
 // Prompt ownership remains GameClient's responsibility; classify its rejection only.
@@ -104,7 +112,7 @@ export function parseStageResult(response, { stage, player, resolvePlayerSide,
 // One object belongs to one connected account/client generation. Reconnection creates
 // another object; there is deliberately no unsafe reset for an uncertain battle.
 export function createStageRunner({ client, player, protocol, resolvePlayerSide, battleMode = MAINLINE_CHALLENGE,
-  isCurrent = () => true, signal = null, onUpdate = null, clock = {}, randomInt = cryptoRandomInt } = {}) {
+  isCurrent = () => true, signal = null, onUpdate = null, clock = {}, randomInt = cryptoRandomInt, formationFacts = null, formationModuleConfig = null } = {}) {
   const now = clock.now ?? Date.now;
   const schedule = clock.setTimeout ?? globalThis.setTimeout;
   const unschedule = clock.clearTimeout ?? globalThis.clearTimeout;
@@ -119,8 +127,11 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
 
   function getStatus() {
     return { ...view, config: { ...view.config,
-      ...(view.config.interStageDelay ? { interStageDelay: { ...view.config.interStageDelay } } : {}) }, lastResult: view.lastResult ? { ...view.lastResult } : null,
-      error: view.error ? structuredClone(view.error) : null, history: view.history.map((item) => ({ ...item })),
+      ...(view.config.interStageDelay ? { interStageDelay: { ...view.config.interStageDelay } } : {}),
+      ...(view.config.formation ? { formation: { ...view.config.formation } } : {}) }, lastResult: view.lastResult ? structuredClone(view.lastResult) : null,
+      battleAnalysis: view.battleAnalysis ? structuredClone(view.battleAnalysis) : null,
+      recommendations: structuredClone(view.recommendations ?? []), formationVerification: view.formationVerification ? structuredClone(view.formationVerification) : null,
+      error: view.error ? structuredClone(view.error) : null, history: view.history.map((item) => structuredClone(item)),
       inFlight: pendingRequest !== null };
   }
   function publish() { onUpdate?.(getStatus()); }
@@ -208,6 +219,12 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
         view.nextStage = progress;
         setState('STARTING');
         assertActive(run);
+        // Trusted in-memory caller guard runs synchronously before every send.
+        if (run.beforeDispatch) {
+          const allowed = run.beforeDispatch({ runId: run.id, stage: progress });
+          if (allowed === false || allowed && typeof allowed.then === 'function') throw problem('DISPATCH_CANCELLED', '可信发送检查已拒绝本次挑战');
+          assertActive(run);
+        }
         // No read/skip/query is sent here. All battles are strictly serialized.
         view.attempts += 1;
         const sentinel = {};
@@ -233,8 +250,13 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
         assertActive(run);
         const result = parseStageResult(answer.body, { stage: progress, player, resolvePlayerSide, battleMode });
         assertActive(run);
-        view.lastResult = { ...result, at: new Date(now()).toISOString() };
-        append({ outcome: result.outcome });
+        let formationContext = null, moduleSettings = null;
+        try { formationContext = typeof formationFacts === 'function' ? formationFacts() : formationFacts; moduleSettings = typeof formationModuleConfig === 'function' ? formationModuleConfig() : formationModuleConfig; } catch { /* Missing recommendation facts do not trigger another battle or a formation write. */ }
+        const analysis = battleAnalysis(answer.body, { stage: progress, player, battleMode, formationFacts: moduleSettings?.mainlineEnabled === true ? formationContext : null, moduleConfig: moduleSettings ?? undefined });
+        view.battleAnalysis = analysis;
+        view.recommendations = analysis.recommendations;
+        view.lastResult = { ...result, at: new Date(now()).toISOString(), battleAnalysis: analysis };
+        append({ outcome: result.outcome, battleAnalysis: analysis, recommendations: analysis.recommendations });
         const lastProtocolStage = progress === 2147483647;
         if (result.outcome === 'SUCCESS') {
           view.consecutiveFailures = 0;
@@ -293,7 +315,8 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
       if (activeRun === run && run.active) finish(run, 'ERROR', error.message, error);
     }
   }
-  function start(config, { allowMutate = false } = {}) {
+  function start(config, { allowMutate = false, formationEvidence = null, beforeDispatch = null } = {}) {
+    if (beforeDispatch !== null && typeof beforeDispatch !== 'function') throw problem('INVALID_GUARD', '可信发送检查必须为同步函数');
     if (!allowMutate) throw problem('MUTATION_NOT_AUTHORIZED', '自动闯关会改变游戏状态，需要明确授权', 403);
     const clean = validateStageConfig(config ?? defaultStageConfig());
     if (!clean.enabled) throw problem('DISABLED', '请先启用自动闯关配置');
@@ -305,13 +328,24 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
     if (!stageNumber(progress)) throw problem('INVALID_STAGE', '登录信息缺少有效主线关卡号');
     if (!protocol?.ChallengeStageRequest || !protocol?.ChallengeStageResponse) throw problem('PROTOCOL_MISSING', '缺少现有主线战斗协议');
     if (typeof client.request !== 'function') throw problem('PROTOCOL_MISSING', '客户端缺少请求能力');
+    let formationVerification = null;
+    if (clean.formation?.enabled === true) {
+      const proof = formationEvidence, formation = parseFormation(proof?.formation), checkedAt = proof?.checkedAt;
+      if (!['confirmed','presetId','formation','client','playerId','checkedAt','batchId','planHash'].every(key => own(proof, key)) || proof.confirmed !== true || proof?.client !== client || !own(player, 'playerId') || player.playerId == null || proof?.playerId !== player.playerId ||
+          !Number.isSafeInteger(checkedAt) || checkedAt > now() || now() - checkedAt > 30000 ||
+          typeof proof?.batchId !== 'string' || !proof.batchId.trim() || typeof proof?.planHash !== 'string' || !proof.planHash.trim() ||
+          proof.presetId !== clean.formation.presetId || !formation?.heroPositions.length || formation.presetId !== clean.formation.presetId) {
+        throw problem('FORMATION_UNVERIFIED', '启动前阵容尚未通过当前账号授权保存和新复读验证，禁止闯关');
+      }
+      formationVerification = { confirmed: true, presetId: proof.presetId, formation, checkedAt, batchId: proof.batchId, planHash: proof.planHash };
+    }
     let cancel;
     const cancelled = new Promise((resolve) => { cancel = resolve; });
-    const run = { id: randomUUID(), active: true, cancel, cancelled, timer: null, handlers: [], abortHandler: null };
+    const run = { id: randomUUID(), active: true, cancel, cancelled, timer: null, handlers: [], abortHandler: null, beforeDispatch };
     activeRun = run;
     view = { ...view, runId: run.id, state: 'STARTING', running: true, currentStage: progress,
       nextStage: progress, attempts: 0, consecutiveFailures: 0, lastResult: null, retryAt: null, nextStageAt: null,
-      history: [], stopReason: null, stopKind: null, error: null, config: clean };
+      history: [], stopReason: null, stopKind: null, error: null, config: clean, formationVerification, battleAnalysis: null, recommendations: [] };
     listen(run);
     completion = Promise.resolve().then(() => execute(run));
     publish();
