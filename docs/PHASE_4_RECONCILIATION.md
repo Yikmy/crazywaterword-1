@@ -118,9 +118,56 @@ flowchart TD
 
 互助缺可信限额/冷却不解禁；DonateFort独立堡垒建设，不是任意成员转物；帮助每reqId一件不包装成任意数量转账。科技reset不在原4.4，不扩展。D6继续硬拒。D1/D2/D4需要未来Owner架构决定，不阻塞本轮既有单进程、单批、离线科技适配和历史细分。
 
-## 7. 执行结果（实施后更新）
+## 7. 本轮实施结果与验收边界
 
-初始回归：隔离CW_DATA_DIR，node src/selftest.mjs与node --test：29组、845/845通过，0失败/取消/skip。素材检查按原条件跳过，未下载。日志TEMP/cw-phase4-offline/baseline-selftest.log、baseline-regression.log。此时完成路线图对齐，尚未改产品代码；之后创建PHASE4独立分支。
+已在路线图对齐后从a505019创建独立分支codex/phase-4-alliance-integration。原PHASE4范围明确，因此继续完成证据充分的离线实现；原阶段仍PARTIAL，不把帮助/求助阻塞和真实验收缺口改成通过。
+
+| 事项 | 本轮最终状态 | 当前源码与测试证据 |
+|---|---|---|
+| 全原阶段/95项C对账、A–D分类、依赖与公共审查 | DONE | 本文§1–6及起点附录，源码与测试复核；未采用R1–R8替换Master |
+| C301/C302精确请求/成员与专业展示 | DONE | allianceId/surveyAlliance、gameplay-page.gpRenderAlliance；原alliance21项及新UI4项；online缺字段保持UNKNOWN，不凭同名识别 |
+| C303/C304成员/物品帮助 | BLOCKED | 现规则/请求/单件成本Function继续复用；生产helpAllowance/helpUsage仍null，合成可信facts的规则通过不等于生产可执行 |
+| C305自动求助 | BLOCKED | 没有Ask候选、请求体或写后合同；额度/冷却未知不放行，不新增猜测阈值执行器 |
+| C306科技树/等级/前置/成本读取 | DONE | 新allianceTechView，surveyAlliance扩展现GuildTechInfo+SeasonTaskStage；alliance-tech codec/静态表/缺失字段测试 |
+| C307科技单级计划/授权/写入/复读 | PARTIAL | planAlliance/verifyAlliance+原executeBusinessOperation/OperationService；22项新科技测试与4项API集成；离线完整，真实升级及服务端成本仍未验 |
+| D3/C606共享业务历史细阶段 | PARTIAL | business-functions固定8阶段、service落盘、原page历史；新execution-stages11项+history UI1项；已闭合默认共享执行器，legacy自定义路径仍旧粒度 |
+| 单进程公共约束与全部旧功能回归 | DONE | 887/887 Node，29 selftest；范围仅本轮既有单进程合同，不等于跨进程所有权或持续运行验收 |
+
+复用的Function：surveyAlliance/allianceView/planAlliance/verifyAlliance、allianceHelpRules、ResourceLedger/validateResources、executeBusinessOperation、OperationService.plan/authorize/execute/settle、ExecutionHistory、原账号guard与gameplay/operations窄路由。新增业务Function仅allianceTechView；其余为原适配器扩展和页面渲染辅助。未新建Client、Session、Snapshot、业务执行器、调度器、数据目录或通用协议入口。
+
+科技协议合同：
+
+| Request / Response | 真实业务含义与确认范围 |
+|---|---|
+| GuildTechInfoRequest{} / GuildTechInfoResponse.tech[] | 当前联盟科技完整等级映射；重复/非法/缺等级阻断。可靠完整列表未出现的科技按客户端map语义为0级，不把失败响应当空列表 |
+| SeasonTaskStageRequest{} / SeasonTaskStageResponse.stage | 当前赛季阶段；必须真实存在字段。显式0按客户端无阶段上限处理，protobuf继承默认0不作证据 |
+| UpgradeGuildTechRequest{techId} / UpgradeGuildTechResponse.tech | 仅将该科技升一级，协议没有targetLevel。typed id/+1、GuildTechInfo新读精确+1、同guild/player/world/season/stage及精确扣点全部成立才确认；多扣/少扣/未知均UNKNOWN |
+
+配置新增tech:false，原配置兼容且默认禁用；启用用{enabled:true,tech:true}，原help/ask等独立开关不变。参数仅{techId,targetLevel}，targetLevel必须等于当前等级+1，科技升级单独一批且不与其他动作混合。真实season从Session.player.worldId精确提取，不能被旧兼容参数season覆盖；stage来自只读响应。成本取GuildTechCfg的techPointCost + techPointCostGrowth × currentLevel，TechUnlockCfg保持客户端顺序，核对maxLevel/openStage/preTech/preTechLevel。世界/英雄使用公会科技点，职级类型使用联盟职级科技点。
+
+可信season也使原有finishOrder在其他真实前置具备时进入既有次数/等级/城市/库存检查，不再恒因season未知阻塞；沿用原maxOrders保守算法，没有新增任意成员转物或放宽帮助/求助限额，真实联盟订单仍未验收。
+
+资源与付费：同一Ledger预留，写前再读AllItem/AllResource；UNKNOWN保留未决预算并持久封锁该账号，不能声称已实现可自动释放的分项持久账本。actions仅在内部已知成本请求集中加入具体UpgradeGuildTechRequest；ACTIONS目录、server通用Web写白名单均未扩大。RUBY/钻石/4、paid/allowPaid继续D6硬拒。科技不能降级为sendWatch或根据回包resolve成功。
+
+API/UI：复用GET /api/gameplay?module=alliance、POST /api/gameplay/survey、/config以及原/api/operations/plan、authorize、execute、history。精确account、同源、JSON和CSRF要求保留。联盟页展示精确成员/请求/自己求助/未知额度、科技前置和成本；按钮只设置业务参数并使旧预览失效，随后重新探测、计划、单次授权。账号切换/迟到回复/缓存轮询不覆盖草稿或恢复旧授权。现有限DAG的alliance节点继续调用同一注册适配器，ACTION仍具体计划后暂停待授权；未增加JS、循环或长期后台授权。
+
+历史：原planSummary、authorizationSummary和发送前DISPATCHING持久屏障保留，新增仅{stage,timestamp}，不保存响应正文。SURVEY/RESOURCE_PREFLIGHT是阶段进入；DISPATCH_INTENT持久成功后才调用传输；DISPATCHED仅表示传输方法已调用，不保证网络已送达；RESPONSE是关联typed响应；OBSERVATION_ENDED仅观察结束；VERIFY是权威复读开始；VERIFIED仅在verify确认后且清指纹前保存。阶段记录不能代替最终业务result。写前存储失败0写、写后失败UNKNOWN并保留预算/指纹，迟到回复不改最终结果，重启不自动重发。原city/order/Stage自定义执行器不接新固定阶段回调、不伪造细粒度记录。
+
+测试记录：
+
+- 起点实际重跑：845/845 Node，29组selftest；隔离CW_DATA_DIR，日志%TEMP%/cw-phase4-offline/baseline-regression.log、baseline-selftest.log。
+- 最终：887/887 Node通过，0失败/取消/跳过；新增42项＝科技22、执行阶段11、实际联盟适配器API4、联盟UI4、历史UI1；所有原测试保留。node src/selftest.mjs仍29组通过，原素材检查按已有条件跳过，未下载素材。
+- 最终日志：%TEMP%/cw-phase4-offline/final-regression-2.log、final-selftest.log。final-regression.log保留第一次完整回归的2项失败：新onStage与旧City EXECUTING标记冲突；修复为仅默认businessExecute注入后全部通过，没有删除或放宽原测试。
+- 独立审查修正：科技原共享consume允许delta>=cost，会把超扣误判成功；科技分支改为精确差额，并覆盖多扣/少扣。正常、缺字段/无效字段、重复、成本未知、不足、身份/目标变化、取消、超时、UNKNOWN、迟到、持久失败、历史重启及D6均有离线覆盖。
+- git diff --check与每次cached检查通过；暂存路径均显式列出，无data/work/E2E/账号配置或真实凭证。
+
+修改文件：src/alliance.mjs、src/actions.mjs、src/business-functions.mjs、src/operation-service.mjs、src/gameplay-page.mjs、src/page.mjs；tests/alliance-tech.test.mjs、tests/execution-stages.test.mjs、tests/gameplay-api.test.mjs、tests/gameplay-view.test.mjs、tests/operations-view.test.mjs；README.md与本文。原用户输入6文件仍未跟踪、原哈希不变；未修改main=61ce3c0，未推送。
+
+模块提交：97c619c路线图对齐；6d86188公共执行阶段及历史；21da53d联盟科技与UI/API。本文和README最终交付更新在随后文档提交，具体hash见git log -1 -- docs/PHASE_4_RECONCILIATION.md。
+
+仍待证据/验收：Alliance帮助配额/日用量/冷却与Ask完整链，Museum Complete/Reward pending身份，Treasure抵达/战斗/掠夺/奖励链，Fleet允许加速/真实攻城/敌对移动成本/持续监听跟随。PHASE2真实订单/建设/生产、写后复读、真实历史/UNKNOWN恢复均未通过；原已批准升级心跳超时、业务写0次记录原样保留。本轮没有连接真实游戏或真实业务写。
+
+下一步先由Owner验收本轮离线结果；D1跨进程owner建议先决定唯一服务进程还是租约方案，D2父预算/持续调度需单独合同，D4是否重排R1–R8仍未决定，不以本轮开发自动授权。需要真实验证时再给精确目标、成本、风险和权威复读方案并单独获批。保持原PHASE4的阻塞项明示，不自动进入PHASE5。
 
 ## 附录：95项原Cxxx起点账本
 

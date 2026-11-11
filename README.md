@@ -366,3 +366,12 @@ Manual 每批一项；Hybrid 的订单提交逐单授权、刷新可组成具体
 新增 POST 同时校验 Host、同源 Origin、JSON 和页面 CSRF 请求头；`confirm:true` 不能单独授权。没有开放 Request 或 Action 通用入口。
 
 能力映射和原始 Inventory 的增量见 [PHASE 2 Capability Delta](docs/PHASE_2_CAPABILITY_DELTA.md)。原始 Master Development Plan 对应工作区的 `docs/baseline.md`，执行状态见验收报告；用户提供的原始输入文件保留在工作区，不混入功能提交。本阶段结束后等待验收，不自动开始 PHASE 3。
+
+
+## PHASE 4：原路线图对齐与联盟科技
+
+原 Master 的 PHASE 4 是 Alliance C301–C307；本轮范围、95项能力对账、公共执行边界和剩余决策见 [PHASE 4 Reconciliation](docs/PHASE_4_RECONCILIATION.md)。PHASE 3 离线交付与 PHASE 2 的真实写入未验收记录继续保留。
+
+联盟页按精确玩家/请求 ID 展示成员、求助、额度和科技。帮助额度或冷却未知仍阻断；DonateFort 仍是堡垒建设。科技配置新增默认关闭的 tech 开关，选择 {techId,targetLevel} 后重新探测，仅允许当前等级加一级。成本取真实赛季配置的 techPointCost + techPointCostGrowth × 当前等级，使用公会科技点或联盟职级科技点；可信 worldId 来自当前 Session，阶段来自 SeasonTaskStage，不能由页面伪造。升级复用原 OperationService 的精确计划、预算、单次授权、账号互斥和执行器；关联响应、科技新读等级和实际扣点全部匹配才确认成功。没有新增通用写入口，D6 继续硬拒钻石。
+
+共享业务执行器的历史新增 SURVEY、RESOURCE_PREFLIGHT、DISPATCH_INTENT、DISPATCHED、RESPONSE / OBSERVATION_ENDED、VERIFY、VERIFIED。DISPATCHED 仅表示调用传输方法；响应和观察结束均不代表业务成功。阶段保存失败在发送前停止，发送后保持 UNKNOWN。旧 orders/city/Stage 自定义执行路径保留原有历史粒度。本轮仅离线/合成验证，不代表真实账号验收，也不提供跨进程写所有权、持续调度或 UNKNOWN 自动解除。
