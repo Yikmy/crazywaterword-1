@@ -676,6 +676,9 @@ async function loopCli({ dryRun = false, allowSpeedUp, allowReroll }) {
 // tools/capture-credentials.mjs 或网页控制台的扫码向导。
 export async function accountsCli(args, { accountStore } = {}) {
   const sub = args.find((arg) => !arg.startsWith('--')) ?? 'list';
+  if (['use', 'label', 'remove', 'rm'].includes(sub)) {
+    throw Object.assign(new Error('Standalone CLI account writes are disabled; use account management in the unique Console service'), { code: 'CLI_ACCOUNT_WRITE_DISABLED', statusCode: 409 });
+  }
   const rest = args.filter((arg) => !arg.startsWith('--') && arg !== sub);
   const store = loadCliStore({ output: cli, ...(accountStore ? { accountStore } : {}) });
 

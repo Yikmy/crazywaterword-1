@@ -1,5 +1,5 @@
 import { assertExecutionActive, awaitExecution, executionOutcome, operationResult } from './execution.mjs';
-import { ResourceLedger, resourceCosts, validateResources } from './resource-ledger.mjs';
+import { ResourceLedger, resourceCosts, validateResources, operationBudgetClaims } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 
 export const stableBusinessValue = value => JSON.stringify(value, (_key, entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
@@ -30,12 +30,12 @@ export async function executeBusinessOperation(client, protocol, operation, { ad
     const fresh = adapter.plan(facts, { ...args, selections: [operation.actionId], ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null) });
     const candidate = fresh.actions?.find(row => row.actionId === operation.actionId);
     if (!candidate || !equal(candidate.target, operation.target) || !equal(candidate.costs, operation.costs) || !equal(candidate.identity, operation.identity) || !equal(candidate.action, operation.action) || !equal(candidate.beforeState, operation.beforeState) || !equal(candidate.expectedState, operation.expectedState)
-      || candidate.actionType !== operation.actionType || candidate.costSource !== operation.costSource || typeof candidate.costSource !== 'string' || !candidate.costSource) return finish('NOT_EXECUTED', { error: '目标、状态、参数或成本来源已变化，请重新规划授权' });
+      || !equal(operationBudgetClaims(candidate), operationBudgetClaims(operation)) || candidate.actionType !== operation.actionType || candidate.costSource !== operation.costSource || typeof candidate.costSource !== 'string' || !candidate.costSource) return finish('NOT_EXECUTED', { error: '目标、状态、参数或成本来源已变化，请重新规划授权' });
     const costs = resourceCosts(candidate.costs);
     assertPaymentAllowed({ ...candidate.action, costs });
     if (!protocol[action.request] || action.response && !protocol[action.response]) return finish('NOT_EXECUTED', { error: '缺少已注册业务协议' });
     onStage('RESOURCE_PREFLIGHT');
-    await validateResources(client, protocol, costs, { timeout, budget, signal, stop, assertActive: active }); active();
+    await validateResources(client, protocol, costs, { timeout, budget, claims: operationBudgetClaims(candidate), signal, stop, assertActive: active }); active();
     if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size || client.uncertainWrites?.size) return finish('NOT_EXECUTED', {error:'写前连接存在未决请求或不确定响应，停止派发'});
     beforeState = candidate.beforeState;
     // The callback is synchronous: durable evidence failure must prevent transport.

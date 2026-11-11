@@ -98,4 +98,4 @@ export function planNaval(facts, options = {}) {
   const selected = selectedActions(view.candidates, options.selections ?? [], options.ledger ?? new ResourceLedger(facts.stockReliable ? facts.stock : null));
   return { ...selected, notes: [...selected.notes, ...view.blocked.map(row => row.reason)] };
 }
-export const navalModule = Object.freeze({ id: 'naval', defaultConfig: NAVAL_DEFAULT_CONFIG, validateConfig: validateNavalConfig, survey: surveyNaval, view: navalView, plan: planNaval, verify: () => ({ confirmed: false, reason: '海战写入结果尚无已验证的权威关联' }) });
+export const navalModule = Object.freeze({ id: 'naval', validateParameters: navalParameters, defaultConfig: NAVAL_DEFAULT_CONFIG, validateConfig: validateNavalConfig, survey: surveyNaval, view: navalView, plan: planNaval, verify: () => ({ confirmed: false, reason: '海战写入结果尚无已验证的权威关联' }) });

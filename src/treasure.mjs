@@ -98,4 +98,4 @@ export function verifyTreasure(operation, beforeFacts, afterFacts) {
   const confirmed = targetExists && ids.every(id => { const before = beforeFacts.fleets.find(fleet => fleet.buildingId === id), after = afterFacts.fleets.find(fleet => fleet.buildingId === id); return before?.state === 1 && before.treasureLootUid === 0 && after?.treasureLootUid === target.uid && [1, 2, 3, 5].includes(after.state); });
   return { confirmed, reason: confirmed ? 'MyFleets 精确舰队已关联目标宝藏；仅确认派遣，不代表获胜或奖励到账' : 'MyFleets 未证实精确舰队派遣到目标；保留 UNKNOWN' };
 }
-export const treasureModule = Object.freeze({ id: 'treasure', defaultConfig: TREASURE_DEFAULT_CONFIG, validateConfig: validateTreasureConfig, survey: surveyTreasure, view: treasureView, plan: planTreasure, verify: verifyTreasure });
+export const treasureModule = Object.freeze({ id: 'treasure', validateParameters: parametersOf, defaultConfig: TREASURE_DEFAULT_CONFIG, validateConfig: validateTreasureConfig, survey: surveyTreasure, view: treasureView, plan: planTreasure, verify: verifyTreasure });

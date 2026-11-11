@@ -212,4 +212,4 @@ export function verifyMuseum(op,b,a,response){
 
   return false;
 }
-export const museumModule=Object.freeze({id:'museum',defaultConfig:MUSEUM_DEFAULT_CONFIG,validateConfig:validateMuseumConfig,survey:surveyMuseum,view:museumView,plan:planMuseum,verify:verifyMuseum});
+export const museumModule=Object.freeze({id:'museum', validateParameters: parametersOf,defaultConfig:MUSEUM_DEFAULT_CONFIG,validateConfig:validateMuseumConfig,survey:surveyMuseum,view:museumView,plan:planMuseum,verify:verifyMuseum});

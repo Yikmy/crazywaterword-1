@@ -4,7 +4,7 @@ import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
 import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
-import { GAMEPLAY_MODULES } from './function-registry.mjs';
+import { GAMEPLAY_MODULES, registerBusinessFunction } from './function-registry.mjs';
 import { createStageFunction } from './stage-function.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -131,7 +131,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   const operationCsrf = randomUUID();
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
-  const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:stageFunction}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
+  const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:registerBusinessFunction(stageFunction)}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
     history: createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() }), ...operationOptions, assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
@@ -153,11 +153,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
     return session.stageRunner;
   }
-  function workflowView(id) { return {accountId:id,csrfToken:operationCsrf,graphs:workflowStore.list(id),examples:exampleWorkflows(operations.modules),status:workflowRunners.get(id)?.getStatus()??{status:'IDLE',running:false},history:workflowStore.history(id)}; }
+  function workflowView(id) { return {accountId:id,csrfToken:operationCsrf,functions:operations.modules?Object.keys(operations.modules):[],graphs:workflowStore.list(id),examples:exampleWorkflows(operations.modules),status:workflowRunners.get(id)?.getStatus()??{status:'IDLE',running:false},history:workflowStore.history(id)}; }
   function workflowRunner(id) {
     if(!workflowRunners.has(id))workflowRunners.set(id,createWorkflowRunner({operations,getSession:accountId=>sessions.get(accountId),modules:operations.modules,
       isCurrent:(session,generation,client)=>!closed&&sessions.get(id)===session&&session.generation===generation&&session.client===client&&session.state==='READY',
-      claim:(accountId,runId)=>operations.claimWorkflow(sessions.get(accountId),runId),
+      claim:(accountId,runId,options)=>operations.claimWorkflow(sessions.get(accountId),runId,options),
       onUpdate:status=>{ writerOwnership.assertOwned(); workflowStore.record(id,status); }}));
     return workflowRunners.get(id);
   }

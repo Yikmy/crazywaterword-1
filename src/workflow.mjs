@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redact } from './security.mjs';
+import { normalizeBudgetClaims } from './resource-ledger.mjs';
+import { validateFunctionParameters } from './function-contracts.mjs';
 
 export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072 });
 const TYPES = new Set(['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP']);
@@ -34,9 +36,10 @@ function condition(value) {
   if (Object.hasOwn(value, 'value')) { if (value.value !== null && !['string','number','boolean'].includes(typeof value.value)) throw fail('条件比较值必须是标量'); json(value.value); }
 }
 export function validateWorkflow(input, options = {}) {
-  exact(input, ['version','id','name','nodes','edges'], '工作流');
+  exact(input, ['version','id','name','nodes','edges','budget'], '工作流');
   if (input.version !== 1 || !text(input.id) || input.id.length > 100 || !text(input.name) || input.name.length > 160 || !Array.isArray(input.nodes) || !input.nodes.length || input.nodes.length > WORKFLOW_LIMITS.nodes || !Array.isArray(input.edges) || input.edges.length > WORKFLOW_LIMITS.edges) throw fail('工作流版本、身份或图大小无效');
   const registry = registryOf(options); let graph; try { graph = copy(input); } catch { throw fail('工作流必须为可复制的 JSON'); } const nodes = new Map();
+  if (graph.budget !== undefined) { try { graph.budget=normalizeBudgetClaims(graph.budget); } catch { throw fail('工作流预算必须为有限资源/配额/UID上限'); } }
   const fields = {
     START: [], STOP: [], BRANCH: [], WAIT: ['durationMs'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
     CONDITION: ['condition'], RULE: ['condition'], VERIFY: ['module','condition'],
@@ -47,6 +50,7 @@ export function validateWorkflow(input, options = {}) {
     if (node.label !== undefined && (!text(node.label) || node.label.length > 160)) throw fail('节点标签无效');
     if (['SURVEY','ACTION'].includes(node.type) || node.module !== undefined) registered(registry, node.module, node.type);
     if (node.parameters !== undefined) { if (!plain(node.parameters)) throw fail('业务参数必须为对象'); json(node.parameters); }
+    if (['SURVEY','ACTION'].includes(node.type)) { const adapter=registry.get(node.module); if(adapter?.contractVersion===1) validateFunctionParameters(node.module,adapter,node.parameters??{}); }
     if (node.type === 'ACTION') {
       if (typeof node.selection === 'string') { if (!text(node.selection) || node.selection.length > 1000) throw fail('操作选择无效'); }
       else { exact(node.selection, ['actionId'], '操作选择'); if (!text(node.selection.actionId) || node.selection.actionId.length > 1000) throw fail('缺少明确操作 ID'); }
@@ -109,15 +113,25 @@ function confirmedRun(run, plan, accountId) {
 }
 export function createWorkflowRunner({ operations, getSession, modules, isCurrent, signal, clock = Date.now, claim = () => true, release = () => {}, onUpdate = () => {} } = {}) {
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
-  let context = null, task = null, starting = false, resuming = false;
+  let context = null, task = null, starting = false, resuming = false, finishing = false;
   const now = () => new Date(clock()).toISOString();
-  function getStatus() { if (!context) return { status: 'IDLE', running: false }; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace }); }
+  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
   function current(ctx) {
     if (ctx.cancel.signal.aborted || signal?.aborted || context !== ctx || ![...ACTIVE].includes(ctx.status) || ctx.session.abort?.signal?.aborted) throw fail('工作流已取消或账号会话失效', 'CANCELLED');
     if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话已切换', 'CANCELLED');
   }
   async function relinquish(ctx) { if (!ctx.claimed) return; ctx.claimed = false; if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId); }
-  async function finish(ctx, status, reason) { ctx.status = status; ctx.reason = reason; ctx.finishedAt = now(); ctx.waitingPlan = null; signal?.removeEventListener('abort', ctx.externalAbort); ctx.session.abort?.signal?.removeEventListener('abort', ctx.externalAbort); try { await onUpdate(getStatus()); } catch { ctx.status = 'FAILED'; ctx.reason = '工作流持久化失败；已停止所有后续节点'; } try { await relinquish(ctx); } catch { ctx.status = 'FAILED'; ctx.reason = '账号工作流锁释放失败'; } }
+  async function finish(ctx, status, reason) {
+    finishing=true;
+    ctx.status=status; ctx.reason=reason; ctx.finishedAt=now(); ctx.waitingPlan=null;
+    signal?.removeEventListener('abort',ctx.externalAbort); ctx.session.abort?.signal?.removeEventListener('abort',ctx.externalAbort);
+    // Close the parent immediately but retain the owner until its operation settles.
+    const outcome={COMPLETED:'SUCCESS',UNKNOWN:'UNKNOWN',CANCELLED:'CANCELLED',FAILED:'FAILED'}[status]??'STOPPED';
+    const parent=operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,outcome); if(parent)ctx.runBudget=parent;
+    if(operations.running?.(ctx.accountId)){operations.stop?.(ctx.accountId);await operations.settle(ctx.accountId);}
+    try{await onUpdate(getStatus());}catch{ctx.status='FAILED';ctx.reason='工作流持久化失败；已停止所有后续节点';}
+    try{await relinquish(ctx);}catch{ctx.status='FAILED';ctx.reason='账号工作流锁释放失败';}finally{finishing=false;}
+  }
   function cancelled(ctx, promise) {
     const observed = Promise.resolve(promise); let listener;
     const aborted = new Promise((_, reject) => { listener = () => reject(fail('工作流已取消', 'CANCELLED')); ctx.cancel.signal.addEventListener('abort', listener, { once: true }); if (ctx.cancel.signal.aborted || signal?.aborted) listener(); });
@@ -159,14 +173,14 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     return getStatus();
   }
   async function start(accountId, graph) {
-    if (starting || context && ACTIVE.has(context.status)) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
+    if (starting || finishing || context && ACTIVE.has(context.status)) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
     if (!text(accountId)) throw fail('工作流必须绑定精确账号 ID');
     const validated = validateWorkflow(graph, { modules }); starting = true;
     try {
       const session = await getSession(accountId); if (!session || session.id !== accountId) throw fail('工作流账号会话不存在');
       const ctx = { accountId, session, generation: session.generation, client: session.client, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.session.abort?.signal?.addEventListener('abort', ctx.externalAbort, { once: true });
-      try { current(ctx); const lock = await claim(accountId, ctx.runId); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
+      try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
       catch (error) { await finish(ctx, error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', error.message); throw error; }
       task = advance(ctx); return await task;
     } finally { starting = false; }
@@ -225,7 +239,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) 
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }
   function save(accountId, graph) { const validated = validateWorkflow(graph, { modules }).workflow, raw = read(), account = entry(raw, accountId); account.workflows = [validated, ...account.workflows.filter(existing => existing.id !== validated.id)]; write(raw); return copy(validated); }
   function record(accountId, run) {
-    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace'];
+    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;

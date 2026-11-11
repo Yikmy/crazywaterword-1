@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { ResourceLedger, resourceCosts } from './resource-ledger.mjs';
+import { ResourceLedger, resourceCosts, createRunBudgetContext, normalizeBudgetClaims, operationBudgetClaims } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, stopsExecution } from './execution.mjs';
 import { loadProductionPolicy, saveProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
 import { summarizeProductionHistory } from './production-report.mjs';
@@ -10,6 +10,7 @@ import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from 
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { GAMEPLAY_MODULES, listBusinessFunctions } from './function-registry.mjs';
 import { createModuleSettings } from './gameplay-settings.mjs';
+import { validateFunctionParameters } from './function-contracts.mjs';
 import { BUSINESS_EXECUTION_STAGES, executeBusinessOperation } from './business-functions.mjs';
 
 const clone = value => structuredClone(value);
@@ -21,7 +22,7 @@ function exact(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) throw error('请求包含不支持的字段', 'INVALID_INPUT', 400);
 }
 function publicAction(operation) {
-  const fields = ['module', 'actionId', 'actionType', 'target', 'costs', 'beforeState', 'identity', 'decision', 'ruleResult', 'reason', 'label', 'expectedState', 'costSource', 'parameters', 'restoreParameters'];
+  const fields = ['module', 'actionId', 'actionType', 'target', 'costs', 'beforeState', 'identity', 'decision', 'ruleResult', 'reason', 'label', 'expectedState', 'costSource', 'parameters', 'restoreParameters', 'budgetClaims'];
   return Object.fromEntries(fields.filter(key => operation[key] !== undefined).map(key => [key, clone(operation[key])]));
 }
 function evidence(result) {
@@ -39,8 +40,12 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   modules = GAMEPLAY_MODULES, moduleSettings = createModuleSettings({ modules }), businessExecute = executeBusinessOperation,
 } = {}) {
   const cache = new Map(), plans = new Map(), runs = new Map(), moduleCache = new Map(), formationProofs = new Map(), moduleFacts = new Map();
-  const recoveryPreviews = new Map();
-  const executionContext = session => toSnapshotJson({ accountId: session.id, playerId: session.player?.playerId ?? null, worldId: session.player?.worldId ?? null, generation: session.generation, connectionId: session.connectionId ?? null });
+  const recoveryPreviews = new Map(), workflowBudgets = new Map(), connectionIds = new WeakMap();
+  const coreModules = new Set(['orders','city','production']);
+  function connectionIdOf(session) { if (typeof session.connectionId === 'string' && session.connectionId) return session.connectionId; if (!connectionIds.has(session.client)) connectionIds.set(session.client, randomUUID()); return connectionIds.get(session.client); }
+  const parentScope = (session, runId) => ({ accountId: session.id, runId, generation: session.generation, connectionId: connectionIdOf(session) });
+  const stockLimits = stock => normalizeBudgetClaims({ resources: [...stock].filter(([,num]) => Number.isSafeInteger(num) && num > 0).filter(([id]) => !['RUBY','钻石'].includes(id)).map(([id,num]) => ({id,num})), quotas: [], uids: [] });
+  const executionContext = session => toSnapshotJson({ accountId: session.id, playerId: session.player?.playerId ?? null, worldId: session.player?.worldId ?? null, generation: session.generation, connectionId: connectionIdOf(session) });
   const lockOwners = new WeakMap(), workflowOwners = new WeakMap();
   const now = () => new Date(clock()).toISOString();
   function current(session, generation, client) {
@@ -91,38 +96,44 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   function adapterFor(id) { if (!Object.hasOwn(modules, id)) throw error('未注册玩法', 'INVALID_INPUT', 400); return modules[id]; }
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id] ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
   function cacheModule(accountId, id, facts, options) {
-    moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(facts)});
+    moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});
     const raw = adapterFor(id).view(facts, options);
     const safe = { ...raw, candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: safe });
   }
   async function surveyModule(session, id, parameters = {}, { workflowId = null } = {}) {
-    const adapter = adapterFor(id), release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
-    try { const options = { config: getConfig(), player: session.player, signal: session.abort.signal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
+    const adapter = adapterFor(id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
+    const release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
+    try { const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: session.abort.signal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
       const facts = await adapter.survey(client, protocol, options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
   function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
-  function claimWorkflow(session, runId) {
+  function claimWorkflow(session, runId, { limits = null } = {}) {
     const release = acquire(session, 'operations:WORKFLOW_CLAIM'); release(); const owner={generation:session.generation,client:session.client}; workflowOwners.set(session,owner); session.workflowOwner=runId; session.busy='workflow:'+runId;
-    return () => { if(workflowOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client || session.workflowOwner!==runId)return; workflowOwners.delete(session); if(plans.get(session.id)?.workflowId===runId)plans.delete(session.id); session.workflowOwner=null; if(session.busy==='workflow:'+runId)session.busy=null; };
+    const scope = parentScope(session, runId);
+    try { workflowBudgets.set(session.id, { runId, scope, limits: limits === null ? null : normalizeBudgetClaims(limits), context: limits === null ? null : createRunBudgetContext({ scope, limits }) }); } catch (cause) { session.workflowOwner=null; session.busy=null; throw cause; }
+    const heldBudget=workflowBudgets.get(session.id);
+    return () => { heldBudget.context?.close('STOPPED'); if(workflowOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client || session.workflowOwner!==runId)return; workflowOwners.delete(session); if(plans.get(session.id)?.workflowId===runId)plans.delete(session.id); session.workflowOwner=null; if(session.busy==='workflow:'+runId)session.busy=null; };
   }
   async function plan(session, payload, { workflowId = null } = {}) {
     exact(payload, ['module', 'mode', 'selections', 'parameters']);
     const { module, mode, selections, parameters = {} } = payload;
-    const adapter = Object.hasOwn(modules, module) ? modules[module] : null;
+    const adapter = Object.hasOwn(modules, module) && (!coreModules.has(module) || module === 'production' || Object.hasOwn(payload,'parameters') || workflowId !== null) ? modules[module] : null;
+    const normalizedParameters = adapter?.contractVersion===1 ? validateFunctionParameters(module,adapter,parameters) ?? {} : parameters;
     if ((!adapter && !['orders', 'city', 'combined'].includes(module)) || (!adapter && Object.hasOwn(payload,'parameters')) || !['Manual', 'Hybrid', 'Automatic'].includes(mode)
       || !Array.isArray(selections) || !selections.length || selections.length > 100 || selections.some(id => typeof id !== 'string' || !id || id.length > 300)
       || new Set(selections).size !== selections.length || (mode === 'Manual' && selections.length !== 1)) throw error('模块、模式或操作选择无效；Manual 每次只允许一条', 'INVALID_INPUT', 400);
     const release = acquire(session, 'operations:PLAN', workflowId);
-    const generation = session.generation, client = session.client;
+    const generation = session.generation, client = session.client, contextHash=operationDigest(executionContext(session));
     try {
       const config = getConfig(), rules = loadRules(session.id).config;
       const moduleConfig = adapter ? moduleSettings.get(session.id,module).config : null;
-      const options = { config, player: session.player, signal: session.abort.signal, parameters, moduleConfig };
+      const production = loadProduction(session.id).config;
+      const options = { config, rules, mode, productionPolicy: production, player: session.player, signal: session.abort.signal, parameters: normalizedParameters, moduleConfig };
       const facts = await (adapter ? adapter.survey(client,protocol,options) : survey(client,protocol,options));
       current(session, generation, client);
-      if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED');
+      if((session.workflowOwner??null)!==workflowId || operationDigest(executionContext(session))!==contextHash)throw error('工作流或账号角色/世界身份已变化', 'CANCELLED');
       if (facts.stockReliable !== true || !(facts.stock instanceof Map)) throw error('库存来源不可靠，禁止计划');
       // Both modules share this exact planning ledger. Execution starts a separate conservative ledger.
       const ledger = new ResourceLedger(facts.stock), operations = [];
@@ -145,19 +156,22 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
         }
       }
       if (operations.length !== selections.length || operations.some(action => !selections.includes(action.actionId))) throw error('操作已变化、无法执行或预算不足；请重新采集和选择', 'STALE_PLAN');
-      const production = loadProduction(session.id).config;
       if (mode === 'Hybrid' && operations.some(op => op.actionType === 'SUBMIT') && operations.length !== 1) throw error('Hybrid 提交需逐单授权', 'INVALID_INPUT', 400);
       if (!adapter && mode === 'Automatic') {
         const allowed = selectProductionCandidates(facts, { policy: production, candidates: cityViewer(facts, { config }).candidates });
         if (operations.some(op => op.actionType === 'startProduce' && !allowed.includes(op.actionId))) throw error('自动生产未启用或超出当前账号策略范围', 'PRODUCTION_POLICY_REQUIRED');
       }
       // Keep the server's deterministic dependency order; no caller-supplied request/body is accepted.
-      const resourceBudget = resourceCosts(operations.flatMap(action => action.costs));
+      for(const operation of operations)operation.budgetClaims=operationBudgetClaims(operation);
+      const budgetClaims=normalizeBudgetClaims({resources:operations.flatMap(action=>action.budgetClaims.resources),quotas:operations.flatMap(action=>action.budgetClaims.quotas),uids:operations.flatMap(action=>action.budgetClaims.uids)});
+      const resourceBudget=budgetClaims.resources;
       const createdAt = now(), batchId = randomUUID(), expiresAt = new Date(clock() + 300000).toISOString();
-      const summary = { batchId, accountId: session.id, module, mode, actions: operations.map(publicAction), resourceBudget, productionPolicy: production, ...(adapter ? { moduleConfig, parameters } : {}), createdAt, expiresAt,
+      let parent = null;
+      if (workflowId) { parent = workflowBudgets.get(session.id); if (!parent || parent.runId !== workflowId) throw error('工作流父预算不存在', 'RUN_BUDGET_SCOPE_MISMATCH'); if (!parent.context) { parent.limits = stockLimits(facts.stock); parent.context = createRunBudgetContext({scope:parent.scope,limits:parent.limits}); } parent.context.assertScope(parentScope(session,workflowId)); }
+      const summary = { ...(parent ? { parentRunId: workflowId, runBudgetIdentity: { scope: clone(parent.scope), limits: clone(parent.limits) } } : {}), batchId, accountId: session.id, module, mode, actions: operations.map(publicAction), resourceBudget, budgetClaims, productionPolicy: production, ...(adapter ? { moduleConfig, parameters: normalizedParameters } : {}), createdAt, expiresAt,
         notes: ['授权仅覆盖本批次具体操作；新订单和新计划需要重新授权', 'UNKNOWN 停止批次并保留预算；不自动重试'] };
       summary.planHash = operationDigest(summary);
-      const internal = { public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
+      const internal = { contextHash, adapter: Boolean(adapter), dependencyHash: adapter?.dependencyVersions ? operationDigest(adapter.dependencyVersions(options)) : null, public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
       plans.set(session.id, internal);
       if(adapter) cacheModule(session.id,module,facts,options); else cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
       return clone(summary);
@@ -167,7 +181,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const entry = plans.get(session.id);
     if (!entry || entry.public.batchId !== payload.batchId || clock() >= Date.parse(entry.public.expiresAt)) throw error('批次不存在或已过期', 'STALE_PLAN');
     current(session, entry.generation, entry.client);
+    if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化，请重新规划','STALE_PLAN');
     if ((session.workflowOwner ?? null) !== entry.workflowId) throw error('工作流归属已变化，重新规划', 'STALE_PLAN');
+    if (entry.workflowId) { const parent=workflowBudgets.get(session.id); if (!parent?.context || parent.runId!==entry.workflowId) throw error('工作流父预算已结束','RUN_BUDGET_CLOSED'); parent.context.assertScope(parentScope(session,entry.workflowId)); if(operationDigest({scope:parent.scope,limits:parent.limits})!==operationDigest(entry.public.runBudgetIdentity))throw error('父预算授权已变化','STALE_PLAN'); }
+    if (entry.dependencyHash) { const adapter=modules[entry.public.module]; const versions=adapter.dependencyVersions({config:getConfig(),rules:loadRules(session.id).config,productionPolicy:loadProduction(session.id).config,moduleConfig:moduleSettings.get(session.id,entry.public.module).config,mode:entry.public.mode,parameters:entry.public.parameters??{},player:session.player}); if(operationDigest(versions)!==entry.dependencyHash)throw error('业务相关配置已变化，请重新规划','STALE_PLAN'); return entry; }
     if (entry.moduleHash && operationDigest(moduleSettings.get(session.id,entry.public.module).config) !== entry.moduleHash) throw error('玩法配置已变化，重新规划', 'STALE_PLAN');
     if (operationDigest(loadProduction(session.id).config) !== entry.productionHash) throw error('生产策略已变化，必须重新规划授权', 'STALE_PLAN');
     if (operationDigest(getConfig()) !== entry.configHash) throw error('配置成本表已变化，必须重新规划', 'STALE_PLAN');
@@ -188,7 +205,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const entry = lookup(session, payload);
     if (entry.consumed || !entry.permit || entry.permit.id !== payload.permitId) throw error('缺少当前批次单次授权', 'AUTHORIZATION_REQUIRED', 403);
     const release = acquire(session, 'operations:EXECUTING', entry.workflowId);
-    const record = { executionContext: executionContext(session), runId: randomUUID(), accountId: session.id, module: entry.public.module, mode: entry.public.mode, startedAt: now(), finishedAt: null,
+    const record = { parentRunId: entry.workflowId ?? null, workflowId: entry.workflowId ?? null, executionContext: executionContext(session), runId: randomUUID(), accountId: session.id, module: entry.public.module, mode: entry.public.mode, startedAt: now(), finishedAt: null,
       authorizationSummary: { batchId: entry.public.batchId, planHash: entry.public.planHash, approvedAt: entry.permit.approvedAt, actionIds: entry.public.actions.map(action => action.actionId), resourceBudget: entry.public.resourceBudget },
       planSummary: entry.public, resourceBudget: entry.public.resourceBudget,
       actions: entry.operations.map(action => ({ ...publicAction(action), ...(modules[action.module] && !modules[action.module].execute ? { dispatchEvidence: { version: 1, contract: RECOVERY_DISPATCH_CONTRACT, state: 'NOT_DISPATCHED' } } : {}), resourceReservation: action.costs, requestStatus: 'NOT_DISPATCHED', result: 'NOT_EXECUTED', afterState: null, timestamp: null })),
@@ -198,20 +215,25 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const run = { record, running: true, stop: { aborted: false }, task: null };
     runs.set(session.id, run);
     const generation = session.generation, client = session.client, signal = session.abort.signal;
-    const budget = { ledger: new ResourceLedger(entry.stock) };
+    let budget;
+    try { const parent=entry.workflowId?workflowBudgets.get(session.id).context:createRunBudgetContext({scope:parentScope(session,record.runId),limits:entry.public.budgetClaims}); const limits=entry.public.budgetClaims; budget={runBudget:parent,scope:parentScope(session,entry.workflowId??record.runId),batchId:entry.public.batchId,limits,ledger:parent.child(entry.stock,{batchId:entry.public.batchId,scope:parentScope(session,entry.workflowId??record.runId),limits})}; record.runBudget=parent.snapshot(); history.put(record); } catch(cause) { record.finalStatus='NOT_EXECUTED';record.stopReason=cause.message;record.finishedAt=now();try{history.put(record);}finally{run.running=false;release();}throw cause; }
     const authorizedCurrent = () => {
       current(session, generation, client);
+      if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化','NOT_EXECUTED');
+      budget.runBudget.assertScope(parentScope(session,entry.workflowId??record.runId));
+      if(entry.dependencyHash){ lookup(session,{batchId:entry.public.batchId}); return; }
       if ((session.workflowOwner ?? null) !== entry.workflowId || entry.moduleHash && operationDigest(moduleSettings.get(session.id,entry.public.module).config) !== entry.moduleHash) throw error('玩法配置或工作流归属变化', 'NOT_EXECUTED');
       if (operationDigest(getConfig()) !== entry.configHash || operationDigest(loadRules(session.id).config) !== entry.rulesHash || operationDigest(loadProduction(session.id).config) !== entry.productionHash) throw error('配置或规则变化，当前授权已失效', 'NOT_EXECUTED');
     };
+    budget.onReserved = () => { authorizedCurrent(); record.runBudget=budget.runBudget.snapshot(); history.put(record); };
     run.task = Promise.resolve().then(async () => {
       for (let index = 0; index < entry.operations.length; index++) {
         if (run.stop.aborted) { record.finalStatus = 'CANCELLED'; record.stopReason = '用户主动停止；后续操作未发送'; break; }
         current(session, generation, client);
-        if (operationDigest(loadRules(session.id).config) !== entry.rulesHash) throw error('执行期间规则变化，停止后续操作', 'NOT_EXECUTED');
+        if (!entry.dependencyHash && operationDigest(loadRules(session.id).config) !== entry.rulesHash) throw error('执行期间规则变化，停止后续操作', 'NOT_EXECUTED');
         const operation = entry.operations[index], row = record.actions[index];
         row.requestStatus = 'DISPATCHING'; row.timestamp = now(); history.put(record);
-        const adapter = modules[operation.module];
+        const adapter = entry.adapter ? modules[operation.module] : null;
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
         const result = await executor(client, protocol, operation, { config: entry.config, rules: loadRules(session.id).config, player: session.player,
           allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
@@ -246,8 +268,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       if (pending) { pending.result = 'UNKNOWN'; pending.requestStatus = 'UNKNOWN'; pending.reason = cause.message; }
     }).finally(() => {
       record.finishedAt = now();
-      try { history.put(record); }
-      catch (cause) { record.finalStatus = 'UNKNOWN'; record.stopReason = cause.message; }
+      const success=record.finalStatus==='SUCCESS', standaloneSuccess=success&&!entry.workflowId;
+      record.runBudget=success?{...budget.runBudget.snapshot(),...(standaloneSuccess?{state:'CLOSED',outcome:'SUCCESS'}:{})}:budget.runBudget.close(['UNKNOWN','CANCELLED','RATE_LIMITED','FAILED'].includes(record.finalStatus)?record.finalStatus:'STOPPED');
+      try { history.put(record); if(standaloneSuccess)budget.runBudget.close('SUCCESS'); }
+      catch (cause) { record.finalStatus = 'UNKNOWN'; record.stopReason = cause.message; record.runBudget=budget.runBudget.close('UNKNOWN'); }
       run.running = false; release();
     });
     return { runId: record.runId, status: 'EXECUTING' };
@@ -315,7 +339,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },

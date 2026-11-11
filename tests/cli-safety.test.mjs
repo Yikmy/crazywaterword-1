@@ -312,3 +312,42 @@ test('writer main inspect and dead-owner recovery preserve malformed credentials
   const names = fs.readdirSync(dir); assert.equal(names.length, 3); assert.equal(names.some(name => name.endsWith('.lock')), false);
   clean(inspection + JSON.stringify(recovered));
 });
+test('standalone account mutations reject before injected account store access regardless of flags', async (t) => {
+  const lines = capture(t); let reads = 0;
+  const accountStore = { loadStore() { reads++; throw new Error('malformed synthetic store ' + token); } };
+  for (const sub of ['use', 'label', 'remove', 'rm']) {
+    for (const flags of [[], ['--yes'], ['--force', '--paid', '--dry']]) {
+      await assert.rejects(accountsCli([...flags, sub, '1', 'fixture-label'], { accountStore }), { code: 'CLI_ACCOUNT_WRITE_DISABLED', statusCode: 409 });
+    }
+  }
+  assert.equal(reads, 0); assert.deepEqual(lines, []);
+});
+
+test('account mutation main routes preserve valid or malformed synthetic store and never acquire owner', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-cli-account-write-deny-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'accounts.json');
+  const appUrl = pathToFileURL(path.resolve(import.meta.dirname, '../src/app.mjs')).href;
+  const script = [
+    "import assert from 'node:assert/strict';",
+    'const { main } = await import(' + JSON.stringify(appUrl) + ');',
+    "for (const sub of ['use', 'label', 'remove', 'rm']) {",
+    "process.argv = [process.execPath, 'fixture-cli', 'accounts', '--force', sub, '1', 'fixture-label', '--yes', '--dry'];",
+    "await assert.rejects(main(), { code: 'CLI_ACCOUNT_WRITE_DISABLED', statusCode: 409 });",
+    '}',
+  ].join('\n');
+  for (const contents of [JSON.stringify(store()), 'not-json-' + token]) {
+    fs.writeFileSync(file, contents);
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: dir, env: { ...process.env, CW_DATA_DIR: dir, CW_ALLOW_MUTATE: '1', CW_FORCE: '1', CW_DEBUG: '1' }, encoding: 'utf8', timeout: 15000 });
+    assert.equal(output, ''); assert.equal(fs.readFileSync(file, 'utf8'), contents);
+    assert.deepEqual(fs.readdirSync(dir), ['accounts.json']);
+  }
+});
+
+test('account list/show remain read-only with unchanged synthetic credentials and metadata', async (t) => {
+  const lines = capture(t), original = store(), before = JSON.stringify(original); let reads = 0;
+  const accountStore = { loadStore() { reads++; return original; } };
+  await accountsCli(['list'], { accountStore }); await accountsCli(['show', '1'], { accountStore });
+  assert.equal(reads, 2); assert.equal(JSON.stringify(original), before); clean(lines.join('\n'));
+  assert.match(lines.join('\n'), /账号 fixtur/); assert.doesNotMatch(lines.join('\n'), /fixture-cli-open-id/);
+});

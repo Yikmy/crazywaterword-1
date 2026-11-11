@@ -199,4 +199,11 @@ export function verifyFleet(operation, beforeFacts, afterFacts, response) {
   if (type === 'cargoClaim') return { confirmed: before.status === 2 && [0, 1].includes(after.status) && response?.ship?.index === target.shipIndex && Array.isArray(response?.reward?.asset) && response.reward.asset.length > 0, reason: '须同时确认奖励回包、精确货船及旧到港状态已消耗' };
   return { confirmed: false, reason: '该操作未通过业务验证' };
 }
-export const fleetModule = Object.freeze({ id: 'fleet', defaultConfig: FLEET_DEFAULT_CONFIG, validateConfig: validateFleetConfig, survey: surveyFleet, view: fleetView, plan: planFleet, verify: verifyFleet });
+// Re-read only the fixed scenario map used by movement cost calculations.
+// No map functions or filesystem paths are exported as dependency metadata.
+function fleetDependencyVersions({config,moduleConfig={}}={}) {
+  const opts=validateFleetConfig(moduleConfig), map=opts.move?loadMapAsset(opts.scenarioId):null;
+  const names=['CityCfg','AttackCityConsumeCfg','FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'];
+  return {moduleConfig:opts,config:Object.fromEntries(names.map(name=>[name,structuredClone(config?.tables?.[name]??null)])),mapAsset:map?{scenarioId:map.scenarioId,width:map.width,height:map.height,tileWidth:map.tileWidth??null,tileHeight:map.tileHeight??null,cityInfo:structuredClone(map.cityInfo??null)}:null};
+}
+export const fleetModule = Object.freeze({ dependencyVersions:fleetDependencyVersions, id: 'fleet', validateParameters: parametersOf, defaultConfig: FLEET_DEFAULT_CONFIG, validateConfig: validateFleetConfig, survey: surveyFleet, view: fleetView, plan: planFleet, verify: verifyFleet });

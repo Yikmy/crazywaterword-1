@@ -142,6 +142,6 @@ test('history failure before dispatch sends nothing; failure after dispatch bloc
   let f = fixture({ history: { unresolved: () => false, list: () => [], put: fail } }), a = f.session('A');
   try { const plan = await createPlan(f, a); assert.throws(() => start(f, a, plan), /history/); assert.equal(f.calls.length, 0); assert.equal(a.busy, null); } finally { f.cleanup(); }
   let writes = 0;
-  f = fixture({ history: { unresolved: () => false, list: () => [], put: () => { if (++writes >= 3) fail(); } } }); a = f.session('A');
+  f = fixture({ history: { unresolved: () => false, list: () => [], put: record => { writes++; if (record.actions.some(row => row.result === 'SUCCESS')) fail(); } } }); a = f.session('A');
   try { start(f, a, await createPlan(f, a, ['order-a', 'order-b'], 'Automatic')); await f.service.settle('A'); assert.equal(f.calls.length, 1); assert.equal(f.service.status('A').blocked, true); await assert.rejects(createPlan(f, a), /未决/); } finally { f.cleanup(); }
 });

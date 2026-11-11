@@ -1984,7 +1984,7 @@ Function 状态与 API/UI、离线测试、外部证据阻塞分别记录。EXIS
 |---|---|---|---|
 | W01 | OFFLINE_VERIFIED（已实施的公共安全/恢复合同） | writer-ownership→Console listen/派发/持久写/关闭结算；独立CLI非dry写在读凭证前拒绝；writer inspect/recover显式同机双DEAD证明；Stage共用精确账号/Origin/CSRF；History追加reconciliation→Service预览/二次复读/确认→专用API→历史UI | APPLIED仅完整原凭据+同connectionId/代次/角色/世界+零成本Formation权威复读；NOT_APPLIED仅版本化未派发屏障；其余/旧记录/重连/重启仍STILL_UNKNOWN，不清指纹、不重发、不改原结果或预算。后续领域按证据扩，不伪造通用恢复 |
 | W03 | 公共事实/时钟/目录 OFFLINE_VERIFIED；资产可移植恢复 BLOCKED_EVIDENCE | state-facts→Client匹配Ping/Pong/terminal reset→五领域survey最早/最晚时间；48基础collector追加精度/来源/范围；Explorer保留provenance；28业务只读目录（16复用基础+12附加）仅元数据；账号默认配置复用ModuleSettings账户隔离；有界20项首Pong/事件循环诊断与页面可靠性；asset-readiness→固定清单→显式assets CLI | map1缺失；原协议包/CDN版本和可移植恢复archive尚无可靠证据。清单与本地文件匹配≠可从干净clone完整恢复。账号安全导入/新区进入继续按独立权限和证据评审，不启捕获路由。诊断不改原1000ms心跳 |
-| W02 | IN_PROGRESS | 正接同一Ledger父run合同、静态Function元数据及原City/Orders/Production适配 | 未宣布R1结束，未开始R2；不受缺地图影响的合同及现有业务测试继续。地图依赖模块仍受W03局部闸门约束 |
+| W02 | OFFLINE_VERIFIED（公共合同与原核心Adapter范围，见D.6） | 父run/子batch统一物资、配额、typed UID声明；10项静态合同；原City/Orders/Production包装及Workflow配置/候选/执行 | 不等于所有领域工作包已完成；W03地图/来源恢复仍局部BLOCKED，不冒称R1完整DoD关闭 |
 
 W01 的恢复证据存于原ExecutionHistory v1的动作reconciliations数组，原finalStatus/requestStatus/result/resourceReservation保持。未完成run读取仍保守投影UNKNOWN；损坏历史拒写，已有复核事件不能被put覆盖。预览有效期60秒，确认复读后再次检查到期、历史digest及上下文。发送前持久DISPATCH_INTENT；崩溃窗口视为MAY_HAVE_DISPATCHED。成功原Formation验证后仅保存脱敏最小凭据，验证凭据持久失败仍UNKNOWN。只读复核不创建假业务写历史，不预留/返还资源。
 
@@ -2028,3 +2028,33 @@ node --test tests/writer-ownership.test.mjs tests/cli-safety.test.mjs tests/acti
 继续使用现有分支/目录，不建新worktree。先查Git状态、附录D最新增量和所有未提交diff；不要重复创建Goal或重做W01/PHASE4。W02按父预算→Service/Workflow接入、静态合同→Registry/实际模块validator、Core Adapter→旧API兼容/Workflow目录接线串行集成；公共文件由root统一修改，独立Ledger/Core Adapter/Contract文件由各子任务负责。相关定向测试通过后完成R1独立阶段提交；随后才开放R2及可提前的W19。
 
 未覆盖/待后续：旧UNKNOWN缺原凭据/跨重连无法自动解除；原CLI写已封禁需使用服务具体业务API；全量账号默认专业设置在W21产品整合继续；原工具在线诊断治理仍属W22、未调用；W02跨node父预算尚未宣称完成。所有R2–R8、W04–W22原DoD及24最终真实场景均保持，R8授权清单在R7完成后具体生成。局部外证、NOT_EXERCISED/REAL_UNVERIFIED不改PASS。
+
+### D.6 W02 公共合同集成增量（2026-11-11，取代D.5待实施项）
+
+公共安全基础已提交为26ed68d8fd09996418bd23946e2a3a21a4042949；W02测试对象以该提交为父，本节随W02提交保存，Git可准确定位源码。目录/分支不变，原五份未跟踪输入不暂存。未真实连接、未读真实凭证、未push/merge。
+
+实施链：function-contracts → registerBusinessFunction → 9个静态域及server注册Stage（共10） → OperationService → 原业务executor或唯一generic executor → 原GameClient → 权威verify → 原ExecutionHistory。元数据含capabilityId、C/P/S、输入/输出结构、权限、预算、取消、验证、调度支持及证据限制；元数据不授予缺证子能力权限。已注册域暴露原validateParameters；未知字段、transport、脚本、凭证、原型、访问器注入在读状态前拒绝。
+
+Orders/City/Production包装原survey/planner/executor，保留规则、Manual/Hybrid/Automatic、生产策略、完整状态和资源复读，不新建发送器。无parameters旧orders/city计划兼容；Workflow或有parameters的新节点走同Service受控Adapter，默认关闭。Workflow现有区可读取/保存三模块账号开关，变更清旧候选/计划，迟到响应按账号及编辑代次丢弃。
+
+createRunBudgetContext冻结account/run/generation/connectionId与有限上限；child精确绑定batchId。operationBudgetClaims要求resources等于costs；quota/typed UID是可信planner声明，不代替业务资格。每action及合并batch声明进入planHash，同批重复UID拒绝；fresh replan比较声明。没有可靠配额来源的原业务继续阻塞，不编造quota事实。三类声明原子检查后才扣减；库存/收益/新batch不补父预算，无refund/reset/restore。旧图无budget时冻结首计划可靠库存，后续加额须新run明确预算。摘要resumable=false，重启不重建活父预算。
+
+Service在transport前同步保存父累计扣减；Stage零材料也走同preflight。UNKNOWN/取消子链关闭父预算并保留扣减。Workflow结束先close父，再等Operation结算、保存CLOSED最终快照、释放匹配owner；结算期间不准新start，旧run不读取新run预算。最终history失败保持UNKNOWN并close父；standalone成功只有最终落盘成功才真正close SUCCESS。
+
+依赖失效使用可信adapter.dependencyVersions：相关配置变化作废，无关订单/生产规则不影响Formation等域；旧端点保留原保护。Fleet读取实际scenario地图成本相关投影，缺地图保持null并阻塞对应业务，不把固定空metadata当版本。计划另绑定精确player/world/generation/connection，变化在授权/执行前STALE_PLAN，不制造虚假写历史。
+
+D.4原32个测试文件，加tests/gameplay-view.test.mjs、run-budget.test.mjs、run-budget-service.test.mjs、run-budget-safety.test.mjs、core-operation-adapters.test.mjs、function-contracts.test.mjs、function-registry.test.mjs、workflow.test.mjs、resource-budget.test.mjs、stage-function.test.mjs组成42文件统一定向命令（均位于tests/）。实际758 tests / 758 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo，18.06秒。之后只增加standalone最终持久失败场景，run-budget-safety单文件14/14 PASS，0 skip；两套有重叠，不相加。不是R7，也不是真实E2E。
+
+合成真实Function链：同汽油订单/生产/修船各40，父100只允许前两次，父120允许三次，派发前持久usage依次40/80/120；fresh1000不补额。真实双ACTION Workflow父60挡第二笔40，父80两次独立授权且CONFIRMED完成。零材料quota/UID、跨账号/代次/连接、STOP/UNKNOWN、fresh声明变化、persist失败0派发、重启拒复用均有用例。quota/UID合成声明只验证共享机制，不声称具体资格已获服务端证据。
+
+| 失败证据 | 修复及保留断言 |
+|---|---|
+| 新预算快照改变put次数，旧fault注入第三次不再对应写后 | 按action SUCCESS语义注入，原1次派发/阻塞断言保留 |
+| STOP夹具初始60先花40，后续40无法规划 | 仅该场景初始及父限改80，停止后0派发/不退款断言保留 |
+| CLOSED父摘要先前被删除 | 保留匹配run CLOSED审计；旧release不清新owner |
+| 原目录断言仅6域 | 扩到9静态域，原全部默认关闭/账号隔离检查保留 |
+| 世界变化更早拒绝，旧API测试取不存在history导致TypeError | 明确断言409/STALE_PLAN、0游戏派发、0虚假history |
+| 写后最终history失败父仍ACTIVE | 故障测试先复现12PASS/1FAIL；finally close UNKNOWN不退quota/材料；workflow与standalone各有用例 |
+| 编辑脚本引号/路径转义解析失败 | 均在写文件前失败，改String.raw和显式Set-Location检查；无源码部分覆盖 |
+
+R1公共合同足够供不依赖地图的后续域使用；W03资产可移植恢复仍BLOCKED，R1整体不标完整交付。下一集合W04/W05/W06/W08及可提前W19；root统一改Service/Registry/Contracts/API/UI共享区，独立领域与测试可并行。后续按原DoD逐项实施，缺证只冻结子分支。W02不使C602/C603/C607全产品范围自动完整；95/273/42/8、W01–W22、E01–E24及所有REAL_UNVERIFIED保留。

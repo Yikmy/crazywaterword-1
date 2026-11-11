@@ -10,7 +10,7 @@ class Element {
  set innerHTML(value){throw Error('unsafe HTML insertion');}appendChild(node){this.children.push(node);return node;}append(...nodes){nodes.forEach(n=>this.appendChild(n));}setAttribute(key,value){this.attrs[key]=String(value);}click(){return this.onclick?.();}
 }
 function harness(){const nodes=new Map(),requests=[],confirmations=[];let confirm=true;const node=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};const guard=createAccountViewGuard();guard.select('A');
- const ctx=vm.createContext({current:'A',snapshot:{connected:true,state:'READY',busy:null},viewGuard:guard,document:{createElement:tag=>new Element(tag),createElementNS:(ns,tag)=>new Element(tag),createTextNode:text=>{const e=new Element();e.textContent=text;return e;},getElementById:node,querySelector:()=>null},$:node,window:{confirm(text){confirmations.push(text);return confirm;}},operationCosts:costs=>Array.isArray(costs)?costs.length?costs.map(r=>r.id+' × '+r.num).join(';'):'无资源消耗':'成本未知',call:(path,options,scope)=>new Promise((resolve,reject)=>requests.push({path,body:null,scope,resolve,reject,settled:false})),operationMutation:(path,body,scope)=>new Promise((resolve,reject)=>requests.push({path,body,scope,resolve,reject,settled:false}))});
+ const ctx=vm.createContext({current:'A',snapshot:{connected:true,state:'READY',busy:null},viewGuard:guard,document:{createElement:tag=>new Element(tag),createElementNS:(ns,tag)=>new Element(tag),createTextNode:text=>{const e=new Element();e.textContent=text;return e;},getElementById:node,querySelector:()=>null},$:node,window:{confirm(text){confirmations.push(text);return confirm;}},operationCosts:costs=>Array.isArray(costs)?costs.length?costs.map(r=>r.id+' × '+r.num).join(';'):'无资源消耗':'成本未知',call:(path,options,scope)=>new Promise((resolve,reject)=>requests.push({path,body:null,scope,resolve,reject,settled:false})),operationMutation:(path,body,scope)=>new Promise((resolve,reject)=>requests.push({path,body,scope,csrfToken:vm.runInContext('gameplayCsrfToken()',ctx),resolve,reject,settled:false}))});
  new vm.Script(GAMEPLAY_SCRIPT).runInContext(ctx);const run=source=>vm.runInContext(source,ctx);return {ctx,node,nodes,requests,confirmations,run,guard,setConfirm(value){confirm=value;},select(account){ctx.current=account;guard.select(account);run('resetGameplay()');},pending(path){return requests.find(r=>r.path===path&&!r.settled);},respond(path,data){const r=this.pending(path);assert.ok(r,'expected '+path);r.settled=true;r.resolve(data);return r;}};
 }
 const row=(id='safe-action')=>({actionId:id,actionType:'SAVE',label:'synthetic <img onerror=evil()>',target:{module:1,presetId:2},costs:[],costSource:'client proof',beforeState:{presetId:1},expectedState:{presetId:2},parameters:{presetId:2},action:{request:'SaveFormationRequest',response:'SaveFormationResponse',body:{}}});
@@ -99,3 +99,71 @@ test('alliance professional tables preserve exact IDs, show unknown limits and r
 test('alliance request and technology selection only sets exact business parameters and invalidates previous authorization',async()=>{const h=await allianceBoot();await preview(h,'alliance');assert.equal(h.node('gp-alliance-authorize').disabled,false);allianceButtons(h)[0].onclick();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{reqIds:['9007199254740995'],memberIds:['9007199254740993'],itemIds:['小麦']});assert.equal(h.node('gp-alliance-authorize').disabled,true);assert.equal(h.node('gp-alliance-plan').disabled,true);allianceButtons(h)[1].onclick();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{techId:101,targetLevel:3});assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);assert.equal(h.pending('/api/gameplay/survey'),undefined);const task=h.node('gp-alliance-survey').onclick();assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/gameplay/survey').body)),{module:'alliance',parameters:{techId:101,targetLevel:3}});h.respond('/api/gameplay/survey',allianceData());await task;});
 test('alliance selection cannot mutate a pending survey or retain previous account facts',async()=>{const h=await allianceBoot(),buttons=allianceButtons(h),task=h.node('gp-alliance-survey').onclick();assert.equal(buttons[0].disabled,true);buttons[0].onclick();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{});h.select('B');h.select('A');h.respond('/api/gameplay/survey',allianceData());await task;assert.equal(h.node('gp-alliance-facts').textContent,'');buttons[1].onclick();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{});assert.equal(h.pending('/api/operations/execute'),undefined);});
 test('alliance cached polling preserves selected technology draft and never generates an implicit write',async()=>{const h=await allianceBoot();allianceButtons(h)[1].onclick();const task=h.run("gameplayPoll('alliance')");h.respond('/api/gameplay?module=alliance',allianceData());await task;assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{techId:101,targetLevel:3});assert.equal(h.node('gp-alliance-plan').disabled,true);assert.equal(h.requests.filter(r=>r.body).length,0);});
+
+const coreSettingData=(module,accountId='A',enabled=false)=>({accountId,module,csrfToken:'core-settings-'+accountId,config:{enabled}});
+async function loadWorkflowSetting(h,module,accountId='A',enabled=false){const pending=h.node('wf-'+module+'-load').onclick();h.respond('/api/gameplay?module='+module,coreSettingData(module,accountId,enabled));await pending;}
+
+for(const module of ['orders','city','production'])test('workflow '+module+' enable is explicit, account scoped and sends only local configuration through current CSRF',async()=>{
+ const h=harness();
+ for(const suffix of ['load','enabled','save','hint'])assert.match(GAMEPLAY_HTML,new RegExp('id="wf-'+module+'-'+suffix+'"'));
+ assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-enabled').disabled,true);assert.equal(h.node('wf-'+module+'-save').disabled,true);
+ await h.node('wf-'+module+'-save').onclick();assert.equal(h.requests.length,0);
+ await loadWorkflowSetting(h,module);const read=h.requests[0];assert.equal(read.path,'/api/gameplay?module='+module);assert.equal(read.scope.account,'A');assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-enabled').disabled,false);
+ h.node('wf-'+module+'-enabled').checked=true;h.node('wf-'+module+'-enabled').onchange();assert.equal(h.requests.length,1);assert.match(h.node('wf-'+module+'-hint').textContent,/尚未保存/);
+ const save=h.node('wf-'+module+'-save').onclick(),request=h.pending('/api/gameplay/config');assert.deepEqual(JSON.parse(JSON.stringify(request.body)),{module,config:{enabled:true}});assert.equal(request.scope.account,'A');assert.equal(request.csrfToken,'core-settings-A');assert.equal(h.node('wf-'+module+'-save').disabled,true);
+ h.respond('/api/gameplay/config',coreSettingData(module,'A',true));await save;assert.match(h.node('wf-'+module+'-hint').textContent,/已保存/);
+ assert.deepEqual(h.requests.filter(r=>r.body).map(r=>r.path),['/api/gameplay/config']);assert.equal(h.pending('/api/gameplay/survey'),undefined);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+ h.select('B');assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-save').disabled,true);assert.equal(h.run('gameplayCsrfToken()'),null);
+ await loadWorkflowSetting(h,module,'B');h.node('wf-'+module+'-enabled').checked=true;const savedB=h.node('wf-'+module+'-save').onclick(),requestB=h.pending('/api/gameplay/config');assert.equal(requestB.scope.account,'B');assert.equal(requestB.csrfToken,'core-settings-B');h.respond('/api/gameplay/config',coreSettingData(module,'B',true));await savedB;
+ h.select('A');assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-save').disabled,true);
+});
+
+test('core Workflow setting reads fail closed for wrong account/module, malformed config or missing current CSRF',async()=>{
+ for(const change of [v=>v.accountId='B',v=>v.module='fleet',v=>v.config.enabled='true',v=>v.config={enabled:false,request:'ArbitraryRequest'},v=>delete v.csrfToken]){
+  const h=harness(),pending=h.node('wf-orders-load').onclick(),value=coreSettingData('orders');change(value);h.respond('/api/gameplay?module=orders',value);await pending;
+  assert.equal(h.node('wf-orders-save').disabled,true);assert.equal(h.node('wf-orders-enabled').disabled,true);const count=h.requests.length;await h.node('wf-orders-save').onclick();assert.equal(h.requests.length,count);assert.equal(h.pending('/api/gameplay/config'),undefined);
+ }
+});
+
+test('core Workflow settings discard A to B to A late reads and do not restore old configuration or token',async()=>{
+ for(const module of ['orders','city','production']){
+  const h=harness(),old=h.node('wf-'+module+'-load').onclick();h.select('B');h.select('A');
+  h.respond('/api/gameplay?module='+module,coreSettingData(module,'A',true));await old;
+  assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-save').disabled,true);assert.equal(h.node('wf-'+module+'-hint').textContent,'');assert.equal(h.run('gameplayCsrfToken()'),null);
+  await loadWorkflowSetting(h,module);assert.equal(h.node('wf-'+module+'-enabled').checked,false);assert.equal(h.node('wf-'+module+'-save').disabled,false);
+ }
+});
+
+test('late configuration saves and errors cannot change a newer account generation or its current setting',async()=>{
+ for(const fail of [false,true]){
+  const h=harness();await loadWorkflowSetting(h,'production');h.node('wf-production-enabled').checked=true;const old=h.node('wf-production-save').onclick(),oldRequest=h.pending('/api/gameplay/config');
+  h.select('B');h.select('A');await loadWorkflowSetting(h,'production');const current=h.node('wf-production-hint').textContent,token=h.run('gameplayCsrfToken()');
+  if(fail){oldRequest.settled=true;oldRequest.reject(Error('old account <img onerror=alert(1)>'));}else h.respond('/api/gameplay/config',coreSettingData('production','A',true));await old;
+  assert.equal(h.node('wf-production-enabled').checked,false);assert.equal(h.node('wf-production-save').disabled,false);assert.equal(h.node('wf-production-hint').textContent,current);assert.equal(h.run('gameplayCsrfToken()'),token);assert.equal(h.pending('/api/operations/execute'),undefined);
+ }
+});
+
+test('Workflow core setting edits clear candidate previews and pending plan without authorizing or dispatching',async()=>{
+ const h=await workflows();await loadWorkflowSetting(h,'orders');h.node('wf-saved').value='saved';h.node('wf-open').onclick();
+ const action=h.node('wf-nodes').children[1],modules=action.children.find(e=>e.children?.[0]?.textContent==='玩法 ').children[1];for(const id of ['orders','city','production'])assert.ok(modules.children.some(option=>option.value===id));
+ const collect=action.children.find(e=>e.dataset.workflowCandidate==='a').onclick();h.respond('/api/gameplay/survey',data());await collect;
+ assert.ok(h.node('wf-nodes').children[1].children.some(e=>e.dataset.workflowSelection==='a'));
+ const refreshed=h.run('refreshWorkflows()');h.respond('/api/workflows',{accountId:'A',csrfToken:'core-settings-A',status:{status:'AWAITING_AUTHORIZATION',plan:plan()}});await refreshed;assert.equal(h.node('wf-authorize').disabled,false);
+ h.node('wf-orders-enabled').checked=true;h.node('wf-orders-enabled').onchange();assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.node('wf-plan').textContent,'');assert.ok(!h.node('wf-nodes').children[1].children.some(e=>e.dataset.workflowSelection==='a'));
+ assert.equal(h.pending('/api/gameplay/config'),undefined);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+
+test('Workflow setting pending state prevents duplicate writes and failures require a fresh explicit read',async()=>{
+ const h=harness();await loadWorkflowSetting(h,'city');h.node('wf-city-enabled').checked=true;
+ const pending=h.node('wf-city-save').onclick(),request=h.pending('/api/gameplay/config');const count=h.requests.length;await h.node('wf-city-save').onclick();await h.node('wf-orders-load').onclick();assert.equal(h.requests.length,count);
+ request.settled=true;request.reject(Error('<img onerror=alert(1)> local save rejected'));await pending;assert.equal(h.node('wf-city-save').disabled,true);assert.equal(h.node('wf-city-enabled').disabled,true);assert.match(h.node('wf-city-hint').textContent,/<img onerror=alert\(1\)> local save rejected/);
+ await h.node('wf-city-save').onclick();assert.equal(h.requests.length,count);await loadWorkflowSetting(h,'city');assert.equal(h.node('wf-city-save').disabled,false);
+ h.ctx.snapshot.busy='workflow:running';const before=h.requests.length;await h.node('wf-city-save').onclick();assert.equal(h.requests.length,before);
+});
+
+test('changing a Workflow core setting rejects an earlier in-flight candidate response',async()=>{
+ const h=await workflows();await loadWorkflowSetting(h,'orders');h.node('wf-saved').value='saved';h.node('wf-open').onclick();
+ const collect=h.node('wf-nodes').children[1].children.find(e=>e.dataset.workflowCandidate==='a').onclick();h.node('wf-orders-enabled').checked=true;h.node('wf-orders-enabled').onchange();
+ h.respond('/api/gameplay/survey',data());await collect;
+ assert.ok(!h.node('wf-nodes').children[1].children.some(e=>e.dataset.workflowSelection==='a'));assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
