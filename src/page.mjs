@@ -1117,7 +1117,7 @@ function renderOperationHistory(data) {
     card.appendChild(el('div', null, '本批次预算：' + operationCosts(run.resourceBudget)));
     for (const action of run.actions || []) {
       const actionBox = el('details', 'order-preview-card'); actionBox.appendChild(el('summary', null, action.actionType + ' · ' + operationTarget(action.target) + ' · ' + (typeof action.result === 'string' ? action.result : action.result?.status || action.requestStatus || '未知')));
-      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
+      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, stages: action.stages ?? null, afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
     }
     box.appendChild(card);
   }

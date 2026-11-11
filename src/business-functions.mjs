@@ -6,10 +6,11 @@ export const stableBusinessValue = value => JSON.stringify(value, (_key, entry) 
   ? Object.fromEntries(Object.keys(entry).sort().map(key => [key, entry[key]])) : entry);
 const equal = (a, b) => stableBusinessValue(a) === stableBusinessValue(b);
 const publicState = facts => facts?.state ?? facts?.current ?? null;
+export const BUSINESS_EXECUTION_STAGES = Object.freeze(['SURVEY', 'RESOURCE_PREFLIGHT', 'DISPATCH_INTENT', 'DISPATCHED', 'RESPONSE', 'OBSERVATION_ENDED', 'VERIFY', 'VERIFIED']);
 
 // The sole adapter executor: transport, budgets, cancellation and fingerprints stay
 // in the existing shared implementations. Adapters only supply facts and semantics.
-export async function executeBusinessOperation(client, protocol, operation, { adapter, config, moduleConfig, parameters = {}, player, allowMutate = false, budget = { ledger: null }, signal, stop, assertCurrent = () => {}, timeout = 15000, window = 400 } = {}) {
+export async function executeBusinessOperation(client, protocol, operation, { adapter, config, moduleConfig, parameters = {}, player, allowMutate = false, budget = { ledger: null }, signal, stop, assertCurrent = () => {}, onStage = () => {}, timeout = 15000, window = 400 } = {}) {
   let dispatched = false, requestStatus = 'NOT_EXECUTED', afterState = null, beforeState = operation?.beforeState, response = null;
   const action = operation?.action;
   const active = () => { assertExecutionActive(client, { signal, stop }); assertCurrent(); };
@@ -24,6 +25,7 @@ export async function executeBusinessOperation(client, protocol, operation, { ad
     active();
     if (!allowMutate || !adapter || !action) return finish('NOT_EXECUTED', { error: '业务动作需要当前单批授权' });
     const args = { config, player, moduleConfig, parameters: operation.parameters ?? parameters, signal, stop, timeout };
+    onStage('SURVEY');
     const facts = await adapter.survey(client, protocol, args); active();
     const fresh = adapter.plan(facts, { ...args, selections: [operation.actionId], ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null) });
     const candidate = fresh.actions?.find(row => row.actionId === operation.actionId);
@@ -32,26 +34,39 @@ export async function executeBusinessOperation(client, protocol, operation, { ad
     const costs = resourceCosts(candidate.costs);
     assertPaymentAllowed({ ...candidate.action, costs });
     if (!protocol[action.request] || action.response && !protocol[action.response]) return finish('NOT_EXECUTED', { error: '缺少已注册业务协议' });
+    onStage('RESOURCE_PREFLIGHT');
     await validateResources(client, protocol, costs, { timeout, budget, signal, stop, assertActive: active }); active();
     if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size || client.uncertainWrites?.size) return finish('NOT_EXECUTED', {error:'写前连接存在未决请求或不确定响应，停止派发'});
     beforeState = candidate.beforeState;
+    // The callback is synchronous: durable evidence failure must prevent transport.
+    onStage('DISPATCH_INTENT'); active();
     // Conservatively retain a pending write even if the transport throws while sending.
     dispatched = true; requestStatus = 'DISPATCHING';
     if (action.response) {
-      response = await awaitExecution(client.request(action.request, action.body, action.response, timeout, { mutate: true, signal }), client, { signal, stop });
+      const pending = Promise.resolve(client.request(action.request, action.body, action.response, timeout, { mutate: true, signal }));
+      // Observe rejection before persistence: onStage can throw after a write was sent.
+      pending.catch(() => {});
+      onStage('DISPATCHED');
+      response = await awaitExecution(pending, client, { signal, stop });
       requestStatus = 'SUCCESS';
+      onStage('RESPONSE');
     } else {
-      const watch = await awaitExecution(client.sendWatch(action.request, action.body, { window, signal }), client, { signal, stop });
+      const pending = Promise.resolve(client.sendWatch(action.request, action.body, { window, signal }));
+      pending.catch(() => {});
+      onStage('DISPATCHED');
+      const watch = await awaitExecution(pending, client, { signal, stop });
       requestStatus = watch?.status ?? 'UNKNOWN';
+      onStage('OBSERVATION_ENDED');
       if (watch?.status && !['SUCCESS', 'UNKNOWN'].includes(watch.status)) return finish(watch.status, { error: '观察窗口未允许权威复读' });
     }
     active();
+    onStage('VERIFY');
     const after = await adapter.survey(client, protocol, args); active();
     const verification = adapter.verify(candidate, facts, after, response);
     const confirmed = verification === true || verification?.confirmed === true || verification?.status === 'CONFIRMED';
     afterState = verification?.afterState ?? publicState(after) ?? adapter.view(after, args);
     if (!confirmed) return finish('UNKNOWN', { error: verification?.reason ?? '权威复读未确认预期变化', verification: { status: 'UNCONFIRMED', reason: verification?.reason ?? '权威复读未确认' } });
-    active(); client.confirmWatchedWrite?.(action.request, action.body);
+    active(); onStage('VERIFIED'); active(); client.confirmWatchedWrite?.(action.request, action.body);
     return finish('SUCCESS', { verification: { status: 'CONFIRMED', reason: verification?.reason ?? '权威复读确认业务状态变化' }, responseEvidence: verification?.responseEvidence ?? null, beforeInventory: facts.stock instanceof Map ? [...facts.stock].map(([id, num]) => ({ id, num })) : [], afterInventory: after.stock instanceof Map ? [...after.stock].map(([id, num]) => ({ id, num })) : [], beforeInventoryReliable: facts.stockReliable === true, afterInventoryReliable: after.stockReliable === true });
   } catch (error) {
     const status = executionOutcome(error); requestStatus = dispatched ? status : 'NOT_EXECUTED';

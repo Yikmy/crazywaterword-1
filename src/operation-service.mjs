@@ -8,7 +8,7 @@ import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from 
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { GAMEPLAY_MODULES, listBusinessFunctions } from './function-registry.mjs';
 import { createModuleSettings } from './gameplay-settings.mjs';
-import { executeBusinessOperation } from './business-functions.mjs';
+import { BUSINESS_EXECUTION_STAGES, executeBusinessOperation } from './business-functions.mjs';
 
 const clone = value => structuredClone(value);
 const stable = value => JSON.stringify(value, (_key, entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
@@ -207,7 +207,13 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
         const adapter = modules[operation.module];
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
         const result = await executor(client, protocol, operation, { config: entry.config, rules: loadRules(session.id).config, player: session.player,
-          allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent });
+          allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
+          ...(executor === businessExecute ? { onStage(stage) {
+            if (!BUSINESS_EXECUTION_STAGES.includes(stage)) throw error('执行证据阶段无效', 'HISTORY_UNAVAILABLE');
+            // Store only the fixed stage token and a service-owned timestamp; no payloads.
+            (row.stages ??= []).push({ stage, timestamp: now() });
+            history.put(record);
+          } } : {}) });
         if (operation.module === 'formation') {
           formationProofs.delete(session.id);
           if (result.status === 'SUCCESS' && result.verification?.status === 'CONFIRMED') formationProofs.set(session.id, { generation, client, operation: clone(operation), batchId: entry.public.batchId, planHash: entry.public.planHash });
