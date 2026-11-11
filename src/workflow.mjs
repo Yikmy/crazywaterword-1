@@ -149,6 +149,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'SURVEY') { ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx); ctx.surveyModule = node.module; await trace(ctx, node, 'SURVEYED'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'ACTION') {
+          operations.bindWorkflowNode?.(ctx.session,ctx.runId,{workflowId:ctx.graph.id,nodeId:node.id});
           const plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [typeof node.selection === 'string' ? node.selection : node.selection.actionId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx);
           if (!plain(plan) || !text(plan.batchId) || plan.accountId !== ctx.accountId || !Array.isArray(plan.actions) || plan.actions.length !== 1 || !text(plan.actions[0].actionId)) throw fail('操作服务未返回可单次确认的账号计划', 'WORKFLOW_UNKNOWN');
           const selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;

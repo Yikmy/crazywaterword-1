@@ -111,3 +111,19 @@ test('Action cancellation after synthetic login sends no first write; silent res
   assert.equal(watches, 1); assert.equal(result.status, 'UNKNOWN'); assert.equal(result.ok, null);
   assert.equal(result.response, null); assert.equal(result.body, null);
 });
+test('farm seed-only D6 contract rejects batch expansion, hidden payment fields and missing costs',()=>{
+ const action=()=>({request:'FarmPlantRequest',body:{args:[{buildingId:'1农田',productId:'小麦'}]},costs:[{id:'小麦种子',num:1}]});
+ assert.doesNotThrow(()=>assertPaymentAllowed(action()));
+ for(const mutate of [a=>a.body.args.push({...a.body.args[0]}),a=>a.body.args=[],a=>a.body.args[0].buyMissing=true,a=>a.body.autoFarming=true,a=>a.costs=[],a=>delete a.costs,a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.body.args[0].productId='',a=>a.body.args.extra=true]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ assert.throws(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田']},costs:[]}),{code:'COST_UNKNOWN'});
+});
+
+test('forge D6 allows only exact owned-material Make and explicit zero-cost Pick',()=>{
+ const make=()=>({request:'MakeEquipRequest',body:{buildingId:'1装备厂',makeId:1001,universal:false},costs:[{id:'材料',num:4}]});
+ const pick=()=>({request:'PickMadeEquipRequest',body:{buildingId:'1装备厂'},costs:[]});
+ assert.doesNotThrow(()=>assertPaymentAllowed(make()));assert.doesNotThrow(()=>assertPaymentAllowed(pick()));
+ for(const mutate of [a=>delete a.body.universal,a=>a.body.universal=true,a=>a.body.makeId=0,a=>a.body.makeId=1.5,a=>a.body.buyMissing=true,a=>a.costs=[],a=>a.costs.push({id:'材料',num:4})]){const a=make();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const mutate of [a=>delete a.costs,a=>a.body.universal=false,a=>a.costs=[{id:'材料',num:1}],a=>a.body.buildingId='']){const a=pick();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=make();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+});

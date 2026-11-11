@@ -56,3 +56,10 @@ test('technology recognition retains the D6 hard block for forged RUBY or diamon
   for(const id of ['RUBY','钻石','4'])for(const allowPaid of [false,true])assert.throws(()=>assertPaymentAllowed({request:'UpgradeGuildTechRequest',body:{techId:10101},costs:[{id,num:1}]},{allowPaid}),e=>e.code==='D6_FORBIDDEN');
   assert.throws(()=>assertPaymentAllowed({request:'UpgradeGuildTechRequest',body:{techId:10101},paid:true,costs:[{id:'公会科技点',num:24}]},{allowPaid:true}),e=>e.code==='D6_FORBIDDEN');
 });
+
+test('shared world season parser preserves exact original integer semantics and rejects lossy identity',async()=>{
+ const {seasonFromWorldId}=await import('../src/alliance.mjs');
+ for(const value of [1000001,'1000001',1001000001])assert.equal(seasonFromWorldId(value),1);
+ assert.equal(seasonFromWorldId(1),0);
+ for(const value of [null,undefined,0,-1,1.5,Number.MAX_SAFE_INTEGER+1,{},'bad'])assert.equal(seasonFromWorldId(value),null);
+});

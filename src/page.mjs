@@ -245,6 +245,7 @@ export const PAGE = `<!doctype html>
   </section>
   <section id="tab-production" class="hidden">
     ${CORE_GAMEPLAY_HTML.production}
+    ${CORE_GAMEPLAY_HTML.farm}
     <h2>生产管理</h2>
     <p class="dim">生产策略按账号保存在本地，仅限制 Automatic 本批次候选；保存配置不会启动生产。每批仍须预览与明确授权。</p>
     <div class="bar"><button id="production-policy-load">读取本地生产策略</button><button id="production-policy-save" disabled>保存本账号策略</button><button id="production-select-recommended" disabled>选择本次推荐生产</button></div>
@@ -266,6 +267,12 @@ export const PAGE = `<!doctype html>
     <p class="dim">按当前账号保存的历史证据，不代表当前实时游戏状态。UNKNOWN 保留未决状态，不能作为失败重试。</p>
     <div class="bar"><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
     <div id="ops-history">尚未读取历史。</div>
+    <h2>只读执行记忆</h2>
+    <p class="dim">记忆是原始执行历史的补充审计，不代表当前游戏状态。原始 UNKNOWN 永远保留；当前是否已复核仅以原始历史追加证据为准。此处不提供清除、重试或执行授权。</p>
+    <div class="bar"><button id="ops-memory-load">读取只读执行记忆</button><span id="ops-memory-hint" class="warn" role="status"></span></div>
+    <div id="ops-memory-coverage" class="dim">尚未读取覆盖范围。</div>
+    <div id="ops-memory-pending"></div>
+    <div id="ops-memory">尚未读取执行记忆。</div>
   </section>
   <section id="operations-batch" class="hidden">
     <h2>本批次操作</h2>
@@ -291,6 +298,7 @@ export const PAGE = `<!doctype html>
     <div id="stages-availability" class="warn" role="status">尚未读取运行条件。</div>
     <div class="bar">
       <label><input id="stages-enabled" type="checkbox"> 启用本次自动闯关</label>
+      <label><input id="stages-stop-on-defeat" type="checkbox"> 首次明确战败后停止</label>
       <label><input id="stages-formation-enabled" type="checkbox"> 启用已授权验证阵容</label><label>阵型模板 <input id="stages-formation-preset" type="number" min="1" placeholder="阵型模板 ID"></label><p class="dim">先在阵容页面预览、授权保存并完成复读；启动前再次核对。</p>
       <label>最高目标关卡 <input id="stages-max-stage" type="number" min="1" step="1" placeholder="留空不限制" aria-label="最高目标关卡"></label>
       <label>重试间隔（秒） <input id="stages-retry-delay" type="number" min="0" step="1" value="10" aria-label="重试间隔秒数"></label>
@@ -344,6 +352,7 @@ export const PAGE = `<!doctype html>
 
   <section id="tab-heroes" class="hidden">
     ${CORE_GAMEPLAY_HTML.heroes}
+    ${CORE_GAMEPLAY_HTML['equipment-forge']}
     <div class="bar">
       <button id="hero-plan">查看英雄数据</button>
       <button id="hero-run" class="primary" disabled hidden>执行养成</button>
@@ -862,6 +871,7 @@ function resetOperations() {
   for (const id of ['ops-orders', 'ops-city', 'ops-production', 'ops-stock', 'ops-notes', 'ops-hint', 'ops-history-hint', 'ops-plan-actions']) clear($(id));
   $('ops-status').textContent = '选择账号后读取已有运行状态。';
   $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
+  resetOperationMemory();
   $('ops-budget').textContent = '尚未生成预览。'; $('ops-plan-meta').textContent = '先选择操作并生成预览，再授权执行。';
   renderOperationSelection(); operationControls();
 }
@@ -871,6 +881,7 @@ function operationControls() {
   const ready = Boolean(current && snapshot.connected && snapshot.state === 'READY' && operationsData?.csrfToken && operationsReadable && !productionPolicyPending);
   const selected = operationRows().filter((row) => operationSelections.has(row.actionId));
   $('ops-load').disabled = !current || operationsPending;
+  $('ops-memory-load').disabled = !current;
   $('ops-survey').disabled = !ready || operationsPending || locked;
   $('ops-plan').disabled = !ready || operationsPending || locked || Boolean(operationModeError(selected));
   $('ops-authorize-execute').disabled = !ready || operationsPending || locked || !operationPlanLive();
@@ -987,7 +998,7 @@ async function operationMutation(path, payload, scope) {
   viewGuard.assert(scope);
   const csrfToken = (operationsData?.accountId === scope.account ? operationsData.csrfToken : null) || gameplayCsrfToken();
   if (!scope.account || !csrfToken) throw new Error('请先读取本账号运行状态。');
-  if (!['/api/operations/recovery/preview', '/api/operations/recovery/confirm', '/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop'].includes(path)) throw new Error('未开放此批次操作');
+  if (!['/api/operations/recovery/preview', '/api/operations/recovery/confirm', '/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop','/api/formations/named/save','/api/formations/named/rename','/api/formations/named/overwrite','/api/formations/named/delete','/api/formations/named/prepare'].includes(path)) throw new Error('未开放此批次操作');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
   const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json().catch(() => ({})); viewGuard.assert(scope);
@@ -1174,6 +1185,48 @@ async function refreshOperationHistory() {
 }
 $('ops-history-load').onclick = refreshOperationHistory;
 
+function resetOperationMemory() {
+  $('ops-memory').textContent = '尚未读取执行记忆。';
+  $('ops-memory-coverage').textContent = '尚未读取覆盖范围。';
+  clear($('ops-memory-pending')); $('ops-memory-hint').textContent = '';
+}
+function renderOperationMemory(data) {
+  if(typeof data.available!=='boolean'||!Array.isArray(data.events)||!Array.isArray(data.pendingHistoryProjection)||data.resumable!==false||data.retryAllowed!==false)throw new Error('执行记忆只读合同不可靠');
+  const box=clear($('ops-memory')),coverage=clear($('ops-memory-coverage')),pending=clear($('ops-memory-pending'));
+  const policy=data.policyCoverage||{};
+  coverage.appendChild(el('div',null,(data.available===true?'补充记忆可用':'补充记忆不可用')+' · 覆盖范围 '+(data.coverage||'UNKNOWN')));
+  coverage.appendChild(el('div',null,'拒绝身份变化策略：'+(policy.identityChange===true?'已接入':'未覆盖')+'；冷却策略：'+(policy.cooldown===true?'已接入':'未覆盖')+'；游戏日界策略：'+(policy.gameDay===true?'已接入':'未覆盖')+'。未覆盖的冷却或日界不能据此解除限制。'));
+  coverage.appendChild(el('div','dim',data.note||'只读审计；不恢复执行、预算或授权。'));
+  const projections=Array.isArray(data.pendingHistoryProjection)?data.pendingHistoryProjection:[];
+  pending.appendChild(el('div',projections.length?'warn':'dim','原始历史待投影结果：'+projections.length+'；本次 GET 只读取，不补写记忆。'));
+  if(projections.length)pending.appendChild(el('pre',null,JSON.stringify(projections,null,2)));
+  for(const event of Array.isArray(data.events)?data.events:[]) {
+    const origin=event.historyOrigin||{},unknown=event.status==='UNKNOWN';
+    const card=el('details','order-preview-card');
+    card.appendChild(el('summary',null,(event.module||'?')+' · '+(event.actionType||'?')+' · 原始结果 '+(event.status||'UNKNOWN')+' · '+(event.eventId||'?')));
+    if(unknown)card.appendChild(el('div','warn','原始 UNKNOWN 审计保留不变。当前原始历史复核：'+(origin.status||'ORIGIN_UNAVAILABLE')+' · '+(origin.resolved===true?'已追加权威复核证据；不重用旧授权或自动重试。':'仍未解除；禁止以本记忆重试。')));
+    else card.appendChild(el('div','dim','确定拒绝记录；当前限制由新鲜权威身份及既有执行保护判断，本记录不授予重试。'));
+    card.appendChild(el('pre',null,JSON.stringify({operationRunId:origin.operationRunId??event.runId??null,workflowRunId:origin.workflowRunId??event.workflowId??null,workflowDefinitionId:origin.workflowDefinitionId??null,nodeId:origin.nodeId??event.nodeId??null,batchId:event.batchId??null,actionId:event.actionId??null,capabilityId:event.capabilityId??null},null,2)));
+    card.appendChild(el('pre',null,JSON.stringify({eventId:event.eventId,status:event.status,dispatched:event.dispatched,unresolvedWrite:event.unresolvedWrite,targetDigest:event.targetDigest,identityDigest:event.identityDigest,source:event.source,generation:event.generation,recordedAt:event.recordedAt,reason:event.reason,policy:event.policy,timeGate:event.timeGate,historyOrigin:event.historyOrigin},null,2)));
+    box.appendChild(card);
+  }
+  if(!box.childElementCount)box.textContent=data.available===true?'本账号尚无补充执行记忆。':'当前存储未提供补充执行记忆；原始执行历史仍是复核依据。';
+}
+async function refreshOperationMemory() {
+  if(!current)return;
+  const scope=viewGuard.begin('operations-memory');
+  clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));
+  $('ops-memory-hint').textContent='正在读取本账号只读执行记忆 ...';
+  try {
+    const data=await call('/api/operations/memory',undefined,scope);
+    if(data.accountId!==scope.account)throw new Error('执行记忆账号不匹配');
+    renderOperationMemory(data);$('ops-memory-hint').textContent='';
+  } catch(error) {
+    if(viewGuard.current(scope)) {clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));$('ops-memory-hint').textContent='读取失败：'+error.message;}
+  }
+}
+$('ops-memory-load').onclick=refreshOperationMemory;
+
 // Stage mutations have their own narrow authorization path; READ_POSTS stays read-only.
 function stageReason(value) {
   if (typeof value === 'string') return value;
@@ -1181,12 +1234,12 @@ function stageReason(value) {
 }
 function resetStages() {
   stagesData = null; stagesActionPending = false;
-  $('stages-enabled').checked = false;
+  $('stages-enabled').checked = false; $('stages-stop-on-defeat').checked = false;
   $('stages-formation-enabled').checked=false; $('stages-formation-preset').value='';
   $('stages-retry-delay').value = '10';
   $('stages-max-attempts').value = ''; $('stages-max-stage').value = '';
   $('stages-start').disabled = true; $('stages-stop').disabled = true;
-  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = false;
+  for (const id of ['stages-enabled', 'stages-stop-on-defeat', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = false;
   $('stages-availability').textContent = '尚未读取运行条件。';
   $('stages-hint').textContent = '';
   $('stages-status').textContent = '选择账号后读取已有运行状态。';
@@ -1201,10 +1254,9 @@ function stageConfig() {
     if (!value || !Number.isSafeInteger(number) || number < (optional ? 1 : 0)) throw new Error('关卡与尝试次数应为正整数，重试间隔应为非负整数。');
     return number;
   };
-  const config = { enabled: $('stages-enabled').checked === true, retryDelaySeconds: integer('stages-retry-delay'), maxAttempts: integer('stages-max-attempts', true), maxStage: integer('stages-max-stage', true) };
+  const config = { enabled: $('stages-enabled').checked === true, stopOnDefeat: $('stages-stop-on-defeat').checked === true, retryDelaySeconds: integer('stages-retry-delay'), maxAttempts: integer('stages-max-attempts', true), maxStage: integer('stages-max-stage', true) };
   const delay = stagesData?.runner?.config?.interStageDelay || stagesData?.defaults?.interStageDelay;
   if (delay) config.interStageDelay = { minSeconds: delay.minSeconds, maxSeconds: delay.maxSeconds };
-  if (typeof stagesData?.runner?.config?.stopOnDefeat === 'boolean') config.stopOnDefeat = stagesData.runner.config.stopOnDefeat;
   if ($('stages-formation-enabled').checked) config.formation={enabled:true,presetId:integer('stages-formation-preset')};
   return config;
 }
@@ -1213,7 +1265,7 @@ function stageControls() {
   const busy = stagesActionPending || runner.running === true || runner.inFlight === true || operationsLocked();
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
-  for (const id of ['stages-enabled', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = busy;
+  for (const id of ['stages-enabled', 'stages-stop-on-defeat', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = busy;
 }
 function updateStageCountdown() {
   const runner = stagesData?.runner;
@@ -1230,7 +1282,7 @@ function renderStages(data) {
   const runner = data.runner || {};
   if (initial) {
     const config = runner.config || data.defaults || { enabled: false, retryDelaySeconds: 10 };
-    $('stages-enabled').checked = config.enabled === true;
+    $('stages-enabled').checked = config.enabled === true; $('stages-stop-on-defeat').checked = config.stopOnDefeat === true;
     $('stages-formation-enabled').checked=config.formation?.enabled===true; $('stages-formation-preset').value=config.formation?.presetId==null?'':String(config.formation.presetId);
     $('stages-retry-delay').value = String(config.retryDelaySeconds ?? 10);
     $('stages-max-attempts').value = config.maxAttempts == null ? '' : String(config.maxAttempts);
@@ -1296,12 +1348,13 @@ async function stageMutation(path, payload, scope) {
 }
 $('stages-load').onclick = refreshStages;
 $('stages-enabled').onchange = stageControls;
+$('stages-stop-on-defeat').onchange = stageControls;
 $('stages-start').onclick = async () => {
   if ($('stages-start').disabled || stagesActionPending) return;
   let config;
   try { config = stageConfig(); } catch (error) { $('stages-hint').textContent = error.message; return; }
   if (!config.enabled || !stagesData?.available) return;
-  if (!window.confirm('为当前账号启动自动主线闯关？这会实际开战并改变游戏进度。仅明确战败才按配置等待重试；异常立即停止。')) return;
+  if (!window.confirm('为当前账号启动自动主线闯关？这会实际开战并改变游戏进度。'+(config.stopOnDefeat?'首次明确战败后停止；':'仅明确战败才按配置等待重试；')+'异常立即停止。')) return;
   const scope = viewGuard.begin('stages'); stagesActionPending = true; stageControls();
   $('stages-hint').textContent = '正在授权启动自动闯关 ...';
   try { renderStages(await stageMutation('/api/stages/start', { config, confirm: true }, scope)); $('stages-hint').textContent = '已提交本次开战授权。'; }

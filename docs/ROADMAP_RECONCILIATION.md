@@ -2115,3 +2115,58 @@ R1 W01/W02 公共合同已提交，W03资产恢复局部BLOCKED仍保留；R1/R2
 实际命令：node --test tests/execution-history.test.mjs tests/operation-recovery.test.mjs tests/operation-recovery-service.test.mjs tests/operation-recovery-api.test.mjs tests/run-budget-safety.test.mjs。结果 117 tests / 117 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo，2.98秒。对应本节提交的安全文件及父 528dc6e 上本次协作工作区，不是 R7 或真实 E2E。独立只读审查的107项与本次有重叠，不相加。原故障注入/账号隔离/追加复核/预算不退款断言保留；同目录精确文件断言增加 anchor，而非删除断言。git diff --check 通过。
 
 下一步继续整合 W04 单田种植、W07 装备制造收取、W08 具名阵容与首败停止 UI、W19 补充记忆及只读展示。所有真实游戏场景仍 REAL_UNVERIFIED，W03 资产来源恢复及其余外证闸门不改。
+
+
+### D.10 R2 领域扩展与提前 W19 集成（2026-11-11）
+
+本增量以安全提交 2258e16c844e2aa5929c640e334917c8bd262dd1 为父；源代码及本节随所在提交共同定位。此前领域/服务专项测试在父 528dc6e 的协作工作区运行，不能冒称已在旧提交独立交付。全部共享 Service/Server/Registry/Contracts/Page 由 root 串行集成，各独立领域及测试冻结后合并到当前工作区。原五份未跟踪输入不自动暂存，无新目录/worktree；未 push/merge/reset/真实操作。原 95C/273Inventory/42P/8S、W01–W22、R1–R8、E01–E24 和 X01–X18 未缩减。
+
+| 原工作包/要求 | Function、实际调用与离线交付 | 当前完整范围及保留边界 |
+|---|---|---|
+| W04 / BIZ-R16a–c | farm-operations#surveyFarmOperations/viewFarmOperations/planFarmOperations/verifyFarmOperation → farmModule → 静态 registry/contract → 原 generic executor/OperationService/Ledger/History/API/Workflow；原生产页内独立农田专业区 | 显式空田、autoFarming=false、精确持有种子的一田 PLANT OFFLINE_VERIFIED；HARVEST 的成熟时间单位及 CriticalAsset 暴击奖励缺证，始终没有action，成熟/收取仍 BLOCKED_EVIDENCE；不把 BIZ 农田误映射成 C111/C113 完成。W04 PARTIAL |
+| W07 / BIZ-R07 | equipment-forge#surveyEquipmentForge/viewEquipmentForge/planEquipmentForge/verifyEquipmentForge → equipmentForgeModule → 同 registry/原 generic executor/Service/预算/History/API/Workflow；原英雄页内装备厂子区 | 自有精确配方材料 MAKE、到期单批次 PICK OFFLINE_VERIFIED；universal兑换/自动品质回退不开放；C225–230高级成长、Pet及BIZ-R08/R09剩余原分项未因此完成。W07 PARTIAL |
+| W08 / FRM-007 | named-formations#createNamedFormationStore → Service 的同锁fresh Formation survey/可信 StateFact → 6个精确本地 API（1GET/5POST）→ 原阵容页存档区；应用只产原 planner 参数 | 本地命名、重命名、覆盖、删除、重启读及准备应用 OFFLINE_VERIFIED；保存完整 preset/英雄坐标/明确 petUid（含0），应用要求拥有/解锁/合法layout/当前pet匹配，再经原 survey→plan→单次授权→Save→verify，不恢复旧授权。其他模式、极限复制及图纸解锁尚未由本增量交付。W08 PARTIAL |
+| W08 / C201/C204/C205 运行控件 | 原 StageRunner 的 stopOnDefeat 配置接现有 page/stageConfig/账号切换和轮询 | UI 可显式开关；首败停止和原重试策略均保留既有Runner，不新增执行器、不启动Runner。控件 OFFLINE_VERIFIED，真实10–11秒及战败分支 E11 仍 REAL_UNVERIFIED |
+| W19 / C604/C606、S7/所有业务历史的受控Operation子集 | execution-memory#createExecutionMemory → 原History先落盘，再幂等补充投影；Service plan/fresh plan/pre-dispatch拒绝检查；workflow#bindWorkflowNode补definition/node关联；生产Console注入带secrets/writer的同目录store；原历史页只读审计 | 身份变化拒绝记忆、UNKNOWN原历史关联和只读重启查询 OFFLINE_VERIFIED；Store冷却/游戏日界有纯能力，但Service没有可信领域策略来源，policyCoverage.cooldown/gameDay明确false。Standalone Stage逐场、Loop/Tasks/Dailies所有入口尚未全接，W19 PARTIAL，不能宣称全入口完成 |
+
+原始 P 页面映射：Farm 沿用 P2-2，Forge 是 P3-6/P3-7 的现有页子域，没有原 P3-8；FRM-007沿用P3-5及原运行/历史页面。新增 Farm/Forge 的 requirementIds.C=[]，分别记录 inventoryRequirementIds，保留原业务分项。当前 12 个静态 Adapter + 1 个动态原 Stage Function 共 13 合同，不是新增13个产品模块或95C交付数。前文a505019历史分类计数不覆盖当前增量；此表作为原ID当前差异索引，禁止据测试数量推导完成需求数量。
+
+农田/装备复用链：surveyCityOperations 同一轮采集保留 rawOnWater/rawAllItem/rawAllResource，raw字段完整性在展示默认值转换前验证，不重复拉全量Snapshot。Farm复用core survey；Forge附加原Equips/AllHero及现有hero parseOperationInventory；赛季最小提取alliance#seasonFromWorldId供两域复用，精确Long算法不变。两域没有自带execute，由原generic唯一派发器负责预算/授权/取消/迟到/UNKNOWN及History。默认enabled=false，新增账号配置由原ModuleSettings持久化，禁止前端提供transport/body/成本/证明。
+
+Farm每田每批一个动作，多个田共用Ledger及父预算；收益不入预算。PLANT后权威完整crop、精确seed净扣、其余物资和地块不变才确认。缺farm绝不推断空田，autoFarming=true或缺完整字段均不派。D6只接精确单田body及单个正种子成本，Harvest不因同请求族定义而开放。
+
+Forge MAKE绑定正int32 makeId及明确universal=false、BuildingEquipMakeCfg.costItem精确自有材料；只认own四零队列，不将省略队列当空闲；产物必须在EquipMakeLibCfg合法集合，不预言star或精确finishTime（委任影响）。PICK绑定原批次、可信game clock earliest已到期及typed PickMadeEquipResponse.equipId；后态必须显式四零IDLE、恰好一个新UID/equipId/star匹配，原bag/英雄装备归属/其他建筑/全部库存不变。typed ACK单独或默认化空队列均UNKNOWN。D6仅这两种严格body和成本分支，不允许premium/兑换/购买/分解。
+
+具名队伍持久文件沿用原DATA_DIR/测试History同目录，原子fsync/rename、writer fence、账号/revision隔离；损坏fail closed。save/overwrite只接受进程内同锁fresh GetFormationResponse事实，30秒以实际响应完成时间计算，缓存读取不刷新时间。rename/delete本地可离线，GET不创建Session；save/overwrite/prepare须现有READY Session，并取消旧plan。所有POST同源JSON/CSRF/精确账号，不能HTTP注入阵容、proof或provenance。prepare等待期间立即废弃旧授权并锁相关计划，草稿编辑后丢弃迟到准备结果。完整PAGE实际调用器仅加入五条精确本地路径，原普通Web写白名单和任意请求保护不变。
+
+记忆先持久History、再record；memory失败/损坏/pending/orphan UNKNOWN保守阻止后续派发。UNKNOWN必须精确原run/batch/action/module/type/目标hash/identity hash匹配，只有原History追加APPLIED/NOT_APPLIED解除补充锁；原结果与预算永不改写或退款。RATE_LIMITED未决结果保持原status，另有UNKNOWN补充审计，不把CONFIRMED成功伪造UNKNOWN。file History自动同目录依赖注入；custom非文件History保持兼容且coverage明确不可用。GET /api/operations/memory只读过滤，不补写；UI展示原UNKNOWN与historyOrigin当前复核分开、operation run/workflow run/definition/node/batch/action关联、pending投影和未覆盖策略，账号代次/新读/错误清旧显示，无清除/重试/授权入口。重启无自动执行、permit、父预算或虚假业务history。
+
+#### D.10.1 实际离线验证
+
+命令一（38文件，业务/服务/协议/预算/历史/安全）：
+
+node --test tests/farm-operations.test.mjs tests/farm-service.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/farm-forge-api.test.mjs tests/named-formations.test.mjs tests/named-formations-service.test.mjs tests/execution-memory.test.mjs tests/execution-memory-service.test.mjs tests/execution-memory-api.test.mjs tests/execution-history.test.mjs tests/operation-service.test.mjs tests/operation-recovery.test.mjs tests/operation-recovery-service.test.mjs tests/operation-recovery-api.test.mjs tests/operation-adapters-integration.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/gameplay-locks.test.mjs tests/operations-api.test.mjs tests/actions-safety.test.mjs tests/cli-safety.test.mjs tests/core-operation-adapters.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/formation.test.mjs tests/alliance-tech.test.mjs tests/run-budget.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/resource-budget.test.mjs tests/workflow.test.mjs tests/stage-function.test.mjs tests/stages-formation.test.mjs tests/stages-stop-on-defeat.test.mjs
+
+实际 736 tests / 736 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo，17.69秒。
+
+命令二：node --test tests/operations-view.test.mjs tests/gameplay-view.test.mjs tests/stages-view.test.mjs tests/account-view.test.mjs。实际 144/144 PASS，0fail/cancelled/skipped/todo，0.39秒；包含完整PAGE Named五路径、10项Memory及fragment59项等既有保护。之后仅合同页面编号纠正，在 tests/function-contracts.test.mjs tests/function-registry.test.mjs 定向59/59 PASS；与命令一重叠，不相加。
+
+命令三：node --test tests/farm-forge-full-page.test.mjs tests/server-runtime.test.mjs tests/writer-ownership.test.mjs tests/execution-stages.test.mjs。实际60/60 PASS，0fail/cancelled/skipped/todo，4.57秒；完整PAGE不替换call/operationMutation，Farm/Forge各自精确Manual→取消确认/批准→单次authorize/execute、账号迟到permit、编辑晚preview、错误计划/账号、默认禁用等12项。相邻Server测试使用合成Client/临时本地Console，所有权使用临时文件和本地进程；均无真实游戏网络/账号/凭证/Runtime。新Farm/Forge API15项实际createConsole in-process不listen，clientFactory/全量collect计数并抛错，断言0调用；专域服务使用真实GameClient本地Codec+假socket/TEMP，不能称真实E2E。不是R7全量回归，所有E03–E24真实分支状态不因此改变。
+
+| 失败/审查证据 | 修复及保留回归 |
+|---|---|
+| Farm/Forge API初次10PASS/2FAIL：重复account被接受；跨账号permit误期望403 | 共享受控gate要求唯一account；第二项按原STALE_PLAN409合同纠正，仍要求0派发/账号隔离。专属15/15及相邻64/64通过 |
+| 完整PAGE Named首次34PASS/1FAIL，保存按钮到不了fetch；fragment替身漏过入口 | 加五个精确本地path，不接任意prefix；完整生命周期/CSRF/account测试保留并通过 |
+| Memory初版对live DISPATCHING误生成UNKNOWN导致相邻15FAIL；扩Workflow scope破坏旧接口74/75 | completed result才补投影，重启由原History保守恢复；保持旧父scope，新增可选bindWorkflowNode；原断言保留 |
+| 完整PAGE新Farm/Forge测试初轮VM跨realm headers deepEqual假失败 | 仅比较plain归一化headers，不降低内容/账号/成本/0派发断言；12/12通过 |
+| 静态合同误填不存在P3-8 | 改原P3-6/P3-7并补原BIZ/C空集断言，59/59通过；没有新建产品页编号 |
+| root长UI编辑脚本在exec解析前SyntaxError | 未写文件，改独占双文件小范围接线；原成果保留，最终完整页面回归通过 |
+| D.9首次提交前diff-check发现文档EOF多空行 | 仅修尾空白再提交，未绕过check或混入原输入 |
+
+#### D.10.2 最新恢复位置及可执行后续
+
+D.8待办按本节替代已交子分支：农田单田播种、装备厂自有材料制造/收取、具名队伍专业API/UI、首败停止控件、Operation/Workflow补充记忆和历史页审计已落地；不再重复开发。W04/W06/W07/W08/W19整体仍PARTIAL，R1 W03来源/地图资产恢复仍BLOCKED_EVIDENCE；W05允许装货领奖分支及前批Hero LEVEL/STAR/SKILL继续复用。全部本批写路径REAL_UNVERIFIED。
+
+下一独立工作：W04订单奖励证据解析由独立order-rewards纯模块推进，root随后统一接原survey/executor/History/UI，不再创建订单执行器。X02本地WorkerOrderCfg129/129及WorkerSpecOrderCfg25/25都有EXP/GOLD，旧“没有任何金币来源”需细化为“配置基础GOLD存在，但最终预派发公式/加成链未证实”；FinishWorkerOrderResponse.reward可提供事后实际奖励，不能倒当MIN_GOLD事前事实。X01完整游戏全天产量及X03免费刷新provider仍缺证，不以工具日报/refreshTime/每日40订单上限替代。W08普通图纸解锁与极限复制继续静态核客户端分支/配置/模式，不擅自解除闸门。root独占共享文件，领域独占两文件，冻结后定向回归、记录并提交。R7后才生成R8具体授权清单；Goal保持ACTIVE。
+
+Forge静态参考定位（不属于目标仓库源码）：C:/Users/zyk-o/Documents/crazywaterword/src/equip.mjs，SHA256 7592c2112579fad5097e71e503561574966f22616b45a2eeec19eecd793e26ff；describeRecipe:49、pickRecipe:82/83、surveyEquip:97/118、planEquip:199/223–225/246–248。参考155/164省略finishTime即成熟的推断未移植，目标要求显式完整队列和可信到期。引用不代表真实游戏证据。

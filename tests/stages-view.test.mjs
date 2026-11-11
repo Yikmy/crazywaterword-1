@@ -45,7 +45,7 @@ test('start requires enable, READY connection and explicit per-run confirmation'
 });
 test('authorized start sends only the scoped stage route with default 10 seconds and nullable limits',async()=>{
  const h=await boot();await load(h);enable(h);const p=h.node('stages-start').onclick(),r=h.pending('/api/stages/start','A');
- assert.equal(r.options.method,'POST');assert.equal(r.options.headers['x-cw-csrf'],'synthetic-page-csrf-A');assert.deepEqual(JSON.parse(r.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null},confirm:true});
+ assert.equal(r.options.method,'POST');assert.equal(r.options.headers['x-cw-csrf'],'synthetic-page-csrf-A');assert.deepEqual(JSON.parse(r.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null,stopOnDefeat:false},confirm:true});
  assert.equal(h.node('stages-start').disabled,true);assert.match(h.confirmations[0],/实际开战/);
  h.respond('/api/stages/start','A',fixture('A',{runId:'new-run',state:'WAITING_RESULT',running:true,inFlight:true,attempts:1}));await p;
  assert.match(h.node('stages-status').textContent,/战斗中/);assert.match(h.node('stages-status').textContent,/new-run/);assert.equal(h.node('stages-stop').disabled,false);assert.equal(h.node('refresh-data').disabled,true);
@@ -109,7 +109,7 @@ test('B4 production defaults send the configured inter-stage delay without chang
  const h=await boot(),data=fixture();data.defaults.interStageDelay={minSeconds:10,maxSeconds:11};await load(h,data);enable(h);
  assert.match(h.node('stages-delay-policy').textContent,/10–11 秒/);
  const p=h.node('stages-start').onclick(),req=h.pending('/api/stages/start','A');
- assert.deepEqual(JSON.parse(req.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null,interStageDelay:{minSeconds:10,maxSeconds:11}},confirm:true});
+ assert.deepEqual(JSON.parse(req.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null,stopOnDefeat:false,interStageDelay:{minSeconds:10,maxSeconds:11}},confirm:true});
  h.respond('/api/stages/start','A',fixture('A',{state:'WAITING_RESULT',running:true,runId:'paced'}));await p;
 });
 
@@ -153,4 +153,16 @@ test('Stage starts use the latest GET token for the selected account instead of 
  h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");const b=fixture('B');b.csrfToken='returned-by-get-B';await load(h,b);enable(h);
  p=h.node('stages-start').onclick();assert.equal(h.pending('/api/stages/start','B').options.headers['x-cw-csrf'],'returned-by-get-B');
  h.respond('/api/stages/start','B',fixture('B',{state:'WAITING_RESULT',running:true}));await p;
+});
+
+test('first-defeat switch is explicit, per-run, preserved through polling and reset on account change',async()=>{
+ const h=await boot();await load(h);enable(h);assert.equal(h.node('stages-stop-on-defeat').checked,false);h.node('stages-stop-on-defeat').checked=true;h.node('stages-stop-on-defeat').onchange();
+ await load(h,fixture());assert.equal(h.node('stages-stop-on-defeat').checked,true);
+ const pending=h.node('stages-start').onclick(),req=h.pending('/api/stages/start','A');assert.equal(JSON.parse(req.options.body).config.stopOnDefeat,true);assert.equal(h.node('stages-stop-on-defeat').disabled,true);
+ h.respond('/api/stages/start','A',fixture('A',{runId:'first-defeat',state:'WAITING_RESULT',running:true,inFlight:true}));await pending;assert.equal(h.node('stages-stop-on-defeat').disabled,true);
+ h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");assert.equal(h.node('stages-stop-on-defeat').checked,false);
+});
+test('owner can explicitly disable a retained first-defeat policy for a newly authorized run',async()=>{
+ const h=await boot();await load(h,fixture('A',{config:{enabled:false,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true}}));assert.equal(h.node('stages-stop-on-defeat').checked,true);enable(h);h.node('stages-stop-on-defeat').checked=false;
+ const pending=h.node('stages-start').onclick();assert.equal(JSON.parse(h.pending('/api/stages/start','A').options.body).config.stopOnDefeat,false);h.respond('/api/stages/start','A',fixture('A',{state:'WAITING_RESULT',running:true,inFlight:true}));await pending;
 });

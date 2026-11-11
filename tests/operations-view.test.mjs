@@ -428,3 +428,94 @@ test('explicitly appending STILL_UNKNOWN keeps the original UNKNOWN, blocks new 
   const posted = h.requests.filter(request => request.options.method === 'POST').map(request => new URL(request.url, 'http://localhost').pathname);
   assert.deepEqual(posted, ['/api/operations/recovery/preview', '/api/operations/recovery/confirm']);
 });
+
+
+test('full PAGE named formation buttons use only five exact POST routes with account CSRF and no game execution', async () => {
+  const h=await boot(); await load(h);
+  h.run("snapshot={connected:true,state:'READY',busy:null}");
+  const entry={accountId:'A',id:'00000000-0000-4000-8000-000000000001',name:'队伍一',revision:1,mode:'MAINLINE'};
+  const loading=h.node('nf-load').onclick();
+  h.respond('/api/formations/named','A',{accountId:'A',entries:[],csrfToken:'synthetic-csrf-A'}); await loading;
+  h.node('nf-name').value=entry.name;
+  for(const kind of ['save','rename','overwrite','prepare','delete']){
+    if(kind==='rename')h.node('nf-name').value='队伍二';
+    const pending=h.node('nf-'+kind).onclick();
+    const route='/api/formations/named/'+kind,request=h.pending(route,'A');
+    assert.ok(request,'real page must dispatch the exact local '+kind+' route');
+    assert.equal(request.options.method,'POST');assert.equal(request.options.headers['x-cw-csrf'],'synthetic-csrf-A');
+    if(kind==='save')assert.deepEqual(body(request),{name:'队伍一'});
+    else assert.deepEqual(body(request),{id:entry.id,expectedRevision:entry.revision,...(kind==='rename'?{name:'队伍二'}:{})});
+    if(kind==='prepare')h.respond(route,'A',{accountId:'A',mode:'MAINLINE',requiresFreshSurvey:true,requiresFreshPlan:true,requiresAuthorization:true,parameters:{presetId:1,heroPositions:[{heroId:'合成英雄',pos:{x:1,y:1}}]}});
+    else if(kind==='delete')h.respond(route,'A',{accountId:'A',id:entry.id,deleted:true});
+    else {if(kind!=='save')entry.revision++;if(kind==='rename')entry.name='队伍二';h.respond(route,'A',{...entry});}
+    await pending;
+  }
+  assert.deepEqual(JSON.parse(h.node('gp-formation-parameters').value),{presetId:1,heroPositions:[{heroId:'合成英雄',pos:{x:1,y:1}}]});
+  assert.equal(h.requests.filter(row=>new URL(row.url,'http://local').pathname==='/api/operations/execute').length,0);
+  for(const suffix of ['clear','apply','save/extra'])await assert.rejects(h.run("operationMutation('/api/formations/named/"+suffix+"',{},viewGuard.capture())"),/未开放/);
+  await assert.rejects(h.run("call('/api/formations/named/save',{method:'POST',body:'{}'})"),/只读/);
+});
+
+
+const memoryFixture=(accountId='A',overrides={})=>({accountId,available:true,coverage:'UNTIL_IDENTITY_CHANGE_AND_UNKNOWN_AUDIT',events:[],pendingHistoryProjection:[],resumable:false,retryAllowed:false,policyCoverage:{identityChange:true,cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权',...overrides});
+const memoryEvent=(overrides={})=>({eventId:'memory-event-A',module:'formation',actionType:'SAVE',runId:'operation-run-A',workflowId:'workflow-run-A',nodeId:'node-A',batchId:'batch-A',actionId:'action-A',capabilityId:'cw.formation',status:'UNKNOWN',dispatched:true,unresolvedWrite:true,target:{presetId:2},identityDigest:'identity-digest-A',source:'ExecutionHistory.action.result.v1',generation:1,reason:'原始请求未决',policy:{kind:'UNTIL_IDENTITY_CHANGE'},historyOrigin:{status:'STILL_UNKNOWN',resolved:false,workflowDefinitionId:'workflow-definition-A',operationRunId:'operation-run-A',workflowRunId:'workflow-run-A',nodeId:'node-A'},...overrides});
+async function loadMemory(h,data=memoryFixture()) {const pending=h.node('ops-memory-load').onclick();h.respond('/api/operations/memory',data.accountId,data);await pending;}
+function settleMemoryRequest(request,data,ok=true){request.settled=true;request.resolve({ok,statusText:'fixture failure',json:async()=>data});}
+const memoryText=h=>['ops-memory','ops-memory-coverage','ops-memory-pending','ops-memory-hint'].map(id=>h.node(id).textContent).join(' ');
+
+test('full PAGE Memory button issues only an exact-account GET without CSRF Runtime or execution side effects',async()=>{
+ const h=await boot(),before=h.requests.length;assert.match(PAGE,/id="ops-memory-load"/);assert.match(PAGE,/清除、重试或执行授权/);assert.equal(h.node('ops-memory-load').disabled,false);
+ const snapshot=h.run('JSON.stringify(snapshot)'),state=h.run('JSON.stringify({operationsData,operationsPlan,operationsReadable,operationsRevision})');
+ const pending=h.node('ops-memory-load').onclick(),request=h.pending('/api/operations/memory','A');assert.ok(request);assert.equal(request.options.method,undefined);assert.equal(request.options.body,undefined);assert.equal(request.options.headers,undefined);assert.deepEqual([...new URL(request.url,'http://local').searchParams],[['account','A']]);
+ h.respond('/api/operations/memory','A',memoryFixture());await pending;assert.equal(h.requests.length,before+1);assert.equal(h.run('JSON.stringify(snapshot)'),snapshot);assert.equal(h.run('JSON.stringify({operationsData,operationsPlan,operationsReadable,operationsRevision})'),state);assert.match(h.node('ops-memory').textContent,/尚无补充执行记忆/);assert.equal(h.node('ops-memory-hint').textContent,'');
+ for(const route of ['/api/connect','/api/refresh','/api/operations/authorize','/api/operations/execute','/api/operations/recovery/preview','/api/operations/recovery/confirm'])assert.equal(h.pending(route,'A'),undefined);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE Memory renders original UNKNOWN separately from current History reconciliation and complete run correlations',async()=>{
+ const h=await boot();const events=['STILL_UNKNOWN','APPLIED','NOT_APPLIED','ORIGIN_UNAVAILABLE','ORIGIN_MISMATCH'].map((status,index)=>memoryEvent({eventId:'event-'+status,historyOrigin:{status,resolved:['APPLIED','NOT_APPLIED'].includes(status),workflowDefinitionId:'definition-'+index,operationRunId:'operation-'+index,workflowRunId:'workflow-'+index,nodeId:'node-'+index}}));
+ events.push(memoryEvent({eventId:'definite-rejection',status:'REJECTED',unresolvedWrite:false,historyOrigin:{status:'REJECTED',resolved:false,operationRunId:'definite-run'}}));
+ await loadMemory(h,memoryFixture('A',{events}));const text=memoryText(h);for(const status of ['STILL_UNKNOWN','APPLIED','NOT_APPLIED','ORIGIN_UNAVAILABLE','ORIGIN_MISMATCH','REJECTED'])assert.ok(text.includes(status));assert.match(text,/原始 UNKNOWN 审计保留不变/);assert.match(text,/当前原始历史复核/);assert.match(text,/已追加权威复核证据/);assert.match(text,/仍未解除/);assert.match(text,/确定拒绝记录/);
+ for(const field of ['operationRunId','workflowRunId','workflowDefinitionId','nodeId','batchId','actionId','capabilityId','historyOrigin','identityDigest','dispatched','unresolvedWrite'])assert.ok(text.includes(field));for(const value of ['operation-0','workflow-0','definition-0','node-0','batch-A','action-A','cw.formation'])assert.ok(text.includes(value));assert.equal(descendants(h.node('ops-memory')).filter(node=>node.tagName==='button').length,0);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE Memory shows policy coverage limits and pending History projections without repairing them or fabricating authorization',async()=>{
+ const h=await boot();await load(h);choose(h,submit().actionId);await preview(h);const priorPlan=h.node('ops-plan-meta').textContent,priorBudget=h.node('ops-budget').textContent,posted=h.requests.filter(row=>row.options.method==='POST').length;
+ await loadMemory(h,memoryFixture('A',{events:[memoryEvent()],pendingHistoryProjection:[{runId:'pending-origin-run',batchId:'pending-batch',actionId:'pending-action',status:'UNKNOWN'}]}));
+ assert.match(h.node('ops-memory-coverage').textContent,/拒绝身份变化策略：已接入.*冷却策略：未覆盖.*游戏日界策略：未覆盖/);assert.match(h.node('ops-memory-coverage').textContent,/不能据此解除限制/);assert.match(h.node('ops-memory-pending').textContent,/待投影结果：1.*GET 只读取，不补写记忆/s);assert.match(h.node('ops-memory-pending').textContent,/pending-origin-run.*pending-batch.*pending-action/s);assert.equal(h.node('ops-plan-meta').textContent,priorPlan);assert.equal(h.node('ops-budget').textContent,priorBudget);assert.equal(h.node('ops-authorize-execute').disabled,false);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,posted);assert.equal(h.pending('/api/operations/execute','A'),undefined);
+ for(const suffix of ['','/record','/clear','/proof','/retry']){await assert.rejects(h.run("call('/api/operations/memory"+suffix+"',{method:'POST',body:'{}'})"),/只读/);await assert.rejects(h.run("operationMutation('/api/operations/memory"+suffix+"',{},viewGuard.capture())"),/未开放/);}assert.equal(h.requests.filter(row=>row.options.method==='POST').length,posted);
+});
+
+test('full PAGE Memory data and untrusted provenance remain literal text with no HTML or interactive retry controls',async()=>{
+ const h=await boot(),payload='<img src=x onerror=alert(1)><script>alert(2)</script>';await loadMemory(h,memoryFixture('A',{note:payload,coverage:payload,events:[memoryEvent({eventId:payload,reason:payload,target:{id:payload},source:payload,historyOrigin:{status:payload,resolved:false}})],pendingHistoryProjection:[{runId:payload}]}));
+ assert.ok(h.node('ops-memory').textContent.includes(payload));assert.ok(h.node('ops-memory-coverage').textContent.includes(payload));assert.ok(h.node('ops-memory-pending').textContent.includes(payload));for(const id of ['ops-memory','ops-memory-coverage','ops-memory-pending'])assert.ok(descendants(h.node(id)).every(node=>!['img','script','button','input'].includes(node.tagName)));assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE account switch immediately clears Memory state and late A success cannot replace current B',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{events:[memoryEvent()]}));const old=h.node('ops-memory-load').onclick();h.run("selectAccount('B')");assert.equal(h.node('ops-memory').textContent,'尚未读取执行记忆。');assert.equal(h.node('ops-memory-coverage').textContent,'尚未读取覆盖范围。');assert.equal(h.node('ops-memory-pending').textContent,'');assert.equal(h.node('ops-memory-hint').textContent,'');
+ await loadMemory(h,memoryFixture('B',{events:[memoryEvent({eventId:'current-B',runId:'run-B'})]}));const shown=memoryText(h),count=h.requests.length;h.respond('/api/operations/memory','A',memoryFixture('A',{events:[memoryEvent({eventId:'late-A'})]}));await old;assert.equal(memoryText(h),shown);assert.equal(h.requests.length,count);assert.doesNotMatch(memoryText(h),/late-A|memory-event-A/);assert.match(memoryText(h),/current-B/);
+});
+
+test('full PAGE A to B to A Memory generation rejects both old results and old errors',async()=>{
+ const h=await boot(),oldSuccess=h.node('ops-memory-load').onclick(),first=h.pending('/api/operations/memory','A');const oldError=h.node('ops-memory-load').onclick(),second=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);
+ h.run("selectAccount('B');selectAccount('A')");const fresh=h.node('ops-memory-load').onclick(),third=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);settleMemoryRequest(third,memoryFixture('A',{events:[memoryEvent({eventId:'new-generation-A'})]}));await fresh;const shown=memoryText(h),count=h.requests.length;settleMemoryRequest(first,memoryFixture('A',{events:[memoryEvent({eventId:'old-generation-A'})]}));await oldSuccess;settleMemoryRequest(second,{error:'old-generation-error'},false);await oldError;assert.equal(memoryText(h),shown);assert.equal(h.requests.length,count);assert.match(memoryText(h),/new-generation-A/);assert.doesNotMatch(memoryText(h),/old-generation/);
+});
+
+test('full PAGE newer same-account Memory GET wins and older success cannot overwrite its data',async()=>{
+ const h=await boot(),first=h.node('ops-memory-load').onclick(),old=h.pending('/api/operations/memory','A'),second=h.node('ops-memory-load').onclick(),fresh=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);assert.notEqual(old,fresh);
+ settleMemoryRequest(fresh,memoryFixture('A',{events:[memoryEvent({eventId:'latest-read'})]}));await second;const shown=memoryText(h);settleMemoryRequest(old,memoryFixture('A',{events:[memoryEvent({eventId:'superseded-read'})]}));await first;assert.equal(memoryText(h),shown);assert.match(memoryText(h),/latest-read/);assert.doesNotMatch(memoryText(h),/superseded-read/);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE current Memory API failure clears old data coverage and pending projection and older response cannot resurrect them',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{events:[memoryEvent()],pendingHistoryProjection:[{runId:'old-pending'}]}));const oldPending=h.node('ops-memory-load').onclick(),old=h.pending('/api/operations/memory','A');assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-coverage').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');const failing=h.node('ops-memory-load').onclick(),fresh=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);settleMemoryRequest(fresh,{error:'memory file corrupt'},false);await failing;assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-coverage').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');assert.match(h.node('ops-memory-hint').textContent,/读取失败.*memory file corrupt/);const shown=memoryText(h);settleMemoryRequest(old,memoryFixture('A',{events:[memoryEvent({eventId:'stale-revival'})]}));await oldPending;assert.equal(memoryText(h),shown);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE mismatched-account and network Memory failures fail closed while custom unavailable history stays explicit',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{events:[memoryEvent()]}));let pending=h.node('ops-memory-load').onclick();h.respond('/api/operations/memory','A',memoryFixture('B',{events:[memoryEvent({eventId:'wrong-account'})]}));await pending;assert.match(h.node('ops-memory-hint').textContent,/账号不匹配/);assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-coverage').textContent,'');
+ pending=h.node('ops-memory-load').onclick();const request=h.pending('/api/operations/memory','A');request.settled=true;request.reject(new Error('synthetic network error'));await pending;assert.match(h.node('ops-memory-hint').textContent,/synthetic network error/);assert.equal(h.node('ops-memory-pending').textContent,'');
+ await loadMemory(h,memoryFixture('A',{available:false,coverage:'CUSTOM_NON_FILE_HISTORY_WITHOUT_MEMORY',policyCoverage:{identityChange:false,cooldown:false,gameDay:false}}));assert.match(h.node('ops-memory-coverage').textContent,/补充记忆不可用.*CUSTOM_NON_FILE_HISTORY_WITHOUT_MEMORY/);assert.match(h.node('ops-memory-coverage').textContent,/身份变化策略：未覆盖/);assert.match(h.node('ops-memory').textContent,/原始执行历史仍是复核依据/);assert.equal(h.node('ops-memory-hint').textContent,'');assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+
+test('full PAGE malformed Memory contracts clear prior evidence instead of reporting an empty usable store',async()=>{
+ const h=await boot();for(const invalid of [{events:null},{pendingHistoryProjection:null},{available:'yes'},{resumable:true},{retryAllowed:true}]){await loadMemory(h,memoryFixture('A',{events:[memoryEvent()]}));const pending=h.node('ops-memory-load').onclick();h.respond('/api/operations/memory','A',memoryFixture('A',invalid));await pending;assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-coverage').textContent,'');assert.match(h.node('ops-memory-hint').textContent,/合同不可靠/);}assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});

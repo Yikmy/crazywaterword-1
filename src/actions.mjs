@@ -291,7 +291,16 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
     fail('D6_FORBIDDEN', 'D6 禁止付费动作');
   }
   if (request === 'DrawAfkRewardRequest' && body.useAdvCard) fail('COST_UNKNOWN', '广告卡成本未经确认');
-  const known = Object.values(ACTIONS).some((entry) => entry.request === request)
+  const fields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable===true&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value'));
+  const identifier=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
+  const exactCosts=list=>Array.isArray(list)&&Reflect.ownKeys(list).length===list.length+1&&list.every(v=>fields(v,['id','num'])&&identifier(v.id)&&Number.isSafeInteger(v.num)&&v.num>0)&&new Set(list.map(v=>v.id)).size===list.length;
+  // Exact seed-only or owned-material branches. No fallback purchase, exchange,
+  // harvest or automatic-farming branch is admitted by a request-family label.
+  const farmPlant=request==='FarmPlantRequest',forgeMake=request==='MakeEquipRequest',forgePick=request==='PickMadeEquipRequest';
+  if(farmPlant&&(!fields(body,['args'])||!Array.isArray(body.args)||body.args.length!==1||Reflect.ownKeys(body.args).length!==2||!fields(body.args[0],['buildingId','productId'])||!identifier(body.args[0].buildingId)||!identifier(body.args[0].productId)||!exactCosts(costs)||costs.length!==1))fail('COST_UNKNOWN','仅允许有精确种子成本的单田播种');
+  if(forgeMake&&(!fields(body,['buildingId','makeId','universal'])||!identifier(body.buildingId)||!Number.isInteger(body.makeId)||body.makeId<=0||body.makeId>2147483647||body.universal!==false||!exactCosts(costs)||costs.length===0))fail('COST_UNKNOWN','装备制造仅允许精确配方、自有材料及universal=false');
+  if(forgePick&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!Object.hasOwn(action,'costs')||!exactCosts(costs)||costs.length!==0))fail('COST_UNKNOWN','装备收取仅允许明确单建筑及零成本');
+  const known = farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
     || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {

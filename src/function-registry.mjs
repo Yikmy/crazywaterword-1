@@ -1,3 +1,5 @@
+import { equipmentForgeModule } from './equipment-forge.mjs';
+import { farmModule } from './farm-operations.mjs';
 import { heroModule } from './hero-operations.mjs';
 import { formationModule } from './formation.mjs';
 import { allianceModule } from './alliance.mjs';
@@ -16,5 +18,5 @@ function declaredDependencies(id, options) {
 }
 export function registerBusinessFunction(module) { const adapter=Object.freeze({...module,contractVersion:1,dependencyVersions:module.dependencyVersions??(options=>declaredDependencies(module.id,options))});validateFunctionContract(adapter.id,adapter);return adapter; }
 // Static trusted registration only. Browser data never supplies code or transport.
-export const GAMEPLAY_MODULES=Object.freeze(Object.fromEntries([formationModule,allianceModule,museumModule,treasureModule,fleetModule,navalModule,...Object.values(CORE_OPERATION_MODULES),heroModule].map(module=>[module.id,registerBusinessFunction(module)])));
+export const GAMEPLAY_MODULES=Object.freeze(Object.fromEntries([formationModule,allianceModule,museumModule,treasureModule,fleetModule,navalModule,...Object.values(CORE_OPERATION_MODULES),heroModule,farmModule,equipmentForgeModule].map(module=>[module.id,registerBusinessFunction(module)])));
 export function listBusinessFunctions(modules=GAMEPLAY_MODULES){return Object.values(modules).map(module=>({id:module.id,label:module.label??module.id,contract:'Survey → View → Plan → Authorize → Execute → Verify',defaultConfig:structuredClone(module.defaultConfig??{enabled:false}),capabilities:module.capabilities??FUNCTION_CONTRACTS[module.id]?.requirementIds.C??[],source:module.evidence??FUNCTION_CONTRACTS[module.id]?.source??null,metadata:module.contractVersion===1?describeFunctionContract(module.id):null}));}

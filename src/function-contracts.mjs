@@ -44,6 +44,18 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'equipment-forge': contract('equipment-forge', [], ['P3-6','P3-7'], ['src/equipment-forge.mjs#equipmentForgeModule','src/equipment-forge.mjs#planEquipmentForge'], {buildingId:string,action:{type:'string',enum:['make','pick']},makeId:integer,allowUniversal:boolean}, {
+    inventoryRequirementIds:['BIZ-R07'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['MAKE','PICK'],blockedCapabilities:[blocked('UNIVERSAL_EXCHANGE','Universal material consumption is not proven'),blocked('IMPLICIT_IDLE_QUEUE','Missing equipMaking does not prove an idle queue'),blocked('QUALITY_FALLBACK','Automatic lower-quality fallback is excluded')]},
+    verification:verification('verifyEquipmentForge','src/equipment-forge.mjs#verifyEquipmentForge','Exact original batch, queue, typed pick equipId, one new owned UID and full inventory net change'),
+    dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.BuildingEquipMakeCfg','config.EquipMakeLibCfg','config.EquipCfg']),
+  }),
+  farm: contract('farm', [], ['P2-2'], ['src/farm-operations.mjs#farmModule','src/farm-operations.mjs#planFarmOperations'], {buildingId:string,action:{type:'string',enum:['plant','harvest']},productId:string}, {
+    inventoryRequirementIds:['BIZ-R16a','BIZ-R16b','BIZ-R16c'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['PLANT'],blockedCapabilities:[blocked('HARVEST','Maturity time unit and CriticalAsset reward semantics lack authoritative evidence'),blocked('IMPLICIT_EMPTY_PLOT','Missing farm is not proven empty'),blocked('AUTO_FARMING','Server automatic farming is outside a single-plot permit')]},
+    verification:verification('verifyFarmOperation','src/farm-operations.mjs#verifyFarmOperation','Fresh exact OnWater crop, unchanged other plots and exact full inventory seed debit'),
+    dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.FarmlandPlantCfg']),
+  }),
   formation: contract('formation', ['C211', 'C212', 'C213', 'C214'], ['P1-3', 'P3-5'], ['src/formation.mjs#formationModule', 'src/formation.mjs#validateFormationParameters'], formationParameters, {
     implementation: { mode: 'CONTROLLED_WRITE', actions: ['SAVE'], blockedCapabilities: [blocked('C215', 'Extreme-copy and other battle-mode formation are not implemented', 'NOT_IMPLEMENTED'), blocked('UNLOCK_PRESET', 'Paid unlock is excluded by D6')] },
     verification: verification('verifyFormation', 'src/formation.mjs#verifyFormation', 'Full saved mainline formation and unchanged petUid, typed response plus fresh GetFormation; no victory claim'),

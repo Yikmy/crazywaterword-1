@@ -4,6 +4,8 @@ import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
 import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
+import { createExecutionMemory } from './execution-memory.mjs';
+import { createNamedFormationStore } from './named-formations.mjs';
 import { GAMEPLAY_MODULES, registerBusinessFunction } from './function-registry.mjs';
 import { createStageFunction } from './stage-function.mjs';
 import fs from 'node:fs';
@@ -132,7 +134,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   const operationCsrf = randomUUID();
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
   const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:registerBusinessFunction(stageFunction)}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
-    history: createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() }), ...operationOptions, assertWriter: () => writerOwnership.assertOwned() });
+    history: createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() }), ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
   const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets});
@@ -657,14 +659,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       // Keep the existing read-only policy intact. Stage start has a separate,
       // explicit mutation gate below; no generic game Action route is opened.
       const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
-      const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
+      const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/memory', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
+      const namedFormationRoute=new Set(['GET /api/formations/named','POST /api/formations/named/save','POST /api/formations/named/rename','POST /api/formations/named/overwrite','POST /api/formations/named/delete','POST /api/formations/named/prepare']).has(route);
       const gameplayRoute=new Set(['GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
-      if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
+      if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
       }
       if (req.method === 'POST') writerOwnership.assertOwned();
-      if (operationRoute || gameplayRoute || stageRoute) {
+      if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute) {
         // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
         const expectedPort = server.address()?.port;
         const acceptedHosts = new Set([host + ':' + expectedPort]);
@@ -674,13 +677,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           json({ error: '执行接口仅允许同源请求', code: 'ORIGIN_REQUIRED' }, 403); return;
         }
         const id = parsed.searchParams.get('account');
-        if (!id) { json({ error: '必须指定精确账号 ID' }, 400); return; }
+        if (!id || parsed.searchParams.getAll('account').length !== 1) { json({ error: '必须指定唯一精确账号 ID' }, 400); return; }
         if (!loadStore().accounts.some(account => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        if(namedFormationRoute&&(parsed.searchParams.getAll('account').length!==1||[...parsed.searchParams.keys()].some(key=>key!=='account')))throw Object.assign(Error('具名阵容需唯一精确账号且不接受其他查询字段'),{code:'INVALID_INPUT',statusCode:400});
+        if(route==='GET /api/formations/named'){json({...operations.namedFormations(id),csrfToken:operationCsrf});return;}
         if (stageRoute && req.method === 'GET') { json(stageView(id, sessions.get(id))); return; }
         if (route === 'GET /api/gameplay') { json({...operations.moduleView(id,parsed.searchParams.get('module')),csrfToken:operationCsrf});return; }
         if (route === 'GET /api/workflows') { json(workflowView(id));return; }
         if (route === 'GET /api/operations') { json({ ...operations.view(id), csrfToken: operationCsrf }); return; }
         if (route === 'GET /api/operations/production-policy') { json(operations.productionPolicy(id)); return; }
+        if (route === 'GET /api/operations/memory') { if(parsed.searchParams.getAll('account').length!==1)throw Object.assign(Error('记忆查询需唯一账号'),{code:'INVALID_INPUT',statusCode:400});const filters=Object.create(null);for(const [key,value] of parsed.searchParams){if(key==='account')continue;if(Object.hasOwn(filters,key))throw Object.assign(Error('重复记忆筛选字段'),{code:'INVALID_INPUT',statusCode:400});filters[key]=value;}json(operations.executionMemory(id,filters));return; }
         if (route === 'GET /api/operations/history') { json(operations.history(id, parsed.searchParams.get('runId'))); return; }
         const csrf = req.headers['x-cw-csrf'];
         if (req.headers.origin !== 'http://' + req.headers.host || typeof csrf !== 'string' || Buffer.byteLength(csrf) !== Buffer.byteLength(operationCsrf)
@@ -692,6 +698,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (stageRoute) { /* Original Runner uses the common Origin/CSRF gate. */ } else {
         const payload = jsonBody();
         const fields = keys => {if(!payload || typeof payload!=='object' || Array.isArray(payload) || Object.keys(payload).some(key=>!keys.includes(key)))throw Object.assign(new Error('玩法请求包含未知字段'),{statusCode:400});};
+        if(namedFormationRoute){fields(route.endsWith('/save')?['name']:route.endsWith('/rename')?['id','name','expectedRevision']:['id','expectedRevision']);}
+        if(route==='POST /api/formations/named/rename'){json(operations.renameNamedFormation(id,payload));return;}
+        if(route==='POST /api/formations/named/delete'){json(operations.deleteNamedFormation(id,payload));return;}
         if (route==='POST /api/gameplay/config') {fields(['module','config']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
         if (route==='POST /api/workflows/save') {fields(['graph']);workflowStore.save(id,payload.graph);json(workflowView(id));return;}
         if (route==='POST /api/workflows/simulate') {fields(['graph']);json({accountId:id,...simulateWorkflow(payload.graph,{modules:operations.modules})});return;}
@@ -704,6 +713,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         const session = sessions.get(id); scoped = session ?? null;
         if (!session?.client?.connected || session.state !== 'READY') { json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return; }
+        if(route==='POST /api/formations/named/save'){json(await operations.saveNamedFormation(session,payload));return;}
+        if(route==='POST /api/formations/named/overwrite'){json(await operations.overwriteNamedFormation(session,payload));return;}
+        if(route==='POST /api/formations/named/prepare'){json(await operations.prepareNamedFormation(session,payload));return;}
         if (route==='POST /api/gameplay/survey') {fields(['module','parameters']);json({...await operations.surveyModule(session,payload.module,payload.parameters??{}),csrfToken:operationCsrf});return;}
         if (route==='POST /api/workflows/start') {fields(['graph']);validateWorkflow(payload.graph,{modules:operations.modules});const runner=workflowRunner(id);if(runner.getStatus().running)throw Object.assign(new Error('账号工作流正在运行'),{code:'WORKFLOW_BUSY',statusCode:409});runner.start(id,payload.graph).catch(cause=>emit(session,'error',cause.message));await Promise.resolve();json(workflowView(id));return;}
         if (route === 'POST /api/operations/survey') {

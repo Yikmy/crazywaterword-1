@@ -81,7 +81,7 @@ function heroList(response) {
   if (parsed.some(value => value === null) || new Set(parsed.map(value => value.heroId)).size !== parsed.length) return null;
   return parsed.sort((a, b) => a.heroId.localeCompare(b.heroId));
 }
-function inventory(items, resources) {
+export function parseOperationInventory(items, resources) {
   const itemValid = own(items, 'items') && dense(items.items) && items.items.every(row => own(row, 'itemId') && id(row.itemId)
     && own(row, 'num') && safeResourceQuantity(row.num) !== null
     && (!own(row, 'id') || row.id === row.itemId) && (!own(row, 'count') || equal(row.count, row.num)))
@@ -112,7 +112,7 @@ export async function surveyHeroOperations(client, protocol, { player, parameter
   active();
   const heroes = heroList(responses[0]), playerId = playerIdentity(player), playerLevel = own(player, 'level') && positive(player.level) ? player.level : null;
   return { module: 'heroes', heroes, heroesReliable: heroes !== null, playerId, playerLevel,
-    ...inventory(responses[1], responses[2]), parameters, available: Object.keys(protocol ?? {}), notes,
+    ...parseOperationInventory(responses[1], responses[2]), parameters, available: Object.keys(protocol ?? {}), notes,
     state: { playerId, playerLevel, heroes: heroes?.map(hero => hero.raw) ?? null } };
 }
 function rows(config, name) { const value = config?.tables?.[name]?.data; return dense(value) && value.length ? value : null; }

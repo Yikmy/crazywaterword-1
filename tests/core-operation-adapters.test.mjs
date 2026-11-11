@@ -301,3 +301,16 @@ test('production missing appointment protocol or explicit star remains unknown a
     assert.equal(view.factories[0].recipes[0].appointmentAdjustedSeconds,null);assert.equal(f.writes.length,0);
   }
 });
+
+test('core survey retains original farm and equipment fields without another query or mutable aliases', async () => {
+ const f=fixture(),base=f.client.request.bind(f.client);
+ f.raw.autoFarming=false;f.raw.building.push({buildingId:'1农田',level:1,buildStartTime:0,buildFinishTime:0,farm:{productId:'小麦',plantTime:100,ripeTime:200},equipMaking:{makeId:1,equipId:'装备',star:0,finishTime:300}});
+ f.client.request=async(name,...args)=>{const value=await base(name,...args);if(name==='AllItemRequest')value.items.push({itemId:'large-exact',num:'9007199254740993'});return value;};
+ const facts=await read(productionModule,f);
+ assert.equal(facts.rawOnWater.autoFarming,false);assert.deepEqual(facts.rawOnWater.building.at(-1).farm,{productId:'小麦',plantTime:100,ripeTime:200});
+ assert.deepEqual(facts.rawOnWater.building.at(-1).equipMaking,{makeId:1,equipId:'装备',star:0,finishTime:300});
+ assert.equal(facts.rawAllItem.items.at(-1).num,'9007199254740993');assert.deepEqual(facts.rawAllResource,{list:[]});
+ facts.rawOnWater.building.at(-1).farm.productId='changed';assert.equal(f.raw.building.at(-1).farm.productId,'小麦');
+ for(const request of ['OnWaterRequest','AllItemRequest','AllResourceRequest'])assert.equal(f.reads.filter(name=>name===request).length,1);
+ assert.equal(f.writes.length,0);
+});

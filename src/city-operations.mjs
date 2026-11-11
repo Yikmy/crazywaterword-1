@@ -1,5 +1,6 @@
 // City integration: existing survey/planner/executor with target-bound selections.
 // The server owns authorization, the account lock, and durable execution history.
+import { toSnapshotJson } from './game.mjs';
 import { surveyWorld, planWorld, runWorld, upgradeRow } from './world.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, operationResult } from './execution.mjs';
@@ -32,7 +33,8 @@ export function decorateCitySurvey(survey, capturedResponses) {
       finishedProducts: !!factory && assetsReliable(factory.finishedProducts),
     };
   }
-  return { ...survey, cityReliability: { buildings, byBuilding } };
+  const captured = name => capturedResponses instanceof Map ? capturedResponses.get(name) : capturedResponses?.[name];
+  return { ...survey, rawOnWater: toSnapshotJson(raw ?? null), rawAllItem: toSnapshotJson(captured('AllItemRequest') ?? null), rawAllResource: toSnapshotJson(captured('AllResourceRequest') ?? null), cityReliability: { buildings, byBuilding } };
 }
 
 export async function surveyCityOperations(client, protocol, options = {}) {

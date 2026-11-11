@@ -120,6 +120,9 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
   return {technologies,state,target,blockedReason:p.techId!==undefined&&!target?'TECH_TARGET_NOT_IN_SEASON':target?.blockedReason??(target&&p.targetLevel!==target.targetLevel?'TECH_EXACT_SINGLE_LEVEL_REQUIRED':null)};
 }
 
+// WorldIdRule.ts:3603; retain exact integer parsing used by the original alliance survey.
+export function seasonFromWorldId(value) { const worldId=quantity(value); return worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null; }
+
 export async function surveyAlliance(client,protocol,{player=null,signal,parameters={},moduleConfig={},timeout=8000}={}){
   parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);const notes=[],available=Object.keys(protocol??{});
   const get=async(name,body={})=>{assertExecutionActive(client,{signal});const response=name.replace(/Request$/,'Response');
@@ -132,7 +135,7 @@ export async function surveyAlliance(client,protocol,{player=null,signal,paramet
   const itemsValid=Array.isArray(items?.items)&&items.items.every(a=>text(a?.itemId??a?.id)&&quantity(field(a,'num')??field(a,'count'))!==null)&&unique(items.items,a=>a.itemId??a.id),resourcesValid=Array.isArray(resources?.list)&&resources.list.every(a=>quantity(a?.res)!==null&&quantity(field(a,'amount'))!==null)&&unique(resources.list,a=>a.res);
   const tech=Array.isArray(techRes?.tech)?techRes.tech.map(t=>({techId:field(t,'techId'),level:quantity(field(t,'level'))})):null;
   const techReliable=!!tech&&tech.every(t=>techInteger(t.techId)&&t.techId>0&&techInteger(t.level))&&unique(tech,t=>t.techId);
-  const worldId=quantity(field(player,'worldId')),season=worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null,seasonStage=quantity(field(stageRes,'stage'));
+  const worldId=quantity(field(player,'worldId')),season=seasonFromWorldId(worldId),seasonStage=quantity(field(stageRes,'stage'));
   const stock=stockFromResponses(itemsValid?items:null,resourcesValid?resources:null),stockReliable=itemsValid&&resourcesValid&&[...stock.values()].every(n=>n!==null);
   return {module:'alliance',available,...readGameTime(client),
     playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),worldId,season,seasonStage:techInteger(seasonStage)?seasonStage:null,tech,techReliable,helpAllowance:null,helpUsage:null,guildId:allianceId(info?.guild?.guildId),guild:info?.guild?{guildId:field(info.guild,'guildId'),welfarePack:info.guild.welfarePack,gotWelfareTime:quantity(field(info.guild,'gotWelfareTime'))}:null,members,

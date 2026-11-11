@@ -247,3 +247,9 @@ test('explicit complete current formation can be re-applied through a new typed 
   assert.equal(verifyFormation(operation, result, result, {}).confirmed, false);
   assert.equal(plan(result, { presetId: 1 }).actions.length, 1, 'career sorting can still change current positions');
 });
+
+test('formation source time belongs to the original GetFormation response and cannot be refreshed by a cache read',async()=>{
+ const before=Date.now(),f=await facts(),after=Date.now();assert.equal(f.result.formationSource.source,'GetFormationResponse');assert.ok(f.result.formationSource.sourceAt>=before&&f.result.formationSource.sourceAt<=after);
+ const timestamp=f.result.formationSource.sourceAt;viewFormation(f.result,{moduleConfig:enabled});assert.equal(f.result.formationSource.sourceAt,timestamp);
+ const missing=await facts({proto:{...protocol,GetFormationResponse:null}});assert.equal(missing.result.formationSource.sourceAt,null);assert.equal(missing.result.reliability.formation,false);
+});

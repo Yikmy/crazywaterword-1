@@ -100,10 +100,12 @@ export async function surveyFormation(client, protocol, { config, player, signal
   const errors = [];
   if (!config) { try { config = getConfig(); } catch { errors.push('静态阵型配置不可用'); } }
   const queries = [['GetFormationRequest', { module: 1 }, 'GetFormationResponse'], ['MyFormationPresetRequest', {}, 'MyFormationPresetResponse'], ['AllHeroRequest', {}, 'AllHeroResponse']];
+  const observedAt = new Map();
   const results = await Promise.allSettled(queries.map(async ([request, body, response]) => {
     if (!protocol?.[request] || !protocol?.[response]) throw new Error('PROTOCOL_MISSING');
     assertExecutionActive(client, { signal });
-    return await awaitExecution(client.request(request, body, response, 15000, { signal }), client, { signal });
+    const value = await awaitExecution(client.request(request, body, response, 15000, { signal }), client, { signal });
+    observedAt.set(response, Date.now()); return value;
   }));
   assertExecutionActive(client, { signal });
   const values = results.map((r, i) => { if (r.status === 'fulfilled') return r.value; errors.push(queries[i][0] + ' 不可用'); return null; });
@@ -112,7 +114,7 @@ export async function surveyFormation(client, protocol, { config, player, signal
   const rawHeroes = own(values[2], 'heroes') && Array.isArray(values[2].heroes) ? values[2].heroes : null;
   const ownedHeroIds = rawHeroes && rawHeroes.every(r => own(r, 'heroId') && validId(r.heroId)) && new Set(rawHeroes.map(r => r.heroId)).size === rawHeroes.length ? rawHeroes.map(r => r.heroId) : null;
   const catalog = catalogFrom(config, player);
-  return { module: 'formation', formation, ownedHeroIds, unlockedPresetIds: [...new Set([1, ...(presetIds ?? [])])].sort((a, b) => a - b), catalog,
+  return { module: 'formation', formation, formationSource: { source: 'GetFormationResponse', sourceAt: observedAt.get('GetFormationResponse') ?? null }, ownedHeroIds, unlockedPresetIds: [...new Set([1, ...(presetIds ?? [])])].sort((a, b) => a - b), catalog,
     reliability: { formation: formation !== null, presets: presetIds !== null, heroes: ownedHeroIds !== null, config: catalog.reliable },
     writeProtocolAvailable: Boolean(protocol?.SaveFormationRequest && protocol?.SaveFormationResponse),
     stock: stockFromResponses({ items: [] }, { list: [] }), stockReliable: true, costSource, errors };
