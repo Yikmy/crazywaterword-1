@@ -66,8 +66,9 @@ function gpRenderDomain(id,view){
  const show=value=>value===null||value===undefined?'未知':String(value);
  const table=(title,headers,rows)=>{box.appendChild(gpEl('h3',title));const element=gpEl('table'),heading=gpEl('tr');for(const label of headers)heading.appendChild(gpEl('th',label));element.appendChild(heading);for(const row of rows){const tr=gpEl('tr');for(const value of row)tr.appendChild(gpEl('td',show(value)));element.appendChild(tr);}box.appendChild(element);};
  if(id==='equipment-growth'){
-  table('已佩戴装备单次升级',['英雄','UID','装备','等级','星级','精炼等级'],(view?.heroes||[]).flatMap(hero=>(hero.equips||[]).map(equip=>[hero.heroId,equip.uid,equip.equipId,equip.level,equip.star,equip.refineLv])));
-  box.appendChild(gpEl('p','只升级明确已佩戴装备一级，使用已持有精铁；目标英雄战力与属性以服务器完整复读为准。'));
+  table('已佩戴装备单次成长',['英雄','UID','装备','等级','星级','精炼等级'],(view?.heroes||[]).flatMap(hero=>(hero.equips||[]).map(equip=>[hero.heroId,equip.uid,equip.equipId,equip.level,equip.star,equip.refineLv])));
+  box.appendChild(gpEl('p','等级单次消耗自有精铁；显式选择红装精炼后单次消耗自有精铁与精炼石。目标英雄战力与属性以服务器完整复读为准。'));
+  const scope=viewGuard.capture(),revision=gpRevision;for(const mode of [{label:'查看单次等级',action:null},{label:'查看红装单次精炼',action:'refine'}]){const button=gpEl('button',mode.label);button.dataset.equipmentGrowthMode=mode.action||'level';button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;const old=gpParse('gp-'+id+'-parameters'),parameters={};for(const key of ['heroId','uid'])if(old[key]!==undefined)parameters[key]=old[key];if(mode.action)parameters.action=mode.action;$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择成长种类；请重新探测明确目标、成本并单次授权。';};s.actionControls.push(button);box.appendChild(button);}
  }else if(id==='formation-unlock'){
   table('普通阵型模板',['模板','名称','对应已有图纸','解锁状态'],(view?.templates||[]).map(row=>[row.presetId,row.name,operationCosts(row.costs),view?.unlockedPresetIds?.includes(row.presetId)?'已解锁':'未解锁']));
   box.appendChild(gpEl('p','仅消耗已持有的对应图纸一张；解锁后必须重新读取阵容列表，再单独预览并授权应用。'));

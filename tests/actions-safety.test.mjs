@@ -153,3 +153,9 @@ test('Fort D6 admits only exact single-city ordinary owned material and matching
  for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
  for(const request of ['BuildFortRequest','FinishFortRequest','DemolishFortRequest'])assert.throws(()=>assertPaymentAllowed({...action(),request}),{code:'COST_UNKNOWN'});
 });
+
+test('equipment refinement D6 accepts exact UID and two positive owned materials without hidden growth controls',()=>{
+ const action=()=>({request:'EquipRefineRequest',body:{uid:'9007199254740993'},costs:[{id:'精铁',num:90500},{id:'精炼石',num:100}]});assert.doesNotThrow(()=>assertPaymentAllowed(action()));const reversed=action();reversed.costs.reverse();assert.doesNotThrow(()=>assertPaymentAllowed(reversed));
+ for(const mutate of [a=>a.body.uid='0',a=>a.body.uid='01',a=>a.body.uid=9007199254740992,a=>a.body.uid='9223372036854775808',a=>a.body.action='refine',a=>a.body.num=2,a=>a.body.universal=false,a=>a.body.buyMissing=true,a=>a.body.heroId='A',a=>a.costs.pop(),a=>a.costs[1].id='精铁',a=>a.costs[1].id='材料',a=>a.costs[0].num=0,a=>a.costs[1].num=0,a=>a.costs[1].num=1.5,a=>delete a.costs,a=>a.costs.push({id:'GOLD',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[1].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}const paid=action();paid.needsPaid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+});

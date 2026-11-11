@@ -2320,3 +2320,48 @@ node --test tests/business-transport-freshness.test.mjs tests/equipment-growth.t
 原95C/273Inventory/42P/8S、W01–W22、R1–R8、E01–E24、X01–X18全部保持。C215本节替代历史NOT_IMPLEMENTED；PRO-002/REQ-159捐赠子分支新交，不把整项互助/联盟交付标完成。W04/W06/W07/W08/W09/W19仍PARTIAL，W03来源/地图资产恢复BLOCKED_EVIDENCE；R1/R2/R3整阶段未虚报完成。E10纳极限源身份/站位/宠物保留及保存复读，E12纳普通堡垒材料/功勋/日计数精确变化，E20/E21/E23纳父预算/UNKNOWN/取消/账号隔离；原E03真实升级0派发待验保留。R7未完成，R8必须其后单独批准具体账号/请求/次数/预算/风险/清理，所有真实分支REAL_UNVERIFIED。
 
 下一可执行原子分支：W07/BIZ-R09明确已佩戴RED装备REFINE+1。静态证据已核EquipDetailPop:1057（SHA a72390a57247af8a52e500a34c726043f5e58d2d5d7fee8edcaa7b9d28c27e50）、EquipUtil:1087（eee5b62dd7bd3295b60c062ed12986073b55fca1fad85018af07716c41e9ea9b）；请求仅uid、无专用Response，EquipRefineCfg[next]双正成本精铁/精炼石、EquipAttrCfg[id_star].maxRefineLv。扩原equipment-growth而非建新执行器；缺省action保持LEVEL，显式refine单项授权，完整pool/英雄镜像/refineLv+1和双材料精确扣除，目标派生只容合法power/attributes变化。尚未纳本提交实现，不计C230替换完成；其余原W07原子子项继续保留。领域两文件独占，root串行D6/合同/UI/Service/docs，阶段提交后继续，不等待Owner逐项确认。
+
+### D.14 红装 REFINE 单次闭环与配置依赖对账（2026-11-11）
+
+本批父提交d79e2d39198588454e0deb809873851db14570e4，代码、测试及本节由同一次本地提交定位。恢复实核目录 //zhangnas/app/crazywaterword，分支codex/phase-4-alliance-integration，main...HEAD=0/30，a505019仍祖先。staged原为空，11份未提交文件均为交接列明的本Goal协作成果；没有覆盖用户改动。可访问祖先及仓库未发现AGENTS.md/TREE.md；沿用原src/tests/docs，无新目录/worktree。原五份未跟踪输入重新核SHA与第2节一致，不纳暂存。Goal ACTIVE；没有真实连接、Token读取、Runtime/Stage Runner/MITM/CA、push/merge/reset。
+
+| 工作包/原ID | 实际Function/调用链 | 当前状态与边界 |
+|---|---|---|
+| W07 / BIZ-R09、P3-6/P3-7 | 原equipment-growth#surveyEquipmentGrowth/viewEquipmentGrowth/planEquipmentGrowth/verifyEquipmentGrowth → 同equipmentGrowthModule/contract/registry → 原generic executor/OperationService/ResourceLedger/ExecutionHistory → 原API/专业装备页/Workflow ACTION | 显式已佩戴RED单UID REFINE+1：Function EXISTING_FUNCTION、UI EXISTING_UI、Protocol STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。没有新增C编号，不把C230装备替换或整包W07标完成 |
+| W01/W02 配置依赖及传输保护 | equipmentGrowthDependencyVersions；原registerBusinessFunction fallback；真实GameClient合成socket回归 | LEVEL与REFINE只绑定各自实际费用表；两种模式共用equipment UID父预算。复用旧的本地未派发错误不能伪装新socket尝试为零派发 |
+
+省略action完全保留C229 LEVEL参数、actionId、identity及依赖形状。唯一新增参数action:'refine'；action:'level'/star/replace及传输/费用/批次注入仍拒绝。明确英雄已佩戴、唯一主人、完整Equips池与AllHero镜像逐字段一致；level≥1、own refineLv≥0、EquipCfg.quality=RED、低于EquipAttrCfg[id_star].maxRefineLv。EquipRefineRequest仅{uid}、没有专用Response，watch不能证明成功。取EquipRefineCfg[refineLv+1].costItem1精铁及costItem2精炼石，两项均正整数；不开放付费、补料、购买、自动激活或闲置装备。
+
+REFINE权威复读仅允许目标UID refineLv恰好+1，level/star/equipId/attr/rerollAttrs及其他装备、英雄、归属不变；完整库存仅两项材料精确净扣。目标英雄仅允许权威power/attributes合法变化。请求标签SUCCESS但无效果仍UNKNOWN；双成本与typed equipment UID预算持久预留，父级跨批累计且同UID LEVEL与REFINE不能重复消耗，重启禁止自动重发。各独立响应保留原完成时间，30秒时效在资源await后、DISPATCH_INTENT后及真实传输边界重核；预算与UID必须先持久化才派发。
+
+动态依赖公共moduleConfig/EquipCfg/EquipAttrCfg；缺省LEVEL只加EquipUpDecomposeCfg，显式REFINE只加EquipRefineCfg。独立审查发现合同缺省条件写undefined而registry valueAt归一为null，当前域自定义依赖正确，但元数据fallback不一致；已改parameters.action=null，并用移除自定义依赖的真实注册fallback分别对照四组参数，确保两种路径一致。相关table.revision变化失效，无关费用表不失效。Registry回归补齐原Fort五表相关变化断言，未扩大生产白名单。
+
+原装备专业页新增两种明确模式，只编辑草稿并要求重新survey/plan/单次authorize；默认LEVEL。完整PAGE账号切换、脏草稿及迟到结果保护保留，不在页面计算费用或做业务判断。15合同数量不变，没有新executor/adapter/HTTP写入口。
+
+#### D.14.1 固定静态证据
+
+沿用D.13固定manifest、v76主包4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444、main entry a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54、本地协议ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc及配置0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762。EquipDetailPop:1057模块SHA a72390a57247af8a52e500a34c726043f5e58d2d5d7fee8edcaa7b9d28c27e50，UTF8 byte1981657，refresh1991603/request1994952；EquipUtil:1087模块eee5b62dd7bd3295b60c062ed12986073b55fca1fad85018af07716c41e9ea9b，byte2075468，资格2079901/成本2088678。完整证据常量EQUIPMENT_REFINE_EVIDENCE保留具体offset/hash。60档配置及36条正精炼上限（均RED）进入固定配置回归；红武器1 star0 cap10，首档90500精铁+100精炼石，第11档108500/120。客户端仅静态内存分析，不执行bundle或连接游戏。
+
+#### D.14.2 实际离线验证与失败证据
+
+最终21文件统一定向命令（父d79e2d3+本批最终工作区）：
+
+```powershell
+node --test tests/equipment-growth.test.mjs tests/equipment-growth-service.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/actions-safety.test.mjs tests/business-transport-freshness.test.mjs tests/farm-forge-full-page.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/execution-memory-service.test.mjs tests/operation-recovery-service.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/workflow.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/operations-api.test.mjs
+```
+
+实际590 tests/590 pass/0fail/cancelled/skipped/todo，13.0246秒。包含domain48、Service66、transport42及完整PAGE；先前266/266、domain48和Service66与本590重叠，不相加。不是R7或真实E2E。原LEVEL域28及Service29全部保留；旧refine非法断言改为确实未支持的star，新增明确refine合法及省略仍LEVEL的互斥用例，没有删测试/降低成功条件。真实本地Codec+合成状态、内存socket、临时History、进程内Console handler；没有监听真实控制台，clientFactory/collector调用0。完整PAGE用实际call/operationMutation及封闭fetch；没有浏览器DOM和真实游戏定时器覆盖。git diff --check通过。
+
+| 原始失败/审查 | 修复及保留 |
+|---|---|
+| 两条旧已证明error复用回归首跑失败于缺ResourceLedger import | fixture补import；42/42证明第一次本地编码/frame失败后，第二次socket重抛同Error仍dispatched=true/UNKNOWN。此失败不是生产缺陷 |
+| 缺省LEVEL依赖声明undefined与registry null不一致 | 精确改声明并新增真实fallback与域依赖相等回归；无关表不误失效 |
+| 传输测试EOF空行 | 仅修尾部空白，无断言删改；diff-check通过 |
+
+#### D.14.3 追踪、恢复与后续
+
+95C/273Inventory/42P/8S、22W、8R、24E及X01–X18全部保留。BIZ-R09新增REFINE子分支由本节覆盖历史未实现表述，C229仍仅已佩戴level≥1，C230替换不变；专武、纹章、升星、Pet等W07子项继续分别核证。W04/W06/W07/W08/W09/W19整体仍PARTIAL，W03来源/地图恢复仍BLOCKED_EVIDENCE，不虚报R1/R2/R3完成。
+
+E09组内增加明确RED同UID REFINE、双材料精确净扣、cap/缺材料零派发、镜像/非目标保持、无效果UNKNOWN；E20/E21/E23覆盖同UID跨种类父预算、重启、停止及账号隔离。全部真实分支REAL_UNVERIFIED；原E03真实升级0派发待验保留，R7尚未完成，R8必须其后单独批准账号/请求/次数/预算/风险/清理。
+
+下一独立原子分支W07/C225：已有激活专武单次LEVEL，优先扩原hero-operations/buildHeroAction及同共享执行合同。静态审计正在还原HeroDetailExclusiveLevel:1579、ExclusiveUpgradeCfg下一档、RED cost[1]/其他cost[0]、ExclusiveStarCfg当前星unlockLv及英雄星级前置、实际Response配对和完整DisplayHero权威字段；证据齐全后才实现，不使用任意非空cost fallback。root串行共享合同/D6/UI/docs，领域与Service测试分文件独占。Goal保持ACTIVE，继续施工无需Owner逐项确认。

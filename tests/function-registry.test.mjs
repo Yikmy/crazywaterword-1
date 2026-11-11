@@ -25,7 +25,7 @@ const rawModules = { formation: formationModule, alliance: allianceModule, museu
 const tablesByModule = { 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
   heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
-  alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg'],
+  alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg','WorldFortCfg','FortDonateMaterialCfg','FortParamCfg','FortSeasonUnlockCfg','ItemCfg'],
   museum: ['MuseumExpeditionStageCfg','MuseumExpeditionTeamCfg','MuseumExpeditionConditionCfg','MuseumExploreTimeFactorCfg','MuseumAchievementCfg','MuseumAreaCfg','MuseumAreaIndicatorCfg','MuseumDisplayCaseCfg','AntiqueBaseCfg'],
   fleet: ['CityCfg','AttackCityConsumeCfg','FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   treasure: ['GameplayOpenCfg','WorldParamCfg'], naval: [], stage: [], orders: ['WorkerOrderCfg','WorkerSpecOrderCfg'],
@@ -229,4 +229,16 @@ test('equivalent same-account identity objects and unrelated player display chan
   const f = fixture(), plan = await makePlan(f,'formation');
   f.session.player = { ...clone(f.session.player), nickname: 'changed display only' };
   assert.ok(approve(f,plan).permitId); noExecution(f);
+});
+
+test('equipment LEVEL and explicit REFINE bind their own exact configuration tables without unrelated invalidation',()=>{
+ const f=fixture(),module=f.modules['equipment-growth'],level=f.options('equipment-growth'),refine=clone(level);refine.parameters={action:'refine'};level.config.tables.EquipRefineCfg={revision:1,data:[{level:1,costItem1:90500,costItem2:100}]};refine.config.tables.EquipRefineCfg=clone(level.config.tables.EquipRefineCfg);
+ const lv=module.dependencyVersions(level),rf=module.dependencyVersions(refine);assert.ok(Object.hasOwn(lv,'config.EquipUpDecomposeCfg'));assert.equal(Object.hasOwn(lv,'config.EquipRefineCfg'),false);assert.ok(Object.hasOwn(rf,'config.EquipRefineCfg'));assert.equal(Object.hasOwn(rf,'config.EquipUpDecomposeCfg'),false);
+ const changedLevel=clone(refine);changedLevel.config.tables.EquipUpDecomposeCfg.revision=42;assert.deepEqual(module.dependencyVersions(changedLevel),rf);const changedRefine=clone(level);changedRefine.config.tables.EquipRefineCfg.revision=42;assert.deepEqual(module.dependencyVersions(changedRefine),lv);
+ for(const name of ['EquipCfg','EquipAttrCfg','EquipRefineCfg']){const changed=clone(refine);changed.config.tables[name].revision=99;assert.notDeepEqual(module.dependencyVersions(changed),rf);}noExecution(f);
+});
+
+test('equipment declared fallback matches custom dependencies for omitted LEVEL and explicit REFINE',()=>{
+ const f=fixture(),raw={...equipmentGrowthModule};delete raw.dependencyVersions;const declared=registerBusinessFunction(raw);
+ for(const parameters of [{},{heroId:'h',uid:'1'},{action:'refine'},{heroId:'h',uid:'1',action:'refine'}]){const options={...f.options('equipment-growth'),parameters};options.config.tables.EquipRefineCfg={revision:1,data:[{level:1,costItem1:90500,costItem2:100}]};assert.deepEqual(declared.dependencyVersions(options),equipmentGrowthModule.dependencyVersions(options));}noExecution(f);
 });

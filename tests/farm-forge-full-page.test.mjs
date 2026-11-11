@@ -57,6 +57,7 @@ async function boot() {
   return h;
 }
 const cases = [
+  { module:'equipment-growth',actionId:'equipment-growth:REFINE:synthetic-exact',actionType:'REFINE',parameters:{heroId:'A',uid:'9007199254740994',action:'refine'},costs:[{id:'精铁',num:90500},{id:'精炼石',num:100}],facts:{heroes:[{heroId:'A',equips:[{uid:'9007199254740994',equipId:'红武器1',level:1,star:0,refineLv:0}]}]},blockedReason:'EXACT_RED_WORN_EQUIPMENT_REQUIRED' },
   { module:'equipment-growth',actionId:'equipment-growth:LEVEL:synthetic-exact',actionType:'LEVEL',parameters:{heroId:'A',uid:'9007199254740994'},costs:[{id:'精铁',num:4}],facts:{heroes:[{heroId:'A',equips:[{uid:'9007199254740994',equipId:'蓝武器1',level:1,star:0,refineLv:0}]}]},blockedReason:'TARGET_HERO_DERIVED_STATE_UNKNOWN' },
   { module: 'formation-unlock', actionId: 'formation-unlock:UNLOCK:2:synthetic-exact', actionType: 'UNLOCK', parameters: {presetId:2}, costs:[{id:'阵型2图纸',num:1}], facts:{templates:[{presetId:2,name:'普通图纸模板',costs:[{id:'阵型2图纸',num:1}]}],unlockedPresetIds:[1]}, blockedReason:'OWNED_BLUEPRINT_REQUIRED' },
   { module: 'farm', actionId: 'farm:PLANT:synthetic-exact', actionType: 'PLANT', parameters: { buildingId: '1农田', action: 'plant', productId: '小麦' }, costs: [{ id: '小麦种子', num: 1 }], facts: { plots: [{ buildingId: '1农田', state: 'EMPTY', productId: '', plantTime: 0, ripeTime: 0 }], autoFarming: false, crops: [{ productId: '小麦', costs: [{ id: '小麦种子', num: 1 }], reliable: true }] }, blockedReason: 'FARM_MATURITY_TIME_UNIT_UNVERIFIED' },
@@ -103,7 +104,8 @@ async function preview(h, spec) {
   assert.equal(writes(h, '/api/operations/authorize').length, 0); assert.equal(writes(h, '/api/operations/execute').length, 0);
 }
 for (const spec of cases) {
-  test(spec.module + ': assembled PAGE reaches exact Manual preview, authorize and execute once through actual account/CSRF caller', async () => {
+  const testLabel=spec.module+':'+spec.actionType;
+  test(testLabel + ': assembled PAGE reaches exact Manual preview, authorize and execute once through actual account/CSRF caller', async () => {
     const h = await loaded(spec); await preview(h, spec);
     assert.equal(Object.hasOwn(data(spec).view.candidates[0], 'action'), false, 'fixture matches cropped public candidates');
     const ids = [...PAGE.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
@@ -123,7 +125,7 @@ for (const spec of cases) {
     assert.deepEqual(writes(h).map((request) => new URL(request.url, 'http://localhost').pathname), ['/api/operations/plan', '/api/operations/authorize', '/api/operations/execute']);
   });
 
-  test(spec.module + ': A→B→A late permit cannot reach execute or restore an old account token', async () => {
+  test(testLabel + ': A→B→A late permit cannot reach execute or restore an old account token', async () => {
     const h = await loaded(spec); await preview(h, spec);
     const running = h.node('gp-' + spec.module + '-authorize').onclick();
     assert.equal(writes(h, '/api/operations/authorize').length, 1);
@@ -136,7 +138,7 @@ for (const spec of cases) {
     assert.equal(h.node('gp-' + spec.module + '-authorize').disabled, true);
   });
 
-  test(spec.module + ': an edited draft discards a late full-page preview and detached domain controls', async () => {
+  test(testLabel + ': an edited draft discards a late full-page preview and detached domain controls', async () => {
     const h = await loaded(spec), control = domainButtons(h, spec)[0]; control.click();
     const task = h.node('gp-' + spec.module + '-plan').onclick();
     h.node('gp-' + spec.module + '-parameters').value = JSON.stringify({ buildingId: 'edited-local-draft' });
@@ -148,7 +150,7 @@ for (const spec of cases) {
     assert.equal(writes(h, '/api/operations/authorize').length, 0); assert.equal(writes(h, '/api/operations/execute').length, 0);
   });
 
-  test(spec.module + ': a response with a different action cannot promote a preview into authorization', async () => {
+  test(testLabel + ': a response with a different action cannot promote a preview into authorization', async () => {
     const h = await loaded(spec); domainButtons(h, spec)[0].click();
     const task = h.node('gp-' + spec.module + '-plan').onclick(), wrong = plan(spec); wrong.actions[0].actionId = 'formation:not-the-selected-action';
     h.respond('/api/operations/plan', wrong); await task;
@@ -157,7 +159,7 @@ for (const spec of cases) {
     assert.equal(writes(h, '/api/operations/authorize').length, 0); assert.equal(writes(h, '/api/operations/execute').length, 0);
   });
 
-  test(spec.module + ': a permit for another account is consumed locally and never dispatched', async () => {
+  test(testLabel + ': a permit for another account is consumed locally and never dispatched', async () => {
     const h = await loaded(spec); await preview(h, spec);
     const task = h.node('gp-' + spec.module + '-authorize').onclick();
     h.respond('/api/operations/authorize', { accountId: 'B', batchId: plan(spec).batchId, permitId: 'wrong-account' }); await task;
@@ -168,7 +170,7 @@ for (const spec of cases) {
     assert.equal(writes(h, '/api/operations/authorize').length, 1);
   });
 
-  test(spec.module + ': default-off cached state has no executable selection or implicit writes', async () => {
+  test(testLabel + ': default-off cached state has no executable selection or implicit writes', async () => {
     const h = await loaded(spec, { disabled: true });
     assert.equal(domainButtons(h, spec).length, 0);
     assert.equal(h.node('gp-' + spec.module + '-plan').disabled, true);
@@ -211,4 +213,11 @@ test('Fort assembled PAGE displays authority and prepares exact material quantit
 test('Fort assembled PAGE rejects invalid quantity and ignores detached controls during pending reads or account changes',async()=>{
  for(const bad of ['0','-1','1.5','2147483648']){const h=await fortUiBoot(),input=descendants(h.node('gp-alliance-facts')).find(e=>e.dataset.fortMaterial);input.value=bad;fortSelectors(h).find(e=>JSON.parse(e.dataset.allianceSelect).itemId).click();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{});assert.equal(writes(h).length,0);assert.match(h.node('gp-alliance-hint').textContent,/正整数/);}
  const h=await fortUiBoot(),button=fortSelectors(h).find(e=>JSON.parse(e.dataset.allianceSelect).itemId),task=h.node('gp-alliance-survey').onclick();assert.equal(button.disabled,true);button.click();h.run("selectAccount('B');selectAccount('A');");h.respond('/api/gameplay/survey',fortUiData({candidateReady:true}));await task;button.click();assert.deepEqual(JSON.parse(h.node('gp-alliance-parameters').value),{});assert.equal(h.node('gp-alliance-facts').textContent,'');assert.equal(h.run('gameplayCsrfToken()'),null);assert.equal(writes(h,'/api/operations/plan').length,0);
+});
+
+test('equipment growth assembled PAGE selects explicit refinement mode without a plan and requires a fresh survey',async()=>{
+ const spec=cases.find(s=>s.actionType==='REFINE'),h=await loaded(spec);const modes=descendants(h.node('gp-equipment-growth-facts')).filter(e=>e.dataset.equipmentGrowthMode);assert.equal(modes.length,2);const before=h.requests.length;modes.find(e=>e.dataset.equipmentGrowthMode==='refine').click();assert.deepEqual(JSON.parse(h.node('gp-equipment-growth-parameters').value),{action:'refine'});assert.equal(h.requests.length,before);assert.equal(h.node('gp-equipment-growth-plan').disabled,true);assert.equal(h.node('gp-equipment-growth-authorize').disabled,true);const task=h.node('gp-equipment-growth-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'equipment-growth',parameters:{action:'refine'}});assert.equal(modes[0].disabled,true);h.respond('/api/gameplay/survey',data(spec));await task;assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('equipment growth mode selectors cannot reuse stale view after account change or dirty drafts',async()=>{
+ const spec=cases.find(s=>s.actionType==='REFINE'),h=await loaded(spec),mode=descendants(h.node('gp-equipment-growth-facts')).find(e=>e.dataset.equipmentGrowthMode==='refine');h.node('gp-equipment-growth-parameters').value=JSON.stringify({heroId:'edited'});h.node('gp-equipment-growth-parameters').oninput();mode.click();assert.deepEqual(JSON.parse(h.node('gp-equipment-growth-parameters').value),{heroId:'edited'});h.run("selectAccount('B');selectAccount('A');");mode.click();assert.deepEqual(JSON.parse(h.node('gp-equipment-growth-parameters').value),{});assert.equal(writes(h).length,0);
 });

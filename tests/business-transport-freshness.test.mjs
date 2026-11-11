@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {GameClient} from '../src/client.mjs';
 import {loadProtocol} from '../src/proto.mjs';
 import {executeBusinessOperation} from '../src/business-functions.mjs';
-import {createRunBudgetContext} from '../src/resource-ledger.mjs';
+import {ResourceLedger,createRunBudgetContext} from '../src/resource-ledger.mjs';
 
 const protocol=loadProtocol();
 // A real Codec/client with an in-memory socket. No login, listener or network.
@@ -68,3 +68,17 @@ async function equipmentHarness({boundary=null}={}){
 }
 for(const boundary of ['encoding','frame','assertTransport'])test('original C229 facts expiring during '+boundary+' never reach the real socket',async()=>{const f=await equipmentHarness({boundary});try{const result=await f.run();assert.equal(f.writes.length,0);assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(result.unresolvedWrite,false);assert.equal(f.pool[0].level,1);assert.equal(f.heroes[0].equips[0].level,1);cleanTransport(f);assert.deepEqual(f.budget.runBudget.snapshot().reserved,f.operation.budgetClaims);}finally{f.restore();}});
 test('original C229 authority verifies the real Codec/client single upgrade and exact finite reservation',async()=>{const f=await equipmentHarness();try{const result=await f.run();assert.equal(f.writes.length,1);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(result.dispatched,true);assert.equal(f.pool[0].level,2);assert.equal(f.heroes[0].equips[0].level,2);cleanTransport(f);assert.deepEqual(f.budget.runBudget.snapshot().reserved,f.operation.budgetClaims);}finally{f.restore();}});
+for(const kind of ['typed','silent'])test(kind+' an earlier true predispatch Error cannot attest a later socket attempt',async()=>{
+ let phase='early',oldError,writes=0,oldGuard,newGuard;
+ const operation={actionId:'offline:reused:'+kind,actionType:'SAVE',target:{module:1},costs:[],costSource:'synthetic-boundary-fixture',identity:'unchanged',beforeState:{saved:false},expectedState:{saved:true},action:{request:'SaveFormationRequest',response:kind==='typed'?'SaveFormationResponse':null,body:{module:1,formation:{presetId:2,heroPositions:[],petUid:'0'}}}};
+ const facts={stock:new Map(),stockReliable:true},adapter={async survey(){return facts;},plan(){return {actions:[operation]};},verify(){return {confirmed:false};},view(){return {};}};
+ const client=new GameClient({protocol,WebSocketImpl:class{constructor(){throw Error('offline only');}}});client.state='READY';client.socket={readyState:1,close(){},send(){writes++;throw oldError;}};
+ client.on('frame',()=>{if(phase==='early')throw Error('synthetic failure before first socket attempt');});
+ const method=kind==='typed'?'request':'sendWatch',original=client[method].bind(client);
+ client[method]=(...args)=>{const guard=args[kind==='typed'?4:2].beforeDispatch;if(phase==='early')oldGuard=guard;else newGuard=guard;return original(...args).catch(error=>{if(phase==='early')oldError=error;throw error;});};
+ const run=()=>executeBusinessOperation(client,protocol,operation,{adapter,allowMutate:true,budget:{ledger:new ResourceLedger(new Map())},window:0});
+ try{
+  const first=await run();assert.equal(first.dispatched,false);assert.equal(first.status,'NOT_EXECUTED');assert.equal(first.unresolvedWrite,false);assert.equal(writes,0);assert.ok(oldError instanceof Error);assert.equal(client.uncertainWrites.size,0);
+  phase='late';const second=await run();assert.notEqual(oldGuard,newGuard,'each execution must bind a distinct transport proof callback');assert.equal(writes,1);assert.equal(second.status,'UNKNOWN');assert.equal(second.dispatched,true);assert.equal(second.unresolvedWrite,true);assert.equal(second.verification.status,'UNCONFIRMED');assert.equal(client.uncertainWrites.size,1);assert.equal(client.pending.length,0);assert.equal(client.watchers.length,0);assert.equal(client.lateResponses.size,0);
+ }finally{client.stop();}
+});

@@ -167,3 +167,164 @@ test('equipment facts expiring in the final synchronous authority callback never
   assert.deepEqual(budget.runBudget.snapshot().reserved.resources,operation.costs);
  }finally{Date.now=originalNow;}
 });
+
+// REFINE is BIZ-R09, not a new C capability or a second executor. Existing LEVEL
+// fixtures above are unchanged, so their IDs/parameters/dependencies stay covered.
+const refineParameters=()=>({heroId:'A',uid,action:'refine'});
+const refineCfg=()=>({tables:{EquipCfg:{data:[{id:'红武器1',type:'武器',quality:'RED'}]},EquipAttrCfg:{data:[{id:'红武器1',star:'0',maxLv:135,maxRefineLv:2}]},EquipRefineCfg:{data:[{level:1,costItem1:4,costItem2:2},{level:2,costItem1:6,costItem2:3}]}}});
+function refineFake({wireMode=false,apply=true,derived=true,watchStatus='UNKNOWN',afterWrite}={}){
+ const client=fake({wireMode,apply,derived,watchStatus});
+ for(const row of client.pool)row.equipId='红武器1';
+ for(const h of client.heroes)for(const row of h.equips)row.equipId='红武器1';
+ client.stock.set('精炼石',10);
+ client.mutate=function(name,body){
+  assert.equal(name,'EquipRefineRequest');this.writes.push({name,body:structuredClone(body)});
+  if(apply){const row=this.pool.find(value=>value.uid===body.uid),owner=this.heroes.find(value=>value.equips.some(item=>item.uid===body.uid)),iron=row.refineLv===0?4:6,stone=row.refineLv===0?2:3;row.refineLv++;owner.equips.find(value=>value.uid===body.uid).refineLv++;this.stock.set('精铁',this.stock.get('精铁')-iron);this.stock.set('精炼石',this.stock.get('精炼石')-stone);if(derived){owner.power=(BigInt(owner.power)+8n).toString();owner.attributes[0].value+=1.5;}}
+  afterWrite?.(this);
+ };
+ return client;
+}
+const refineSurvey=(client,config=refineCfg(),p=refineParameters(),extra={})=>surveyEquipmentGrowth(client,protocol,options(p,config,extra));
+const refinePlan=(facts,config=refineCfg(),p=refineParameters(),extra={})=>planEquipmentGrowth(facts,options(p,config,extra));
+async function refinePrepared(input={},config=refineCfg()){const client=refineFake(input),facts=await refineSurvey(client,config),operation=refinePlan(facts,config).actions[0];assert.ok(operation,'expected executable refine candidate: '+JSON.stringify(viewEquipmentGrowth(facts,options(refineParameters(),config)).blocked));return {client,facts,operation,config};}
+function refineBudget(operation,{iron=operation.costs[0].num,stone=operation.costs[1].num,uids=[uid]}={}){
+ const scope={accountId:'account-A',runId:'refine-run',generation:1,connectionId:'refine-connection'},limits={resources:[{id:'精铁',num:iron},{id:'精炼石',num:stone}],quotas:[],uids:uids.map(id=>({type:'equipment',id}))},runBudget=createRunBudgetContext({scope,limits});
+ return {scope,runBudget,batchId:'refine-batch',limits:operation.budgetClaims,ledger:null};
+}
+const refineRun=(client,operation,config=refineCfg(),extra={})=>executeBusinessOperation(client,protocol,operation,{adapter:equipmentGrowthModule,...options(refineParameters(),config),allowMutate:true,budget:refineBudget(operation),...extra});
+
+test('explicit refine selector alone extends the strict parameter whitelist and preserves omitted LEVEL',async()=>{
+ assert.deepEqual(validateEquipmentGrowthParameters(refineParameters()),refineParameters());assert.deepEqual(validateEquipmentGrowthParameters({}),{});assert.equal(Object.hasOwn(validateEquipmentGrowthParameters(parameters()),'action'),false);
+ for(const action of ['level','REFINE','star','replace',null,undefined,{},1])assert.throws(()=>validateEquipmentGrowthParameters({...parameters(),action}),{code:'INVALID_PARAMETERS'});
+ for(const extra of [{request:'EquipRefineRequest'},{count:2},{targetRefineLv:1},{universal:false},{decomposeUid:[]}])assert.throws(()=>validateEquipmentGrowthParameters({...refineParameters(),...extra}),{code:'INVALID_PARAMETERS'});
+ const inherited=Object.create({action:'refine'});inherited.heroId='A';inherited.uid=uid;assert.throws(()=>validateEquipmentGrowthParameters(inherited));
+ const getter={...parameters()};Object.defineProperty(getter,'action',{enumerable:true,get(){throw Error('must not access');}});assert.throws(()=>validateEquipmentGrowthParameters(getter),{code:'INVALID_PARAMETERS'});
+ const {operation}=await refinePrepared();assert.equal(operation.actionType,'REFINE');assert.match(operation.actionId,/^equipment-growth:REFINE:/);assert.deepEqual(operation.parameters,refineParameters());assert.equal(operation.expectedState.level,1);assert.equal(operation.expectedState.refineLv,1);assert.deepEqual(operation.action,{request:'EquipRefineRequest',response:null,body:{uid}});
+ assert.deepEqual(operation.costs,[{id:'精铁',num:4},{id:'精炼石',num:2}]);assert.deepEqual(operation.budgetClaims,{resources:operation.costs,quotas:[],uids:[{type:'equipment',id:uid}]});assert.deepEqual(Object.keys(operation.configEvidence),['EquipCfg','EquipAttrCfg','EquipRefineCfg']);assert.match(operation.costSource,/EquipDetailPop/);
+ assert.equal(protocol.EquipRefineResponse,undefined);assert.equal(equipmentGrowthModule.execute,undefined);assert.deepEqual(equipmentGrowthModule.capabilities,['C229']);
+});
+
+test('refine view preserves selected mode for every candidate and cannot silently select LEVEL',async()=>{
+ const client=refineFake(),config=refineCfg(),facts=await refineSurvey(client,config,{action:'refine'}),view=viewEquipmentGrowth(facts,options({action:'refine'},config));
+ assert.equal(view.candidates.length,2);assert.ok(view.candidates.every(row=>row.actionType==='REFINE'&&row.parameters.action==='refine'&&row.action.request==='EquipRefineRequest'));assert.equal(refinePlan(facts,config,{}).actions.length,0);
+ assert.equal(refinePlan(facts,config,{action:'refine'}).actions.length,0,'view listing does not grant an implicit hero or UID');
+ assert.equal(refinePlan(facts,config,refineParameters(),{moduleConfig:{enabled:false}}).actions.length,0);
+});
+
+test('LEVEL identity and dependency values ignore refinement tables while REFINE ignores level tables',async()=>{
+ const lc=cfg(),levelFacts=await survey(fake(),parameters(),lc),before=plan(levelFacts,parameters(),lc).actions[0],augmented=structuredClone(lc);augmented.tables.EquipRefineCfg=refineCfg().tables.EquipRefineCfg;
+ const after=plan(levelFacts,parameters(),augmented).actions[0];for(const key of ['actionId','identity','action','costs','costSource','configEvidence','expectedState','parameters'])assert.deepEqual(after[key],before[key],key);
+ assert.deepEqual(Object.keys(equipmentGrowthDependencyVersions(options())),['moduleConfig','config.EquipCfg','config.EquipAttrCfg','config.EquipUpDecomposeCfg']);
+ const rc=refineCfg(),base=equipmentGrowthDependencyVersions(options(refineParameters(),rc)),unrelated=structuredClone(rc);unrelated.tables.EquipUpDecomposeCfg={revision:9,data:[]};assert.deepEqual(equipmentGrowthDependencyVersions(options(refineParameters(),unrelated)),base);
+ assert.deepEqual(Object.keys(base),['moduleConfig','config.EquipCfg','config.EquipAttrCfg','config.EquipRefineCfg']);
+ for(const table of ['EquipCfg','EquipAttrCfg','EquipRefineCfg']){const changed=structuredClone(rc);changed.tables[table].revision=2;assert.notDeepEqual(equipmentGrowthDependencyVersions(options(refineParameters(),changed)),base);}
+});
+
+test('refine requires RED, exact star cap, explicit active ownership and both sufficient materials',async()=>{
+ for(const mutate of [
+  c=>{c.pool[0].level=0;c.heroes[0].equips[0].level=0;},
+  c=>{delete c.pool[0].refineLv;delete c.heroes[0].equips[0].refineLv;},
+  c=>{c.pool[0].refineLv=2;c.heroes[0].equips[0].refineLv=2;},
+  c=>{c.pool[0].star=1;c.heroes[0].equips[0].star=1;},
+  c=>c.stock.set('精铁',3),c=>c.stock.set('精炼石',1),
+  c=>c.heroes[1].equips.push(structuredClone(c.heroes[0].equips[0])),
+  c=>c.pool.shift(),c=>c.pool[0].refineLv++,
+  c=>delete c.heroes[0].attributes,
+ ]){const client=refineFake();mutate(client);assert.equal(refinePlan(await refineSurvey(client)).actions.length,0);assert.equal(client.writes.length,0);}
+ const config=refineCfg();config.tables.EquipCfg.data[0].quality='ORANGE';assert.equal(refinePlan(await refineSurvey(refineFake(),config),config).actions.length,0);
+ for(const p of [{heroId:'B',uid,action:'refine'},{heroId:'A',uid:idleUid,action:'refine'}])assert.equal(refinePlan(await refineSurvey(refineFake()),refineCfg(),p).actions.length,0);
+ for(const star of [0,'0']){const config=refineCfg();config.tables.EquipAttrCfg.data[0].star=star;assert.equal(refinePlan(await refineSurvey(refineFake(),config),config).actions.length,1);}
+});
+
+test('refine config rejects absent ambiguous nonpositive or unsafe costs and caps without fallback',async()=>{
+ for(const mutate of [
+  c=>delete c.tables.EquipRefineCfg,c=>c.tables.EquipRefineCfg.data.splice(0,1),
+  c=>c.tables.EquipRefineCfg.data[0].costItem1=0,c=>c.tables.EquipRefineCfg.data[0].costItem2=0,
+  c=>c.tables.EquipRefineCfg.data[0].costItem1=-1,c=>c.tables.EquipRefineCfg.data[0].costItem2=1.5,
+  c=>c.tables.EquipRefineCfg.data[0].costItem1=2147483648,c=>c.tables.EquipRefineCfg.data[0].costItem2='2',
+  c=>delete c.tables.EquipRefineCfg.data[0].costItem2,c=>c.tables.EquipRefineCfg.data.push(c.tables.EquipRefineCfg.data[0]),
+  c=>delete c.tables.EquipCfg.data[0].quality,c=>c.tables.EquipCfg.data[0].quality='UNKNOWN',
+  c=>c.tables.EquipCfg.data.push(c.tables.EquipCfg.data[0]),
+  c=>delete c.tables.EquipAttrCfg.data[0].maxRefineLv,c=>c.tables.EquipAttrCfg.data[0].maxRefineLv=0,
+  c=>c.tables.EquipAttrCfg.data[0].maxRefineLv=-1,c=>c.tables.EquipAttrCfg.data[0].maxRefineLv=1.5,
+  c=>c.tables.EquipAttrCfg.data[0].star='00',c=>c.tables.EquipAttrCfg.data.push(c.tables.EquipAttrCfg.data[0]),
+ ]){const config=refineCfg();mutate(config);const client=refineFake();assert.equal(refinePlan(await refineSurvey(client,config),config).actions.length,0);assert.equal(client.writes.length,0);}
+});
+
+test('refine source facts and raw projections retain account world generation and original freshness',async()=>{
+ const original=await refineSurvey(refineFake());
+ for(const mutate of [f=>f.sourceFacts.ownership.provenance.sourceAt-=31000,f=>f.sourceFacts.inventory.provenance.sourceAt=Date.now()+60000,f=>f.sourceFacts.equips.provenance.generation++,f=>f.sourceFacts.heroes.provenance.accountId='other',f=>f.sourceFacts.inventory.provenance.scope={kind:'CURRENT_RESPONSE_ONLY',key:'one'},f=>f.catalog.refines[0].costItem2=1,f=>f.stock.set('精炼石',999),f=>f.inputs.equips.equip[0].refineLv++,f=>f.ownership.pool[0].refineLv++]){const facts=structuredClone(original);mutate(facts);assert.equal(refinePlan(facts).actions.length,0);}
+ const client=refineFake(),available={...protocol};delete available.EquipRefineRequest;const facts=await surveyEquipmentGrowth(client,available,options(refineParameters(),refineCfg()));assert.equal(refinePlan(facts).actions.length,0);
+});
+
+for(const wireMode of [false,true])for(const derived of [false,true])test('REFINE full exact authority confirms single increment with codec '+wireMode+' derived '+derived,async()=>{
+ const {client,operation,config}=await refinePrepared({wireMode,derived});const result=await refineRun(client,operation,config);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(result.responseEvidence,null);assert.equal(client.writes.length,1);assert.equal(client.pool[0].refineLv,1);assert.equal(client.heroes[0].equips[0].refineLv,1);assert.equal(client.stock.get('精铁'),26);assert.equal(client.stock.get('精炼石'),8);assert.equal(client.uncertainWrites.size,0);assert.equal(client.pool[0].level,1);
+});
+
+for(const watchStatus of ['UNKNOWN','SUCCESS'])test('REFINE no effect watch '+watchStatus+' retains UNKNOWN',async()=>{
+ const {client,operation,config}=await refinePrepared({apply:false,watchStatus}),budget=refineBudget(operation),result=await refineRun(client,operation,config,{budget});
+ assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(client.uncertainWrites.size,1);assert.equal(client.writes.length,1);assert.deepEqual(budget.runBudget.snapshot().reserved.resources,operation.costs);assert.deepEqual(budget.runBudget.snapshot().reserved.uids,operation.budgetClaims.uids);
+});
+
+test('REFINE exact instance and two-resource effects reject every unrelated mutation',async()=>{
+ const changes=[
+  c=>{c.pool[0].refineLv++;c.heroes[0].equips[0].refineLv++;},
+  c=>{c.pool[0].level++;c.heroes[0].equips[0].level++;},
+  c=>{c.pool[0].star++;c.heroes[0].equips[0].star++;},
+  c=>{c.pool[0].attr[0].value++;c.heroes[0].equips[0].attr[0].value++;},
+  c=>{c.pool[0].rerollAttrs.push({attr:2,value:1.5});c.heroes[0].equips[0].rerollAttrs.push({attr:2,value:1.5});},
+  c=>c.heroes[0].equips[0].refineLv++,
+  c=>c.pool[2].refineLv++,c=>c.pool.pop(),c=>c.pool.push({...equip('99'),equipId:'红武器1'}),
+  c=>c.heroes[1].equips.push(c.heroes[0].equips.pop()),c=>c.heroes[0].level++,c=>c.heroes[1].power='44',
+  c=>c.stock.set('精铁',27),c=>c.stock.set('精炼石',9),c=>c.stock.set('GOLD',99),c=>c.stock.set('reward',1),
+  c=>delete c.heroes[0].attributes,c=>c.heroes[0].attributes=[{attr:1,value:Infinity}],
+ ];
+ for(const afterWrite of changes){const {client,operation,config}=await refinePrepared({afterWrite}),result=await refineRun(client,operation,config);assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,1);}
+});
+
+test('REFINE verifier rebuilds its full branch contract and cannot accept LEVEL or forged costs',async()=>{
+ const {client,facts,operation,config}=await refinePrepared();client.mutate('EquipRefineRequest',{uid});const after=await refineSurvey(client,config);assert.equal(verifyEquipmentGrowth(operation,facts,after).confirmed,true);
+ for(const mutate of [o=>delete o.parameters.action,o=>o.actionType='LEVEL',o=>o.action.request='EnhanceEquipRequest',o=>o.costs[0].num=1,o=>o.costs[1].num=1,o=>o.costs.pop(),o=>o.expectedState.refineLv=2,o=>o.expectedState.level=2,o=>o.budgetClaims.uids=[],o=>o.configEvidence.EquipRefineCfg.data[0].costItem2=1,o=>o.identity='fake',o=>o.costSource='fake']){const op=structuredClone(operation);mutate(op);assert.equal(verifyEquipmentGrowth(op,facts,after).confirmed,false);}
+});
+
+test('REFINE stale preview changed authority mode or relevant config stops before dispatch',async()=>{
+ for(const mutate of [c=>{c.pool[0].refineLv++;c.heroes[0].equips[0].refineLv++;},c=>c.pool[2].level++,c=>c.factContext.generation++,c=>c.factContext.accountId='other',c=>c.stock.set('精炼石',0)]){
+  const {client,operation,config}=await refinePrepared();mutate(client);assert.equal((await refineRun(client,operation,config)).status,'NOT_EXECUTED');assert.equal(client.writes.length,0);
+ }
+ const {client,operation,config}=await refinePrepared();config.tables.EquipRefineCfg.data[0].costItem2++;assert.equal((await refineRun(client,operation,config)).status,'NOT_EXECUTED');assert.equal(client.writes.length,0);
+});
+
+test('REFINE budget claims reserve both resources atomically and prohibit same UID reuse',async()=>{
+ for(const bounds of [{iron:3},{stone:1},{uids:[]}]){const {client,operation,config}=await refinePrepared(),budget=refineBudget(operation,bounds),result=await refineRun(client,operation,config,{budget});assert.equal(result.status,'NOT_EXECUTED');assert.equal(client.writes.length,0);assert.deepEqual(budget.runBudget.snapshot().reserved,{resources:[],quotas:[],uids:[]});}
+ const {client,operation,config}=await refinePrepared(),budget=refineBudget(operation,{iron:30,stone:10});assert.equal((await refineRun(client,operation,config,{budget})).status,'SUCCESS');
+ const next=refinePlan(await refineSurvey(client,config),config).actions[0];assert.ok(next);const nextBudget={...budget,batchId:'refine-next',limits:next.budgetClaims,ledger:null};assert.equal((await refineRun(client,next,config,{budget:nextBudget})).status,'NOT_EXECUTED');assert.equal(client.writes.length,1);assert.deepEqual(budget.runBudget.snapshot().reserved.uids,operation.budgetClaims.uids);
+});
+
+test('REFINE cancellation and late responses never resend or fabricate confirmation',async()=>{
+ const first=await refinePrepared(),before=new AbortController();before.abort();assert.equal((await refineRun(first.client,first.operation,first.config,{signal:before.signal})).status,'CANCELLED');assert.equal(first.client.writes.length,0);
+ const second=await refinePrepared(),after=new AbortController();let release;second.client.sendWatch=async(name,body)=>{second.client.mutate(name,body);after.abort();return new Promise(resolve=>{release=()=>resolve({status:'SUCCESS'});});};const result=await refineRun(second.client,second.operation,second.config,{signal:after.signal});assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);release();await Promise.resolve();assert.equal(result.status,'UNKNOWN');assert.equal(second.client.writes.length,1);
+});
+
+test('REFINE post-read or persistence failure stays UNKNOWN without replay',async()=>{
+ for(const mode of ['read','history']){const {client,operation,config}=await refinePrepared(),request=client.request.bind(client);if(mode==='read')client.request=async(name,...args)=>client.writes.length&&name==='EquipsRequest'?Promise.reject(Error('unavailable')):request(name,...args);const result=await refineRun(client,operation,config,mode==='history'?{onStage(stage){if(stage==='DISPATCHED')throw Error('durable failure');}}:{});assert.equal(result.status,'UNKNOWN');assert.equal(client.writes.length,1);}
+});
+
+test('REFINE preflight and persistence expiry preserve zero dispatch with exact reservation timing',async()=>{
+ const originalNow=Date.now;let now=1000000;Date.now=()=>now;
+ try{
+  for(const mode of ['preflight','intent']){now=1000000;const {client,operation,config}=await refinePrepared(),budget=refineBudget(operation),request=client.request.bind(client),reads={AllItemRequest:0,AllResourceRequest:0};
+   if(mode==='preflight')client.request=async(name,...args)=>{const response=await request(name,...args);if(Object.hasOwn(reads,name)&&++reads[name]===2){await new Promise(resolve=>setImmediate(resolve));now+=14900;}return response;};
+   const result=await refineRun(client,operation,config,{budget,onStage(stage){if(mode==='preflight'&&stage==='RESOURCE_PREFLIGHT')now+=500;if(mode==='intent'&&stage==='DISPATCH_INTENT')now+=31000;}});
+   assert.equal(client.writes.length,0);assert.equal(result.status,'NOT_EXECUTED');assert.equal(client.stock.get('精铁'),30);assert.equal(client.stock.get('精炼石'),10);const reserved=budget.runBudget.snapshot().reserved;
+   if(mode==='preflight')assert.deepEqual(reserved,{resources:[],quotas:[],uids:[]});else{assert.deepEqual(reserved.resources,operation.costs);assert.deepEqual(reserved.uids,operation.budgetClaims.uids);}
+  }
+ }finally{Date.now=originalNow;}
+});
+
+test('fixed actual REFINE config selects exact first cost cap and refuses nonRED without guessing',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))},client=refineFake();client.stock.set('精铁',100000);client.stock.set('精炼石',1000);
+ const operation=refinePlan(await refineSurvey(client,config),config).actions[0];assert.ok(operation);assert.deepEqual(operation.costs,[{id:'精铁',num:90500},{id:'精炼石',num:100}]);assert.equal(operation.expectedState.refineLv,1);
+ for(const row of [client.pool[0],client.heroes[0].equips[0]])row.refineLv=10;assert.equal(refinePlan(await refineSurvey(client,config),config).actions.length,0);
+ for(const row of [client.pool[0],client.heroes[0].equips[0]]){row.star=1;row.refineLv=10;}const next=refinePlan(await refineSurvey(client,config),config).actions[0];assert.ok(next===undefined,'next star permits cap but stock cannot afford 108500 iron');
+ client.stock.set('精铁',200000);assert.deepEqual(refinePlan(await refineSurvey(client,config),config).actions[0].costs,[{id:'精铁',num:108500},{id:'精炼石',num:120}]);
+});

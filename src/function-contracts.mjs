@@ -44,10 +44,10 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
-  'equipment-growth': contract('equipment-growth', ['C229'], ['P3-6','P3-7'], ['src/equipment-growth.mjs#equipmentGrowthModule','src/equipment-growth.mjs#planEquipmentGrowth'], {heroId:string,uid:string}, {
-    implementation:{mode:'CONTROLLED_WRITE',actions:['LEVEL'],blockedCapabilities:[blocked('LEVEL_ZERO','Initial zero-level branch is outside the proven positive-cost scope'),blocked('REFINE_STAR_REPLACE','Refine, star and replacement require separate contracts')]},
-    verification:verification('verifyEquipmentGrowth','src/equipment-growth.mjs#verifyEquipmentGrowth','Full pool and hero mirror same UID LEVEL+1, exact iron debit, unchanged ownership and non-targets; only explicit target hero power/attributes may change'),
-    dependencyVersions:dependencies(['moduleConfig','config.EquipCfg','config.EquipAttrCfg','config.EquipUpDecomposeCfg']),
+  'equipment-growth': contract('equipment-growth', ['C229'], ['P3-6','P3-7'], ['src/equipment-growth.mjs#equipmentGrowthModule','src/equipment-growth.mjs#planEquipmentGrowth'], {heroId:string,uid:string,action:{type:'string',enum:['refine']}}, {
+    implementation:{mode:'CONTROLLED_WRITE',actions:['LEVEL','REFINE'],additionalRequirementIds:['BIZ-R09'],blockedCapabilities:[blocked('LEVEL_ZERO','Initial zero-level branch is outside the proven positive-cost scope'),blocked('STAR_REPLACE','Star and replacement require separate contracts')]},
+    verification:verification('verifyEquipmentGrowth','src/equipment-growth.mjs#verifyEquipmentGrowth','Full pool and hero mirror same UID LEVEL+1 or explicit RED REFINE+1; exact iron or iron+refining-stone debit, unchanged ownership and non-targets; only target hero power/attributes may change'),
+    dependencyVersions:dependencies(['moduleConfig','config.EquipCfg','config.EquipAttrCfg'],[{when:'parameters.action=null',keys:['config.EquipUpDecomposeCfg']},{when:'parameters.action=refine',keys:['config.EquipRefineCfg']}]),
   }),
   'formation-unlock': contract('formation-unlock', [], ['P3-5'], ['src/formation-unlock.mjs#formationUnlockModule','src/formation-unlock.mjs#planFormationUnlock'], {presetId:integer}, {
     inventoryRequirementIds:['FRM-005'],
