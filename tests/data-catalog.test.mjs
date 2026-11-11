@@ -118,3 +118,54 @@ test('all 27 parsed query links preserve distinct synthetic business values', ()
     assert.deepEqual(entry.parsed, expected, request);
   }
 });
+
+
+import { BUSINESS_QUERY_CATALOG, ADDITIONAL_READ_QUERIES, validateBusinessQueryParameters } from '../src/data-catalog.mjs';
+import { loadProtocol } from '../src/proto.mjs';
+
+test('business metadata registers 12 additional read queries and reuses 16 existing entries without changing the 48 collector', () => {
+ const extras=['GuildInfoRequest','GuildMemberRequest','GuildAidListRequest','MyGuildAidRequest','GuildCityInfoRequest','MuseumInfoRequest','WorldInfoRequest','FleetRepairParamRequest','TreasureLootStatsRequest','TreasureLootListRequest','TreasureLootRankRequest','TreasureLootDefenceRequest'];
+ assert.equal(BUSINESS_QUERY_CATALOG.length,28);assert.equal(ADDITIONAL_READ_QUERIES.length,12);assert.equal(new Set(BUSINESS_QUERY_CATALOG.map(row=>row.request)).size,28);
+ assert.deepEqual(ADDITIONAL_READ_QUERIES.map(row=>row.request),extras);assert.ok(ADDITIONAL_READ_QUERIES.every(row=>!ENTRY_QUERIES.some(query=>query.name===row.request)));
+ for(const row of BUSINESS_QUERY_CATALOG){assert.equal(row.readOnly,true);assert.equal(row.metadataOnly,true);assert.equal(row.response,row.request.replace(/Request$/,'Response'));assert.ok(row.consumers.length);assert.equal(row.source.length,row.consumers.length);assert.ok(row.scope.binding.includes('accountId'));assert.ok(row.scope.binding.includes('generation'));assert.equal(row.parameters.arbitraryFields,false);assert.ok(row.notes);assert.ok(DATA_DOMAINS.some(domain=>domain.id===row.domain));
+  const base=DATA_CATALOG.find(entry=>entry.request===row.request);assert.equal(row.baseEntry,base??null);assert.equal(row.registration,base?'ENTRY_QUERY_REUSE':'DOMAIN_SURVEY_ONLY');
+ }
+ assert.equal(BUSINESS_QUERY_CATALOG.filter(row=>row.baseEntry).length,16);assert.equal(DATA_CATALOG.length,48);assert.equal(ENTRY_QUERIES.length,48);assert.equal(exploreSnapshot(null).entries.length,48);
+});
+
+test('additional query codecs exist locally and metadata never registers a mutation or entry signal',()=>{
+ const protocol=loadProtocol(),forbidden=['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','FinishGuildOrderRequest','GotGuildWelfarePackRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumCollectRevenueRequest','RepairFleetRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest','TreasureLootSendFleetsRequest','ChallengeStageRequest','RedPointRequest','ExitWorldMapRequest'];
+ for(const row of BUSINESS_QUERY_CATALOG){assert.ok(protocol[row.request],row.request);assert.ok(protocol[row.response],row.response);assert.ok(!forbidden.includes(row.request));}
+ for(const request of forbidden)assert.throws(()=>validateBusinessQueryParameters(request,{}),{code:'INVALID_QUERY_PARAMETERS'});
+});
+
+test('query metadata preserves exact scope limitations and domain parameter constraints',()=>{
+ const byName=new Map(BUSINESS_QUERY_CATALOG.map(row=>[row.request,row]));
+ assert.deepEqual(byName.get('GetFormationRequest').parameters.fixed,{module:1});assert.deepEqual(byName.get('GuildAidListRequest').parameters.fixed,{type:0});assert.deepEqual(byName.get('MyGuildAidRequest').parameters.fixed,{type:0});
+ assert.equal(byName.get('WorldInfoRequest').scope.kind,'CURRENT_RESPONSE_ONLY');assert.equal(byName.get('WorldInfoRequest').scope.completeness,'CURRENT_RESPONSE_ONLY');
+ assert.equal(byName.get('TreasureLootListRequest').scope.completeness,'CURRENT_RESPONSE_ONLY');assert.ok(byName.get('TreasureLootRankRequest').scope.binding.includes('uid'));assert.ok(byName.get('FleetRepairParamRequest').scope.binding.includes('buildingId'));
+ assert.deepEqual(byName.get('GuildInfoRequest').consumers.map(row=>row.module),['alliance','fleet']);assert.deepEqual(byName.get('WorldInfoRequest').consumers.map(row=>row.module),['fleet','naval']);
+ assert.ok(byName.get('OnWaterRequest').notes.includes('formation'));assert.ok(byName.get('MyFleetsRequest').notes.includes('no authority'));
+ for(const row of BUSINESS_QUERY_CATALOG){assert.equal(Object.isFrozen(row),true);assert.equal(Object.isFrozen(row.scope.binding),true);assert.equal(Object.isFrozen(row.consumers),true);assert.equal(Object.isFrozen(row.parameters.allowedKeys),true);}
+ assert.throws(()=>byName.get('GetFormationRequest').parameters.fixed.module=2,TypeError);
+});
+
+test('parameter validator accepts only existing survey body shapes and copies caller objects',()=>{
+ const cases=[['AllItemRequest',{}],['GetFormationRequest',{module:1}],['GuildAidListRequest',{type:0}],['MyGuildAidRequest',{type:0}],['WorldInfoRequest',{screenCenter:{x:-2147483647,y:2147483647}}],['FleetRepairParamRequest',{buildingId:'fleet-A'}],['TreasureLootRankRequest',{uid:1}],['TreasureLootDefenceRequest',{uid:2147483647}]];
+ const protocol=loadProtocol();for(const [request,body] of cases){const copy=validateBusinessQueryParameters(request,body);assert.deepEqual(copy,body);assert.notEqual(copy,body);const decoded=protocol[request].decode(protocol[request].encode(copy).finish());for(const key of Object.keys(copy))if(typeof copy[key]!=='object')assert.equal(decoded[key],copy[key]);}
+ for(const [request,body] of [['AllItemRequest',{page:1}],['GetFormationRequest',{}],['GetFormationRequest',{module:2}],['GetFormationRequest',{module:1,body:{}}],['GuildAidListRequest',{type:1}],['MyGuildAidRequest',{type:'0'}],['WorldInfoRequest',{}],['WorldInfoRequest',{screenCenter:{x:0}}],['WorldInfoRequest',{screenCenter:{x:0,y:0,z:0}}],['WorldInfoRequest',{screenCenter:{x:1.2,y:0}}],['WorldInfoRequest',{screenCenter:{x:-2147483648,y:0}}],['FleetRepairParamRequest',{buildingId:''}],['FleetRepairParamRequest',{buildingId:1}],['TreasureLootRankRequest',{uid:0}],['TreasureLootDefenceRequest',{uid:2147483648}],['TreasureLootRankRequest',{uid:'7'}],['TreasureLootRankRequest',{uid:7,request:'PayRequest'}],['MissingRequest',{}]])assert.throws(()=>validateBusinessQueryParameters(request,body),{code:'INVALID_QUERY_PARAMETERS'});
+ for(const body of [null,[],new Date(),Object.create({module:1}),JSON.parse('{"module":1,"__proto__":{}}')])assert.throws(()=>validateBusinessQueryParameters('GetFormationRequest',body),{code:'INVALID_QUERY_PARAMETERS'});
+});
+
+test('all six existing domain surveys consume exactly the registered read queries and parameter restrictions',async()=>{
+ const [{surveyFormation},{surveyAlliance},{surveyMuseum},{surveyFleet},{surveyTreasure},{surveyNaval}]=await Promise.all([import('../src/formation.mjs'),import('../src/alliance.mjs'),import('../src/museum.mjs'),import('../src/fleet.mjs'),import('../src/treasure.mjs'),import('../src/naval-rules.mjs')]);
+ const calls=[],protocol=Object.fromEntries(BUSINESS_QUERY_CATALOG.flatMap(row=>[[row.request,{}],[row.response,{}]]));
+ const rawFleet={buildingId:'synthetic-fleet',state:1,durability:100,maxDura:200,cityId:1,targetCityId:0,treasureLootUid:0,autoFight:{isOn:false,todayTimes:0}};
+ const responses={MyFleetsRequest:{fleets:[rawFleet]},AllItemRequest:{items:[]},AllResourceRequest:{list:[]},FleetRepairParamRequest:{unitRepairCost:1,unitRepairTime:1},WorldInfoRequest:{cities:[],fleets:[]}};
+ let module=null;const client={connected:true,gameClock:{read:()=>({status:'TRUSTED',reliable:true,nowMs:100000,earliestMs:100000,latestMs:100000})},async request(request,body,response){calls.push({module,request,body:structuredClone(body),response});return structuredClone(responses[request]??{});},send(){throw Error('Forbidden write');},sendWatch(){throw Error('Forbidden watched write');}};
+ const player={playerId:'1',worldId:1000001,mainlineStage:1,level:30};
+ for(const [id,survey,options] of [['formation',surveyFormation,{}],['alliance',surveyAlliance,{}],['museum',surveyMuseum,{}],['fleet',surveyFleet,{moduleConfig:{repair:true,formation:true}}],['treasure',surveyTreasure,{parameters:{uid:7}}],['naval',surveyNaval,{parameters:{screenCenter:{x:10,y:-20}}}]]){module=id;await survey(client,protocol,{config:{tables:{}},player,...options});}
+ assert.deepEqual([...new Set(calls.map(call=>call.request))].sort(),BUSINESS_QUERY_CATALOG.map(row=>row.request).sort());
+ for(const call of calls){const row=BUSINESS_QUERY_CATALOG.find(entry=>entry.request===call.request);assert.ok(row.consumers.some(use=>use.module===call.module),call.module+':'+call.request);assert.equal(row.response,call.response);assert.deepEqual(validateBusinessQueryParameters(call.request,call.body),call.body);}
+ assert.deepEqual(calls.find(call=>call.module==='fleet'&&call.request==='WorldInfoRequest').body,{screenCenter:{x:0,y:0}});assert.deepEqual(calls.find(call=>call.request==='FleetRepairParamRequest').body,{buildingId:'synthetic-fleet'});
+});

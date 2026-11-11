@@ -6,8 +6,9 @@ const names=['GuildInfo','GuildMember','GuildAidList','MyGuildAid','GuildOrder',
 const protocol=Object.fromEntries([...names.flatMap(n=>[[n+'Request',{}],[n+'Response',{}]]),...['GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GuildAidAskRequest'].map(n=>[n,{}])]);
 const config={tables:{GuildParamCfg:{data:[{paramName:'每日求助次数上限',paramValue:20}]},GuildOrderNumCfg:{data:[{season:1,playerLevel:1,maxNum:-1},{season:2,playerLevel:1,maxNum:10},{season:2,playerLevel:25,maxNum:-1}]}}};
 const moduleConfig={enabled:true,help:true,cancel:true,claimAid:true,ask:true,orders:true,welfare:true,fort:true,maxDailyHelps:10,maxActionsPerPlan:10,dailyBudgetItemIds:['小麦'],dailyBudgetQuantities:[10]};
-const now=Math.floor(Date.now()/1000);
-function fake(overrides={}){const answers={GuildInfoRequest:{guild:{guildId:'10',welfarePack:[],gotWelfareTime:0}},GuildMemberRequest:{titleList:[{guildTitle:1,members:[{playerId:'2',nickname:'同名'},{playerId:'3',nickname:'同名'}]}]},GuildAidListRequest:{askItems:[{reqId:'9007199254740993',reqItemId:'小麦',asker:{playerId:'2'},askTime:now-2,endTime:now+1000}]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{order:{requirements:[{id:'小麦',num:2}],nextRefreshTime:now+1000}},GuildCityInfoRequest:{cities:[{cityId:1},{cityId:2}]},CounterInfoRequest:{counters:[{type:'DAILY_GUILD_AID',num:0},{type:'DAILY_FINISH_GUILD_ORDER',num:0}]},AllItemRequest:{items:[{itemId:'小麦',num:3}]},AllResourceRequest:{list:[]},...overrides};return {connected:true,serverClockOffsetMs:0,reads:[],answers,async request(name,body,response){this.reads.push({name,body,response});if(this.answers[name] instanceof Error)throw this.answers[name];return structuredClone(this.answers[name]);}};}
+const now=1800000000;
+const gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000,latestMs:now*1000})};
+function fake(overrides={}){const answers={GuildInfoRequest:{guild:{guildId:'10',welfarePack:[],gotWelfareTime:0}},GuildMemberRequest:{titleList:[{guildTitle:1,members:[{playerId:'2',nickname:'同名'},{playerId:'3',nickname:'同名'}]}]},GuildAidListRequest:{askItems:[{reqId:'9007199254740993',reqItemId:'小麦',asker:{playerId:'2'},askTime:now-2,endTime:now+1000}]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{order:{requirements:[{id:'小麦',num:2}],nextRefreshTime:now+1000}},GuildCityInfoRequest:{cities:[{cityId:1},{cityId:2}]},CounterInfoRequest:{counters:[{type:'DAILY_GUILD_AID',num:0},{type:'DAILY_FINISH_GUILD_ORDER',num:0}]},AllItemRequest:{items:[{itemId:'小麦',num:3}]},AllResourceRequest:{list:[]},...overrides};return {connected:true,serverClockOffsetMs:0,gameClock,reads:[],answers,async request(name,body,response){this.reads.push({name,body,response});if(this.answers[name] instanceof Error)throw this.answers[name];return structuredClone(this.answers[name]);}};}
 const read=async(c,p={})=>{const f=await surveyAlliance(c,protocol,{player:{id:'1',level:20},parameters:p});return {...f,helpAllowance:{reliable:true,remaining:10,cooldownUntil:0,source:'SYNTHETIC_TEST_ONLY'},helpUsage:{reliable:true,dayKey:allianceBudgetDay(f.now),total:0,spentByItem:new Map(),source:'SYNTHETIC_TEST_HISTORY'}};};
 const view=(f,o={})=>allianceView(f,{config,moduleConfig,...o});
 const candidate=(f,type)=>view(f).candidates.find(c=>c.actionType===type);
@@ -46,3 +47,34 @@ test('real protocol roundtrips every implemented alliance write and proves missi
   const fresh=fake();fresh.answers.GuildInfoRequest=missing;const unknown=await surveyAlliance(fresh,wireProtocol,{player:{id:'1',level:20}});assert.equal(unknown.guild.gotWelfareTime,null);assert.equal(view(unknown).candidates.some(a=>a.actionType==='claimWelfare'),false);
   const response=wire('GotGuildWelfarePackResponse',{lastGotTime:now,reward:{asset:[{id:'小麦',num:1}]}});assert.equal(response.lastGotTime,now);assert.equal(response.reward.asset[0].id,'小麦');
 });
+
+
+test('alliance survey rejects absent, legacy-zero and untrusted clock for all time-sensitive candidates',async()=>{
+ for(const clock of [undefined,{read:()=>({status:'UNKNOWN',reliable:false,nowMs:now*1000})}]){
+  const c=fake({MyGuildAidRequest:{aids:[{reqId:'8',reqItemId:'小麦',endTime:now+1000}]},GuildInfoRequest:{guild:{guildId:'10',welfarePack:[{id:'9',createTime:now-1}],gotWelfareTime:0}}});c.gameClock=clock;
+  const f=await surveyAlliance(c,protocol,{player:{id:'1',level:20,worldId:1000001}});assert.equal(c.serverClockOffsetMs,0);assert.equal(f.now,null);assert.equal(f.gameTime.reliable,false);
+  const forged={...f,now,helpAllowance:{reliable:true,remaining:10,cooldownUntil:0,source:'SYNTHETIC'},helpUsage:{reliable:true,dayKey:allianceBudgetDay(now),total:0,spentByItem:new Map(),source:'SYNTHETIC'}};
+  assert.equal(view(forged).candidates.some(a=>['help','cancel','finishOrder','claimWelfare'].includes(a.actionType)),false);
+ }
+});
+
+test('alliance expiration uses latest clock bound and help cooldown uses earliest bound',async()=>{
+ const c=fake({MyGuildAidRequest:{aids:[{reqId:'8',reqItemId:'小麦',endTime:now+1}]},GuildInfoRequest:{guild:{guildId:'10',welfarePack:[{id:'9',createTime:now+1-86400}],gotWelfareTime:0}}});
+ c.answers.GuildAidListRequest.askItems[0].endTime=now+1;c.answers.GuildOrderRequest.order.nextRefreshTime=now+1;
+ c.gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000-100,latestMs:now*1000+1100})};
+ const f=await read(c);f.worldId=1000001;f.season=1;
+ assert.equal(view(f).candidates.some(a=>['help','cancel','finishOrder','claimWelfare'].includes(a.actionType)),false);
+ const removed={...f,asks:[],stock:new Map(f.stock)};removed.stock.set('小麦',2);
+ assert.equal(verifyAlliance({actionType:'help',target:{reqId:f.asks[0].reqId,playerId:'2',itemId:'小麦'},costs:[{id:'小麦',num:1}]},f,removed),false);
+ const cooldown=await read(fake());cooldown.gameTime={status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000-100,latestMs:now*1000+100};cooldown.helpAllowance.cooldownUntil=now;
+ assert.equal(allianceHelpRules(cooldown,{moduleConfig}).decisions[0].blockedReason,'HELP_COOLDOWN_ACTIVE');
+});
+
+test('alliance daily help budget and order counter cannot cross an uncertain game-day boundary',async()=>{
+ const midnight=1800028800,c=fake();c.gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:midnight*1000,earliestMs:midnight*1000-100,latestMs:midnight*1000+100})};
+ c.answers.GuildAidListRequest.askItems[0].endTime=midnight+1000;c.answers.GuildOrderRequest.order.nextRefreshTime=midnight+1000;
+ const f=await read(c);f.season=1;
+ assert.notEqual(allianceBudgetDay(f.nowEarliest),allianceBudgetDay(f.nowLatest));assert.equal(allianceHelpRules(f,{moduleConfig}).remaining,null);assert.equal(view(f).candidates.some(a=>a.actionType==='finishOrder'),false);
+});
+
+test('alliance day rejects dates outside representable range rather than throwing or inventing quota',()=>{assert.equal(allianceBudgetDay(Number.MAX_SAFE_INTEGER),null);assert.equal(allianceBudgetDay(null),null);});

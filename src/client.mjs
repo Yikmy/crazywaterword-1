@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { createCodec } from './codec.mjs';
+import { trustedGameClock } from './state-facts.mjs';
 
 export const MAX_SEQ = 2147483647;
 const HALF_SEQ = (MAX_SEQ - 1) / 2;
@@ -34,8 +35,11 @@ export function isSeqNoInRange(seq, right) {
 }
 
 export class GameClient extends EventEmitter {
-  constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket } = {}) {
+  constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket, assertTransport = () => {}, accountId = null, generation = 0, gameClock = null } = {}) {
     super();
+    this.assertTransport = assertTransport;
+    this.factContext = { accountId, generation };
+    this.gameClock = gameClock ?? (typeof accountId === 'string' && accountId ? trustedGameClock({ accountId, generation }) : { reset() {}, markPing() {}, observePong() {}, read: () => ({ status: 'UNKNOWN', reliable: false, reason: 'CONTEXT_UNKNOWN' }) });
     this.url = url;
     this.login = login;
     this.WebSocketImpl = WebSocketImpl;
@@ -60,6 +64,8 @@ export class GameClient extends EventEmitter {
     this.watchers = [];
     this.uncertainWrites = new Set();
     this.sendOrder = 0;
+    this.heartbeatDiagnostics = [];
+    this.lastTickAt = null;
     this.stopping = false;
   }
 
@@ -77,6 +83,7 @@ export class GameClient extends EventEmitter {
     if (this.loginPromise) return this.loginPromise;
     if (this.state === 'READY' && this.connected) return Promise.resolve(this.loginResponse);
     this.stopping = false;
+    this.gameClock.reset();
     const attempt = { resolve: null, reject: null, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
     this.loginPromise = promise;
@@ -84,6 +91,7 @@ export class GameClient extends EventEmitter {
     this.setState('CONNECTING', this.url);
     if (this.loginAttempt !== attempt) return promise;
     try {
+      this.assertTransport();
       const socket = new this.WebSocketImpl(this.url);
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
@@ -96,6 +104,8 @@ export class GameClient extends EventEmitter {
         if (!current()) return;
         try {
           this.emit('frame', { dir: 'out', name: 'LoginRequest', seq: this.sendSeqNo, bytes: frame });
+          this.assertTransport();
+          if (!current()) return;
           socket.send(frame);
         } catch (error) {
           this.finishConnection('FAILED', error, 'loginSendFailed');
@@ -155,6 +165,8 @@ export class GameClient extends EventEmitter {
 
   // Every terminal path releases resources before publishing its final state.
   finishConnection(state, error, reason = state.toLowerCase()) {
+    this.recordHeartbeat('TERMINAL', { state });
+    this.gameClock.reset();
     const attempt = this.loginAttempt;
     this.loginAttempt = null;
     this.loginPromise = null;
@@ -195,6 +207,7 @@ export class GameClient extends EventEmitter {
       throw error;
     }
     if (!this.connected) throw new Error('not connected');
+    this.assertTransport();
     onDispatch?.(seq);
     this.socket.send(frame);
     return seq;
@@ -204,6 +217,7 @@ export class GameClient extends EventEmitter {
     if (!this.connected) return false;
     const frame = this.codec.encode(name, 0, body || {});
     this.emit('frame', { dir: 'out', name, seq: 0, bytes: frame, body });
+    this.assertTransport();
     this.socket.send(frame);
     return true;
   }
@@ -364,8 +378,17 @@ export class GameClient extends EventEmitter {
     entry.reject(error);
   }
 
+  recordHeartbeat(kind, values = {}) {
+    this.heartbeatDiagnostics.push({ kind, at: Date.now(), ...values });
+    if (this.heartbeatDiagnostics.length > 20) this.heartbeatDiagnostics.shift();
+  }
+
+  clockDiagnostics() { return { clock: this.gameClock.read(this.factContext), events: structuredClone(this.heartbeatDiagnostics), pingTimeoutMs: PING_TIMEOUT_MS, tickIntervalMs: TICK_INTERVAL_MS }; }
+
   sendPing(timestamp) {
     this.lastPingTimestamp = timestamp;
+    this.gameClock.markPing(timestamp);
+    this.recordHeartbeat('PING', { outstandingAgeMs: 0 });
     this.sendNoSeq('PingRequest', { clientTimestamp: timestamp });
   }
 
@@ -376,6 +399,8 @@ export class GameClient extends EventEmitter {
     const echoed = toNumber(body?.clientTimestamp);
     if (echoed !== this.lastPingTimestamp) return false;
     const now = Date.now();
+    const clockFact = this.gameClock.observePong(body);
+    this.recordHeartbeat('PONG', { roundTripMs: Math.max(0, now - echoed), trusted: clockFact?.reliable === true });
     this.lastPingTimestamp = 0;
     const sample = 0.4 * (now - echoed) + 0.6 * this.latencyMs;
     this.latencyMs = Math.round(Math.max(sample, 0));
@@ -475,6 +500,9 @@ export class GameClient extends EventEmitter {
   }
 
   tick() {
+    const observedAt = Date.now(), tickGapMs = this.lastTickAt === null ? null : Math.max(0, observedAt - this.lastTickAt);
+    this.lastTickAt = observedAt;
+    if (tickGapMs !== null && tickGapMs > TICK_INTERVAL_MS + 100) this.recordHeartbeat('TICK_DELAY', { tickGapMs });
     if (!this.stopping) {
       const now = Date.now();
       if (this.connected) {

@@ -66,3 +66,28 @@ test('registered naval, treasure and fleet config validators fill partial defaul
  for(const bad of [{rules:[{id:'x',type:'unknown',value:1}]},{rules:[{id:'x',type:'minPetrol',value:-1}]},{rules:[{id:'x',type:'minPetrol',value:1},{id:'x',type:'minPetrol',value:1}]}])assert.throws(()=>navalModule.validateConfig(bad),{code:'INVALID_INPUT'});
  const rules=[{id:'b',type:'minPetrol',value:1},{id:'a',type:'targetState',value:2}];assert.deepEqual(navalModule.validateConfig({rules}).rules,rules);
 });
+
+
+test('naval survey cannot invent freshTarget time from default offset or absent trusted clock',async()=>{
+ const {surveyNaval}=await import('../src/naval-rules.mjs'),responses={WorldInfoRequest:{fleets:[{buildingId:'f',owner:{playerId:'123',guildId:'3'},state:1}]},MyFleetsRequest:{fleets:[]},WorldBossInfoRequest:{},LimitedBossOpenRequest:{},AllItemRequest:{items:[]},AllResourceRequest:{list:[]}};
+ const protocol=Object.fromEntries(Object.keys(responses).flatMap(name=>[[name,{}],[name.replace('Request','Response'),{}]])),client={connected:true,serverClockOffsetMs:0,request:async name=>responses[name]};
+ const f=await surveyNaval(client,protocol);assert.equal(f.now,null);assert.equal(f.worldObservedTime.now,null);
+ const view=navalModule.view({...f,now:100},{moduleConfig:{rules:[{id:'age',type:'freshTarget',value:10}]}});assert.equal(view.targets[0].status,'UNKNOWN');assert.equal(view.observations.length,0);
+});
+
+test('naval target freshness retains world response observation time while slower parallel reads complete',async()=>{
+ const {surveyNaval}=await import('../src/naval-rules.mjs'),responses={WorldInfoRequest:{fleets:[{buildingId:'f',owner:{playerId:'123',guildId:'3'},state:1}]},MyFleetsRequest:{fleets:[]},WorldBossInfoRequest:{},LimitedBossOpenRequest:{},AllItemRequest:{items:[]},AllResourceRequest:{list:[]}};
+ const protocol=Object.fromEntries(Object.keys(responses).flatMap(name=>[[name,{}],[name.replace('Request','Response'),{}]]));let milliseconds=100000;
+ const client={connected:true,gameClock:{read:()=>({status:'TRUSTED',reliable:true,nowMs:milliseconds,earliestMs:milliseconds,latestMs:milliseconds})},request:async name=>{if(name==='AllResourceRequest'){await new Promise(resolve=>setTimeout(resolve,5));milliseconds=120000;}return responses[name];}};
+ const f=await surveyNaval(client,protocol);assert.equal(f.worldObservedTime.now,100);assert.equal(f.now,120);
+ const view=navalModule.view(f,{moduleConfig:{rules:[{id:'age',type:'freshTarget',value:10}]}});assert.equal(view.targets[0].observedAt,100);assert.equal(view.targets[0].status,'FAIL');assert.equal(view.observations.length,0);
+});
+
+test('freshTarget evaluates worst-case age from trusted latest now and earliest observation',()=>{
+ const rules=[{id:'age',type:'freshTarget',value:5}],gameTime={status:'TRUSTED',reliable:true,nowMs:105000,earliestMs:104900,latestMs:105100};
+ const context={now:105,gameTime,target:{observedAt:100,observedGameTime:{status:'TRUSTED',reliable:true,nowMs:100000,earliestMs:99900,latestMs:100100}}};
+ assert.equal(evaluateNavalRules(rules,context).status,'FAIL');assert.equal(evaluateNavalRules([{...rules[0],value:7}],context).status,'PASS');
+ context.gameTime.reliable=false;assert.equal(evaluateNavalRules(rules,context).status,'UNKNOWN');
+});
+
+test('freshTarget cannot mix trusted observation from another account or clock generation',()=>{for(const key of ['accountId','generation']){const current={status:'TRUSTED',reliable:true,nowMs:105000,earliestMs:105000,latestMs:105000,accountId:'synthetic-A',generation:1},observed={...current,nowMs:100000,earliestMs:100000,latestMs:100000};observed[key]=key==='accountId'?'synthetic-B':2;assert.equal(evaluateNavalRules([{id:'age',type:'freshTarget',value:10}],{now:105,gameTime:current,target:{observedAt:100,observedGameTime:observed}}).status,'UNKNOWN');}});

@@ -4,6 +4,7 @@
 import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { allianceId } from './alliance.mjs';
+import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 const rows=(c,n)=>c?.tables?.[n]?.data??[];
 const text=s=>typeof s==='string'&&s.trim().length>0;
 const unique=(a,key)=>Array.isArray(a)&&new Set(a.map(key)).size===a.length;
@@ -48,15 +49,15 @@ export async function surveyMuseum(client,protocol,{player=null,signal,parameter
   const exhibitions=Array.isArray(info?.exhibitions)?info.exhibitions.map(e=>({exhibitionId:quantity(field(e,'exhibitionId')),level:quantity(field(e,'level')),keywordLevels:e?.keywordLevels,cases:Array.isArray(e?.cases)?e.cases.map(c=>({caseIndex:quantity(field(c,'caseIndex')),level:quantity(field(c,'level')),unlocked:field(c,'unlocked'),antiqueId:field(c,'antiqueId'),upgradeFinishTime:quantity(field(c,'upgradeFinishTime'))})):null})):null;
   const antiques=Array.isArray(antiquesRes?.antiques)?antiquesRes.antiques.map(a=>a?.id):null;
   const claimed=Array.isArray(info?.claimedAchievements)?info.claimedAchievements.map(quantity):null;
-  return {module:'museum',available,playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),now:Number.isFinite(client.serverClockOffsetMs)?Math.floor((Date.now()+client.serverClockOffsetMs)/1000):null,
+  return {module:'museum',available,playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),...readGameTime(client),
     antiques,antiquesReliable:!!antiques&&antiques.every(text)&&unique(antiques,id=>id),stages,stagesReliable:!!stages&&stages.every(stageValid)&&unique(stages,s=>s.stageId),heroes,heroesReliable:!!heroes&&heroes.every(text)&&unique(heroes,id=>id),exhibitions,
     exhibitionsReliable:!!exhibitions&&exhibitions.every(e=>e.exhibitionId!==null&&e.exhibitionId>0&&e.level!==null)&&unique(exhibitions,e=>e.exhibitionId),
     uncollectedRevenue:quantity(field(info,'uncollectedRevenue')),topPopularity:quantity(field(info,'topPopularity')),claimedAchievements:claimed,claimedReliable:!!claimed&&claimed.every(n=>n!==null)&&unique(claimed,n=>n),stock,stockReliable,parameters,notes};
 }
-const stateOf=(s,now)=>!stageValid(s)||quantity(now)===null?'UNKNOWN':!s.expedition||s.expedition.endTime===0?'IDLE':s.expedition.endTime>now?'EXPLORING':'COMPLETE_UNSETTLED';
+const stateOf=(s,f)=>{const time=gameTimeBounds(f);return !stageValid(s)||time.now===null?'UNKNOWN':!s.expedition||s.expedition.endTime===0?'IDLE':s.expedition.endTime>time.latest?'EXPLORING':s.expedition.endTime<=time.earliest?'COMPLETE_UNSETTLED':'UNKNOWN';};
 function unlocked(f,c,s){const cfg=rows(c,'MuseumExpeditionStageCfg').filter(r=>r.stageId===s.stageId);if(cfg.length!==1||!Array.isArray(cfg[0].areaLevelReq))return null;const req=cfg[0].areaLevelReq;if(req.length===0)return true;if(req.length!==2||!f.exhibitionsReliable||quantity(req[0])===null||quantity(req[1])===null)return null;return f.exhibitions.some(e=>e.exhibitionId===req[0]&&e.level>=req[1]);}
 export function museumView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
-  parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const candidates=[],blocked=[],notes=[...(f.notes??[])];
+  parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const time=gameTimeBounds(f),candidates=[],blocked=[],notes=[...(f.notes??[])];
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason}),enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
   const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:'museum:'+type+':'+encodeURIComponent(stable(target)),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
   if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[]};
@@ -64,11 +65,11 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
   const busy=f.stagesReliable?f.stages.filter(s=>s.expedition?.endTime>0):null,busyHeroes=new Set(busy?.flatMap(s=>s.expedition.heroIds)??[]);
   const teamCfg=rows(config,'MuseumExpeditionTeamCfg'),teamKnown=teamCfg.length>0&&teamCfg.every(r=>quantity(r.teamCount)!==null&&quantity(r.playerLevel)!==null)&&quantity(f.playerLevel)!==null;
   const teamCount=teamKnown?Math.max(0,...teamCfg.filter(r=>r.playerLevel<=f.playerLevel).map(r=>r.teamCount)):null;
-  const display=(f.stages??[]).map(s=>({...s,status:f.stagesReliable?stateOf(s,f.now):'UNKNOWN',unlocked:unlocked(f,config,s)}));
+  const display=(f.stages??[]).map(s=>({...s,status:f.stagesReliable?stateOf(s,f):'UNKNOWN',unlocked:unlocked(f,config,s)}));
   if(enabled('exploration')){
     if(!f.stagesReliable)block('startExplore','EXPEDITION_STATE_UNKNOWN');
     else for(const s of f.stages.filter(s=>parameters.stageId===undefined||s.stageId===parameters.stageId)){
-      const target={stageId:s.stageId},status=stateOf(s,f.now),open=unlocked(f,config,s);
+      const target={stageId:s.stageId},status=stateOf(s,f),open=unlocked(f,config,s);
       if(status==='UNKNOWN'){block('startExplore','SERVER_TIME_UNKNOWN',target);continue;}
       if(status==='COMPLETE_UNSETTLED'){
         block('completeExplore','SETTLEMENT_PENDING_STATE_NOT_OBSERVABLE',target);block('claimExplore','REQUIRES_VERIFIED_COMPLETE_RESULT_AND_PENDING_IDENTITY',target);continue;
@@ -78,7 +79,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
         if(parameters.payment==='FREE'){block('speedExplore','FREE_SPEED_UP_NOT_PROVEN',target);continue;}
         if(parameters.useNum===undefined)continue;
         if(parameters.useNum>moduleConfig.maximumSpeedItems){block('speedExplore','CONFIGURED_SPEED_BUDGET_EXCEEDED',target);continue;}
-        if(parameters.useNum>Math.ceil((s.expedition.endTime-f.now)/1800)){block('speedExplore','SPEED_QUANTITY_EXCEEDS_REMAINING_TIME',target);continue;}
+        if(parameters.useNum>Math.ceil((s.expedition.endTime-time.latest)/1800)){block('speedExplore','SPEED_QUANTITY_EXCEEDS_REMAINING_TIME',target);continue;}
         add('exploration','speedExplore',target,s,[{id:MUSEUM_SPEED_ITEM,num:parameters.useNum}],'SpeedPop.ts:2949, GameConstants.ts:1383; 1800 seconds per item','MuseumSpeedUpExploreRequest',{stageId:s.stageId,useNum:parameters.useNum},'MuseumSpeedUpExploreResponse',{endTimeReducedBy:parameters.useNum*1800});continue;
       }
       if(open!==true){block('startExplore',open===false?'STAGE_LOCKED':'STAGE_UNLOCK_UNKNOWN',target);continue;}
@@ -134,16 +135,16 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
       if(parameters.caseIndex!==undefined&&parameters.caseIndex!==c.caseIndex)continue;
       const target={exhibitionId:e.exhibitionId,caseIndex:c.caseIndex};
       if(moduleConfig.caseFinish&&c.upgradeFinishTime>0){
-        if(quantity(f.now)===null)block('finishCase','SERVER_TIME_UNKNOWN',target);
-        else if(c.upgradeFinishTime<=f.now)add('exhibition','finishCase',target,c,[],'MuseumModel.ts:2207 expired MuseumFinishCaseUpgradeRequest has no cost','MuseumFinishCaseUpgradeRequest',target,null,{level:c.level+1,upgradeFinishTime:0});
+        if(time.now===null)block('finishCase','SERVER_TIME_UNKNOWN',target);
+        else if(c.upgradeFinishTime<=time.earliest)add('exhibition','finishCase',target,c,[],'MuseumModel.ts:2207 expired MuseumFinishCaseUpgradeRequest has no cost','MuseumFinishCaseUpgradeRequest',target,null,{level:c.level+1,upgradeFinishTime:0});
       }
 
       if(moduleConfig.caseSpeed&&c.upgradeFinishTime>0){
         if(parameters.payment==='PREMIUM')block('speedCase','PREMIUM_BLOCKED',target);
         else if(parameters.payment==='FREE')block('speedCase','ADVERTISING_SPEED_NOT_AUTHORIZED',target);
-        else if(quantity(f.now)===null)block('speedCase','SERVER_TIME_UNKNOWN',target);
-        else if(c.upgradeFinishTime>f.now&&parameters.useNum!==undefined){
-          if(parameters.useNum>moduleConfig.maximumSpeedItems||parameters.useNum>Math.ceil((c.upgradeFinishTime-f.now)/60))block('speedCase','SPEED_QUANTITY_EXCEEDS_REMAINING_TIME_OR_CONFIG',target);
+        else if(time.now===null)block('speedCase','SERVER_TIME_UNKNOWN',target);
+        else if(c.upgradeFinishTime>time.latest&&parameters.useNum!==undefined){
+          if(parameters.useNum>moduleConfig.maximumSpeedItems||parameters.useNum>Math.ceil((c.upgradeFinishTime-time.latest)/60))block('speedCase','SPEED_QUANTITY_EXCEEDS_REMAINING_TIME_OR_CONFIG',target);
           else add('exhibition','speedCase',target,c,[{id:'加速器',num:parameters.useNum}],'MuseumModel.ts:2207 / MuseumBoothView.ts:2187; SpeedUpPop.ts:2953 ITEM=2, each item 60 seconds','MuseumSpeedUpCaseRequest',{...target,speedUp:{type:2,useNum:parameters.useNum}},null,{upgradeFinishTimeReduced:true});
         }
       }
@@ -154,7 +155,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
           if(quantity(n.areaLevelReq)===null||quantity(n.upgradeTime)===null||!Array.isArray(n.prevCaseId))reason='CASE_CONFIG_UNKNOWN';
           else if(e.level<n.areaLevelReq)reason='CASE_AREA_LEVEL_TOO_LOW';
           else if(n.prevCaseId.length!==0&&(n.prevCaseId.length!==2||!e.cases.some(p=>p.caseIndex===Number(n.prevCaseId[0])&&p.level>=Number(n.prevCaseId[1]))))reason='CASE_PREVIOUS_CASE_REQUIREMENT_NOT_MET';
-          if(reason)block('upgradeCase',reason,target);else if(quantity(f.now)===null)block('upgradeCase','SERVER_TIME_UNKNOWN',target);else add('exhibition','upgradeCase',target,c,costsOf(n.costArr),'MuseumDisplayCaseCfg next level costArr; UpgradeBoothPop.ts:3411','MuseumUpgradeCaseRequest',target,null,{level:c.level+1,upgradeSeconds:n.upgradeTime});
+          if(reason)block('upgradeCase',reason,target);else if(time.now===null)block('upgradeCase','SERVER_TIME_UNKNOWN',target);else add('exhibition','upgradeCase',target,c,costsOf(n.costArr),'MuseumDisplayCaseCfg next level costArr; UpgradeBoothPop.ts:3411','MuseumUpgradeCaseRequest',target,null,{level:c.level+1,upgradeSeconds:n.upgradeTime});
         }else if(next.length>1)block('upgradeCase','CASE_CONFIG_AMBIGUOUS',target);
       }
       if(moduleConfig.exhibit&&parameters.antiqueId!==undefined&&c.unlocked&&c.upgradeFinishTime===0&&parameters.antiqueId!==c.antiqueId){
@@ -184,10 +185,11 @@ export function planMuseum(f,options={}){
 const increase=(b,a,id,n)=>b.stockReliable&&a.stockReliable&&quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(a.stock.get(id)??0)-(b.stock.get(id)??0)>=n;
 const consume=(b,a,c)=>b.stockReliable&&a.stockReliable&&c.every(({id,num})=>quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(b.stock.get(id)??0)-(a.stock.get(id)??0)>=num);
 export function verifyMuseum(op,b,a,response){
-  if(!b.playerId||b.playerId!==a.playerId)return false;
+  if(!b.playerId||b.playerId!==a.playerId)return false;const beforeTime=gameTimeBounds(b),afterTime=gameTimeBounds(a);
+  if(['startExplore','speedExplore','upgradeCase','finishCase','speedCase'].includes(op.actionType)&&(beforeTime.now===null||afterTime.now===null))return false;
   if(op.actionType==='startExplore'){
     const before=b.stages?.find(s=>s.stageId===op.target.stageId),after=a.stages?.find(s=>s.stageId===op.target.stageId),e=after?.expedition;
-    return b.stagesReliable&&a.stagesReliable&&before&&stateOf(before,b.now)==='IDLE'&&e&&e.endTime>e.startTime&&e.startTime>=b.now&&e.factor===op.target.factor&&stable([...e.heroIds].sort())===stable([...op.target.heroIds].sort())&&consume(b,a,op.costs);
+    return b.stagesReliable&&a.stagesReliable&&before&&stateOf(before,b)==='IDLE'&&e&&e.endTime>e.startTime&&e.startTime>=beforeTime.earliest&&e.factor===op.target.factor&&stable([...e.heroIds].sort())===stable([...op.target.heroIds].sort())&&consume(b,a,op.costs);
   }
   if(op.actionType==='speedExplore'){
     const before=b.stages?.find(s=>s.stageId===op.target.stageId)?.expedition,after=a.stages?.find(s=>s.stageId===op.target.stageId)?.expedition;
@@ -202,9 +204,9 @@ export function verifyMuseum(op,b,a,response){
     const before=b.exhibitions.find(e=>e.exhibitionId===op.target.exhibitionId),after=a.exhibitions.find(e=>e.exhibitionId===op.target.exhibitionId);if(!before||!after)return false;
     if(op.actionType==='upgradeKeyword'){const i=op.target.keywordType-1;return keywordsValid(before)&&keywordsValid(after)&&after.keywordLevels[i]===before.keywordLevels[i]+1&&after.keywordLevels.every((n,j)=>j===i||n===before.keywordLevels[j])&&consume(b,a,op.costs);}
     if(!casesValid(before)||!casesValid(after))return false;const old=before.cases.find(c=>c.caseIndex===op.target.caseIndex),current=after.cases.find(c=>c.caseIndex===op.target.caseIndex);if(!old||!current)return false;
-    if(op.actionType==='speedCase')return old.upgradeFinishTime>b.now&&current.level===old.level&&current.upgradeFinishTime>0&&current.upgradeFinishTime<old.upgradeFinishTime&&consume(b,a,op.costs);
-    if(op.actionType==='finishCase')return old.upgradeFinishTime>0&&quantity(b.now)!==null&&old.upgradeFinishTime<=b.now&&current.level===old.level+1&&current.upgradeFinishTime===0;
-    if(op.actionType==='upgradeCase')return consume(b,a,op.costs)&&old.upgradeFinishTime===0&&(current.level===old.level+1&&current.upgradeFinishTime===0||current.level===old.level&&op.expectedState.upgradeSeconds>0&&current.upgradeFinishTime>b.now&&current.upgradeFinishTime>0);
+    if(op.actionType==='speedCase')return old.upgradeFinishTime>beforeTime.latest&&current.level===old.level&&current.upgradeFinishTime>0&&current.upgradeFinishTime<old.upgradeFinishTime&&consume(b,a,op.costs);
+    if(op.actionType==='finishCase')return old.upgradeFinishTime>0&&beforeTime.earliest!==null&&old.upgradeFinishTime<=beforeTime.earliest&&current.level===old.level+1&&current.upgradeFinishTime===0;
+    if(op.actionType==='upgradeCase')return consume(b,a,op.costs)&&old.upgradeFinishTime===0&&(current.level===old.level+1&&current.upgradeFinishTime===0||current.level===old.level&&op.expectedState.upgradeSeconds>0&&current.upgradeFinishTime>beforeTime.latest&&current.upgradeFinishTime>0);
     if(op.actionType==='exhibit')return current.antiqueId===op.target.antiqueId&&old.antiqueId!==current.antiqueId&&a.exhibitions.every(casesValid)&&(op.target.antiqueId===''||a.exhibitions.flatMap(e=>e.cases).filter(c=>c.antiqueId===op.target.antiqueId).length===1);
   }
 

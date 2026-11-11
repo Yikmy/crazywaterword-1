@@ -97,3 +97,17 @@ test('typed actions retain mutation metadata for unresolved-write protection', a
   assert.equal(metadata.mutate, true);
   assert.equal(metadata.signal, controller.signal);
 });
+
+// These assertions formerly reached Action transport through the standalone CLI.
+// CLI writes now fail before login; synthetic transport still proves lifecycle/UNKNOWN semantics.
+test('Action cancellation after synthetic login sends no first write; silent responses stay unknown', async () => {
+  const controller = new AbortController(); let requests = 0, watches = 0;
+  const cancelled = { connected: true, async connect() { controller.abort(); }, async request() { requests++; return {}; } };
+  await cancelled.connect();
+  await assert.rejects(runAction(cancelled, protocol, 'afkDraw', {}, { allowMutate: true, signal: controller.signal }), { code: 'CANCELLED' });
+  assert.equal(requests, 0);
+  const silent = { connected: true, async sendWatch(name, body) { watches++; assert.equal(name, 'SetBuildingAutoWorkRequest'); assert.deepEqual(body, { buildingId: 'fixture-building', isOn: true }); return { status: 'UNKNOWN', name }; } };
+  const result = await runAction(silent, protocol, 'buildingAutoWork', { buildingId: 'fixture-building', isOn: true }, { allowMutate: true });
+  assert.equal(watches, 1); assert.equal(result.status, 'UNKNOWN'); assert.equal(result.ok, null);
+  assert.equal(result.response, null); assert.equal(result.body, null);
+});

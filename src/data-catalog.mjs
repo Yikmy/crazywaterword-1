@@ -119,6 +119,7 @@ export function exploreSnapshot(snapshot, { domain = null, config = null, update
       raw: status === 'SUCCESS' ? (Object.hasOwn(state.raw ?? {}, entry.request) ? state.raw[entry.request] : ok[entry.request]) : null,
       rawSource: status !== 'SUCCESS' ? null : Object.hasOwn(state.raw ?? {}, entry.request) ? 'decoded-exact' : 'legacy-normalized',
       precisionNote: status !== 'SUCCESS' ? null : Object.hasOwn(state.raw ?? {}, entry.request) ? '原始解码响应；超出安全范围的 int64 使用十进制字符串' : '旧快照经过数字归一化；超出安全范围的 int64 精度无法恢复，请手动刷新获取新快照',
+      provenance: state.facts?.[entry.request]?.provenance ?? null,
       parsed, parseError,
     };
   });
@@ -126,4 +127,91 @@ export function exploreSnapshot(snapshot, { domain = null, config = null, update
     domains: DATA_DOMAINS.map((entry) => ({ ...entry, count: DATA_CATALOG.filter(({ domains }) => domains.includes(entry.id)).length })),
     total: DATA_CATALOG.length, entries: result,
   };
+}
+
+// Domain-only read metadata. This does not add queries to ENTRY_QUERIES, start
+// collection, grant transport permission, or expand any API write allowlist.
+const freezeQueryMetadata = value => {
+  if (value && typeof value === 'object') { for (const nested of Object.values(value)) freezeQueryMetadata(nested); Object.freeze(value); }
+  return value;
+};
+const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
+const uses = {
+  formation: consumer('formation', 'surveyFormation', 'src/formation.mjs:surveyFormation', ['formation', 'presets', 'heroes']),
+  alliance: consumer('alliance', 'surveyAlliance', 'src/alliance.mjs:surveyAlliance', ['guild', 'members', 'aids', 'order', 'counters', 'stock', 'technology', 'seasonStage']),
+  museum: consumer('museum', 'surveyMuseum', 'src/museum.mjs:surveyMuseum', ['exploreStages', 'exhibitions', 'revenue', 'achievements', 'heroes', 'antiques', 'stock']),
+  fleet: consumer('fleet', 'surveyFleet', 'src/fleet.mjs:surveyFleet', ['fleets', 'repairParams', 'cargo', 'worldCities', 'guild', 'formation', 'stock']),
+  treasure: consumer('treasure', 'surveyTreasure', 'src/treasure.mjs:surveyTreasure', ['treasure', 'rank', 'defence', 'fleets', 'season', 'stock']),
+  naval: consumer('naval', 'surveyNaval', 'src/naval-rules.mjs:surveyNaval', ['worldFleets', 'fleets', 'bossInfo', 'limitedBossOpen', 'stock']),
+};
+const accountScope = { kind: 'ACCOUNT', binding: ['accountId', 'generation'], completeness: 'CURRENT_TYPED_RESPONSE_ONLY' };
+const guildScope = { kind: 'ENTITY', binding: ['accountId', 'generation', 'guildId'], key: 'CURRENT_GUILD', completeness: 'CURRENT_TYPED_RESPONSE_ONLY' };
+const emptyParameters = { mode: 'EMPTY', allowedKeys: [], requiredKeys: [], arbitraryFields: false };
+const mainlineParameters = { mode: 'FIXED', allowedKeys: ['module'], requiredKeys: ['module'], fixed: { module: 1 }, arbitraryFields: false };
+const aidParameters = { mode: 'FIXED', allowedKeys: ['type'], requiredKeys: ['type'], fixed: { type: 0 }, arbitraryFields: false };
+const worldParameters = { mode: 'SCREEN_CENTER', allowedKeys: ['screenCenter'], requiredKeys: ['screenCenter'], nestedKeys: { screenCenter: ['x', 'y'] }, integerRange: [-2147483647, 2147483647], arbitraryFields: false,
+  policy: 'surveyFleet uses fixed {x:0,y:0}; surveyNaval accepts only explicit integer center or its {x:0,y:0} default' };
+const fleetParameters = { mode: 'FLEET_BUILDING_ID', allowedKeys: ['buildingId'], requiredKeys: ['buildingId'], arbitraryFields: false,
+  policy: 'Exact buildingId from current reliable MyFleets response; queried sequentially only for immediate repair of an idle damaged fleet' };
+const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], requiredKeys: ['uid'], integerRange: [1, 2147483647], arbitraryFields: false,
+  policy: 'Exact explicitly selected positive int32 treasure uid, shared by rank and defence reads; never a dispatch request' };
+// [request, consumers, result authority, allowed parameter shape, domain, notes]
+const businessReads = [
+  ['GetFormationRequest', ['formation'], { ...accountScope, key: 'MAINLINE_MODULE_1' }, mainlineParameters, 'heroes', 'Complete formation with exact hero positions and optional pet UID; does not prove save success by itself'],
+  ['MyFormationPresetRequest', ['formation', 'fleet'], accountScope, emptyParameters, 'heroes', 'Unlocked formation layouts; not saved complete teams'],
+  ['AllHeroRequest', ['formation', 'museum', 'fleet'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],
+  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
+  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
+  ['GuildInfoRequest', ['alliance', 'fleet'], guildScope, emptyParameters, 'guild', 'Current guild identity and welfare watermark; fleet derives guild index'],
+  ['GuildMemberRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current titleList members; absent online flag remains unknown'],
+  ['GuildAidListRequest', ['alliance'], guildScope, aidParameters, 'guild', 'Exact request, asker, item and expiry identity; type is fixed zero'],
+  ['MyGuildAidRequest', ['alliance'], guildScope, aidParameters, 'guild', 'Own aid request/helper identity; no ask, cancel or claim'],
+  ['GuildOrderRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current material requirements and nextRefreshTime'],
+  ['GuildCityInfoRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'City identities used for exact single-order target selection'],
+  ['CounterInfoRequest', ['alliance'], accountScope, emptyParameters, 'tasks', 'Known daily counters only; no invented allowance or cooldown'],
+  ['GuildTechInfoRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current technology levels require exact reliable parsing'],
+  ['SeasonTaskStageRequest', ['alliance'], { ...accountScope, binding: ['accountId', 'generation', 'worldId', 'season'] }, emptyParameters, 'activities', 'Explicit stage presence is mandatory; user season cannot replace current world evidence'],
+  ['MuseumInfoRequest', ['museum'], accountScope, emptyParameters, 'collections', 'Explore stages, exhibitions, revenue and claimed achievement markers; no settlement claim'],
+  ['AllAntiqueRequest', ['museum'], accountScope, emptyParameters, 'collections', 'Owned antique IDs only; no exhibit or collection write'],
+  ['MyFleetsRequest', ['fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'fleets', 'Fleet states and exact building IDs; no authority over fleet formation payload'],
+  ['CargoShipsRequest', ['fleet'], accountScope, emptyParameters, 'fleets', 'Ship and cargo slot state; no fill, claim or acceleration'],
+  ['WorldInfoRequest', ['fleet', 'naval'], { kind: 'CURRENT_RESPONSE_ONLY', binding: ['accountId', 'generation', 'screenCenter'], key: 'SCREEN_CENTER', completeness: 'CURRENT_RESPONSE_ONLY' }, worldParameters, 'map', 'Observed cities/fleets in this response only; not a complete world or continuous global target registry'],
+  ['FleetRepairParamRequest', ['fleet'], { kind: 'ENTITY', binding: ['accountId', 'generation', 'buildingId'], key: 'EXACT_FLEET_BUILDING_ID', completeness: 'CURRENT_TYPED_RESPONSE_ONLY' }, fleetParameters, 'fleets', 'Unit repair cost/time only; does not start or stop repair'],
+  ['OnWaterRequest', ['fleet'], accountScope, emptyParameters, 'city', 'Fleet formation authority for exact building ID; other building state still uses existing parser'],
+  ['TreasureLootStatsRequest', ['treasure'], accountScope, emptyParameters, 'activities', 'Current reward counters; no reward or dispatch'],
+  ['TreasureLootListRequest', ['treasure'], { kind: 'CURRENT_RESPONSE_ONLY', binding: ['accountId', 'generation', 'worldId'], key: 'TREASURE_LIST', completeness: 'CURRENT_RESPONSE_ONLY' }, emptyParameters, 'map', 'Only current returned treasure targets; not global completeness'],
+  ['SeasonRankInfoRequest', ['treasure'], { ...accountScope, binding: ['accountId', 'generation', 'worldId', 'season'] }, emptyParameters, 'activities', 'Explicit startTime/endTime for activity boundary checks with trusted clock'],
+  ['TreasureLootRankRequest', ['treasure'], { kind: 'ENTITY', binding: ['accountId', 'generation', 'uid'], key: 'EXACT_TREASURE_UID', completeness: 'CURRENT_TYPED_RESPONSE_ONLY' }, treasureParameters, 'map', 'Exact selected treasure rank observation; not victory evidence'],
+  ['TreasureLootDefenceRequest', ['treasure'], { kind: 'ENTITY', binding: ['accountId', 'generation', 'uid'], key: 'EXACT_TREASURE_UID', completeness: 'CURRENT_TYPED_RESPONSE_ONLY' }, treasureParameters, 'map', 'Exact selected treasure defence observation; not a battle result'],
+  ['WorldBossInfoRequest', ['naval'], { ...accountScope, completeness: 'OBSERVATION_ONLY' }, emptyParameters, 'battle', 'Existing survey fetches read source; no new complete battle parser or side authorization'],
+  ['LimitedBossOpenRequest', ['naval'], { ...accountScope, completeness: 'OBSERVATION_ONLY' }, emptyParameters, 'battle', 'Open-state source only; not a challenge or an authorized combat mode'],
+];
+const existingReadEntries = new Map(DATA_CATALOG.map(entry => [entry.request, entry]));
+export const BUSINESS_QUERY_CATALOG = freezeQueryMetadata(businessReads.map(([request, modules, scope, parameters, domain, notes]) => ({
+  request, response: request.replace(/Request$/, 'Response'), readOnly: true, metadataOnly: true,
+  registration: existingReadEntries.has(request) ? 'ENTRY_QUERY_REUSE' : 'DOMAIN_SURVEY_ONLY',
+  baseEntry: existingReadEntries.get(request) ?? null,
+  consumers: modules.map(module => uses[module]), source: modules.map(module => uses[module].source),
+  scope, parameters, domain, notes,
+})));
+export const ADDITIONAL_READ_QUERIES = Object.freeze(BUSINESS_QUERY_CATALOG.filter(entry => entry.registration === 'DOMAIN_SURVEY_ONLY'));
+const businessReadsByName = new Map(BUSINESS_QUERY_CATALOG.map(entry => [entry.request, entry]));
+if (businessReadsByName.size !== BUSINESS_QUERY_CATALOG.length || BUSINESS_QUERY_CATALOG.some(entry =>
+    !entry.readOnly || !entry.metadataOnly || !domainIds.has(entry.domain) || !entry.consumers.length || entry.source.length !== entry.consumers.length)) {
+  throw new Error('业务只读目录必须唯一映射实际 survey，且不能改变基础采集目录');
+}
+
+// Metadata validation only: deliberately no protocol/client/transport argument.
+// Existing business surveys remain the sole callers and builders of these reads.
+export function validateBusinessQueryParameters(request, body = {}) {
+  const entry = businessReadsByName.get(request);
+  const fail = () => { throw Object.assign(new Error('查询不在业务只读目录或参数不符合固定范围'), { code: 'INVALID_QUERY_PARAMETERS', statusCode: 400 }); };
+  const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+  if (!entry || !plain(body) || Object.keys(body).some(key => !entry.parameters.allowedKeys.includes(key)) || entry.parameters.requiredKeys.some(key => !Object.hasOwn(body, key))) fail();
+  const schema = entry.parameters;
+  if (schema.mode === 'FIXED' && Object.entries(schema.fixed).some(([key, value]) => body[key] !== value)) fail();
+  if (schema.mode === 'FLEET_BUILDING_ID' && (typeof body.buildingId !== 'string' || !body.buildingId.trim())) fail();
+  if (schema.mode === 'TREASURE_UID' && (!Number.isInteger(body.uid) || body.uid < 1 || body.uid > 2147483647)) fail();
+  if (schema.mode === 'SCREEN_CENTER' && (!plain(body.screenCenter) || Object.keys(body.screenCenter).some(key => !['x', 'y'].includes(key)) || ['x', 'y'].some(key => !Object.hasOwn(body.screenCenter, key) || !Number.isInteger(body.screenCenter[key]) || Math.abs(body.screenCenter[key]) > 2147483647))) fail();
+  return structuredClone(body);
 }

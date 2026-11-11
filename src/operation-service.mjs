@@ -3,7 +3,9 @@ import { ResourceLedger, resourceCosts } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, stopsExecution } from './execution.mjs';
 import { loadProductionPolicy, saveProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
 import { summarizeProductionHistory } from './production-report.mjs';
-import { createExecutionHistory } from './execution-history.mjs';
+import { collectOperationRecovery, buildVerifiedReceipt, RECOVERY_DISPATCH_CONTRACT } from './operation-recovery.mjs';
+import { toSnapshotJson } from './game.mjs';
+import { createExecutionHistory, runHasUnresolvedWrites, actionNeedsReconciliation } from './execution-history.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from './order-execution.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { GAMEPLAY_MODULES, listBusinessFunctions } from './function-registry.mjs';
@@ -19,7 +21,7 @@ function exact(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) throw error('请求包含不支持的字段', 'INVALID_INPUT', 400);
 }
 function publicAction(operation) {
-  const fields = ['actionId', 'actionType', 'target', 'costs', 'beforeState', 'identity', 'decision', 'ruleResult', 'reason', 'label', 'expectedState', 'costSource', 'parameters', 'restoreParameters'];
+  const fields = ['module', 'actionId', 'actionType', 'target', 'costs', 'beforeState', 'identity', 'decision', 'ruleResult', 'reason', 'label', 'expectedState', 'costSource', 'parameters', 'restoreParameters'];
   return Object.fromEntries(fields.filter(key => operation[key] !== undefined).map(key => [key, clone(operation[key])]));
 }
 function evidence(result) {
@@ -33,24 +35,29 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   survey = (client, wire, opts) => surveyOrderExecution(client, wire, { ...opts, survey: surveyCityOperations }),
   orderPlanner = planOrderExecution, cityPlanner = planCityOperations, cityViewer = cityView,
   orderExecute = executeOrderOperation, cityExecute = executeCityAction,
+  assertWriter = () => {}, recoveryCollect = collectOperationRecovery,
   modules = GAMEPLAY_MODULES, moduleSettings = createModuleSettings({ modules }), businessExecute = executeBusinessOperation,
 } = {}) {
   const cache = new Map(), plans = new Map(), runs = new Map(), moduleCache = new Map(), formationProofs = new Map(), moduleFacts = new Map();
+  const recoveryPreviews = new Map();
+  const executionContext = session => toSnapshotJson({ accountId: session.id, playerId: session.player?.playerId ?? null, worldId: session.player?.worldId ?? null, generation: session.generation, connectionId: session.connectionId ?? null });
   const lockOwners = new WeakMap(), workflowOwners = new WeakMap();
   const now = () => new Date(clock()).toISOString();
   function current(session, generation, client) {
+    assertWriter();
     if (session.generation !== generation || session.client !== client || session.state !== 'READY') throw error('账号会话已切换或失效', 'CANCELLED');
     assertExecutionActive(client, { signal: session.abort.signal });
   }
-  function acquire(session, label, workflowId = null) {
+  function acquire(session, label, workflowId = null, { recoveryRead = false } = {}) {
+    assertWriter();
     if (!session?.client?.connected || session.state !== 'READY') throw error('账号未连接，请先显式连接', 'NOT_CONNECTED');
     const stage = session.stageRunner?.getStatus();
     if(stage?.uncertain)throw error('主线存在未决结果，禁止新的业务写批次', 'RESPONSE_UNCERTAIN');
     const ownsWorkflow = workflowId && session.workflowOwner === workflowId;
     if ((session.workflowOwner && !ownsWorkflow) || (session.busy && !(ownsWorkflow && session.busy === 'workflow:' + workflowId)) || session.collectionPromise || session.loop?.running || stage?.running || stage?.inFlight || runs.get(session.id)?.running) throw error('账号已有互斥任务', 'ACCOUNT_BUSY');
     const client = session.client;
-    if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size || client.uncertainWrites?.size) throw error('连接存在未决请求；禁止新批次', 'RESPONSE_UNCERTAIN');
-    if (runs.get(session.id)?.record.finalStatus === 'UNKNOWN' || history.unresolved(session.id)) throw error('历史存在 UNKNOWN 或异常退出未决批次，等待权威复核', 'RECOVERY_UNCERTAIN');
+    if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size || !recoveryRead && client.uncertainWrites?.size) throw error('连接存在未决请求；禁止新批次', 'RESPONSE_UNCERTAIN');
+    if (!recoveryRead && (runs.get(session.id) && runHasUnresolvedWrites(runs.get(session.id).record) || history.unresolved(session.id))) throw error('历史存在 UNKNOWN 或异常退出未决批次，等待权威复核', 'RECOVERY_UNCERTAIN');
     const owner={token:Symbol(label),generation:session.generation,client:session.client}; lockOwners.set(session,owner);
     session.busy = label;
     return () => { if(lockOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client)return; lockOwners.delete(session); if (session.busy === label) session.busy = session.workflowOwner ? 'workflow:' + session.workflowOwner : null; };
@@ -58,7 +65,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   function status(accountId) {
     const run = runs.get(accountId);
     let blocked, warning;
-    try { blocked = run?.record.finalStatus === 'UNKNOWN' || history.unresolved(accountId); }
+    try { blocked = Boolean(run && runHasUnresolvedWrites(run.record)) || history.unresolved(accountId); }
     catch (cause) { blocked = true; warning = cause.message; }
     return { running: Boolean(run?.running), runId: run?.record.runId ?? null, finalStatus: run?.record.finalStatus ?? (blocked ? 'UNKNOWN' : 'IDLE'), stopReason: run?.record.stopReason ?? warning ?? null, blocked };
   }
@@ -95,7 +102,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const facts = await adapter.survey(client, protocol, options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
-  function saveModuleConfig(accountId, payload) { exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
+  function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
   function claimWorkflow(session, runId) {
     const release = acquire(session, 'operations:WORKFLOW_CLAIM'); release(); const owner={generation:session.generation,client:session.client}; workflowOwners.set(session,owner); session.workflowOwner=runId; session.busy='workflow:'+runId;
     return () => { if(workflowOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client || session.workflowOwner!==runId)return; workflowOwners.delete(session); if(plans.get(session.id)?.workflowId===runId)plans.delete(session.id); session.workflowOwner=null; if(session.busy==='workflow:'+runId)session.busy=null; };
@@ -181,10 +188,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const entry = lookup(session, payload);
     if (entry.consumed || !entry.permit || entry.permit.id !== payload.permitId) throw error('缺少当前批次单次授权', 'AUTHORIZATION_REQUIRED', 403);
     const release = acquire(session, 'operations:EXECUTING', entry.workflowId);
-    const record = { runId: randomUUID(), accountId: session.id, module: entry.public.module, mode: entry.public.mode, startedAt: now(), finishedAt: null,
+    const record = { executionContext: executionContext(session), runId: randomUUID(), accountId: session.id, module: entry.public.module, mode: entry.public.mode, startedAt: now(), finishedAt: null,
       authorizationSummary: { batchId: entry.public.batchId, planHash: entry.public.planHash, approvedAt: entry.permit.approvedAt, actionIds: entry.public.actions.map(action => action.actionId), resourceBudget: entry.public.resourceBudget },
       planSummary: entry.public, resourceBudget: entry.public.resourceBudget,
-      actions: entry.operations.map(action => ({ ...publicAction(action), resourceReservation: action.costs, requestStatus: 'NOT_DISPATCHED', result: 'NOT_EXECUTED', afterState: null, timestamp: null })),
+      actions: entry.operations.map(action => ({ ...publicAction(action), ...(modules[action.module] && !modules[action.module].execute ? { dispatchEvidence: { version: 1, contract: RECOVERY_DISPATCH_CONTRACT, state: 'NOT_DISPATCHED' } } : {}), resourceReservation: action.costs, requestStatus: 'NOT_DISPATCHED', result: 'NOT_EXECUTED', afterState: null, timestamp: null })),
       finalStatus: 'EXECUTING', stopReason: null };
     try { history.put(record); } catch (cause) { release(); throw cause; }
     entry.consumed = true; entry.permit = null;
@@ -210,9 +217,13 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
           allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
           ...(executor === businessExecute ? { onStage(stage) {
             if (!BUSINESS_EXECUTION_STAGES.includes(stage)) throw error('执行证据阶段无效', 'HISTORY_UNAVAILABLE');
+            if (stage === 'DISPATCH_INTENT') row.dispatchEvidence = { version: 1, contract: RECOVERY_DISPATCH_CONTRACT, state: 'MAY_HAVE_DISPATCHED' };
             // Store only the fixed stage token and a service-owned timestamp; no payloads.
             (row.stages ??= []).push({ stage, timestamp: now() });
             history.put(record);
+          }, onVerifiedReceipt(candidate, before, after, response) {
+            const receipt = buildVerifiedReceipt(candidate, before, after, response, record.executionContext);
+            if (receipt) { row.verifiedReceipt = receipt; history.put(record); }
           } } : {}) });
         if (operation.module === 'formation') {
           formationProofs.delete(session.id);
@@ -256,13 +267,59 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       return {confirmed:true,presetId:requested.presetId,formation:clone(facts.formation),client,playerId:session.player?.playerId,checkedAt:clock(),batchId:proof.batchId,planHash:proof.planHash};
     } finally { release(); }
   }
+
+  function recoveryRow(accountId, runId, actionId) {
+    const matches = history.list(accountId).filter(run => run.runId === runId);
+    const run = matches[0], rows = run?.actions.filter(row => row.actionId === actionId) ?? [];
+    if (matches.length !== 1 || rows.length !== 1 || !actionNeedsReconciliation(run, rows[0])) throw error('待复核历史不存在、不唯一或已解决', 'STALE_RECOVERY');
+    return { run, row: rows[0], digest: operationDigest(run) };
+  }
+  async function previewRecovery(session, payload) {
+    exact(payload, ['runId', 'actionId']);
+    if (typeof payload.runId !== 'string' || typeof payload.actionId !== 'string') throw error('复核需要精确批次及动作', 'INVALID_INPUT', 400);
+    const release = acquire(session, 'operations:RECOVERY_READ', null, { recoveryRead: true }), generation = session.generation, client = session.client;
+    try {
+      const selected = recoveryRow(session.id, payload.runId, payload.actionId), context = executionContext(session);
+      const assertContext = () => { current(session, generation, client); if (operationDigest(executionContext(session)) !== operationDigest(context)) throw error('复核身份已变化', 'CANCELLED'); };
+      const result = await recoveryCollect(client, protocol, selected.run, selected.row, { context, clock, signal: session.abort.signal, assertCurrent: assertContext });
+      assertContext();
+      if (recoveryRow(session.id, payload.runId, payload.actionId).digest !== selected.digest) throw error('历史在复读期间变化', 'STALE_RECOVERY');
+      const preview = { previewId: randomUUID(), accountId: session.id, runId: payload.runId, actionId: payload.actionId, result, expiresAt: new Date(clock() + 60000).toISOString(), originalStatus: selected.run.finalStatus };
+      preview.previewHash = operationDigest(preview);
+      recoveryPreviews.set(session.id, { public: clone(preview), digest: selected.digest, generation, client, context });
+      return clone(preview);
+    } finally { release(); }
+  }
+  async function confirmRecovery(session, payload) {
+    exact(payload, ['previewId', 'previewHash', 'confirm']);
+    const entry = recoveryPreviews.get(session.id);
+    if (!entry || payload.confirm !== true || entry.public.previewId !== payload.previewId || entry.public.previewHash !== payload.previewHash || clock() >= Date.parse(entry.public.expiresAt)) throw error('必须确认当前只读复核预览；已过期或不匹配', 'STALE_RECOVERY');
+    const release = acquire(session, 'operations:RECOVERY_CONFIRM', null, { recoveryRead: true });
+    try {
+      const assertContext = () => { current(session, entry.generation, entry.client); if (operationDigest(executionContext(session)) !== operationDigest(entry.context)) throw error('复核身份已变化', 'STALE_RECOVERY'); };
+      assertContext();
+      const selected = recoveryRow(session.id, entry.public.runId, entry.public.actionId);
+      if (selected.digest !== entry.digest) throw error('复核历史已变化', 'STALE_RECOVERY');
+      const result = await recoveryCollect(entry.client, protocol, selected.run, selected.row, { context: entry.context, clock, signal: session.abort.signal, assertCurrent: assertContext });
+      assertContext();
+      const proof = value => ({ status: value.status, reasonCode: value.evidence.reasonCode, scope: value.evidence.scope, observation: value.evidence.observation });
+      if (operationDigest(proof(result)) !== operationDigest(proof(entry.public.result)) || recoveryRow(session.id, entry.public.runId, entry.public.actionId).digest !== entry.digest) throw error('确认时权威证据或历史变化，请重新预览', 'STALE_RECOVERY');
+      if (clock() >= Date.parse(entry.public.expiresAt)) throw error('只读复核已过期，请重新预览', 'STALE_RECOVERY');
+      const event = history.appendReconciliation(session.id, selected.run.runId, selected.row.actionId, { status: result.status, timestamp: now(), evidence: { ...result.evidence, previewId: entry.public.previewId, previewHash: entry.public.previewHash } });
+      recoveryPreviews.delete(session.id); plans.delete(session.id); formationProofs.delete(session.id);
+      const live = runs.get(session.id);
+      if (live?.record.runId === selected.run.runId) live.record = history.list(session.id).find(run => run.runId === selected.run.runId);
+      return { accountId: session.id, runId: selected.run.runId, actionId: selected.row.actionId, event, status: status(session.id), note: '保留原始结果及预算；复核不会重发、重用授权或自动恢复任务。连接未决指纹仍需安全重连。' };
+    } finally { release(); }
+  }
+
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
-    saveProductionPolicy: (accountId, payload) => { exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },
-    blocked: accountId => runs.get(accountId)?.record.finalStatus === 'UNKNOWN' || history.unresolved(accountId), running: accountId => Boolean(runs.get(accountId)?.running),
+    saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },
+    blocked: accountId => Boolean(runs.get(accountId) && runHasUnresolvedWrites(runs.get(accountId).record)) || history.unresolved(accountId), running: accountId => Boolean(runs.get(accountId)?.running),
     settle: accountId => runs.get(accountId)?.task ?? Promise.resolve(),
   };
 }

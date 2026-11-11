@@ -3,6 +3,7 @@
 import { ResourceLedger } from './resource-ledger.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { strictParameters, stringIds, invalid, readNavalFact, stockFacts, fleetFacts, configuredCost, rowsOf, quantity, factQuantity, stable, selectedActions, moduleConfiguration } from './naval-facts.mjs';
+import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 
 export const TREASURE_DEFAULT_CONFIG = Object.freeze({ enabled: false, dispatch: false, colors: [5], maxFleets: 1, minimumDurabilityRatio: 0.8, petrolReserve: 0 });
 function parametersOf(parameters = {}) {
@@ -35,7 +36,7 @@ export async function surveyTreasure(client, protocol, { config = null, player =
   }
   const stats = sources.TreasureLootStatsRequest;
   const season = sources.SeasonRankInfoRequest;
-  return { now: Math.floor(Date.now() / 1000), config, player: structuredClone(player), parameters: structuredClone(parameters), sources,
+  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources,
     targetDetails, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), ...fleetFacts(sources.MyFleetsRequest), treasureReliable, treasures,
     statsReliable: stats.available && factQuantity(stats.body, 'todayRewardTimes') !== null && factQuantity(stats.body, 'totalRewardTimes') !== null && stats.body.totalRewardTimes > 0,
     todayRewardTimes: quantity(stats.body?.todayRewardTimes), totalRewardTimes: factQuantity(stats.body, 'totalRewardTimes'),
@@ -44,12 +45,17 @@ export async function surveyTreasure(client, protocol, { config = null, player =
   };
 }
 function opening(facts, config) {
+  const time = gameTimeBounds(facts);
+  if (time.now === null) return null;
   const worldId = quantity(facts.player?.worldId);
   const season = worldId === null ? 0 : Math.floor(worldId / 1000000) % 1000;
   const matches = rowsOf(config, 'GameplayOpenCfg').filter(row => row.gameplay === '世界宝藏');
   const days = matches.length === 1 ? matches[0].openDays?.[Math.min(season - 1, matches[0].openDays.length - 1)] : null;
   if (!facts.season?.reliable || quantity(facts.season.startTime) === null || facts.season.startTime <= 0 || quantity(facts.season.endTime) === null || facts.season.endTime <= facts.season.startTime || !Number.isSafeInteger(days) || days < 1 || season < 1) return null;
-  return facts.now >= facts.season.startTime + (days - 1) * 86400 && facts.now < facts.season.endTime - 3600;
+  const opens = facts.season.startTime + (days - 1) * 86400, closes = facts.season.endTime - 3600;
+  if (time.earliest >= opens && time.latest < closes) return true;
+  if (time.latest < opens || time.earliest >= closes) return false;
+  return null;
 }
 function buildCandidates(facts, { config = facts.config, parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   parametersOf(parameters); const opts = validateTreasureConfig(moduleConfig), unit = configuredCost(config, '进攻宝藏消耗汽油');

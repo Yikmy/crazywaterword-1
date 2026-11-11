@@ -1,11 +1,14 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { assetReadinessReport, assetRecoveryInstructions } from './asset-readiness.mjs';
+import { createWriterOwnership, rejectStandaloneGameWrite } from './writer-ownership.mjs';
 import { assertExecutionActive, executionDelay, executionOutcome, stopsExecution } from './execution.mjs';
 import { createCliOutput, loadCliStore, loadCliCredential, cliAccountSelector, isCliEntry } from './cli-safety.mjs';
 import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { createConsole, openBrowser } from './server.mjs';
 import { saveStore, pickAccount, removeAccount, setActive, describeAccount, ACCOUNTS_PATH, LEGACY_CREDENTIALS_PATH } from './accounts.mjs';
-import { listWorlds, listGroup, enterWorld, describeRole } from './worlds.mjs';
+import { listWorlds, listGroup, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState } from './game.mjs';
 import { ACTIONS, listActions, runAction, assertAllowed, buildBody } from './actions.mjs';
 import { normalize } from './worlds.mjs';
@@ -14,7 +17,6 @@ import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, planChests, planDailyGift, claimableDailyTasks } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM } from './world.mjs';
-import { runLoop, formatLoopRound } from './loop.mjs';
 
 const cli = createCliOutput();
 
@@ -133,10 +135,9 @@ export async function headless({ seconds = 60, probes = true } = {}, { credentia
   }
 }
 
-// Read-only: list the worlds this account has roles on, plus the user info for the
-// world the account currently sits in. Passing a worldId adds a second connection that
-// enters that world and prints its user info (see the newRole warning below).
-async function worlds({ worldId = null, group = false, seconds = 0 }) {
+// List existing roles only. A selected world can create a role and is refused before credentials.
+async function worlds({ worldId = null, group = false }) {
+  if (worldId !== null) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -161,22 +162,6 @@ async function worlds({ worldId = null, group = false, seconds = 0 }) {
       const all = await listGroup(client, worlds.latestGroupId);
       cli.log(`\nworlds in group ${worlds.latestGroupId} (count=${all.length}):`);
       for (const world of all) cli.log(`  worldId=${world.worldId} tag=${world.tag}`);
-    }
-
-    const worldIds = new Set(worlds.recentWorlds.map((world) => world.worldId));
-    client.stop();
-
-    if (worldId !== null) {
-      const entered = await enterWorld({ url, login, protocol }, worldId);
-      bindCliClient(entered.client);
-      const player = entered.player || {};
-      cli.log(`\nentered worldId=${player.worldId} (requested ${worldId}), user info:`);
-      cli.log(cli.json(describeRole(player), null, 2));
-      if (!worldIds.has(worldId)) cli.log(`note: worldId=${worldId} was not in the account's world list`);
-      if (player.newRole) cli.log('warning: newRole=true — this login created a role in that world');
-      try {
-        if (seconds > 0) await executionDelay(seconds * 1000, executionOptions(entered.client));
-      } finally { entered.client.stop(); }
     }
   } finally {
     client.stop();
@@ -303,6 +288,7 @@ const KEY_FIELDS = (ok) => {
 
 // 领取类动作先判定再执行；未知结果立即停止后续写操作。
 async function loot({ allowMutate, dryRun = false }) {
+  if (allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -321,7 +307,7 @@ async function loot({ allowMutate, dryRun = false }) {
     cli.log(`\n可领取 ${plan.length} 项:`);
     for (const step of plan) cli.log(`  ${step.id} ${cli.json(step.params)} — ${step.why}`);
 
-    if (dryRun) {
+    if (dryRun || !allowMutate) {
       cli.log('\n--dry：只列出计划，未执行任何动作');
       return;
     }
@@ -359,15 +345,20 @@ async function loot({ allowMutate, dryRun = false }) {
   }
 }
 
-// One protocol call. Mutating actions need CW_ALLOW_MUTATE=1; without it the run stops
-// before anything leaves the socket.
-export async function act({ id, params, allowMutate }, { credentialSource = loadCredentials, protocolSource = loadProtocol, createClient = (options) => new GameClient(options) } = {}) {
-  assertAllowed(id, { allowMutate });
-  buildBody(ACTIONS[id], params);
+// Standalone game writes are disabled. Pure --dry normalization remains credential-free.
+export async function act({ id, params, dryRun = false }, { credentialSource = loadCredentials, protocolSource = loadProtocol, createClient = (options) => new GameClient(options) } = {}) {
+  const action = assertAllowed(id, { allowMutate: true });
+  const body = buildBody(action, params);
+  if (dryRun) {
+    cli.log('--dry：只列出请求预览，未读取凭证或连接游戏');
+    cli.log(cli.json({ id, request: action.request, body }, null, 2));
+    return;
+  }
   if (['upgradeBuilding', 'buildBuilding', 'startProduce', 'finishOrder', 'speedUpUpgrade', 'speedUpProduce'].includes(id)) {
     throw new Error('资源消耗动作必须通过 world 计划与执行前余额复核；act 不接受此类动作');
   }
   if (id === 'afkUpgrade') throw new Error('挂机升级缺少可靠的成本与余额校验，当前禁止通过 act 执行');
+  if (action.mutate) rejectStandaloneGameWrite();
   const credential = credentialSource();
   cli.remember(credential);
   const { url, login } = credential;
@@ -379,7 +370,7 @@ export async function act({ id, params, allowMutate }, { credentialSource = load
 
     await client.connect(login);
     assertExecutionActive(client, executionOptions(client));
-    const result = await runAction(client, protocol, id, params, { ...executionOptions(client), allowMutate });
+    const result = await runAction(client, protocol, id, params, { ...executionOptions(client), allowMutate: false });
     cli.log(result.status === 'UNKNOWN' ? `${result.sent} 结果未知，未获得最终确认` : `${result.sent}${result.response ? ` -> ${result.response}` : ''}`);
     if (result.body) cli.log(cli.json(normalize(result.body), null, 2));
   } finally {
@@ -387,8 +378,9 @@ export async function act({ id, params, allowMutate }, { credentialSource = load
   }
 }
 
-// 英雄养成：先按客户端红点条件算计划，--dry 只打印，--yes 才真发请求。
+// 英雄养成 CLI 只保留只读计划；写入统一通过 Console 业务 API。
 async function heroes({ allowMutate, dryRun, allowUniversal }) {
+  if (allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -414,7 +406,7 @@ async function heroes({ allowMutate, dryRun, allowUniversal }) {
     const requests = plan.steps.reduce((sum, step) => sum + (step.kind === 'level' ? step.count : 1), 0);
     cli.log(`\n共 ${plan.steps.length} 个步骤 / ${requests} 个请求`);
 
-    if (dryRun) {
+    if (dryRun || !allowMutate) {
       cli.log('\n--dry：只列计划，未执行');
       return;
     }
@@ -436,8 +428,9 @@ async function heroes({ allowMutate, dryRun, allowUniversal }) {
   }
 }
 
-// 日常：先只读探一遍（--dry 到这里就够），--yes 才执行；钻石与付费礼包始终禁止。
+// 日常 CLI 只保留只读调查和计划；付费选项不能解除独立写封禁。
 async function dailies({ allowMutate, dryRun, allowPaid }) {
+  if (allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -455,7 +448,7 @@ async function dailies({ allowMutate, dryRun, allowPaid }) {
       for (const action of entry.actions ?? []) cli.log(`  ${entry.task.id} ${action.request} ${cli.json(action.body)} — ${action.note} (${action.cost})`);
     }
 
-    if (dryRun) {
+    if (dryRun || !allowMutate) {
       cli.log('\n--dry：只列计划，未执行');
       return;
     }
@@ -490,8 +483,9 @@ async function dailies({ allowMutate, dryRun, allowPaid }) {
   }
 }
 
-// 任务领取：主线 / 支线 / 成就 / 每日订单档位。--dry 只列判定，--yes 才真领。
+// 任务 CLI 只保留主线 / 支线 / 成就 / 每日订单档位的只读领取判定。
 async function tasks({ allowMutate, dryRun }) {
+  if (allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -511,7 +505,7 @@ async function tasks({ allowMutate, dryRun }) {
     }
     cli.log(`\n共 ${survey.plan.length} 条可领`);
 
-    if (dryRun) {
+    if (dryRun || !allowMutate) {
       cli.log('--dry：只列判定，未领取');
       return;
     }
@@ -536,9 +530,10 @@ async function tasks({ allowMutate, dryRun }) {
   }
 }
 
-// 海面世界：收成品 / 竣工 / 交单 / 排产 / 余料升级建筑。--dry 只列计划，--yes 才真发请求。
+// 海面世界 CLI 只保留收成品 / 竣工 / 交单 / 排产 / 余料升级建筑的只读计划。
 // --speed-up 才允许花「加速器」（钻石永远不碰）；--reroll 才允许拒绝材料不齐的订单。
 async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
+  if (allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -555,7 +550,7 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
     cli.log(`\n${formatWorldPlan(survey, plan)}\n`);
     cli.log(`共 ${plan.actions.length} 个动作${allowSpeedUp ? '' : '（未开 --speed-up，不会花' + SPEED_UP_ITEM + '）'}`);
 
-    if (dryRun) {
+    if (dryRun || !allowMutate) {
       cli.log('--dry：只列计划，未执行');
       return;
     }
@@ -594,9 +589,10 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
   }
 }
 
-// 资源田：默认只读报告；occupy / giveup 需要显式 gridIdx 与 --yes。
+// 资源田：默认只读报告；occupy / giveup 只允许只读计划。
 // 占田要求「该田所属城是我方城 + 有闲置且耐久>0 的舰队」，条件不满足就直接拒绝，不发请求。
-async function field({ sub, gridIdx, fleets, allowMutate }) {
+async function field({ sub, gridIdx, fleets, allowMutate, dryRun = false }) {
+  if (sub && allowMutate && !dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -636,8 +632,8 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
     if (planned.error) throw new Error(planned.error);
 
     cli.log(`${planned.action.label} -> ${planned.action.request} ${cli.json(planned.action.body)}`);
-    if (!allowMutate) {
-      cli.log('未加 --yes，只打印计划，未发送');
+    if (dryRun || !allowMutate) {
+      cli.log('只打印计划，未发送');
       return;
     }
     const { rejected } = await runWorld(client, protocol, { actions: [planned.action], notes: [] }, {
@@ -651,8 +647,9 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
   }
 }
 
-// 自动循环：任务 → 日常 → 海面，Ctrl-C 中止当前等待并停止后续操作。
-async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowReroll, allowPaid }) {
+// 循环 CLI 只保留 --dry 单轮任务 → 日常 → 海面计划，不启动执行循环。
+async function loopCli({ dryRun = false, allowSpeedUp, allowReroll }) {
+  if (!dryRun) rejectStandaloneGameWrite();
   const { url, login } = loadCredentials();
   const protocol = loadProtocol();
   const client = bindCliClient(new GameClient({ url, protocol }));
@@ -663,19 +660,13 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
     assertExecutionActive(client, executionOptions(client));
     const config = loadConfigSafe();
     const player = response.playerInfo;
-    cli.log('login ok:', describeRole(player)?.nickname, 'lv' + describeRole(player)?.level,
-      rounds > 0 ? '共 ' + rounds + ' 轮' : '一直跑（Ctrl-C 停）', '间隔 ' + everySeconds + 's');
-    cli.log('开关: 加速=' + (allowSpeedUp ? '开(只花' + SPEED_UP_ITEM + ')' : '关') + ' 拒绝重刷=' + (allowReroll ? '开' : '关'));
-    await runLoop(client, protocol, {
-      ...executionOptions(client), config, player, rounds, everyMs: everySeconds * 1000,
-      allowMutate, allowPaid, allowSpeedUp, allowReroll,
-      onRound: (summary) => cli.log('\n' + formatLoopRound(summary)),
-      onStep: (entry) => {
-        const label = entry.step?.label ?? entry.title ?? entry.id;
-        if (entry.skipped) cli.log('  - ' + label + ' 跳过: ' + (entry.reason ?? entry.error));
-        else cli.log(outcomeLine(entry, label));
-      },
-    });
+    const tasksSurvey = await surveyTasks(client, protocol, { config, ...executionOptions(client) });
+    cli.log(formatTaskPlan(tasksSurvey));
+    const dailySurvey = await surveyDailies(client, protocol, { config, player, ...executionOptions(client) });
+    cli.log(formatSurvey(dailySurvey));
+    const worldSurvey = await surveyWorld(client, protocol, { config, player, ...executionOptions(client) });
+    cli.log(formatWorldPlan(worldSurvey, planWorld(worldSurvey, { config, allowSpeedUp, allowReroll })));
+    cli.log('--dry：只列单轮计划，未执行或启动循环');
   } finally {
     client.stop();
   }
@@ -747,11 +738,44 @@ export async function accountsCli(args, { accountStore } = {}) {
   throw new Error(`未知子命令 ${sub}。可用: list / use / label / remove / show`);
 }
 
+// Local ownership maintenance never loads credentials or grants game execution authority.
+export async function writerCli(args, { writerOwnership } = {}) {
+  const sub = args[0] ?? 'inspect';
+  const invalid = () => Object.assign(new Error('usage: node src/app.mjs writer inspect | writer recover --owner-id <exact-owner-uuid>; force/TTL options are not supported'), { code: 'WRITER_INVALID_INPUT' });
+  if (sub === 'inspect') {
+    if (args.length > 1) throw invalid();
+    const result = (writerOwnership ?? createWriterOwnership()).inspect();
+    const owner = result.owner ? Object.fromEntries(['version', 'ownerId', 'pid', 'host', 'createdAt', 'role'].map(key => [key, result.owner[key]])) : null;
+    const safe = { state: result.state, owner };
+    cli.log(cli.json(safe, null, 2));
+    return safe;
+  }
+  if (sub !== 'recover' || args.length !== 3 || args[1] !== '--owner-id' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(args[2])) throw invalid();
+  const result = (writerOwnership ?? createWriterOwnership()).recoverAbandoned({ expectedOwnerId: args[2] });
+  const safe = { recovered: result.recovered === true, ownerId: result.ownerId, recordPath: result.recordPath,
+    message: '仅恢复本地 writer 互斥锁；未取得写权限，游戏 UNKNOWN、预算和执行历史仍需单独权威复核' };
+  cli.log(cli.json(safe, null, 2));
+  return safe;
+}
+
 export async function main() {
   const mode = process.argv[2] || 'console';
 
   if (mode === 'selftest') {
     await import('./selftest.mjs');
+    return;
+  }
+
+  if (mode === 'assets') {
+    if (process.argv.length > 3) throw new Error('用法: node src/app.mjs assets（固定离线清单；不扫描缓存或下载）');
+    const root = path.resolve(import.meta.dirname, '..');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'docs/RUNTIME_ASSETS.json'), 'utf8'));
+    const result = { ...assetReadinessReport(manifest, { root }), provenanceNote: manifest.provenanceNote, recovery: assetRecoveryInstructions(manifest) };
+    cli.log(cli.json(result, null, 2)); return result;
+  }
+
+  if (mode === 'writer') {
+    await writerCli(process.argv.slice(3));
     return;
   }
 
@@ -791,6 +815,7 @@ export async function main() {
     await act({
       id,
       params,
+      dryRun: process.argv.includes('--dry'),
       allowMutate: process.env.CW_ALLOW_MUTATE === '1' || process.argv.includes('--yes'),
     });
     return;
@@ -842,6 +867,7 @@ export async function main() {
       return i >= 0 && process.argv[i + 1] ? Number(process.argv[i + 1]) : fallback;
     };
     await loopCli({
+      dryRun: process.argv.includes('--dry'),
       rounds: at('--rounds', 1),
       everySeconds: at('--every', 60),
       allowSpeedUp: process.argv.includes('--speed-up'),
@@ -856,6 +882,7 @@ export async function main() {
     const args = process.argv.slice(3).filter((arg) => !arg.startsWith('--'));
     const fleetsAt = process.argv.findIndex((arg) => arg === '--fleets');
     await field({
+      dryRun: process.argv.includes('--dry'),
       sub: args[0] ?? null,
       gridIdx: args[1] ?? null,
       fleets: fleetsAt >= 0 ? process.argv[fleetsAt + 1] : null,
@@ -895,7 +922,6 @@ export async function main() {
     await worlds({
       worldId: arg && arg !== 'all' ? Number(arg) : null,
       group: process.argv.includes('--group'),
-      seconds: Number(process.env.CW_WORLD_HOLD ?? 0),
     });
     return;
   }

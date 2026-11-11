@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "id": "protocol-game",
+      "role": "protocol",
+      "path": "work/extracted/_src_chunks_/src/chunks/game.js",
+      "required": true,
+      "source": "retained-local:work/extracted/_src_chunks_/src/chunks/game.js; original package version unrecorded",
+      "sha256": "ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc",
+      "size": 1621701
+    },
+    {
+      "id": "config-cn",
+      "role": "config",
+      "path": "work/cdn/config_cn_pack.json",
+      "required": true,
+      "source": "retained-local:work/cdn/config_cn_pack.json; original CDN version unrecorded",
+      "sha256": "0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762",
+      "size": 11317227
+    },
+    {
+      "id": "map-1",
+      "role": "map",
+      "path": "work/cdn/world_map.world_map1.json",
+      "required": true,
+      "source": null,
+      "sha256": null,
+      "size": null
+    }
+  ],
+  "observedAt": "2026-11-11",
+  "codeBaseline": "7aef482eda751bb3d9e9ae88b3b5bf282dfec4ec",
+  "provenanceNote": "Observed local baseline only. Original package/CDN version and portable restore archive are not established; map-1 is missing. Never discover account caches, fetch, or execute assets automatically."
+}

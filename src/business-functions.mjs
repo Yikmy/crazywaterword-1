@@ -10,7 +10,7 @@ export const BUSINESS_EXECUTION_STAGES = Object.freeze(['SURVEY', 'RESOURCE_PREF
 
 // The sole adapter executor: transport, budgets, cancellation and fingerprints stay
 // in the existing shared implementations. Adapters only supply facts and semantics.
-export async function executeBusinessOperation(client, protocol, operation, { adapter, config, moduleConfig, parameters = {}, player, allowMutate = false, budget = { ledger: null }, signal, stop, assertCurrent = () => {}, onStage = () => {}, timeout = 15000, window = 400 } = {}) {
+export async function executeBusinessOperation(client, protocol, operation, { adapter, config, moduleConfig, parameters = {}, player, allowMutate = false, budget = { ledger: null }, signal, stop, assertCurrent = () => {}, onStage = () => {}, onVerifiedReceipt = () => {}, timeout = 15000, window = 400 } = {}) {
   let dispatched = false, requestStatus = 'NOT_EXECUTED', afterState = null, beforeState = operation?.beforeState, response = null;
   const action = operation?.action;
   const active = () => { assertExecutionActive(client, { signal, stop }); assertCurrent(); };
@@ -66,7 +66,7 @@ export async function executeBusinessOperation(client, protocol, operation, { ad
     const confirmed = verification === true || verification?.confirmed === true || verification?.status === 'CONFIRMED';
     afterState = verification?.afterState ?? publicState(after) ?? adapter.view(after, args);
     if (!confirmed) return finish('UNKNOWN', { error: verification?.reason ?? '权威复读未确认预期变化', verification: { status: 'UNCONFIRMED', reason: verification?.reason ?? '权威复读未确认' } });
-    active(); onStage('VERIFIED'); active(); client.confirmWatchedWrite?.(action.request, action.body);
+    active(); onVerifiedReceipt(candidate, facts, after, response); active(); onStage('VERIFIED'); active(); client.confirmWatchedWrite?.(action.request, action.body);
     return finish('SUCCESS', { verification: { status: 'CONFIRMED', reason: verification?.reason ?? '权威复读确认业务状态变化' }, responseEvidence: verification?.responseEvidence ?? null, beforeInventory: facts.stock instanceof Map ? [...facts.stock].map(([id, num]) => ({ id, num })) : [], afterInventory: after.stock instanceof Map ? [...after.stock].map(([id, num]) => ({ id, num })) : [], beforeInventoryReliable: facts.stockReliable === true, afterInventoryReliable: after.stockReliable === true });
   } catch (error) {
     const status = executionOutcome(error); requestStatus = dispatched ? status : 'NOT_EXECUTED';

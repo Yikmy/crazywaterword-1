@@ -298,3 +298,133 @@ test('production shortages render reliable server totals and incomplete facts re
 });
 
 test('history shows dispatch, response and authoritative verification stages independently of final result',async()=>{const h=await boot();h.run('renderOperationHistory('+JSON.stringify({runs:[{runId:'staged',module:'alliance',mode:'Manual',finalStatus:'UNKNOWN',actions:[{actionId:'tech',actionType:'upgradeTech',target:{techId:10101},requestStatus:'UNKNOWN',result:'UNKNOWN',stages:[{stage:'DISPATCH_INTENT',timestamp:'2026-11-11T00:00:00Z'},{stage:'DISPATCHED',timestamp:'2026-11-11T00:00:01Z'},{stage:'RESPONSE',timestamp:'2026-11-11T00:00:02Z'},{stage:'VERIFY',timestamp:'2026-11-11T00:00:03Z'}],verification:{status:'UNCONFIRMED'}}]}]})+')');const text=h.node('ops-history').textContent;for(const word of ['DISPATCH_INTENT','DISPATCHED','RESPONSE','VERIFY','UNKNOWN','UNCONFIRMED'])assert.ok(text.includes(word));assert.ok(!text.includes('VERIFIED'));assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);});
+
+function recoveryHistory(accountId = 'A', reconciliations = []) {
+  return { accountId, runs: [{ accountId, runId: 'unknown-run-' + accountId, module: 'formation', mode: 'Manual', finalStatus: 'UNKNOWN', startedAt: '2026-11-11T00:00:00.000Z',
+    authorizationSummary: { actionIds: ['save-one'], planHash: 'original-business-hash' }, resourceBudget: [], actions: [{ actionId: 'save-one', actionType: 'SAVE', target: { module: 1, presetId: 2 }, requestStatus: 'UNKNOWN', result: 'UNKNOWN', unresolvedWrite: true, costs: [], resourceReservation: [], beforeState: { presetId: 1 }, expectedState: { presetId: 2 }, reconciliations }] }] };
+}
+const recoveryPreview = (status = 'APPLIED', accountId = 'A') => ({ accountId, runId: 'unknown-run-' + accountId, actionId: 'save-one', previewId: 'readonly-preview-' + accountId, previewHash: 'readonly-preview-hash-' + accountId, originalStatus: 'UNKNOWN', expiresAt: new Date(Date.now() + 60000).toISOString(), result: { status, evidence: { reasonCode: 'SYNTHETIC_' + status, observation: status === 'NOT_APPLIED' ? null : { desiredStateMatches: true } } } });
+async function loadRecoveryHistory(h, data = recoveryHistory()) {
+  const pending = h.node('ops-history-load').onclick(); h.respond('/api/operations/history', data.accountId, data); await pending;
+}
+function recoveryButtons(h) {
+  const buttons = descendants(h.node('ops-history')).filter(node => node.tagName === 'button');
+  return { preview: buttons.find(node => node.textContent === '只读复核预览'), confirm: buttons.find(node => /确认追加复核证据|保留未决并记录复核证据/.test(node.textContent)) };
+}
+async function showRecovery(h, status = 'APPLIED', accountId = 'A') {
+  const buttons = recoveryButtons(h), pending = buttons.preview.onclick();
+  h.respond('/api/operations/recovery/preview', accountId, recoveryPreview(status, accountId)); await pending; return buttons;
+}
+
+for (const status of ['APPLIED', 'NOT_APPLIED', 'STILL_UNKNOWN']) test('history recovery preview shows ' + status + ' alongside original UNKNOWN and sends only the exact readonly identity with CSRF', async () => {
+  const h = await boot(); await load(h, fixture('A', { finalStatus: 'UNKNOWN', blocked: true })); await loadRecoveryHistory(h);
+  const buttons = recoveryButtons(h); assert.ok(buttons.preview); assert.equal(buttons.confirm.hidden, true);
+  const pending = buttons.preview.onclick(), request = h.pending('/api/operations/recovery/preview', 'A');
+  assert.deepEqual(body(request), { runId: 'unknown-run-A', actionId: 'save-one' }); assert.equal(request.options.headers['x-cw-csrf'], 'synthetic-csrf-A');
+  assert.equal(request.options.method, 'POST'); assert.equal(h.pending('/api/operations/recovery/confirm', 'A'), undefined);
+  h.respond('/api/operations/recovery/preview', 'A', recoveryPreview(status)); await pending;
+  assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.ok(h.node('ops-history').textContent.includes(status));
+  assert.equal(buttons.confirm.hidden, false); assert.equal(buttons.confirm.disabled, false);
+  assert.equal(buttons.confirm.textContent, status === 'STILL_UNKNOWN' ? '保留未决并记录复核证据' : '确认追加复核证据');
+  assert.equal(h.pending('/api/operations/authorize', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+});
+
+test('history recovery confirmation sends the exact preview id/hash, invalidates the old business plan and refreshes only local history', async () => {
+  const h = await boot(); await load(h); choose(h, submit().actionId); await preview(h); assert.equal(h.node('ops-authorize-execute').disabled, false);
+  await loadRecoveryHistory(h); const buttons = await showRecovery(h), pending = buttons.confirm.onclick(), request = h.pending('/api/operations/recovery/confirm', 'A');
+  assert.deepEqual(body(request), { previewId: 'readonly-preview-A', previewHash: 'readonly-preview-hash-A', confirm: true }); assert.equal(request.options.headers['x-cw-csrf'], 'synthetic-csrf-A');
+  const event = { eventId: 'append-only-event', status: 'APPLIED', timestamp: '2026-11-11T00:00:01.000Z', evidence: { previewId: 'readonly-preview-A' } };
+  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', runId: 'unknown-run-A', actionId: 'save-one', event, status: { running: false, finalStatus: 'UNKNOWN', blocked: false } });
+  await tick(); assert.ok(h.pending('/api/operations/history', 'A')); h.respond('/api/operations/history', 'A', recoveryHistory('A', [event])); await pending;
+  assert.equal(h.node('ops-authorize-execute').disabled, true); assert.match(h.node('ops-plan-meta').textContent, /重新生成/);
+  assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.match(h.node('ops-history').textContent, /APPLIED/); assert.match(h.node('ops-history').textContent, /append-only-event/);
+  assert.equal(recoveryButtons(h).preview, undefined); assert.equal(h.pending('/api/operations/authorize', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+  const posted = h.requests.filter(request => request.options.method === 'POST').map(request => new URL(request.url, 'http://localhost').pathname);
+  assert.deepEqual(posted, ['/api/operations/plan', '/api/operations/recovery/preview', '/api/operations/recovery/confirm']);
+});
+
+test('a late recovery preview for old account A cannot show a confirm action or alter current B history', async () => {
+  const h = await boot(); await load(h); await loadRecoveryHistory(h); const buttons = recoveryButtons(h), old = buttons.preview.onclick();
+  h.run("selectAccount('B');snapshot={connected:true,state:'READY'}"); await load(h, fixture('B')); await loadRecoveryHistory(h, recoveryHistory('B'));
+  const current = h.node('ops-history').textContent, count = h.requests.length;
+  h.respond('/api/operations/recovery/preview', 'A', recoveryPreview('APPLIED')); await old;
+  assert.equal(h.node('ops-history').textContent, current); assert.equal(h.requests.length, count); assert.equal(recoveryButtons(h).confirm.hidden, true);
+  assert.equal(h.pending('/api/operations/recovery/confirm', 'A'), undefined); assert.equal(h.pending('/api/operations/recovery/confirm', 'B'), undefined);
+});
+
+test('a late recovery confirmation for old account cannot invalidate a new B plan or launch B history/game requests', async () => {
+  const h = await boot(); await load(h); await loadRecoveryHistory(h); const buttons = await showRecovery(h), old = buttons.confirm.onclick();
+  h.run("selectAccount('B');snapshot={connected:true,state:'READY'}"); await load(h, fixture('B')); choose(h, submit().actionId); await preview(h, plan([submit()], 'Manual', 'B')); await loadRecoveryHistory(h, recoveryHistory('B'));
+  const current = h.node('ops-history').textContent, count = h.requests.length; assert.equal(h.node('ops-authorize-execute').disabled, false);
+  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', event: { status: 'APPLIED' }, status: { blocked: false, finalStatus: 'UNKNOWN' } }); await old;
+  assert.equal(h.node('ops-history').textContent, current); assert.equal(h.node('ops-authorize-execute').disabled, false); assert.equal(h.requests.length, count);
+  assert.equal(h.pending('/api/operations/history', 'B'), undefined); assert.equal(h.pending('/api/operations/execute', 'B'), undefined);
+});
+
+test('expired recovery API failure clears its confirmation and never retries or mutates original UNKNOWN', async () => {
+  const h = await boot(); await load(h, fixture('A', { finalStatus: 'UNKNOWN', blocked: true })); await loadRecoveryHistory(h); const buttons = await showRecovery(h), pending = buttons.confirm.onclick();
+  h.respond('/api/operations/recovery/confirm', 'A', { error: 'STALE_RECOVERY: 复核预览已过期', code: 'STALE_RECOVERY' }, false); await pending;
+  assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.match(h.node('ops-history').textContent, /STALE_RECOVERY.*过期/); assert.equal(buttons.confirm.hidden, true);
+  const count = h.requests.length; await buttons.confirm.onclick(); assert.equal(h.requests.length, count);
+  assert.equal(h.pending('/api/operations/history', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined); assert.equal(h.node('ops-authorize-execute').disabled, true);
+});
+
+test('recovery preview without current CSRF fails locally and API preview failure does not create confirmation or writes', async () => {
+  const h = await boot(), missing = fixture(); delete missing.csrfToken; await load(h, missing); await loadRecoveryHistory(h);
+  let buttons = recoveryButtons(h), count = h.requests.length; await buttons.preview.onclick(); assert.equal(h.requests.length, count); assert.equal(buttons.confirm.hidden, true); assert.match(h.node('ops-history').textContent, /先读取/);
+  await load(h); await loadRecoveryHistory(h); buttons = recoveryButtons(h); const pending = buttons.preview.onclick();
+  h.respond('/api/operations/recovery/preview', 'A', { error: '当前连接存在迟到响应，保留未决', code: 'RESPONSE_UNCERTAIN' }, false); await pending;
+  assert.match(h.node('ops-history').textContent, /迟到响应.*未决/); assert.equal(buttons.confirm.hidden, true); count = h.requests.length; await buttons.confirm.onclick(); assert.equal(h.requests.length, count);
+  assert.equal(h.pending('/api/operations/recovery/confirm', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+});
+
+test('append-only history events and recovery observations render as literal text while keeping original UNKNOWN visible', async () => {
+  const h = await boot(); await load(h); const payload = '<img src=x onerror=alert(1)><script>alert(2)</script>';
+  const event = { eventId: 'unsafe-looking-event', status: 'STILL_UNKNOWN', timestamp: '2026-11-11T00:00:00.000Z', evidence: { reason: payload } };
+  await loadRecoveryHistory(h, recoveryHistory('A', [event])); assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.ok(h.node('ops-history').textContent.includes(payload));
+  const buttons = recoveryButtons(h), pending = buttons.preview.onclick(), shown = recoveryPreview('STILL_UNKNOWN'); shown.result.evidence.reason = payload;
+  h.respond('/api/operations/recovery/preview', 'A', shown); await pending;
+  assert.ok(h.node('ops-history').textContent.includes(payload)); assert.ok(descendants(h.node('ops-history')).every(node => !['img', 'script'].includes(node.tagName)));
+  assert.equal(buttons.confirm.textContent, '保留未决并记录复核证据');
+});
+
+test('A to B to A generation changes reject the original recovery preview even after returning to the same account', async () => {
+  const h = await boot(); await load(h); await loadRecoveryHistory(h); const oldButtons = recoveryButtons(h), old = oldButtons.preview.onclick();
+  h.run("selectAccount('B');snapshot={connected:true,state:'READY'}"); await load(h, fixture('B')); await loadRecoveryHistory(h, recoveryHistory('B'));
+  h.run("selectAccount('A');snapshot={connected:true,state:'READY'}"); await load(h); await loadRecoveryHistory(h);
+  const current = h.node('ops-history').textContent, currentButtons = recoveryButtons(h), count = h.requests.length;
+  h.respond('/api/operations/recovery/preview', 'A', recoveryPreview('APPLIED')); await old;
+  assert.equal(h.node('ops-history').textContent, current); assert.equal(currentButtons.confirm.hidden, true); assert.equal(oldButtons.confirm.hidden, true); assert.equal(h.requests.length, count);
+  assert.equal(h.pending('/api/operations/recovery/confirm', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+  const pending = currentButtons.preview.onclick(), request = h.pending('/api/operations/recovery/preview', 'A');
+  assert.deepEqual(body(request), { runId: 'unknown-run-A', actionId: 'save-one' }); assert.equal(request.options.headers['x-cw-csrf'], 'synthetic-csrf-A');
+  const fresh = recoveryPreview('STILL_UNKNOWN'); fresh.previewId = 'current-generation-preview';
+  h.respond('/api/operations/recovery/preview', 'A', fresh); await pending;
+  assert.equal(currentButtons.confirm.hidden, false); assert.equal(currentButtons.confirm.textContent, '保留未决并记录复核证据');
+});
+
+test('A to B to A generation changes prevent an old recovery confirmation from invalidating the current A plan', async () => {
+  const h = await boot(); await load(h); await loadRecoveryHistory(h); const oldButtons = await showRecovery(h), old = oldButtons.confirm.onclick();
+  h.run("selectAccount('B');snapshot={connected:true,state:'READY'}"); await load(h, fixture('B')); await loadRecoveryHistory(h, recoveryHistory('B'));
+  h.run("selectAccount('A');snapshot={connected:true,state:'READY'}"); await load(h); choose(h, submit().actionId); await preview(h); await loadRecoveryHistory(h);
+  const current = h.node('ops-history').textContent, count = h.requests.length; assert.equal(h.node('ops-authorize-execute').disabled, false);
+  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', event: { eventId: 'stale-generation-event', status: 'APPLIED' }, status: { blocked: false, finalStatus: 'UNKNOWN' } }); await old;
+  assert.equal(h.node('ops-history').textContent, current); assert.equal(h.node('ops-authorize-execute').disabled, false); assert.equal(h.requests.length, count);
+  assert.doesNotMatch(h.node('ops-history').textContent, /stale-generation-event/); assert.equal(recoveryButtons(h).confirm.hidden, true);
+  assert.equal(h.pending('/api/operations/history', 'A'), undefined); assert.equal(h.pending('/api/operations/authorize', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+});
+
+test('explicitly appending STILL_UNKNOWN keeps the original UNKNOWN, blocks new business writes and offers only another readonly preview', async () => {
+  const h = await boot(); await load(h, fixture('A', { finalStatus: 'UNKNOWN', blocked: true, stopReason: '原请求结果未决' })); await loadRecoveryHistory(h);
+  const buttons = await showRecovery(h, 'STILL_UNKNOWN'); assert.equal(buttons.confirm.textContent, '保留未决并记录复核证据');
+  const pending = buttons.confirm.onclick(), event = { eventId: 'still-unknown-event', status: 'STILL_UNKNOWN', timestamp: '2026-11-11T00:00:02.000Z', evidence: { reason: '权威状态不足以归因于原请求' } };
+  assert.deepEqual(body(h.pending('/api/operations/recovery/confirm', 'A')), { previewId: 'readonly-preview-A', previewHash: 'readonly-preview-hash-A', confirm: true });
+  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', event, status: { running: false, finalStatus: 'UNKNOWN', blocked: true, stopReason: '原请求结果未决' } });
+  await tick(); h.respond('/api/operations/history', 'A', recoveryHistory('A', [event])); await pending;
+  assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.match(h.node('ops-history').textContent, /still-unknown-event.*STILL_UNKNOWN/s); assert.match(h.node('ops-history').textContent, /权威状态不足以归因/);
+  assert.match(h.node('ops-status').textContent, /UNKNOWN.*禁止自动重试/); assert.equal(h.node('ops-plan').disabled, true); assert.equal(h.node('ops-authorize-execute').disabled, true); assert.equal(h.node('ops-survey').disabled, true);
+  const next = recoveryButtons(h); assert.ok(next.preview); assert.equal(next.confirm.hidden, true);
+  assert.equal(h.pending('/api/operations/authorize', 'A'), undefined); assert.equal(h.pending('/api/operations/execute', 'A'), undefined);
+  const posted = h.requests.filter(request => request.options.method === 'POST').map(request => new URL(request.url, 'http://localhost').pathname);
+  assert.deepEqual(posted, ['/api/operations/recovery/preview', '/api/operations/recovery/confirm']);
+});

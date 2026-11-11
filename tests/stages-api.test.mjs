@@ -25,8 +25,9 @@ class FakeClient extends EventEmitter {
     const gate = deferred(); const item = { name, body, ...gate }; this.requests.push(item); this.pending.push(item);
     return gate.promise.finally(() => { this.pending = this.pending.filter(entry => entry !== item); });
   }
-  stop() { this.connected = false; this.state = 'STOPPED'; this.emit('state', { state: 'STOPPED' }); }
-  expire(state) { this.connected = false; this.state = state; this.emit('state', { state }); }
+  stop() { this.connected = false; this.state = 'STOPPED'; this.emit('state', { state: 'STOPPED' }); this.rejectPending(); }
+  rejectPending() { for (const entry of this.pending.splice(0)) entry.reject?.(Object.assign(new Error('synthetic connection stopped'), { code: 'CANCELLED' })); }
+  expire(state) { this.connected = false; this.state = state; this.emit('state', { state }); this.rejectPending(); }
 }
 async function harness({ side = () => 'LEFT', collect, productionSide = false, stageClock } = {}) {
   saveStore({ version: 1, activeId: 'A', accounts: [credential('A'), credential('B')] });
@@ -36,19 +37,27 @@ async function harness({ side = () => 'LEFT', collect, productionSide = false, s
     clientFactory: () => { const client = new FakeClient(); clients.push(client); return client; },
     collect: (...args) => { collections++; return collect ? collect(...args) : { ok: {}, failed: {} }; } });
   await app.listen();
-  const call = (route, { id = 'A', method = 'GET', body } = {}) => new Promise((resolve, reject) => {
+  const origin = 'http://127.0.0.1:' + app.server.address().port;
+  const rawCall = (route, { id = 'A', method = 'GET', body, headers = {} } = {}) => new Promise((resolve, reject) => {
     const url = new URL(route, 'http://127.0.0.1:' + app.server.address().port);
     if (id !== null) url.searchParams.set('account', id);
-    const req = http.request(url, { method, headers: { connection: 'close', 'content-type': 'application/json' } }, res => {
+    const req = http.request(url, { method, headers: { connection: 'close', 'content-type': 'application/json', ...headers } }, res => {
       let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk);
       res.on('end', () => resolve({ status: res.statusCode, data: JSON.parse(text), text }));
     });
     req.on('error', reject); req.end(method === 'GET' || body === undefined ? undefined : JSON.stringify(body));
   });
+  // Exercise the public read-before-write flow; never substitute a hard-coded CSRF token.
+  const call = async (route, options = {}) => {
+    if (options.method !== 'POST' || !['/api/stages/start', '/api/stages/stop'].includes(route)) return rawCall(route, options);
+    const context = await rawCall('/api/stages', { id: options.id === undefined ? 'A' : options.id });
+    const headers = { origin, ...(context.data.csrfToken ? { 'x-cw-csrf': context.data.csrfToken } : {}), ...options.headers };
+    return rawCall(route, { ...options, headers });
+  };
   const connect = id => call('/api/connect', { id, method: 'POST', body: {} });
   const start = (id = 'A', extra = {}) => call('/api/stages/start', { id, method: 'POST', body: { confirm: true, config: config(extra) } });
   const stop = id => call('/api/stages/stop', { id, method: 'POST', body: {} });
-  return { ...app, clients, call, connect, start, stop, get collections() { return collections; } };
+  return { ...app, clients, origin, rawCall, call, connect, start, stop, get collections() { return collections; } };
 }
 
 test('production side gap blocks before Runtime allocation or game request; HTTP cannot supply a side resolver', async () => {
@@ -61,7 +70,7 @@ test('production side gap blocks before Runtime allocation or game request; HTTP
     assert.equal(result.status, 409); assert.equal(result.data.code, 'SIDE_UNVERIFIED'); assert.equal(app.sessions.size, 0);
     await app.connect('A');
     const forged = await app.call('/api/stages/start', { method: 'POST', body: { confirm: true, playerSide: 'LEFT', resolvePlayerSide: 'LEFT', config: config() } });
-    assert.equal(forged.status, 409); assert.equal(forged.data.code, 'SIDE_UNVERIFIED'); assert.equal(app.clients[0].requests.length, 0);
+    assert.equal(forged.status, 400); assert.match(forged.data.error, /未知字段/); assert.equal(app.clients[0].requests.length, 0);
   } finally { await app.close(); }
 });
 test('all stages routes require exact account IDs without allocating sessions', async () => {
@@ -317,4 +326,47 @@ test('B4 cooldown retains the account Runner lock and cached browsing until loca
   const refresh=await app.call('/api/refresh',{method:'POST'});assert.equal(refresh.status,409);assert.equal((await app.call('/api/data-explorer')).status,200);
   await app.stop('A');await runner.completion;assert.equal(timers.size,0);assert.equal(runner.getStatus().nextStageAt,null);assert.equal(app.clients[0].requests.length,1);
  } finally {await app.close();}
+});
+
+
+test('Stage start and stop require same-origin and the actual GET-issued CSRF context before allocating any Runtime', async () => {
+  const app = await harness();
+  try {
+    const context = await app.rawCall('/api/stages');
+    assert.equal(context.status, 200); assert.equal(typeof context.data.csrfToken, 'string'); assert.ok(context.data.csrfToken.length > 0);
+    assert.equal(app.sessions.size, 0); assert.equal(app.clients.length, 0);
+    const csrf = context.data.csrfToken;
+    const cases = [
+      { headers: { 'x-cw-csrf': csrf }, code: 'CSRF_REQUIRED' },
+      { headers: { origin: 'http://cross-site.invalid', 'x-cw-csrf': csrf }, code: 'ORIGIN_REQUIRED' },
+      { headers: { origin: app.origin }, code: 'CSRF_REQUIRED' },
+      { headers: { origin: app.origin, 'x-cw-csrf': 'invalid-csrf' }, code: 'CSRF_REQUIRED' },
+      { headers: { origin: app.origin, 'x-cw-csrf': csrf, 'sec-fetch-site': 'cross-site' }, code: 'ORIGIN_REQUIRED' },
+      { headers: { origin: app.origin, 'x-cw-csrf': csrf, 'content-type': 'text/plain' }, code: 'CSRF_REQUIRED' },
+    ];
+    for (const route of ['/api/stages/start', '/api/stages/stop']) {
+      for (const denied of cases) {
+        const result = await app.rawCall(route, { method: 'POST', body: route.endsWith('start') ? { confirm: true, config: config() } : {}, headers: denied.headers });
+        assert.equal(result.status, 403); assert.equal(result.data.code, denied.code);
+        assert.equal(app.sessions.size, 0); assert.equal(app.clients.length, 0); assert.equal(app.collections, 0);
+      }
+    }
+  } finally { await app.close(); }
+});
+
+test('Stage unknown payload fields are rejected after a real CSRF read and before any Runtime or battle request', async () => {
+  const app = await harness();
+  try {
+    for (const body of [{ confirm: true, config: config(), playerSide: 'LEFT' }, { confirm: true, config: config(), resolvePlayerSide: 'LEFT' }, { confirm: true, config: config(), request: 'BuyFixtureRequest' }]) {
+      const denied = await app.call('/api/stages/start', { method: 'POST', body });
+      assert.equal(denied.status, 400); assert.match(denied.data.error, /未知字段/);
+      assert.equal(app.sessions.size, 0); assert.equal(app.clients.length, 0);
+    }
+    const stop = await app.call('/api/stages/stop', { method: 'POST', body: { confirm: true } });
+    assert.equal(stop.status, 400); assert.equal(app.sessions.size, 0); assert.equal(app.clients.length, 0);
+    await app.connect('A');
+    const session = app.sessions.get('A'), client = app.clients[0];
+    const connected = await app.call('/api/stages/start', { method: 'POST', body: { confirm: true, config: config(), playerSide: 'LEFT' } });
+    assert.equal(connected.status, 400); assert.equal(app.sessions.get('A'), session); assert.equal(app.clients.length, 1); assert.equal(client.requests.length, 0);
+  } finally { await app.close(); }
 });

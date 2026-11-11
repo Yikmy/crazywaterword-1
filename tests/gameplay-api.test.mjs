@@ -93,6 +93,9 @@ for (const change of [
   try {
     const session = app.ready('A');
     const body = { confirm: true, config: { enabled: true, retryDelaySeconds: 10, maxAttempts: 1, maxStage: null } };
+    const stageRead = await app.call('/api/stages');
+    assert.equal(stageRead.status, 200);
+    assert.ok(stageRead.data.csrfToken, 'legacy start uses CSRF issued by the actual Stage read route');
     app.operations.assertFormationReady = () => { reached(); return gate; };
     const pending = app.call('/api/stages/start', { body });
     await Promise.race([entered, pending.then(result => { throw Error('Stage rejected before formation preflight: ' + JSON.stringify(result)); })]);

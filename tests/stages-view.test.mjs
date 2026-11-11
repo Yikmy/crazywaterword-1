@@ -22,7 +22,7 @@ function harness(){
  return{nodes,node,requests,timers,confirmations,tabs,run,pending,respond,setConfirm(v){confirm=v;}};
 }
 const overview=account=>({account:{id:account,title:account},status:{connected:true,state:'READY',busy:null},player:{nickname:account},resources:[],items:{top:[]},heroes:{list:[]},failed:{}});
-const fixture=(accountId='A',runner={},available=true)=>({accountId,available,unavailableReason:available?null:'玩家阵营尚未可靠核实（SIDE_UNVERIFIED），不会发送开战请求。',defaults:{enabled:false,retryDelaySeconds:10,maxAttempts:null,maxStage:null},runner:{runId:null,state:'IDLE',running:false,currentStage:41,nextStage:null,lastResult:null,attempts:0,consecutiveFailures:0,retryAt:null,history:[],stopReason:null,stopKind:null,uncertain:false,inFlight:false,config:null,...runner}});
+const fixture=(accountId='A',runner={},available=true)=>({accountId,csrfToken:'synthetic-page-csrf-'+accountId,available,unavailableReason:available?null:'玩家阵营尚未可靠核实（SIDE_UNVERIFIED），不会发送开战请求。',defaults:{enabled:false,retryDelaySeconds:10,maxAttempts:null,maxStage:null},runner:{runId:null,state:'IDLE',running:false,currentStage:41,nextStage:null,lastResult:null,attempts:0,consecutiveFailures:0,retryAt:null,history:[],stopReason:null,stopKind:null,uncertain:false,inFlight:false,config:null,...runner}});
 async function boot(){const h=harness();h.respond('/api/accounts',undefined,{activeId:'A',accounts:[{id:'A',title:'A'},{id:'B',title:'B'}]});await tick();h.respond('/api/overview','A',overview('A'));await tick();return h;}
 async function load(h,data=fixture()){const p=h.node('stages-load').onclick();h.respond('/api/stages',data.accountId,data);await p;}
 function enable(h){h.node('stages-enabled').checked=true;h.node('stages-enabled').onchange();}
@@ -45,7 +45,7 @@ test('start requires enable, READY connection and explicit per-run confirmation'
 });
 test('authorized start sends only the scoped stage route with default 10 seconds and nullable limits',async()=>{
  const h=await boot();await load(h);enable(h);const p=h.node('stages-start').onclick(),r=h.pending('/api/stages/start','A');
- assert.equal(r.options.method,'POST');assert.deepEqual(JSON.parse(r.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null},confirm:true});
+ assert.equal(r.options.method,'POST');assert.equal(r.options.headers['x-cw-csrf'],'synthetic-page-csrf-A');assert.deepEqual(JSON.parse(r.options.body),{config:{enabled:true,retryDelaySeconds:10,maxAttempts:null,maxStage:null},confirm:true});
  assert.equal(h.node('stages-start').disabled,true);assert.match(h.confirmations[0],/实际开战/);
  h.respond('/api/stages/start','A',fixture('A',{runId:'new-run',state:'WAITING_RESULT',running:true,inFlight:true,attempts:1}));await p;
  assert.match(h.node('stages-status').textContent,/战斗中/);assert.match(h.node('stages-status').textContent,/new-run/);assert.equal(h.node('stages-stop').disabled,false);assert.equal(h.node('refresh-data').disabled,true);
@@ -66,7 +66,7 @@ test('late start result cannot affect a newly selected account or launch another
  h.respond('/api/stages/start','A',fixture('A',{running:true,state:'WAITING_RESULT',runId:'old-A'}));await p;assert.equal(h.node('stages-status').textContent,text);assert.equal(h.requests.length,count);assert.doesNotMatch(text,/old-A/);
 });
 test('stop is local cancellation and an unresolved prior battle keeps restart disabled',async()=>{
- const h=await boot();await load(h,fixture('A',{runId:'run-1',running:true,state:'WAITING_RESULT',inFlight:true}));const p=h.node('stages-stop').onclick();const req=h.pending('/api/stages/stop','A');assert.deepEqual(JSON.parse(req.options.body),{});
+ const h=await boot();await load(h,fixture('A',{runId:'run-1',running:true,state:'WAITING_RESULT',inFlight:true}));const p=h.node('stages-stop').onclick();const req=h.pending('/api/stages/stop','A');assert.deepEqual(JSON.parse(req.options.body),{});assert.equal(req.options.headers['x-cw-csrf'],'synthetic-page-csrf-A');
  h.respond('/api/stages/stop','A',fixture('A',{runId:'run-1',state:'STOPPED',stopKind:'USER',stopReason:'用户停止',inFlight:true,uncertain:true}));await p;assert.match(h.node('stages-status').textContent,/用户主动停止/);assert.equal(h.node('stages-start').disabled,true);assert.match(h.node('stages-hint').textContent,/未决请求/);assert.equal(h.confirmations.length,0);
 });
 test('preview distinguishes victory, defeat, retry, normal completion, errors and unknown results',async()=>{
@@ -134,4 +134,23 @@ test('B4 an explicit existing stopOnDefeat policy and custom delay survive a UI 
  const p=h.node('stages-start').onclick(),request=h.pending('/api/stages/start','A'),config=JSON.parse(request.options.body).config;
  assert.equal(config.stopOnDefeat,true);assert.deepEqual(config.interStageDelay,{minSeconds:10.2,maxSeconds:10.9});assert.equal(config.retryDelaySeconds,7);assert.equal(config.maxAttempts,8);assert.equal(config.maxStage,90);
  h.respond('/api/stages/start','A',fixture('A',{state:'WAITING_RESULT',running:true}));await p;
+});
+
+
+test('Stage mutations require CSRF obtained from the current account read and never send with absent context',async()=>{
+ const h=await boot(),withoutToken=fixture();delete withoutToken.csrfToken;
+ await load(h,withoutToken);enable(h);let count=h.requests.length;
+ await h.node('stages-start').onclick();assert.equal(h.requests.length,count);assert.equal(h.pending('/api/stages/start','A'),undefined);assert.match(h.node('stages-hint').textContent,/授权上下文/);
+ const running=fixture('A',{runId:'running',running:true,state:'WAITING_RESULT',inFlight:true});delete running.csrfToken;
+ await load(h,running);count=h.requests.length;
+ await h.node('stages-stop').onclick();assert.equal(h.requests.length,count);assert.equal(h.pending('/api/stages/stop','A'),undefined);assert.match(h.node('stages-hint').textContent,/授权上下文/);
+});
+
+test('Stage starts use the latest GET token for the selected account instead of carrying old account context',async()=>{
+ const h=await boot(),a=fixture();a.csrfToken='returned-by-get-A';await load(h,a);enable(h);
+ let p=h.node('stages-start').onclick();assert.equal(h.pending('/api/stages/start','A').options.headers['x-cw-csrf'],'returned-by-get-A');
+ h.respond('/api/stages/start','A',fixture('A',{state:'STOPPED'}));await p;
+ h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");const b=fixture('B');b.csrfToken='returned-by-get-B';await load(h,b);enable(h);
+ p=h.node('stages-start').onclick();assert.equal(h.pending('/api/stages/start','B').options.headers['x-cw-csrf'],'returned-by-get-B');
+ h.respond('/api/stages/start','B',fixture('B',{state:'WAITING_RESULT',running:true}));await p;
 });

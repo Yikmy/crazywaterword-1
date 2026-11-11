@@ -1,5 +1,6 @@
 import { normalize } from './worlds.mjs';
 import { redact } from './security.mjs';
+import { createStateFact } from './state-facts.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -100,7 +101,7 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
   if (existing) { if (onResult) existing.listeners.add(onResult); return existing.promise; }
   const job = { listeners: new Set(onResult ? [onResult] : []), promise: null };
   job.promise = Promise.resolve().then(async () => {
-    const ok = {}, failed = {}, outcomes = {}, raw = {};
+    const ok = {}, failed = {}, outcomes = {}, raw = {}, facts = {};
     const notify = (name, body, error) => { for (const listener of job.listeners) { try { listener(name, body, error); } catch {} } };
     // ENTRY_SIGNALS remain protocol evidence; data refresh never sends them.
     await Promise.all(ENTRY_QUERIES.map(async (query) => {
@@ -114,13 +115,17 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
       try {
         const body = await client.request(query.name, query.body || {}, response, timeout);
         raw[query.name] = toSnapshotJson(body);
-        ok[query.name] = normalize(body); finish('SUCCESS'); notify(query.name, body, null);
+        ok[query.name] = normalize(body); finish('SUCCESS');
+        const serverTime = client.gameClock?.read(client.factContext);
+        facts[query.name] = createStateFact(raw[query.name], { accountId: client.factContext?.accountId, generation: client.factContext?.generation, source: response, sourceAt: Date.parse(outcomes[query.name].updatedAt), serverTime: serverTime?.reliable === true ? Math.floor(serverTime.nowMs) : null, scope: { kind: 'CURRENT_RESPONSE_ONLY', key: query.name }, reliable: false });
+        // Domain parsers establish semantic reliability; transport SUCCESS alone does not.
+        notify(query.name, body, null);
       } catch (error) {
         const reason = redact({ login: client.login, error: error?.message || 'query failed' }).error;
         failed[query.name] = reason; finish('FAILED', reason); notify(query.name, null, new Error(reason));
       }
     }));
-    return { ok, failed, outcomes, raw };
+    return { ok, failed, outcomes, raw, facts };
   }).finally(() => { if (collections.get(client) === job) collections.delete(client); });
   collections.set(client, job); return job.promise;
 }

@@ -40,10 +40,10 @@ class FakeClient extends EventEmitter {
   expire(state) { this.connected = false; this.state = state; this.emit('state', { state, detail: 'synthetic terminal condition' }); }
 }
 
-async function harness({ connectGate, connectImpl, collect = async () => snapshot() } = {}) {
+async function harness({ writerOwnership, connectGate, connectImpl, collect = async () => snapshot() } = {}) {
   saveStore({ version: 1, activeId: 'account-A', accounts: [credential('account-A'), credential('account-B')] });
   const clients = []; let collects = 0;
-  const app = createConsole({ port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { const client = new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
+  const app = createConsole({ ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { const client = new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
   await app.listen(); const port = app.server.address().port;
   function call(route, { method = 'GET', account = 'account-A', body } = {}) {
     const url = new URL(route, 'http://127.0.0.1:' + port); if (account) url.searchParams.set('account', account);
@@ -227,4 +227,20 @@ test('SSE output is valid framed JSON and redacts credentials', { timeout: 5000 
     const payload = await events; assert.ok(payload.endsWith('\n\n')); const parsed = JSON.parse(payload.slice(6).trim());
     assert.equal(payload.includes(token), false); assert.equal(payload.includes(sign), false); assert.equal(parsed.level, 'warn');
   } finally { await app.close(); }
+});
+
+test('runtime HTTP server error cancels sessions but retains writer ownership until all execution settles', async () => {
+  let owned = false, releases = 0;
+  const writerOwnership = { claim() { owned = true; return true; }, assertOwned() { assert.equal(owned, true); return true; }, release() { owned = false; releases++; return true; } };
+  const app = await harness({ writerOwnership });
+  const gate = deferred();
+  try {
+    await app.connect(); app.operations.settle = () => gate.promise;
+    app.server.emit('error', Object.assign(Error('synthetic runtime failure'), { code: 'EIO' }));
+    assert.equal(app.clients[0].connected, false); assert.equal(releases, 0); assert.equal(owned, true);
+    const closing = app.close(); await flush();
+    assert.equal(releases, 0, 'active execution keeps unique writer until settled');
+    gate.resolve(); await closing;
+    assert.equal(releases, 1); assert.equal(owned, false);
+  } finally { gate.resolve(); await app.close(); }
 });

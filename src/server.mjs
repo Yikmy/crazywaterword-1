@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
 import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
@@ -45,7 +46,7 @@ const STATE_TEXT = {
   EXPIRED: '登录已失效',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock, operationOptions = {} } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock, writerOwnership = createWriterOwnership(), operationOptions = {} } = {}) {
   const protocol = suppliedProtocol ?? loadProtocol();
   let closed = false;
   let closingPromise = null;
@@ -131,7 +132,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   const operationCsrf = randomUUID();
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
   const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:stageFunction}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
-    history: createExecutionHistory({ secrets }), ...operationOptions });
+    history: createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() }), ...operationOptions, assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
   const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets});
@@ -143,7 +144,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           session.stageRunner = createStageRunner({ client: instance, player: session.player, protocol,
             formationFacts:()=>operations.formationContext(id).facts, formationModuleConfig:()=>operations.formationContext(id).moduleConfig,
             resolvePlayerSide: stageSideResolver, battleMode: MAINLINE_CHALLENGE, clock: stageClock, signal: session.abort.signal,
-            isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance,
+            isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance && Boolean(writerOwnership.assertOwned()),
             onUpdate: (status) => {
               if (sessions.get(id) !== session || session.generation !== generation || session.client !== instance) return;
               if (status.lastResult) session.snapshotStale = Boolean(session.snapshot);
@@ -157,7 +158,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     if(!workflowRunners.has(id))workflowRunners.set(id,createWorkflowRunner({operations,getSession:accountId=>sessions.get(accountId),modules:operations.modules,
       isCurrent:(session,generation,client)=>!closed&&sessions.get(id)===session&&session.generation===generation&&session.client===client&&session.state==='READY',
       claim:(accountId,runId)=>operations.claimWorkflow(sessions.get(accountId),runId),
-      onUpdate:status=>workflowStore.record(id,status)}));
+      onUpdate:status=>{ writerOwnership.assertOwned(); workflowStore.record(id,status); }}));
     return workflowRunners.get(id);
   }
   function cancelSession(session, state = 'STOPPED') {
@@ -221,6 +222,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
   function persistIdentity(account, player) {
+    writerOwnership.assertOwned();
     try {
       const store = loadStore();
       const target = store.accounts.find((entry) => entry.id === account.id);
@@ -236,18 +238,27 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   function connect(session, account) {
     if (closed) return Promise.reject(new Error('控制台已关闭'));
+    writerOwnership.assertOwned();
     if (session.connectionPromise) return session.connectionPromise;
     if (session.client?.connected && session.state === 'READY') return Promise.resolve(session.loginResponse);
     validateCredentials(account);
     cancelSession(session, 'IDLE');
     session.abort = new AbortController();
     const generation = session.generation;
-    const instance = clientFactory({ url: account.url, protocol });
+    const instance = clientFactory({ url: account.url, protocol, accountId: session.id, generation, assertTransport: () => writerOwnership.assertOwned() });
+    session.connectionId = randomUUID();
+    instance.factContext = { accountId: session.id, generation, connectionId: session.connectionId };
+    for (const method of ['request', 'sendWatch', 'send', 'sendNoSeq']) {
+      if (typeof instance[method] !== 'function') continue;
+      const original = instance[method].bind(instance);
+      instance[method] = (...args) => { writerOwnership.assertOwned(); return original(...args); };
+    }
     session.client = instance;
     session.state = 'CONNECTING';
     wire(session, instance);
     const task = Promise.resolve().then(async () => {
       assertCurrent(session, generation, instance);
+      writerOwnership.assertOwned();
       const response = await activeTask(session.abort.signal, instance.connect(account.login));
       assertCurrent(session, generation, instance);
       session.player = response.playerInfo || null;
@@ -336,6 +347,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       status: accountStatus(session),
       player: describeRole(session.player),
       accountId: account.id, updatedAt: session.snapshotAt, snapshotStale: session.snapshotStale,
+      dataContext: { generation: session.generation, clock: session.client?.clockDiagnostics?.() ?? null },
       snapshotStatus: !session.snapshot ? 'NOT_COLLECTED' : Object.keys(failed).length ? (Object.keys(ok).length ? 'PARTIAL' : 'FAILED') : 'SUCCESS',
       failed, outcomes: state.outcomes ?? {}, availability: view.availability ?? {},
       resources: (view.resources ?? []).map((entry) => ({ ...entry, icon: resourceIcon(entry.res) })),
@@ -574,6 +586,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   // 抓到登录包就落库；顺手连一次把昵称/等级/区服回填，账号列表才看得到人话。
   async function addCapturedAccount({ url, body, rawFrameHex }) {
+    if (closed) throw new Error('控制台已关闭');
+    writerOwnership.assertOwned();
     const credential = { url, login: body, loginFrameHex: rawFrameHex, source: 'mitm', capturedAt: new Date().toISOString() };
     const store = loadStore();
     const { account, created } = upsertAccount(store, credential);
@@ -601,7 +615,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   const stageUnavailableReason = 'SIDE_UNVERIFIED：当前没有已授权的主线阵营适配器；开战已阻止';
   function stageView(id, session) {
     return { accountId: id, available: stageSideAvailable, unavailableReason: stageSideAvailable ? null : stageUnavailableReason,
-      battleMode: MAINLINE_CHALLENGE,
+      csrfToken: operationCsrf, battleMode: MAINLINE_CHALLENGE,
       sideAuthorization: stageSideResolver === resolveMainlineChallengeSide ? MAINLINE_SIDE_AUTHORIZATION : null,
       defaults: { ...defaultStageConfig(), interStageDelay: { minSeconds: 10, maxSeconds: 11 } },
       runner: session?.stageRunner?.getStatus() ?? { runId: null, state: 'IDLE', running: false,
@@ -643,13 +657,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       // Keep the existing read-only policy intact. Stage start has a separate,
       // explicit mutation gate below; no generic game Action route is opened.
       const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
-      const operationRoute = new Set(['GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
+      const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
       const gameplayRoute=new Set(['GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
       if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
       }
-      if (operationRoute || gameplayRoute) {
+      if (req.method === 'POST') writerOwnership.assertOwned();
+      if (operationRoute || gameplayRoute || stageRoute) {
         // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
         const expectedPort = server.address()?.port;
         const acceptedHosts = new Set([host + ':' + expectedPort]);
@@ -661,6 +676,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const id = parsed.searchParams.get('account');
         if (!id) { json({ error: '必须指定精确账号 ID' }, 400); return; }
         if (!loadStore().accounts.some(account => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
+        if (stageRoute && req.method === 'GET') { json(stageView(id, sessions.get(id))); return; }
         if (route === 'GET /api/gameplay') { json({...operations.moduleView(id,parsed.searchParams.get('module')),csrfToken:operationCsrf});return; }
         if (route === 'GET /api/workflows') { json(workflowView(id));return; }
         if (route === 'GET /api/operations') { json({ ...operations.view(id), csrfToken: operationCsrf }); return; }
@@ -672,6 +688,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           json({ error: '缺少当前页面同源执行授权上下文', code: 'CSRF_REQUIRED' }, 403); return;
         }
         if (Buffer.byteLength(body) > 65536) { json({ error: '执行请求过大' }, 413); return; }
+        writerOwnership.assertOwned();
+        if (stageRoute) { /* Original Runner uses the common Origin/CSRF gate. */ } else {
         const payload = jsonBody();
         const fields = keys => {if(!payload || typeof payload!=='object' || Array.isArray(payload) || Object.keys(payload).some(key=>!keys.includes(key)))throw Object.assign(new Error('玩法请求包含未知字段'),{statusCode:400});};
         if (route==='POST /api/gameplay/config') {fields(['module','config']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
@@ -692,9 +710,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw new Error('采集操作不接受额外字段');
           json(await operations.survey(session)); return;
         }
+        if (route === 'POST /api/operations/recovery/preview') { json(await operations.previewRecovery(session, payload)); return; }
+        if (route === 'POST /api/operations/recovery/confirm') { json(await operations.confirmRecovery(session, payload)); return; }
         if (route === 'POST /api/operations/plan') { json(await operations.plan(session, payload)); return; }
         if (route === 'POST /api/operations/authorize') { json(operations.authorize(session, payload)); return; }
         if (route === 'POST /api/operations/execute') { json(operations.execute(session, payload)); return; }
+        }
       }
       if (stageRoute) {
         const id = parsed.searchParams.get('account');
@@ -704,10 +725,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         scoped = session ?? null;
         if (route === 'GET /api/stages') { json(stageView(id, session)); return; }
         if (route === 'POST /api/stages/stop') {
+          const payload = jsonBody(); if (!payload || Array.isArray(payload) || Object.keys(payload).length) throw Object.assign(new Error('停止不接受额外字段'), {statusCode:400});
           session?.stageRunner?.stop('用户主动停止');
           json(stageView(id, session)); return;
         }
         const payload = jsonBody();
+        if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !['confirm', 'config'].includes(key))) throw Object.assign(new Error('闯关请求包含未知字段'), {statusCode:400});
         needConfirm(payload);
         const config = validateStageConfig(payload.config);
         if (!config.enabled) { json({ error: '自动闯关配置未启用', code: 'STAGES_DISABLED' }, 409); return; }
@@ -1184,8 +1207,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     server,
     listen: () =>
       new Promise((resolve, reject) => {
-        server.once('error', reject);
+        try { writerOwnership.claim(); } catch (cause) { reject(cause); return; }
+        const startupError = cause => { try { writerOwnership.release(); } catch {} reject(cause); };
+        server.once('error', startupError);
         server.listen(port, host, () => {
+          server.off('error', startupError);
+          server.on('error', cause => {
+            closed = true;
+            for (const session of sessions.values()) cancelSession(session, 'FAILED');
+            emit(null, 'error', 'HTTP 服务异常；任务已取消，写所有权保留至关闭结算', { code: cause.code ?? 'SERVER_ERROR' });
+          });
           emit(null, 'info', `控制台已启动 http://${host}:${port}`);
           resolve(`http://${host}:${port}`);
         });
@@ -1197,12 +1228,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         ? new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
         : Promise.resolve();
       const operationTasks = [...sessions.keys()].map(id => operations.settle(id));
+      const stageTasks = [...sessions.values()].map(session => session.stageRunner?.completion).filter(Boolean);
       for (const session of sessions.values()) cancelSession(session, 'STOPPED');
       sessions.clear();
       for (const stream of streams) stream.end();
       streams.clear();
       const traceClosed = traceStream ? new Promise((resolve) => traceStream.end(resolve)) : Promise.resolve();
-      closingPromise = Promise.all([httpClosed, traceClosed, ...operationTasks, ...[...workflowRunners.values()].map(runner=>runner.settle())]).then(() => undefined);
+      closingPromise = Promise.all([httpClosed, traceClosed, ...operationTasks, ...stageTasks, ...[...workflowRunners.values()].map(runner=>runner.settle())]).then(() => { writerOwnership.release(); });
       return closingPromise;
     },
     emit,

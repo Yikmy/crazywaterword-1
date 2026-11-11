@@ -586,6 +586,10 @@ function renderOverview(data) {
   const failures = Array.isArray(data.failed) ? data.failed.length : Object.keys(data.failed || {}).length;
   const statesOfData = { NOT_COLLECTED: '尚未采集（未知）', SUCCESS: '采集成功', PARTIAL: '部分失败', FAILED: '采集失败', unknown: '未知' };
   $('sync-info').textContent = '采集状态：' + (statesOfData[data.snapshotStatus] || data.snapshotStatus || '未知') + (data.snapshotStale ? '（缓存已过期，连接后可手动刷新）' : '') + (data.updatedAt ? '　最近更新：' + when(data.updatedAt) : '　尚未采集') + (failures ? '　查询失败：' + failures + ' 项' : '');
+  if (data.dataContext) {
+    const clock = data.dataContext.clock?.clock;
+    $('sync-info').textContent += '　事实代次：' + data.dataContext.generation + '　游戏时钟：' + (clock?.reliable === true ? '可信（误差≤' + Math.ceil(clock.uncertaintyMs) + 'ms）' : '未知；时间敏感操作受保护');
+  }
   const resourceResult = domainResult(data, 'AllResourceRequest');
   const itemResult = domainResult(data, 'AllItemRequest');
   const heroResult = domainResult(data, 'AllHeroRequest');
@@ -981,7 +985,7 @@ async function operationMutation(path, payload, scope) {
   viewGuard.assert(scope);
   const csrfToken = (operationsData?.accountId === scope.account ? operationsData.csrfToken : null) || gameplayCsrfToken();
   if (!scope.account || !csrfToken) throw new Error('请先读取本账号运行状态。');
-  if (!['/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop'].includes(path)) throw new Error('未开放此批次操作');
+  if (!['/api/operations/recovery/preview', '/api/operations/recovery/confirm', '/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop'].includes(path)) throw new Error('未开放此批次操作');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
   const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json().catch(() => ({})); viewGuard.assert(scope);
@@ -1117,7 +1121,36 @@ function renderOperationHistory(data) {
     card.appendChild(el('div', null, '本批次预算：' + operationCosts(run.resourceBudget)));
     for (const action of run.actions || []) {
       const actionBox = el('details', 'order-preview-card'); actionBox.appendChild(el('summary', null, action.actionType + ' · ' + operationTarget(action.target) + ' · ' + (typeof action.result === 'string' ? action.result : action.result?.status || action.requestStatus || '未知')));
-      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, stages: action.stages ?? null, afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
+      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, stages: action.stages ?? null, dispatchEvidence: action.dispatchEvidence ?? null, reconciliations: action.reconciliations ?? [], afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
+
+      const pending = action.unresolvedWrite === true || ['DISPATCHING','EXECUTING','VERIFY','UNKNOWN'].includes(action.requestStatus) || action.result === 'UNKNOWN';
+      const latest = action.reconciliations?.at(-1);
+      if (pending && (!latest || latest.status === 'STILL_UNKNOWN')) {
+        const previewButton = el('button', null, '只读复核预览'), resultBox = el('pre'), confirmButton = el('button', null, '确认追加复核证据');
+        confirmButton.hidden = true; let preview = null;
+        previewButton.onclick = async () => {
+          const scope = viewGuard.begin('operations-recovery'); previewButton.disabled = true; confirmButton.hidden = true;
+          try {
+            preview = await operationMutation('/api/operations/recovery/preview', { runId: run.runId, actionId: action.actionId }, scope);
+            viewGuard.assert(scope); resultBox.textContent = JSON.stringify(preview.result, null, 2);
+            confirmButton.hidden = false; confirmButton.disabled = false;
+            confirmButton.textContent = preview.result.status === 'STILL_UNKNOWN' ? '保留未决并记录复核证据' : '确认追加复核证据';
+          } catch (error) { if (viewGuard.current(scope)) resultBox.textContent = error.message; }
+          finally { if (viewGuard.current(scope)) previewButton.disabled = false; }
+        };
+        confirmButton.onclick = async () => {
+          if (!preview) return;
+          const scope = viewGuard.begin('operations-recovery'); confirmButton.disabled = true; previewButton.disabled = true;
+          try {
+            const result = await operationMutation('/api/operations/recovery/confirm', { previewId: preview.previewId, previewHash: preview.previewHash, confirm: true }, scope);
+            viewGuard.assert(scope); invalidateOperationPlan();
+            if (operationsData?.accountId === scope.account) renderOperations({ ...operationsData, status: result.status });
+            await refreshOperationHistory();
+          } catch (error) { if (viewGuard.current(scope)) { resultBox.textContent = error.message; preview = null; confirmButton.hidden = true; } }
+          finally { if (viewGuard.current(scope)) previewButton.disabled = false; }
+        };
+        actionBox.appendChild(previewButton); actionBox.appendChild(resultBox); actionBox.appendChild(confirmButton);
+      }
     }
     box.appendChild(card);
   }
@@ -1250,8 +1283,9 @@ async function stageMutation(path, payload, scope) {
   if (!scope.account) throw new Error('请先选择账号');
   if (path !== '/api/stages/start' && path !== '/api/stages/stop') throw new Error('未开放此闯关操作');
   if (path === '/api/stages/start' && payload.confirm !== true) throw new Error('开战需要明确授权');
+  if (stagesData?.accountId !== scope.account || !stagesData?.csrfToken) throw new Error('请先重新读取当前账号闯关授权上下文');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
-  const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': stagesData.csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json().catch(() => ({}));
   viewGuard.assert(scope);
   if (!response.ok) throw new Error(data.error || response.statusText);

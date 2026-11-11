@@ -3,6 +3,7 @@
 // GuildChestPop:1441, GuildUtil:1533, static protocol and configuration.
 import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
+import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 const rows = (c,n) => c?.tables?.[n]?.data ?? [];
 const text = (s) => typeof s === 'string' && s.trim().length > 0;
 const stable = (v) => JSON.stringify(v, (_,x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])) : x);
@@ -30,14 +31,14 @@ export function validateAllianceConfig(input={}){
   if(!Number.isSafeInteger(c.maxDailyHelps)||c.maxDailyHelps<0||c.maxDailyHelps>1e6||!Number.isSafeInteger(c.maxActionsPerPlan)||c.maxActionsPerPlan<1||c.maxActionsPerPlan>100)throw Error('联盟数量上限无效');
   return c;
 }
-export const allianceBudgetDay=now=>quantity(now)===null?null:new Date((now+28800)*1000).toISOString().slice(0,10);
+export const allianceBudgetDay=now=>{if(quantity(now)===null)return null;const day=new Date((now+28800)*1000);return Number.isNaN(day.getTime())?null:day.toISOString().slice(0,10);};
 // Server limits and local daily spend must come from trusted survey/history facts,
 // never from business parameters or user-editable configuration.
 export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{},ledger=null}={}){
   const c=validateAllianceConfig(moduleConfig),p=parametersOf(parameters),decisions=[];
-  const allowance=f.helpAllowance,usage=f.helpUsage,day=allianceBudgetDay(f.now);
+  const allowance=f.helpAllowance,usage=f.helpUsage,time=gameTimeBounds(f),firstDay=allianceBudgetDay(time.earliest),lastDay=allianceBudgetDay(time.latest),day=firstDay===lastDay?firstDay:null;
   const knownLimit=allowance?.reliable===true&&text(allowance.source)&&quantity(allowance.remaining)!==null&&quantity(allowance.cooldownUntil)!==null;
-  const knownUsage=usage?.reliable===true&&text(usage.source)&&usage.dayKey===day&&quantity(usage.total)!==null&&usage.spentByItem instanceof Map&&[...usage.spentByItem].every(([id,num])=>text(id)&&quantity(num)!==null);
+  const knownUsage=day!==null&&usage?.reliable===true&&text(usage.source)&&usage.dayKey===day&&quantity(usage.total)!==null&&usage.spentByItem instanceof Map&&[...usage.spentByItem].every(([id,num])=>text(id)&&quantity(num)!==null);
   const rank=(list,id)=>{const i=list.indexOf(id);return i<0?list.length:i;};
   const sorted=[...(f.asks??[])].sort((a,b)=>rank(c.priorityMemberIds,a.askerId)-rank(c.priorityMemberIds,b.askerId)||rank(c.priorityItemIds,a.itemId)-rank(c.priorityItemIds,b.itemId)||a.endTime-b.endTime||String(a.reqId).localeCompare(String(b.reqId)));
   const budget=new Map(c.dailyBudgetItemIds.map((id,i)=>[id,c.dailyBudgetQuantities[i]])),reserve=new Map(c.stockItemIds.map((id,i)=>[id,c.stockReserveQuantities[i]]));
@@ -46,10 +47,11 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
     if(!c.enabled||!c.help)blockedReason='MODULE_DISABLED';
     else if(!knownLimit)blockedReason='HELP_DAILY_LIMIT_OR_COOLDOWN_UNKNOWN';
     else if(!knownUsage)blockedReason='HELP_DAILY_BUDGET_USAGE_UNKNOWN';
-    else if(allowance.cooldownUntil>f.now)blockedReason='HELP_COOLDOWN_ACTIVE';
+    else if(time.earliest===null||time.latest===null)blockedReason='HELP_FACTS_UNKNOWN';
+    else if(allowance.cooldownUntil>time.earliest)blockedReason='HELP_COOLDOWN_ACTIVE';
     else if(remaining<=0)blockedReason='HELP_DAILY_LIMIT_EXHAUSTED';
-    else if(!f.asksReliable||!f.membersReliable||!f.stockReliable||quantity(f.now)===null)blockedReason='HELP_FACTS_UNKNOWN';
-    else if(a.endTime<=f.now||a.askerId===f.playerId||!f.members.some(m=>m.playerId===a.askerId))blockedReason='HELP_TARGET_UNAVAILABLE';
+    else if(!f.asksReliable||!f.membersReliable||!f.stockReliable||time.now===null)blockedReason='HELP_FACTS_UNKNOWN';
+    else if(a.endTime<=time.latest||a.askerId===f.playerId||!f.members.some(m=>m.playerId===a.askerId))blockedReason='HELP_TARGET_UNAVAILABLE';
     else if((c.memberIds.length&&!c.memberIds.includes(a.askerId))||(c.itemIds.length&&!c.itemIds.includes(a.itemId))||(p.memberIds&&!p.memberIds.includes(a.askerId))||(p.itemIds&&!p.itemIds.includes(a.itemId))||(p.reqIds&&!p.reqIds.includes(a.reqId)))blockedReason='HELP_TARGET_FILTERED';
     else if(!budget.has(a.itemId))blockedReason='HELP_ITEM_DAILY_BUDGET_NOT_CONFIGURED';
     else if((usage.spentByItem.get(a.itemId)??0)>=budget.get(a.itemId))blockedReason='HELP_ITEM_DAILY_BUDGET_EXHAUSTED';
@@ -132,7 +134,7 @@ export async function surveyAlliance(client,protocol,{player=null,signal,paramet
   const techReliable=!!tech&&tech.every(t=>techInteger(t.techId)&&t.techId>0&&techInteger(t.level))&&unique(tech,t=>t.techId);
   const worldId=quantity(field(player,'worldId')),season=worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null,seasonStage=quantity(field(stageRes,'stage'));
   const stock=stockFromResponses(itemsValid?items:null,resourcesValid?resources:null),stockReliable=itemsValid&&resourcesValid&&[...stock.values()].every(n=>n!==null);
-  return {module:'alliance',available,now:Number.isFinite(client.serverClockOffsetMs)?Math.floor((Date.now()+client.serverClockOffsetMs)/1000):null,
+  return {module:'alliance',available,...readGameTime(client),
     playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),worldId,season,seasonStage:techInteger(seasonStage)?seasonStage:null,tech,techReliable,helpAllowance:null,helpUsage:null,guildId:allianceId(info?.guild?.guildId),guild:info?.guild?{guildId:field(info.guild,'guildId'),welfarePack:info.guild.welfarePack,gotWelfareTime:quantity(field(info.guild,'gotWelfareTime'))}:null,members,
     membersReliable:!!members&&members.every(m=>!!m.playerId)&&unique(members,m=>m.playerId),asks,asksReliable:!!asks&&asks.every(a=>aidValid(a,true))&&unique(asks,a=>a.reqId),ownAids,ownReliable:!!ownAids&&ownAids.every(a=>aidValid(a))&&unique(ownAids,a=>a.reqId),order:orderRes?.order?{requirements:Array.isArray(orderRes.order.requirements)?orderRes.order.requirements.map(r=>({id:field(r,'id'),num:quantity(field(r,'num'))})):null,nextRefreshTime:quantity(field(orderRes.order,'nextRefreshTime'))}:null,cities:Array.isArray(citiesRes?.cities)?citiesRes.cities.map(c=>({cityId:field(c,'cityId'),recommended:field(c,'recommended')})):null,counters:Array.isArray(countersRes?.counters)?countersRes.counters.map(c=>({type:field(c,'type'),num:quantity(field(c,'num'))})):null,stock,stockReliable,parameters,notes};
 }
@@ -146,14 +148,14 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
     if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);
     candidates.push({actionId:'alliance:'+type+':'+encodeURIComponent(stable(target)),actionType:type,target,costs,costSource,beforeState:copy(beforeState),identity:stable({guildId:f.guildId,playerId:f.playerId,beforeState}),expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'联盟 '+type});};
   if(!f.guildId||!f.playerId)return {candidates,blocked:[{blockedReason:'ALLIANCE_IDENTITY_UNKNOWN'}],notes,guildId:f.guildId,playerId:f.playerId,members:f.members??[],technologies:tech.technologies,techState:tech.state,dailyLimits:{ask:null,help:null}};
-  const own=f.ownReliable?f.ownAids:[],nowKnown=quantity(f.now)!==null;
+  const time=gameTimeBounds(f),own=f.ownReliable?f.ownAids:[],nowKnown=time.now!==null,dayKnown=allianceBudgetDay(time.earliest)!==null&&allianceBudgetDay(time.earliest)===allianceBudgetDay(time.latest);
   const helpRules=allianceHelpRules(f,{moduleConfig,parameters});
   if(f.asksReliable&&f.membersReliable&&nowKnown)for(const decision of helpRules.decisions){const a=decision.request;if(decision.blockedReason){if(enabled('help'))block('help',decision.blockedReason,{reqId:a.reqId});continue;}
-    if(a.endTime<=f.now||a.askerId===f.playerId||!chosen('memberIds',a.askerId)||!chosen('reqIds',a.reqId)||!chosen('itemIds',a.itemId))continue;
+    if(a.endTime<=time.latest||a.askerId===f.playerId||!chosen('memberIds',a.askerId)||!chosen('reqIds',a.reqId)||!chosen('itemIds',a.itemId))continue;
     if(!f.members.some(m=>m.playerId===a.askerId)){block('help','REQUESTER_MEMBERSHIP_UNKNOWN',{reqId:a.reqId});continue;}
     add('help','help',{reqId:a.reqId,playerId:a.askerId,itemId:a.itemId},a,[{id:a.itemId,num:1}],'GuildHelpRequest.ts:1459 one item per reqId','GuildAidHelpRequest',{reqId:[a.reqId],type:0},null,{requestRemoved:true,stockConsumed:1});
   }else block('help','AID_LIST_MEMBERS_OR_SERVER_TIME_UNKNOWN');
-  if(f.ownReliable&&nowKnown)for(const a of own)if(!a.helperId&&a.endTime>f.now&&chosen('reqIds',a.reqId)&&chosen('itemIds',a.itemId))add('cancel','cancel',{reqId:a.reqId,itemId:a.itemId},a,[],'GuildHelpItem.ts:1455 cancel own request','CancelMyGuildAidRequest',{reqId:a.reqId},null,{ownRequestRemoved:true});
+  if(f.ownReliable&&nowKnown)for(const a of own)if(!a.helperId&&a.endTime>time.latest&&chosen('reqIds',a.reqId)&&chosen('itemIds',a.itemId))add('cancel','cancel',{reqId:a.reqId,itemId:a.itemId},a,[],'GuildHelpItem.ts:1455 cancel own request','CancelMyGuildAidRequest',{reqId:a.reqId},null,{ownRequestRemoved:true});
   const helped=own.filter(a=>a.helperId);
   if(f.ownReliable&&helped.length&&f.stockReliable)add('claimAid','claimAid',{reqIds:helped.map(a=>a.reqId)},own,[],'GuildHelpItem.ts:1455 claim-all, no cost','GotMyGuildAidRequest',{},null,{receivedItems:helped.map(a=>a.itemId)});
   const limitRows=rows(config,'GuildParamCfg').filter(r=>r.paramName==='每日求助次数上限'),maxAsk=limitRows.length===1?quantity(limitRows[0].paramValue):null,usedAsk=counter(f,'DAILY_GUILD_AID');
@@ -163,14 +165,14 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
   if(enabled('orders')){
     if(cap===null||done===null)block('finishOrder','ORDER_DAILY_LIMIT_UNKNOWN');
     else if(cap!==-1&&done>=cap)block('finishOrder','ORDER_DAILY_LIMIT_EXHAUSTED');
-    else if(!nowKnown||quantity(order?.nextRefreshTime)===null||order.nextRefreshTime<=f.now||!assetsValid(order?.requirements)||!order.requirements.length||order.requirements.some(a=>quantity(a.num)===0))block('finishOrder','ORDER_STATE_UNKNOWN_OR_EXPIRED');
+    else if(!nowKnown||!dayKnown||quantity(order?.nextRefreshTime)===null||order.nextRefreshTime<=time.latest||!assetsValid(order?.requirements)||!order.requirements.length||order.requirements.some(a=>quantity(a.num)===0))block('finishOrder','ORDER_STATE_UNKNOWN_OR_EXPIRED');
     else if(!Array.isArray(f.cities)||f.cities.some(c=>!Number.isSafeInteger(c?.cityId)||c.cityId<=0)||!unique(f.cities,c=>c.cityId))block('finishOrder','ORDER_CITY_UNKNOWN');
     else for(const city of f.cities.filter(c=>parameters.cityId===undefined||c.cityId===parameters.cityId))add('orders','finishOrder',{cityId:city.cityId},{order,done},resourceCosts(order.requirements),'GuildOrderResponse.order.requirements; GuildCityArmyPop.ts:1445','FinishGuildOrderRequest',{cityId:city.cityId},'FinishGuildOrderResponse',{counterIncrement:1});
   }
   const packs=f.guild?.welfarePack,got=quantity(f.guild?.gotWelfareTime);
   if(enabled('welfare')){
     if(!f.stockReliable||!Array.isArray(packs)||packs.some(p=>!allianceId(p?.id)||quantity(p.createTime)===null)||!unique(packs,p=>allianceId(p.id))||got===null||!nowKnown)block('claimWelfare','WELFARE_STATE_UNKNOWN');
-    else {const unclaimed=packs.filter(p=>p.createTime>got&&p.createTime+86400>f.now);if(unclaimed.length)add('welfare','claimWelfare',{packIds:unclaimed.map(p=>allianceId(p.id))},{gotWelfareTime:got,packs:unclaimed.map(p=>({id:allianceId(p.id),createTime:p.createTime}))},[],'GuildChestPop.ts:1441 claim-all, no cost','GotGuildWelfarePackRequest',{},'GotGuildWelfarePackResponse',{gotWelfareTimeAtLeast:Math.max(...unclaimed.map(p=>p.createTime))});}
+    else {const unclaimed=packs.filter(p=>p.createTime>got&&p.createTime+86400>time.latest);if(unclaimed.length)add('welfare','claimWelfare',{packIds:unclaimed.map(p=>allianceId(p.id))},{gotWelfareTime:got,packs:unclaimed.map(p=>({id:allianceId(p.id),createTime:p.createTime}))},[],'GuildChestPop.ts:1441 claim-all, no cost','GotGuildWelfarePackRequest',{},'GotGuildWelfarePackResponse',{gotWelfareTimeAtLeast:Math.max(...unclaimed.map(p=>p.createTime))});}
   }
   if(enabled('tech')){
     if(parameters.techId===undefined)block('upgradeTech','TECH_EXACT_TARGET_REQUIRED');
@@ -200,16 +202,16 @@ export function planAlliance(f,options={}){
 const increase=(b,a,id,n)=>b.stockReliable&&a.stockReliable&&quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(a.stock.get(id)??0)-(b.stock.get(id)??0)>=n;
 const consume=(b,a,costs)=>b.stockReliable&&a.stockReliable&&costs.every(({id,num})=>quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(b.stock.get(id)??0)-(a.stock.get(id)??0)>=num);
 export function verifyAlliance(op,b,a,response){
-  if(!b.guildId||b.guildId!==a.guildId||b.playerId!==a.playerId)return false;const t=op.target;
+  if(!b.guildId||b.guildId!==a.guildId||b.playerId!==a.playerId)return false;const t=op.target,time=gameTimeBounds(a),beforeTime=gameTimeBounds(b);
   if(op.actionType==='upgradeTech'){
     const old=b.tech?.find(x=>x.techId===t.techId),next=a.tech?.find(x=>x.techId===t.techId),reply=response?.tech;
     const level=old?.level??0;
     return b.techReliable===true&&a.techReliable===true&&b.worldId===a.worldId&&b.season===a.season&&b.seasonStage===a.seasonStage&&Number.isSafeInteger(b.worldId)&&b.worldId>0&&techInteger(level)&&t.targetLevel===level+1&&next?.level===t.targetLevel&&field(reply,'techId')===t.techId&&quantity(field(reply,'level'))===t.targetLevel&&consume(b,a,op.costs)&&op.costs.every(({id,num})=>(b.stock.get(id)??0)-(a.stock.get(id)??0)===num);
   }
-  if(op.actionType==='help'){const old=b.asks?.find(x=>x.reqId===t.reqId&&x.askerId===t.playerId&&x.itemId===t.itemId);return !!old&&b.asksReliable&&a.asksReliable&&quantity(a.now)!==null&&a.now<old.endTime&&!a.asks.some(x=>x.reqId===t.reqId)&&consume(b,a,op.costs);}
-  if(op.actionType==='cancel'){const old=b.ownAids?.find(x=>x.reqId===t.reqId&&!x.helperId);return !!old&&b.ownReliable&&a.ownReliable&&quantity(a.now)!==null&&a.now<old.endTime&&!a.ownAids.some(x=>x.reqId===t.reqId);}
+  if(op.actionType==='help'){const old=b.asks?.find(x=>x.reqId===t.reqId&&x.askerId===t.playerId&&x.itemId===t.itemId);return !!old&&b.asksReliable&&a.asksReliable&&time.latest!==null&&time.latest<old.endTime&&!a.asks.some(x=>x.reqId===t.reqId)&&consume(b,a,op.costs);}
+  if(op.actionType==='cancel'){const old=b.ownAids?.find(x=>x.reqId===t.reqId&&!x.helperId);return !!old&&b.ownReliable&&a.ownReliable&&time.latest!==null&&time.latest<old.endTime&&!a.ownAids.some(x=>x.reqId===t.reqId);}
   if(op.actionType==='claimAid'){const claimed=b.ownAids?.filter(x=>t.reqIds.includes(x.reqId)&&x.helperId)??[],rewards=new Map();for(const x of claimed)rewards.set(x.itemId,(rewards.get(x.itemId)??0)+1);return b.ownReliable&&a.ownReliable&&claimed.length===t.reqIds.length&&t.reqIds.every(id=>!a.ownAids.some(x=>x.reqId===id))&&[...rewards].every(([id,num])=>increase(b,a,id,num));}
-  if(op.actionType==='finishOrder'){const n=counter(b,'DAILY_FINISH_GUILD_ORDER'),m=counter(a,'DAILY_FINISH_GUILD_ORDER');return n!==null&&m===n+1&&quantity(b.order?.nextRefreshTime)!==null&&a.order?.nextRefreshTime===b.order.nextRefreshTime&&consume(b,a,op.costs);}
+  if(op.actionType==='finishOrder'){const n=counter(b,'DAILY_FINISH_GUILD_ORDER'),m=counter(a,'DAILY_FINISH_GUILD_ORDER');return beforeTime.latest!==null&&time.latest!==null&&allianceBudgetDay(beforeTime.earliest)===allianceBudgetDay(time.latest)&&b.order?.nextRefreshTime>time.latest&&n!==null&&m===n+1&&quantity(b.order?.nextRefreshTime)!==null&&a.order?.nextRefreshTime===b.order.nextRefreshTime&&consume(b,a,op.costs);}
   if(op.actionType==='claimWelfare'){const n=quantity(b.guild?.gotWelfareTime),m=quantity(a.guild?.gotWelfareTime),assets=response?.reward?.asset;return n!==null&&m!==null&&m>n&&m>=op.expectedState.gotWelfareTimeAtLeast&&assetsValid(assets)&&resourceCosts(assets).length>0&&resourceCosts(assets).every(({id,num})=>increase(b,a,id,num));}
   return false;
 }

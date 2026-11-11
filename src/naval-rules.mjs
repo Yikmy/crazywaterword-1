@@ -3,6 +3,7 @@ import { ResourceLedger } from './resource-ledger.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
 export { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
+import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 
 export const NAVAL_DEFAULT_CONFIG = Object.freeze({ enabled: false, observe: false, worldBoss: false, limitedBoss: false, follow: false, rules: [] });
 export function validateNavalConfig(value = {}) { return moduleConfiguration(value, NAVAL_DEFAULT_CONFIG); }
@@ -23,7 +24,7 @@ export function evaluateNavalRules(rules, context = {}) {
       case 'minDurability': actual = context.fleet?.durability; if (quantity(actual) !== null && quantity(expected) !== null) status = actual >= expected ? 'PASS' : 'FAIL'; break;
       case 'minPetrol': actual = context.petrol; if (quantity(actual) !== null && quantity(expected) !== null) status = actual >= expected ? 'PASS' : 'FAIL'; break;
       case 'sameGuild': actual = context.target?.guildIdx; if (quantity(actual) !== null && quantity(context.guildIdx) !== null && typeof expected === 'boolean') status = (actual === context.guildIdx) === expected ? 'PASS' : 'FAIL'; break;
-      case 'freshTarget': actual = context.target?.observedAt; if (quantity(actual) !== null && quantity(context.now) !== null && quantity(expected) !== null && context.now >= actual) status = context.now - actual <= expected ? 'PASS' : 'FAIL'; break;
+      case 'freshTarget': { actual = context.target?.observedAt; const observedClock = context.target?.observedGameTime; const current = gameTimeBounds(context), observed = gameTimeBounds({ now: actual, ...(observedClock ? { gameTime: observedClock } : {}) }); const sameClockScope = !context.gameTime || !observedClock || ['accountId','generation'].every(key => context.gameTime[key] === observedClock[key]); if (sameClockScope && observed.earliest !== null && current.latest !== null && quantity(expected) !== null && current.now >= actual) status = current.latest - observed.earliest <= expected ? 'PASS' : 'FAIL'; break; }
       case 'playerSide': reason = '其他海战模式不继承 BT_MAINLINE LEFT 授权'; break;
     }
     if (status !== 'UNKNOWN') reason = status === 'PASS' ? '权威事实符合规则' : '权威事实不符合规则';
@@ -52,7 +53,8 @@ function navalParameters(parameters = {}) {
 export async function surveyNaval(client, protocol, { signal, parameters = {}, moduleConfig = {}, player = null } = {}) {
   navalParameters(parameters); moduleConfig = validateNavalConfig(moduleConfig);
   const names = ['WorldInfoRequest', 'MyFleetsRequest', 'WorldBossInfoRequest', 'LimitedBossOpenRequest', 'AllItemRequest', 'AllResourceRequest'];
-  const values = await Promise.all(names.map(request => readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? { screenCenter: parameters.screenCenter ?? { x: 0, y: 0 } } : {}, { signal })));
+  let worldObservedTime = null;
+  const values = await Promise.all(names.map(async request => { const value = await readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? { screenCenter: parameters.screenCenter ?? { x: 0, y: 0 } } : {}, { signal }); if (request === 'WorldInfoRequest') worldObservedTime = readGameTime(client); return value; }));
   const sources = Object.fromEntries(names.map((name, index) => [name, values[index]]));
   const world = sources.WorldInfoRequest, rows = world.body?.fleets;
   const worldReliable = world.available && Array.isArray(rows);
@@ -64,11 +66,11 @@ export async function surveyNaval(client, protocol, { signal, parameters = {}, m
     state: factQuantity(fleet, 'state'), cityId: factQuantity(fleet, 'cityId'), targetCityId: factQuantity(fleet, 'targetCityId'), curGridIdx: factQuantity(fleet, 'curGridIdx'),
     durability: factQuantity(fleet, 'durability'), maxDura: factQuantity(fleet, 'maxDura'), power: Object.hasOwn(fleet, 'power') ? exactInt64(fleet.power) : null,
   })) : [];
-  return { now: Math.floor(Date.now() / 1000), player: toSnapshotJson(player), parameters: structuredClone(parameters), sources, ...fleetFacts(sources.MyFleetsRequest), ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), moduleConfig, worldReliable, worldFleets, scope: { screenCenter: parameters.screenCenter ?? { x: 0, y: 0 }, source: 'WorldInfoResponse.fleets', completeness: 'CURRENT_RESPONSE_ONLY' } };
+  return { ...readGameTime(client), player: toSnapshotJson(player), parameters: structuredClone(parameters), sources, ...fleetFacts(sources.MyFleetsRequest), ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), moduleConfig, worldReliable, worldFleets, worldObservedTime, scope: { screenCenter: parameters.screenCenter ?? { x: 0, y: 0 }, source: 'WorldInfoResponse.fleets', completeness: 'CURRENT_RESPONSE_ONLY' } };
 }
 export function navalView(facts, { parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   navalParameters(parameters);
-  const rules = moduleConfig.rules ?? [];
+  const rules = moduleConfig.rules ?? [], observedAt = facts.worldObservedTime ? facts.worldObservedTime.now : facts.now, observedGameTime = facts.worldObservedTime?.gameTime;
   const targets = (facts.worldFleets ?? []).map(fleet => {
     const key = fleet.playerId && fleet.buildingId ? fleet.playerId + ':' + fleet.buildingId : null;
     const trace = [];
@@ -78,11 +80,11 @@ export function navalView(facts, { parameters = facts.parameters ?? {}, moduleCo
     filter('cityIds', fleet.cityId, parameters.cityIds, (actual,wanted) => wanted.includes(actual));
     filter('minimumPower', fleet.power, parameters.minimumPower, (actual,wanted) => BigInt(actual) >= BigInt(wanted));
     filter('maximumPower', fleet.power, parameters.maximumPower, (actual,wanted) => BigInt(actual) <= BigInt(wanted));
-    const evaluated = evaluateNavalRules(rules, { target: { id:key, state:fleet.state, observedAt:facts.now }, fleet, now:facts.now, petrol:facts.stockReliable ? facts.stock.get('汽油') : null });
+    const evaluated = evaluateNavalRules(rules, { target: { id:key, state:fleet.state, observedAt, observedGameTime }, fleet, now:facts.now, ...(Object.hasOwn(facts,'gameTime') ? { gameTime:facts.gameTime } : {}), petrol:facts.stockReliable ? facts.stock.get('汽油') : null });
     const configuredTrace = rules.length ? evaluated.trace : [];
     const all = [...trace,...configuredTrace];
     const status = facts.worldReliable !== true || !key ? 'UNKNOWN' : all.some(row => row.status === 'FAIL') ? 'FAIL' : all.some(row => row.status === 'UNKNOWN') ? 'UNKNOWN' : 'PASS';
-    return { ...fleet, targetKey:key, observedAt:facts.now, source:'WorldInfoResponse.fleets', status, ruleTrace:all, scope:'OBSERVATION_ONLY' };
+    return { ...fleet, targetKey:key, observedAt, source:'WorldInfoResponse.fleets', status, ruleTrace:all, scope:'OBSERVATION_ONLY' };
   });
   return { candidates: [], targets, observations: targets.filter(row => row.status === 'PASS'), worldReliable:facts.worldReliable === true, scope:facts.scope ?? { completeness:'CURRENT_RESPONSE_ONLY' }, rules: evaluateNavalRules(rules, { now: facts.now, petrol: facts.stockReliable ? facts.stock.get('汽油') : null }),
     blocked: [

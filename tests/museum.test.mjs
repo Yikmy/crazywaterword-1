@@ -4,12 +4,13 @@ import { museumModule, surveyMuseum, museumView, planMuseum, verifyMuseum, MUSEU
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 const names=['MuseumInfo','AllHero','AllItem','AllResource','MuseumStartExplore','MuseumSpeedUpExplore','MuseumCollectRevenue','AllAntique'];
 const protocol=Object.fromEntries([...names.flatMap(n=>[[n+'Request',{}],[n+'Response',{}]]),...['MuseumUpgradeExhibitionRequest','MuseumClaimAchievementRequest','MuseumCompleteExploreRequest','MuseumRewardRequest'].map(n=>[n,{}])]);
-const now=Math.floor(Date.now()/1000);
+const now=1800000000;
+const gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000,latestMs:now*1000})};
 const config={tables:{MuseumExpeditionTeamCfg:{data:[{teamCount:1,playerLevel:28}]},MuseumExpeditionStageCfg:{data:[{stageId:1,areaLevelReq:[]},{stageId:2,areaLevelReq:[1,2]}]},MuseumExpeditionConditionCfg:{data:[{conditionId:100,heroCount:3}]},MuseumExploreTimeFactorCfg:{data:[{factor:1,playerLevel:1},{factor:2,playerLevel:30}]},MuseumAchievementCfg:{data:[{score:100,rewards:[['小麦',2]]}]},MuseumAreaCfg:{data:[{areaId:1,level:2,playerLevelReq:30,costArr:[['GOLD',10]]}]},MuseumAreaIndicatorCfg:{data:[{areaId:1,areaLevel:1,level:1}]}}};
 const moduleConfig={enabled:true,exploration:true,exhibition:true,collection:true};
 const params={stageId:1,heroIds:['A','B','C'],factor:1};
 const idle=(stageId=1)=>({stageId,progress:0,expedition:{startTime:0,endTime:0,heroIds:[],cost:{asset:[{id:'小麦',num:2}]},conditionId:100,factor:1}});
-function fake(overrides={}){const answers={MuseumInfoRequest:{uncollectedRevenue:0,topPopularity:0,claimedAchievements:[],exhibitions:[{exhibitionId:1,level:1,keywordLevels:[1,1,1],cases:[]}],exploreStages:[idle()]},AllAntiqueRequest:{antiques:[{id:'藏品1'}]},AllHeroRequest:{heroes:['A','B','C','D'].map(heroId=>({heroId}))},AllItemRequest:{items:[{itemId:'小麦',num:10},{itemId:MUSEUM_SPEED_ITEM,num:3},{itemId:'人气币',num:1}]},AllResourceRequest:{list:[{res:3,amount:100}]},...overrides};return {connected:true,serverClockOffsetMs:0,answers,reads:[],async request(name,body,response){this.reads.push({name,body,response});if(this.answers[name] instanceof Error)throw this.answers[name];return structuredClone(this.answers[name]);}};}
+function fake(overrides={}){const answers={MuseumInfoRequest:{uncollectedRevenue:0,topPopularity:0,claimedAchievements:[],exhibitions:[{exhibitionId:1,level:1,keywordLevels:[1,1,1],cases:[]}],exploreStages:[idle()]},AllAntiqueRequest:{antiques:[{id:'藏品1'}]},AllHeroRequest:{heroes:['A','B','C','D'].map(heroId=>({heroId}))},AllItemRequest:{items:[{itemId:'小麦',num:10},{itemId:MUSEUM_SPEED_ITEM,num:3},{itemId:'人气币',num:1}]},AllResourceRequest:{list:[{res:3,amount:100}]},...overrides};return {connected:true,serverClockOffsetMs:0,gameClock,answers,reads:[],async request(name,body,response){this.reads.push({name,body,response});if(this.answers[name] instanceof Error)throw this.answers[name];return structuredClone(this.answers[name]);}};}
 const read=(c,p=params)=>surveyMuseum(c,protocol,{player:{id:'1',level:30},parameters:p});
 const view=(f,o={})=>museumView(f,{config,moduleConfig,...o});
 const find=(f,type,o={})=>view(f,o).candidates.find(c=>c.actionType===type);
@@ -60,3 +61,26 @@ test('real local protocol roundtrips all implemented Museum writes and authorita
 });
 
 test('Museum case acceleration is item-only, exact cost, nested wire roundtrip and authoritative timer reduction',async()=>{const b=exhibitFacts(await read(fake()));b.available=Object.keys(extraProtocol);b.exhibitions[0].cases[0].upgradeFinishTime=b.now+120;b.stock.set('加速器',2);const opts={config:caseConfig(),moduleConfig:{enabled:true,exhibition:true,caseSpeed:true},parameters:{exhibitionId:1,caseIndex:101,useNum:1,payment:'ITEM'}},op=find(b,'speedCase',opts);assert.deepEqual(op.action.body,{exhibitionId:1,caseIndex:101,speedUp:{type:2,useNum:1}});assert.deepEqual(op.costs,[{id:'加速器',num:1}]);const decoded=wire('MuseumSpeedUpCaseRequest',op.action.body);assert.equal(decoded.speedUp.type,2);assert.equal(decoded.speedUp.useNum,1);const a={...b,exhibitions:structuredClone(b.exhibitions),stock:new Map(b.stock)};a.exhibitions[0].cases[0].upgradeFinishTime-=60;a.stock.set('加速器',1);assert.equal(verifyMuseum(op,b,a),true);assert.equal(verifyMuseum(op,b,{...a,stock:b.stock}),false);assert.equal(find(b,'speedCase',{...opts,parameters:{...opts.parameters,payment:'PREMIUM'}}),undefined);assert.equal(view(b,{...opts,parameters:{...opts.parameters,payment:'PREMIUM'}}).blocked.some(x=>x.actionType==='speedCase'&&x.blockedReason==='PREMIUM_BLOCKED'),true);assert.equal(find(b,'speedCase',{...opts,parameters:{...opts.parameters,payment:'FREE'}}),undefined);});
+
+
+test('museum survey requires trusted game clock rather than the initial zero offset for timed operations',async()=>{
+ for(const clock of [undefined,{read:()=>({status:'UNKNOWN',reliable:false,nowMs:now*1000})}]){
+  const c=fake();c.gameClock=clock;const f=await read(c);assert.equal(c.serverClockOffsetMs,0);assert.equal(f.now,null);assert.equal(f.gameTime.reliable,false);assert.equal(find({...f,now},'startExplore'),undefined);
+  const cases=exhibitFacts({...f,now});cases.available=Object.keys(extraProtocol);cases.exhibitions[0].cases[0].upgradeFinishTime=now-1;assert.equal(find(cases,'finishCase',{config:caseConfig(),moduleConfig:expanded}),undefined);
+ }
+});
+
+test('museum uncertain completion boundary blocks expedition acceleration and case finish until earliest bound is due',async()=>{
+ const c=fake();c.gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000-100,latestMs:now*1000+100})};
+ const f=working(await read(c));f.stages[0].expedition.endTime=now;
+ assert.equal(view(f).stages[0].status,'UNKNOWN');assert.equal(find(f,'speedExplore',{parameters:{stageId:1,useNum:1}}),undefined);
+ const cases=exhibitFacts(await read(c));cases.available=Object.keys(extraProtocol);cases.exhibitions[0].cases[0].upgradeFinishTime=now;
+ assert.equal(find(cases,'finishCase',{config:caseConfig(),moduleConfig:expanded}),undefined);
+ cases.exhibitions[0].cases[0].upgradeFinishTime=now-1;assert.ok(find(cases,'finishCase',{config:caseConfig(),moduleConfig:expanded}));
+});
+
+test('museum item limits use minimum remaining time from latest clock bound',async()=>{
+ const c=fake();c.gameClock={read:()=>({status:'TRUSTED',reliable:true,nowMs:now*1000,earliestMs:now*1000-100,latestMs:now*1000+1100})};
+ const f=working(await read(c));f.stages[0].expedition.endTime=now+1801;
+ assert.equal(find(f,'speedExplore',{parameters:{stageId:1,useNum:2}}),undefined);assert.ok(find(f,'speedExplore',{parameters:{stageId:1,useNum:1}}));
+});
