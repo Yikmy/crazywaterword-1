@@ -101,7 +101,7 @@ test('true dependencies separate unrelated order rules and production policy', (
 });
 test('input fields match fifteen existing domain parameter interfaces without transport controls', () => {
   const expected = { 'equipment-growth':['heroId','uid'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
-    formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel'],
+    formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal'],
   };

@@ -2,6 +2,9 @@ import { EventEmitter } from 'node:events';
 import { createCodec } from './codec.mjs';
 import { trustedGameClock } from './state-facts.mjs';
 
+// Only this module can attest that a local error preceded socket dispatch.
+const undispatchedErrors = new WeakMap();
+export const isUndispatchedTransportError = (error,guard) => typeof guard === 'function' && error !== null && (typeof error === 'object' || typeof error === 'function') && undispatchedErrors.get(error)===guard;
 export const MAX_SEQ = 2147483647;
 const HALF_SEQ = (MAX_SEQ - 1) / 2;
 
@@ -196,21 +199,39 @@ export class GameClient extends EventEmitter {
     return this.sendSeqNo;
   }
 
-  send(name, body, { signal, onDispatch } = {}) {
-    if (!this.connected) throw new Error('not connected');
-    const seq = this.bumpSeqNo();
-    const frame = this.codec.encode(name, seq, body || {});
-    this.emit('frame', { dir: 'out', name, seq, bytes: frame, body });
-    if (signal?.aborted) {
-      const error = new Error('execution cancelled before dispatch');
-      error.code = 'CANCELLED';
+  send(name, body, { signal, onDispatch, beforeDispatch } = {}) {
+    let transportEntered = false;
+    try {
+      if (!this.connected) throw Object.assign(new Error('not connected'),{code:'CANCELLED'});
+      const seq = this.bumpSeqNo();
+      const frame = this.codec.encode(name, seq, body || {});
+      this.emit('frame', { dir: 'out', name, seq, bytes: frame, body });
+      if (signal?.aborted) {
+        const error = new Error('execution cancelled before dispatch');
+        error.code = 'CANCELLED';
+        throw error;
+      }
+      if (!this.connected) throw Object.assign(new Error('not connected'),{code:'CANCELLED'});
+      this.assertTransport();
+      // Encoding, frame listeners and the writer fence can block synchronously.
+      // The caller rechecks current business eligibility after all of them.
+      beforeDispatch?.();
+      onDispatch?.(seq);
+      transportEntered = true;
+      this.socket.send(frame);
+      return seq;
+    } catch(error) {
+      if(!transportEntered) {
+        // A fresh wrapper proves this occurrence only; a reused Error from a
+        // prior failed attempt must never attest a later socket failure.
+        const local = new Error(error?.message ?? String(error), {cause:error});
+        if(error?.code!==undefined)local.code=error.code;
+        if(error?.name==='AbortError')local.name='AbortError';
+        undispatchedErrors.set(local,beforeDispatch);
+        throw local;
+      }
       throw error;
     }
-    if (!this.connected) throw new Error('not connected');
-    this.assertTransport();
-    onDispatch?.(seq);
-    this.socket.send(frame);
-    return seq;
   }
 
   sendNoSeq(name, body) {
@@ -222,7 +243,7 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
-  request(name, body, responseName = name.slice(0, -7) + 'Response', timeout = 15000, { mutate = false, signal } = {}) {
+  request(name, body, responseName = name.slice(0, -7) + 'Response', timeout = 15000, { mutate = false, signal, beforeDispatch } = {}) {
     // Responses carry no request id: only equivalent requests can share one response.
     let key;
     try {
@@ -265,7 +286,7 @@ export class GameClient extends EventEmitter {
     }, timeout);
     this.pending.push(entry);
     try {
-      this.send(name, body, { signal, onDispatch: (seq) => { entry.sent = seq; } });
+      this.send(name, body, { signal, beforeDispatch, onDispatch: (seq) => { entry.sent = seq; } });
     } catch (error) {
       if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(key);
       clearTimeout(entry.timer);
@@ -277,7 +298,7 @@ export class GameClient extends EventEmitter {
 
   // Silence proves dispatch only. Keep an unresolved fingerprint so the same
   // write cannot be re-sent after timeout, cancellation or reconnection.
-  sendWatch(name, body, { window = 350, signal } = {}) {
+  sendWatch(name, body, { window = 350, signal, beforeDispatch } = {}) {
     if (signal?.aborted) {
       const error = new Error('execution cancelled');
       error.code = 'CANCELLED';
@@ -310,13 +331,14 @@ export class GameClient extends EventEmitter {
       uncertain();
       const error = new Error('execution cancelled; dispatched write is unverified');
       error.code = 'CANCELLED';
+      if(watcher.sent===undefined)undispatchedErrors.set(error,beforeDispatch);
       watcher.reject(error);
     };
     watcher.cleanup = cleanup;
     this.watchers.push(watcher);
     signal?.addEventListener('abort', cancel, { once: true });
     try {
-      this.send(name, body, { signal, onDispatch: (seq) => { watcher.sent = seq; } });
+      this.send(name, body, { signal, beforeDispatch, onDispatch: (seq) => { watcher.sent = seq; } });
       // Synchronous prompts, close and abort callbacks already settled this watcher.
       if (watcher.settled) return promise;
       if (signal?.aborted) { cancel(); return promise; }

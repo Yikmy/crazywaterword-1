@@ -2265,3 +2265,58 @@ node --test tests/equipment-growth.test.mjs tests/equipment-growth-service.test.
 原95C/273Inventory/42P/8S、W01–W22、R1–R8、E01–E24全部保持。原a505019主表/附录继续作为历史基线，C229当前增量以本节为准，不能把协议历史行当当前无实现。W04/W06/W07/W08/W19整体仍PARTIAL，W03来源/地图恢复仍BLOCKED_EVIDENCE。E09（非E08）纳Forge与C229：pool/镜像、精铁净扣、目标派生、非目标保持及无效果UNKNOWN；E04保留最终事前金币未证；E20/E21/E23覆盖父预算/UNKNOWN/取消/隔离。所有真实写REAL_UNVERIFIED；R7尚未执行，R8其后另列具体账号/请求/次数/预算/风险/清理等待单独授权。
 
 下一独立工作：W08/C215极限列表→所选replay→BattleReport→合法站位来源链；W09/PRO002已有Fort普通自有材料捐赠；W07其余11原子成长子项核证后逐个闭环。root串行共享Registry/Contract/Service/D6/API/UI/docs，领域两文件可并行，不因局部缺证停止其他链。
+
+### D.13 极限来源复制、普通堡垒捐赠及实际传输时效屏障（2026-11-11）
+
+本批以5f1e54705ce9ee279a56ae130cb1037961fd9325为父，源码/测试/本节随所在本地提交共同定位。实际目录 //zhangnas/app/crazywaterword，分支codex/phase-4-alliance-integration，提交前main...HEAD=0/29，a505019仍为祖先；恢复时staged为空，只有交接列明的协作成果。无AGENTS.md/TREE.md新变化；沿用src/tests/docs，无新目录/worktree。五份原始未跟踪输入SHA与第2节完全一致，仍不暂存；未push/merge/reset、未读真实Token、未创建真实Runtime或连接游戏。人类持续执行Goal取代早期Planning Only，Goal保持ACTIVE。
+
+| 工作包/原ID | 实际Function/调用者 | 当前离线交付及保留边界 |
+|---|---|---|
+| W08 / C215、P3-5 | extreme-formations#surveyExtremeFormationList/surveyExtremeFormations/prepareExtremeFormation → OperationService.extremeFormations/prepareExtremeFormationSource → 两条精确只读准备API → 原Formation页极限来源区 → 原Formation survey/plan/permit/SAVE/verify/History | Function EXISTING_FUNCTION、UI EXISTING_UI、Protocol STATIC_VERIFIED、Offline OFFLINE_VERIFIED、Real REAL_UNVERIFIED。原C215历史NOT_IMPLEMENTED由本节增量替代；准备只返回合法主线站位参数，保存仍须新计划/单次授权。其他战斗模式/自动换阵续跑未因此完成，W08 PARTIAL |
+| W09 / PRO-002、REQ-103/REQ-159 | alliance-fort#parseAllianceFortObservations/viewAllianceFort/planAllianceFort/verifyAllianceFort → 原allianceModule → 同generic executor/OperationService/Ledger/History/API/Workflow → 原联盟专业页 | 普通自有六材料、显式单city/item/num捐赠OFFLINE_VERIFIED；PRO-002整体PARTIAL，C303/C304帮助配额、C305求助、商船等原缺口不变。不是新增C编号；build/finish/demolish/selectPack/自动兑换均未开放。全部写REAL_UNVERIFIED |
+| W01/W02 公共执行合同 | executeBusinessOperation → GameClient.request/sendWatch → send.beforeDispatch | 在异步库存读、原子预留前、DISPATCH_INTENT持久化后、授权/Memory同步检查后及编码/frame/writer fence后重核原planner。最终纯领域检查之后没有业务I/O回调。不是另建执行器，不把socket已尝试后的异常降为无派发 |
+
+#### D.13.1 C215 证据与合同
+
+沿用D.12的v76主包/entry/protocol/config固定SHA。新增只读核验同v76 _src_chunks_.wxapkg SHA b271d4cdcfd3ddaed52e9cdb03f708d95f1f732707a8fc401ae67482d1e52a6d；entry offset49/size1621701，SHA fc25d58348197c04d83af90df1d2f3200f9a9e35ba36ebb3e8a8a90a88348b2f。此包完整schema与旧bundle不同，C215使用的19个定义逐字节一致，不能外推全部schema版本相同。StageView:3001 → RaidExtremePass(module=3)，BestPassPop:363、BestPassItem:361 → BattleReport；普通Rank不含replay/hero/pos，不能替代来源。
+
+来源参数严格stage正int32及playerId/worldId/replayId精确正int64十进制字符串。viewer账号/角色/世界/代次/连接与source身份分别绑定，允许跨服来源。列表与report同stage、BT_MAINLINE、完整LEFT英雄/坐标精确一致，明确report.presetId，不从相同坐标的9/10模板反推；来源没有isWin，仅标SERVER_EXTREME_PASS_SOURCE，不套ChallengeStage胜负判断。目标须已拥有英雄/已解锁layout/人数与坐标合法，保留目标当前明确petUid（含0），不复制源宠物。
+
+每份来源保留原响应完成sourceAt，30秒事实；未决/迟到/UNKNOWN/取消阻断且不自动重试。发现与准备均在原同账号锁内，废弃旧plan/permit和旧source cache，不建history/budget/run/runtime。来源证据仅30秒内、账号/连接/关卡/相关配置/参数一致时附原Formation planSummary并派发前落History；重启不恢复来源授权。HTTP仍同源JSON/CSRF/精确唯一account/READY gate，只有两条精确准备路由，未扩任意游戏写白名单。完整PAGE账号切换/编辑草稿/迟到响应均清空或丢弃旧结果。
+
+#### D.13.2 Fort 证据与复用
+
+静态v76 FortExchangePop:1263、FortDonatePop:1261、FortUtil:1269；Exchange模块SHA 91da72b3dc2743728ca59e5e2f490ae01ed41a773990ccefdc3d08ba410817a9，Util SHA 4077bd8087df5d56677655624fb602a2cb0fbc3cbd047943ceab3cd737066f38。读取复用原Alliance同轮GuildInfo/GuildCityInfo/AllItem/AllResource，仅显式city增加CityFortInfo；raw own字段先解析，再展示转换。五来源各保留sourceAt/gameTime，不用慢兄弟响应刷新旧事实。fortFacts保留对象引用并以私有WeakMap绑定live currentContext/currentGameTime，序列化facts只读不可授权。
+
+默认enabled=false/fort=false，明确本盟guildId/自有city/两份完整Fort镜像、own state=0 BUILDING、season与五张配置表、同可信游戏日和30秒事实。每次plan/verify都核当前trusted clock与账号/角色/世界/联盟/代次/连接。墙钟/monotonic漂移、跨日、日界不确定均阻断。参数仅{}或city-only读取、完整{cityId,itemId,num}捐赠；捐赠不混科技/成员等其他业务目标。材料精确为压电陶瓷/炮弹/耐火砖/高温合金/液态金属/碳纤维，库存及剩余需求必须足够，body固定{cityId,item:{itemId,num},selectPackNum:0}，D6逐字段及同材料同数量成本核验。没有礼包、购买、补料、build或自动兑换。
+
+功勋按正常部分+衰减部分整体floor，500是衰减阈值而非日配额；ITEM type=0，不是联盟resource6。DonateFortResponse.process全量/增量消费语义未证，保留SHAPE_ONLY_SEMANTICS_UNPROVEN，不能单凭它确认成功。typed功勋类型/数量、fresh CityFortInfo全进度/日计数、GuildInfo/GuildCityInfo归属及完整库存必须共同确认：材料精确净扣、功勋精确净增、目标进度和日计数+num、其他状态不变；FortFund/fundSpeed可独立计时，保留原始证据但不伪造为成本。并发其他变化保守UNKNOWN，不重发。
+
+原Alliance专业UI新增城市读取、材料进度/库存/数量选择，仍调用原survey→plan→authorize→execute，没有另建API写入口。public顶层及nested fort.candidates均裁剪transport action。Workflow ACTION复用原Alliance及父RunBudget；UNKNOWN原History与预算保持，重启只读恢复锁；Fort的资源型UNKNOWN尚无安全APPLIED/NOT_APPLIED自动解除合同，继续STILL_UNKNOWN，不由新复读猜清锁。
+
+#### D.13.3 失败证据与最终离线验证
+
+| 原始失败/发现 | 修复与保留回归 |
+|---|---|
+| D.12后第三次复现：DISPATCH_INTENT后最后assertCurrent同步I/O推时31秒，1 test/0pass/1fail，writes1而期望0 | 最后所有潜在阻塞检查之后增加纯领域plan；Memory fresh observer只在第一次fresh plan记录一次，后续重核不重复observer I/O；原第三回归保留 |
+| 真实GameClient编码/frame/assertTransport在最后planner后推时31秒，lastPlanAt=1000000/sendAt=1031000，writes1、UNKNOWN | beforeDispatch在writer fence后/onDispatch前重核；原C229+真实Codec+合成socket三边界均0写；普通伪造dispatchPrevented属性不能绕过 |
+| typed/silent零发送取消/断连首轮32测试24PASS/8FAIL；扩大40测试后34PASS/6FAIL | client内部私有WeakMap将无派发证明绑定本次回调和新错误实例；watch取消在sent不存在时同样证明；socket已尝试后无效果/抛错仍UNKNOWN、保留指纹。最终40/40 |
+| Fort嵌套view泄漏action transport | Service复用公开候选裁剪，nested与top-level均无action；Service专项断言保留 |
+| 首次Fort接线159PASS/2FAIL | 无city读取保留原Fort blocker；合同字段测试增加itemId/num，全部旧注入/安全断言保留，最终162/162 |
+| C215完整PAGE首轮24PASS/4FAIL，路径gate未登记使fetch=0 | page.operationMutation仅登记两条精确准备路径，最终28/28；Fort完整页面新增2项后与相邻view89/89 |
+| Fort live-clock审查复现WALL_CLOCK_CHANGED仍有动作 | 领域每次plan/verify检查当前可信时钟，漂移专项修复后39/39；Service用实际trustedGameClock再验 |
+| 少量编辑脚本因引号/模板语法在解析期失败、Fort新增屏障fixture过早触发 | 解析期无文件写入，改小块编辑；fixture修正后32/32，不把测试fixture错归生产缺陷，不删旧断言 |
+
+最终统一定向命令（48文件；不是R7）：
+
+```powershell
+node --test tests/business-transport-freshness.test.mjs tests/equipment-growth.test.mjs tests/equipment-growth-service.test.mjs tests/extreme-formations.test.mjs tests/extreme-formations-service.test.mjs tests/alliance-fort.test.mjs tests/alliance-fort-service.test.mjs tests/alliance.test.mjs tests/alliance-tech.test.mjs tests/formation.test.mjs tests/formation-unlock.test.mjs tests/named-formations.test.mjs tests/named-formations-service.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/farm-operations.test.mjs tests/farm-service.test.mjs tests/function-registry.test.mjs tests/function-contracts.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/gameplay-locks.test.mjs tests/operations-api.test.mjs tests/workflow.test.mjs tests/farm-forge-api.test.mjs tests/farm-forge-full-page.test.mjs tests/actions-safety.test.mjs tests/run-budget.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/resource-budget.test.mjs tests/operation-service.test.mjs tests/operation-adapters-integration.test.mjs tests/execution-memory-service.test.mjs tests/execution-history.test.mjs tests/operation-recovery.test.mjs tests/operation-recovery-service.test.mjs tests/client-lifecycle.test.mjs tests/client-unverified-write.test.mjs tests/execution-lifecycle.test.mjs tests/server-runtime.test.mjs tests/writer-ownership.test.mjs tests/stages-formation.test.mjs tests/execution-stages.test.mjs
+```
+
+实际1147 tests/1147 pass/0fail/cancelled/skipped/todo，18.90秒。之后只将无派发证明收紧为单次fresh错误+本次callback绑定，重跑business-transport-freshness/client-lifecycle/client-unverified-write 70/70、0fail/skip，1.18秒；与1147重叠不相加。独立C215 Service36、domain54、Fort domain39/Service32、完整PAGE30均包含于统一命令；前批历史结果不冒充本提交全量回归。HTTP用进程内Console不listen，Service协议测试为真实本地Codec+合成state；实际GameClient仅合成socket、构造WebSocket会抛错，无游戏网络/账号/Token。git diff --check通过。
+
+#### D.13.4 恢复位置和后续
+
+原95C/273Inventory/42P/8S、W01–W22、R1–R8、E01–E24、X01–X18全部保持。C215本节替代历史NOT_IMPLEMENTED；PRO-002/REQ-159捐赠子分支新交，不把整项互助/联盟交付标完成。W04/W06/W07/W08/W09/W19仍PARTIAL，W03来源/地图资产恢复BLOCKED_EVIDENCE；R1/R2/R3整阶段未虚报完成。E10纳极限源身份/站位/宠物保留及保存复读，E12纳普通堡垒材料/功勋/日计数精确变化，E20/E21/E23纳父预算/UNKNOWN/取消/账号隔离；原E03真实升级0派发待验保留。R7未完成，R8必须其后单独批准具体账号/请求/次数/预算/风险/清理，所有真实分支REAL_UNVERIFIED。
+
+下一可执行原子分支：W07/BIZ-R09明确已佩戴RED装备REFINE+1。静态证据已核EquipDetailPop:1057（SHA a72390a57247af8a52e500a34c726043f5e58d2d5d7fee8edcaa7b9d28c27e50）、EquipUtil:1087（eee5b62dd7bd3295b60c062ed12986073b55fca1fad85018af07716c41e9ea9b）；请求仅uid、无专用Response，EquipRefineCfg[next]双正成本精铁/精炼石、EquipAttrCfg[id_star].maxRefineLv。扩原equipment-growth而非建新执行器；缺省action保持LEVEL，显式refine单项授权，完整pool/英雄镜像/refineLv+1和双材料精确扣除，目标派生只容合法power/attributes变化。尚未纳本提交实现，不计C230替换完成；其余原W07原子子项继续保留。领域两文件独占，root串行D6/合同/UI/Service/docs，阶段提交后继续，不等待Owner逐项确认。

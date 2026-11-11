@@ -67,18 +67,18 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyFarmOperation','src/farm-operations.mjs#verifyFarmOperation','Fresh exact OnWater crop, unchanged other plots and exact full inventory seed debit'),
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.FarmlandPlantCfg']),
   }),
-  formation: contract('formation', ['C211', 'C212', 'C213', 'C214'], ['P1-3', 'P3-5'], ['src/formation.mjs#formationModule', 'src/formation.mjs#validateFormationParameters'], formationParameters, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['SAVE'], blockedCapabilities: [blocked('C215', 'Extreme-copy and other battle-mode formation are not implemented', 'NOT_IMPLEMENTED'), blocked('PURCHASE_BLUEPRINT', 'Ordinary owned blueprint unlock uses formation-unlock Adapter; buying missing blueprints remains excluded by D6')] },
+  formation: contract('formation', ['C211', 'C212', 'C213', 'C214', 'C215'], ['P1-3', 'P3-5'], ['src/formation.mjs#formationModule', 'src/formation.mjs#validateFormationParameters'], formationParameters, {
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['SAVE'], preparation: 'C215: authoritative RaidExtremePass module3 + BattleReport source prepares existing mainline SAVE; never auto-authorize', blockedCapabilities: [blocked('OTHER_BATTLE_MODES', 'Only authoritative mainline extreme-pass source preparation is implemented; other battle modes lack evidenced contracts'), blocked('PURCHASE_BLUEPRINT', 'Ordinary owned blueprint unlock uses formation-unlock Adapter; buying missing blueprints remains excluded by D6')] },
     verification: verification('verifyFormation', 'src/formation.mjs#verifyFormation', 'Full saved mainline formation and unchanged petUid, typed response plus fresh GetFormation; no victory claim'),
     dependencyVersions: dependencies(['moduleConfig', 'config.FormationTypePositionCfg', 'config.FormationHeroNumCfg', 'config.HeroCfg']),
   }),
   alliance: contract('alliance', ['C301', 'C302', 'C303', 'C304', 'C305', 'C306', 'C307'], ['P1-5', 'P4-1', 'P4-2', 'P4-3', 'P4-4'], ['src/alliance.mjs#allianceModule', 'src/alliance.mjs#parametersOf', 'src/alliance.mjs#allianceTechView'], {
-    memberIds: array(allianceId), itemIds: array(string), reqIds: array(allianceId), cityId: integer, season: integer, techId: integer, targetLevel: integer,
+    memberIds: array(allianceId), itemIds: array(string), reqIds: array(allianceId), cityId: integer, season: integer, techId: integer, targetLevel: integer, itemId: string, num: integer,
   }, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['cancel', 'claimAid', 'finishOrder', 'claimWelfare', 'upgradeTech'], conditionalActions: [{ actionType: 'help', requires: 'Trusted survey allowance, daily usage, cooldown and reliable game clock; production facts currently unavailable' }],
-      blockedCapabilities: [blocked('C303/C304:help', 'Production survey cannot yet establish authoritative daily allowance and usage'), blocked('C305:ask', 'Authoritative cooldown and exact eligible request are unavailable'), blocked('donateFort', 'Independent fortress survey and construction contract are missing')] },
-    verification: verification('verifyAlliance', 'src/alliance.mjs#verifyAlliance', 'Request identity, membership, counters and inventory; technology exact targetLevel from fresh GuildTechInfo'),
-    dependencyVersions: dependencies(['moduleConfig', 'config.GuildParamCfg', 'config.GuildOrderNumCfg', 'config.GuildTechCfg', 'config.TechUnlockCfg']),
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['cancel', 'claimAid', 'finishOrder', 'claimWelfare', 'upgradeTech', 'donateFort'], conditionalActions: [{ actionType: 'help', requires: 'Trusted survey allowance, daily usage, cooldown and reliable game clock; production facts currently unavailable' }],
+      blockedCapabilities: [blocked('C303/C304:help', 'Production survey cannot yet establish authoritative daily allowance and usage'), blocked('C305:ask', 'Authoritative cooldown and exact eligible request are unavailable'), blocked('FORT_BUILD_FINISH_DEMOLISH', 'Only explicit owned ordinary material donation is evidenced; construction and packs remain excluded')] },
+    verification: verification('verifyAlliance', 'src/alliance.mjs#verifyAlliance', 'Request identity, membership, counters and inventory; technology exact targetLevel from fresh GuildTechInfo; Fort typed merit and exact same-day full inventory/progress from GuildCityInfo + CityFortInfo'),
+    dependencyVersions: dependencies(['moduleConfig', 'config.GuildParamCfg', 'config.GuildOrderNumCfg', 'config.GuildTechCfg', 'config.TechUnlockCfg', 'config.WorldFortCfg', 'config.FortDonateMaterialCfg', 'config.FortParamCfg', 'config.FortSeasonUnlockCfg', 'config.ItemCfg']),
   }),
   museum: contract('museum', ['C141', 'C142', 'C143', 'C144'], ['P2-7'], ['src/museum.mjs#museumModule', 'src/museum.mjs#parametersOf'], {
     stageId: integer, heroIds: array(string), factor: integer, exhibitionId: integer, useNum: integer, payment: { type: 'string', enum: ['ITEM', 'PREMIUM', 'FREE'] }, caseIndex: integer, keywordType: integer, antiqueId: string,

@@ -157,3 +157,13 @@ test('equipment facts expiring during dispatch-intent persistence never dispatch
   assert.deepEqual(reserved.resources,operation.costs);assert.deepEqual(reserved.uids,operation.budgetClaims.uids);
  }finally{Date.now=originalNow;}
 });
+test('equipment facts expiring in the final synchronous authority callback never dispatch',async()=>{
+ const originalNow=Date.now;let now=1000000,intent=false,calls=0;Date.now=()=>now;
+ try{
+  const {client,operation}=await prepared(),budget=budgetFor(operation);
+  const result=await run(client,operation,{budget,onStage(stage){if(stage==='DISPATCH_INTENT')intent=true;},assertCurrent(){if(intent&&++calls===2)now+=31000;}});
+  assert.equal(client.writes.length,0,'the last authority I/O must precede the final pure domain eligibility check');
+  assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(client.stock.get('精铁'),30);
+  assert.deepEqual(budget.runBudget.snapshot().reserved.resources,operation.costs);
+ }finally{Date.now=originalNow;}
+});

@@ -1,3 +1,4 @@
+import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createExecutionMemory, executionMemoryKey } from './execution-memory.mjs';
@@ -50,7 +51,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   const namedStore=namedFormationsStore??(typeof history.storagePath==='string'?createNamedFormationStore({file:path.join(path.dirname(history.storagePath),path.basename(history.storagePath)==='execution-history.json'?'named-formations.json':path.basename(history.storagePath)+'.named-formations.json'),assertWriter,wallNow:clock}):null);
   if(namedStore&&['list','save','rename','overwrite','delete','prepareApply'].some(method=>typeof namedStore[method]!=='function'))throw error('具名阵容存储接口无效','NAMED_FORMATION_INVALID');
   const cache = new Map(), plans = new Map(), runs = new Map(), moduleCache = new Map(), formationProofs = new Map(), moduleFacts = new Map();
-  const recoveryPreviews = new Map(), workflowBudgets = new Map(), connectionIds = new WeakMap(), workflowNodes = new WeakMap();
+  const extremePreparations = new Map(), recoveryPreviews = new Map(), workflowBudgets = new Map(), connectionIds = new WeakMap(), workflowNodes = new WeakMap();
   const coreModules = new Set(['orders','city','production']);
   function connectionIdOf(session) { if (typeof session.connectionId === 'string' && session.connectionId) return session.connectionId; if (!connectionIds.has(session.client)) connectionIds.set(session.client, randomUUID()); return connectionIds.get(session.client); }
   const parentScope = (session, runId) => ({ accountId: session.id, runId, generation: session.generation, connectionId: connectionIdOf(session) });
@@ -167,7 +168,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   function cacheModule(accountId, id, facts, options) {
     moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});
     const raw = adapterFor(id).view(facts, options);
-    const safe = { ...raw, candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
+    const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: safe });
   }
   async function surveyModule(session, id, parameters = {}, { workflowId = null } = {}) {
@@ -205,6 +206,26 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function saveNamedFormation(session,payload) { namedInput(payload,['name']);return withNamedFormationSurvey(session,'SAVE',(store,formationFact,_facts,options)=>store.save(session.id,{name:payload.name,formationFact},{generation:options.generation,signal:options.signal})); }
   async function overwriteNamedFormation(session,payload) { namedInput(payload,['id','expectedRevision']);return withNamedFormationSurvey(session,'OVERWRITE',(store,formationFact,_facts,options)=>store.overwrite(session.id,payload.id,{expectedRevision:payload.expectedRevision,formationFact},{generation:options.generation,signal:options.signal})); }
   async function prepareNamedFormation(session,payload) { namedInput(payload,['id','expectedRevision']);return withNamedFormationSurvey(session,'PREPARE',(store,currentFormationFact,facts,options)=>store.prepareApply(session.id,payload.id,{expectedRevision:payload.expectedRevision,currentFormationFact,facts,...options})); }
+  async function withExtremeFormationRead(session,label,parameters) {
+    const release=acquire(session,'operations:EXTREME_FORMATION:'+label),generation=session.generation,client=session.client;
+    const viewerContext=clone(executionContext(session)),contextHash=operationDigest(viewerContext),stage=session.player?.mainlineStage;
+    try {
+      // Discovery and preparation are read-only, invalidate prior permits, and
+      // never create history, parent budgets, execution state or automatic saves.
+      plans.delete(session.id);extremePreparations.delete(session.id);
+      const options={config:getConfig(),player:session.player,viewerContext,signal:session.abort.signal};
+      const facts=parameters===null?await surveyExtremeFormationList(client,protocol,options):await surveyExtremeFormations(client,protocol,{...options,parameters});
+      current(session,generation,client);
+      if(operationDigest(executionContext(session))!==contextHash||session.player?.mainlineStage!==stage)throw error('极限来源读取期间账号、角色、世界、连接或当前关卡已变化','CANCELLED');
+      const result=parameters===null?viewExtremeFormations(facts):prepareExtremeFormation(facts,{parameters,config:getConfig(),player:session.player,viewerContext:clone(executionContext(session)),moduleConfig:moduleSettings.get(session.id,'formation').config});
+      current(session,generation,client);
+      if(parameters!==null)extremePreparations.set(session.id,{contextHash,stage,dependencyHash:operationDigest(adapterFor('formation').dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'formation').config,player:session.player})),parametersHash:operationDigest(result.parameters),source:clone(result.source),preparedAt:clock()});
+      else extremePreparations.delete(session.id);
+      return {accountId:session.id,...result,resumable:false,requiresFreshSurvey:true,requiresFreshPlan:true,requiresAuthorization:true};
+    } finally {release();}
+  }
+  async function extremeFormations(session,payload={}) {exact(payload,[]);return withExtremeFormationRead(session,'SURVEY',null);}
+  async function prepareExtremeFormationSource(session,payload) {const parameters=validateExtremeFormationParameters(payload);return withExtremeFormationRead(session,'PREPARE',parameters);}
   function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
   function claimWorkflow(session, runId, { limits = null } = {}) {
     const release = acquire(session, 'operations:WORKFLOW_CLAIM'); release(); const owner={generation:session.generation,client:session.client}; workflowOwners.set(session,owner); session.workflowOwner=runId; session.busy='workflow:'+runId;
@@ -276,6 +297,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       if (workflowId) { parent = workflowBudgets.get(session.id); if (!parent || parent.runId !== workflowId) throw error('工作流父预算不存在', 'RUN_BUDGET_SCOPE_MISMATCH'); if (!parent.context) { parent.limits = stockLimits(facts.stock); parent.context = createRunBudgetContext({scope:parent.scope,limits:parent.limits}); } parent.context.assertScope(parentScope(session,workflowId)); }
       const summary = { ...(workflowContext?{workflowDefinitionId:workflowContext.workflowId,workflowNodeId:workflowContext.nodeId}:{}), ...(parent ? { parentRunId: workflowId, runBudgetIdentity: { scope: clone(parent.scope), limits: clone(parent.limits) } } : {}), batchId, accountId: session.id, module, mode, actions: operations.map(publicAction), resourceBudget, budgetClaims, productionPolicy: production, ...(adapter ? { moduleConfig, parameters: normalizedParameters } : {}), createdAt, expiresAt,
         notes: ['授权仅覆盖本批次具体操作；新订单和新计划需要重新授权', 'UNKNOWN 停止批次并保留预算；不自动重试'] };
+      const preparation=module==='formation'?extremePreparations.get(session.id):null;
+      if(preparation&&preparation.contextHash===contextHash&&preparation.stage===session.player?.mainlineStage&&preparation.dependencyHash===operationDigest(adapter.dependencyVersions(options))&&preparation.parametersHash===operationDigest(normalizedParameters)&&clock()>=preparation.preparedAt&&clock()-preparation.preparedAt<=30000)summary.preparationEvidence={capabilityId:'C215',source:clone(preparation.source),preparedAt:preparation.preparedAt,scope:'SOURCE_TEMPLATE_ONLY_CURRENT_TARGET_REVALIDATED'};
       summary.planHash = operationDigest(summary);
       const internal = { memoryFacts, contextHash, adapter: Boolean(adapter), dependencyHash: adapter?.dependencyVersions ? operationDigest(adapter.dependencyVersions(options)) : null, public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
       plans.set(session.id, internal);
@@ -344,7 +367,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
         const originalAdapter = entry.adapter ? modules[operation.module] : null;
         // Observe the original fresh planner; transport and verification stay shared.
         let freshMemorySourceAt=clock();
-        const adapter = decisionMemory&&originalAdapter&&!originalAdapter.execute ? {...originalAdapter,async survey(...args){freshMemorySourceAt=clock();return originalAdapter.survey(...args);},plan(facts,options){const planned=originalAdapter.plan(facts,options);for(const fresh of planned.actions??[]){const candidate={...fresh,module:operation.module},fact=memoryFact(session,candidate,freshMemorySourceAt);assertMemoryAction(session,candidate,fact);entry.memoryFacts.set(fresh.actionId,fact);}return planned;}} : originalAdapter;
+        let freshMemoryObserved=false;
+        const adapter = decisionMemory&&originalAdapter&&!originalAdapter.execute ? {...originalAdapter,async survey(...args){freshMemorySourceAt=clock();return originalAdapter.survey(...args);},plan(facts,options){const planned=originalAdapter.plan(facts,options);if(!freshMemoryObserved){for(const fresh of planned.actions??[]){const candidate={...fresh,module:operation.module},fact=memoryFact(session,candidate,freshMemorySourceAt);assertMemoryAction(session,candidate,fact);entry.memoryFacts.set(fresh.actionId,fact);}freshMemoryObserved=true;}return planned;}} : originalAdapter;
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
         const result = await executor(client, protocol, operation, { config: entry.config, rules: loadRules(session.id).config, player: session.player,
           rewardBinding: operation.module==='orders'?{...record.executionContext,runId:record.runId,batchId:entry.public.batchId,actionId:operation.actionId,identity:operation.identity,orderIndex:operation.target.index}:null, rewardContext:()=>executionContext(session),
@@ -453,7 +477,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },

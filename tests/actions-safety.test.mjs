@@ -144,3 +144,12 @@ test('equipment D6 admits only one exact int64 UID with positive iron and no exp
  for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
  for(const request of ['EquipRefineRequest','EquipStarUpRequest','EquipReplaceRequest'])assert.throws(()=>assertPaymentAllowed({...action(),request}),{code:'COST_UNKNOWN'});
 });
+
+test('Fort D6 admits only exact single-city ordinary owned material and matching cost with selectPackNum zero',()=>{
+ const materials=['压电陶瓷','炮弹','耐火砖','高温合金','液态金属','碳纤维'];
+ const action=(id='耐火砖')=>({request:'DonateFortRequest',body:{cityId:7,item:{itemId:id,num:2},selectPackNum:0},costs:[{id,num:2}]});
+ for(const id of materials)assert.doesNotThrow(()=>assertPaymentAllowed(action(id)));
+ for(const mutate of [a=>a.body.cityId=0,a=>a.body.cityId='7',a=>a.body.cityId=2147483648,a=>a.body.item.num=0,a=>a.body.item.num=1.5,a=>a.body.item.num=2147483648,a=>a.body.item.itemId='材料',a=>a.body.item.buyMissing=true,a=>a.body.selectPackNum=1,a=>delete a.body.selectPackNum,a=>a.body.autoExchange=false,a=>delete a.costs,a=>a.costs=[],a=>a.costs[0].id='高温合金',a=>a.costs[0].num=1,a=>a.costs[0].num=0,a=>a.costs.push({id:'高温合金',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ for(const request of ['BuildFortRequest','FinishFortRequest','DemolishFortRequest'])assert.throws(()=>assertPaymentAllowed({...action(),request}),{code:'COST_UNKNOWN'});
+});

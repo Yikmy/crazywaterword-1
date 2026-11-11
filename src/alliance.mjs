@@ -4,6 +4,7 @@
 import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
+import { allianceFortContext, parseAllianceFortObservations, validateAllianceFortParameters, viewAllianceFort, planAllianceFort, verifyAllianceFort } from './alliance-fort.mjs';
 const rows = (c,n) => c?.tables?.[n]?.data ?? [];
 const text = (s) => typeof s === 'string' && s.trim().length > 0;
 const stable = (v) => JSON.stringify(v, (_,x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])) : x);
@@ -62,7 +63,8 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
 }
 
 function parametersOf(p={}) {
-  if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel'].includes(k))) throw Error('联盟参数不在业务白名单');
+  if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'].includes(k))) throw Error('联盟参数不在业务白名单');
+  if(Object.hasOwn(p,'itemId')||Object.hasOwn(p,'num'))return validateAllianceFortParameters(p);
   const out={};
   for(const k of ['memberIds','reqIds'])if(p[k]!==undefined){
     if(!Array.isArray(p[k]) || p[k].some(id=>!allianceId(id)) || !unique(p[k],allianceId))throw Error('联盟身份无效或重复'); out[k]=p[k].map(allianceId);
@@ -123,13 +125,18 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
 // WorldIdRule.ts:3603; retain exact integer parsing used by the original alliance survey.
 export function seasonFromWorldId(value) { const worldId=quantity(value); return worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null; }
 
-export async function surveyAlliance(client,protocol,{player=null,signal,parameters={},moduleConfig={},timeout=8000}={}){
-  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);const notes=[],available=Object.keys(protocol??{});
-  const get=async(name,body={})=>{assertExecutionActive(client,{signal});const response=name.replace(/Request$/,'Response');
+export async function surveyAlliance(client,protocol,{config=null,player=null,signal,stop,parameters={},moduleConfig={},timeout=8000}={}){
+  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);const notes=[],available=Object.keys(protocol??{}),observations={},context=allianceFortContext(client,player),options={signal,stop};
+  const observationKeys={GuildInfoRequest:'guild',GuildCityInfoRequest:'cities',CityFortInfoRequest:'fort',AllItemRequest:'items',AllResourceRequest:'resources'};
+  const get=async(name,body={})=>{assertExecutionActive(client,options);const response=name.replace(/Request$/,'Response');
     if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': 协议不可用');return null;}
-    try{return await awaitExecution(client.request(name,body,response,timeout),client,{signal});}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': UNKNOWN');return null;}};
+    try{const value=await awaitExecution(client.request(name,body,response,timeout,{signal}),client,options);assertExecutionActive(client,options);if(observationKeys[name])observations[observationKeys[name]]={value,sourceAt:Date.now(),gameTime:readGameTime(client).gameTime};return value;}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': UNKNOWN');return null;}};
   const [info,membersRes,aidRes,ownRes,orderRes,citiesRes,countersRes,items,resources,techRes,stageRes]=await Promise.all([
-    get('GuildInfoRequest'),get('GuildMemberRequest'),get('GuildAidListRequest',{type:0}),get('MyGuildAidRequest',{type:0}),get('GuildOrderRequest'),get('GuildCityInfoRequest'),get('CounterInfoRequest'),get('AllItemRequest'),get('AllResourceRequest'),get('GuildTechInfoRequest'),get('SeasonTaskStageRequest')]);
+    get('GuildInfoRequest'),get('GuildMemberRequest'),get('GuildAidListRequest',{type:0}),get('MyGuildAidRequest',{type:0}),get('GuildOrderRequest'),get('GuildCityInfoRequest'),get('CounterInfoRequest'),get('AllItemRequest'),get('AllResourceRequest'),get('GuildTechInfoRequest'),get('SeasonTaskStageRequest'),parameters.cityId?get('CityFortInfoRequest',{cityId:parameters.cityId}):null]);
+  assertExecutionActive(client,options);
+  if(parameters.cityId&&stable(context)!==stable(allianceFortContext(client,player)))throw Object.assign(new Error('联盟采集期间账号、联盟或连接上下文变化'),{code:'CANCELLED'});
+  const fortParameters=Object.fromEntries(['cityId','itemId','num'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]));
+  const fortFacts=parameters.cityId?parseAllianceFortObservations(observations,{context,parameters:fortParameters,config,available,notes,currentGameTime:()=>readGameTime(client).gameTime,currentContext:()=>allianceFortContext(client,player)}):null;
   const asks=Array.isArray(aidRes?.askItems)?aidRes.askItems.map(a=>aidRow(a,true)):null,ownAids=Array.isArray(ownRes?.aids)?ownRes.aids.map(a=>aidRow(a)):null;
   const groups=membersRes?.titleList,members=Array.isArray(groups)&&groups.every(g=>Array.isArray(g?.members))?groups.flatMap(g=>g.members.map(m=>({playerId:allianceId(m?.playerId),nickname:m?.nickname,online:typeof field(m,'online')==='boolean'?m.online:null,title:g.guildTitle}))):null;
   const itemsValid=Array.isArray(items?.items)&&items.items.every(a=>text(a?.itemId??a?.id)&&quantity(field(a,'num')??field(a,'count'))!==null)&&unique(items.items,a=>a.itemId??a.id),resourcesValid=Array.isArray(resources?.list)&&resources.list.every(a=>quantity(a?.res)!==null&&quantity(field(a,'amount'))!==null)&&unique(resources.list,a=>a.res);
@@ -137,13 +144,15 @@ export async function surveyAlliance(client,protocol,{player=null,signal,paramet
   const techReliable=!!tech&&tech.every(t=>techInteger(t.techId)&&t.techId>0&&techInteger(t.level))&&unique(tech,t=>t.techId);
   const worldId=quantity(field(player,'worldId')),season=seasonFromWorldId(worldId),seasonStage=quantity(field(stageRes,'stage'));
   const stock=stockFromResponses(itemsValid?items:null,resourcesValid?resources:null),stockReliable=itemsValid&&resourcesValid&&[...stock.values()].every(n=>n!==null);
-  return {module:'alliance',available,...readGameTime(client),
+  return {module:'alliance',available,fortFacts,...readGameTime(client),
     playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),worldId,season,seasonStage:techInteger(seasonStage)?seasonStage:null,tech,techReliable,helpAllowance:null,helpUsage:null,guildId:allianceId(info?.guild?.guildId),guild:info?.guild?{guildId:field(info.guild,'guildId'),welfarePack:info.guild.welfarePack,gotWelfareTime:quantity(field(info.guild,'gotWelfareTime'))}:null,members,
     membersReliable:!!members&&members.every(m=>!!m.playerId)&&unique(members,m=>m.playerId),asks,asksReliable:!!asks&&asks.every(a=>aidValid(a,true))&&unique(asks,a=>a.reqId),ownAids,ownReliable:!!ownAids&&ownAids.every(a=>aidValid(a))&&unique(ownAids,a=>a.reqId),order:orderRes?.order?{requirements:Array.isArray(orderRes.order.requirements)?orderRes.order.requirements.map(r=>({id:field(r,'id'),num:quantity(field(r,'num'))})):null,nextRefreshTime:quantity(field(orderRes.order,'nextRefreshTime'))}:null,cities:Array.isArray(citiesRes?.cities)?citiesRes.cities.map(c=>({cityId:field(c,'cityId'),recommended:field(c,'recommended')})):null,counters:Array.isArray(countersRes?.counters)?countersRes.counters.map(c=>({type:field(c,'type'),num:quantity(field(c,'num'))})):null,stock,stockReliable,parameters,notes};
 }
 export function allianceView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateAllianceConfig(moduleConfig);const candidates=[],blocked=[],notes=[...(f.notes??[])];
   const tech=allianceTechView(f,{config,parameters});
+  const fort=f.fortFacts?viewAllianceFort(f.fortFacts,{config,moduleConfig,parameters:Object.fromEntries(['cityId','itemId','num'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]))}):null;
+  if(parameters.itemId!==undefined)return {guildId:f.guildId,playerId:f.playerId,fort,candidates:(fort?.candidates??[]).filter(c=>c.executable),blocked:(fort?.candidates??[]).filter(c=>!c.executable),notes:[...notes,...(fort?.notes??[])],members:[],technologies:[],dailyLimits:{ask:null,help:null}};
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason});
   const enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),chosen=(k,v)=>parameters[k]===undefined||parameters[k].includes(v),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
   const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{
@@ -183,13 +192,14 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
     else if(tech.blockedReason)block('upgradeTech',tech.blockedReason,{techId:parameters.techId,targetLevel:parameters.targetLevel});
     else {const t=tech.target;add('tech','upgradeTech',{techId:t.techId,targetLevel:parameters.targetLevel},{worldId:f.worldId,season:f.season,stage:f.seasonStage,techId:t.techId,level:t.level,preTech:t.preTech,prerequisiteLevel:t.prerequisiteLevel},t.costs,t.costSource,'UpgradeGuildTechRequest',{techId:t.techId},'UpgradeGuildTechResponse',{techId:t.techId,level:parameters.targetLevel});}
   }
-  if(enabled('fort'))block('donateFort','FORT_IS_INDEPENDENT_CONSTRUCTION_REQUIRES_CITY_FORT_SURVEY');
-  return {candidates,blocked,notes,guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
+  if(enabled('fort'))block('donateFort',fort?'FORT_EXPLICIT_SINGLE_DONATION_REQUIRED':'FORT_IS_INDEPENDENT_CONSTRUCTION_REQUIRES_CITY_FORT_SURVEY');
+  return {candidates,blocked,notes,fort,cities:f.cities??[],guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
 }
 export function planAlliance(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
   if(!Array.isArray(selections)||selections.some(id=>!text(id))||!unique(selections,x=>x))throw Error('联盟选择必须是唯一 actionId 数组');
   const view=allianceView(f,options),known=new Map(view.candidates.map(c=>[c.actionId,c]));if(selections.some(id=>!known.has(id)))throw Error('联盟候选已失效或无证据');
+  if((options.parameters??f.parameters)?.itemId!==undefined){const planned=planAllianceFort(f.fortFacts,{...options,parameters:options.parameters??f.parameters,ledger,selections});return {...planned,view};}
   const chosen=selections.map(id=>known.get(id));if(chosen.filter(a=>a.actionType==='finishOrder').length>1)throw Error('每次仅允许一个联盟订单');
   if(chosen.some(a=>a.actionType==='upgradeTech')&&chosen.length!==1)throw Error('联盟科技每批仅允许单次一级升级并独立复读');
   if(chosen.some(a=>a.actionType==='claimAid')&&chosen.some(a=>a.actionType==='cancel'))throw Error('领取与取消必须分别回读');
@@ -205,6 +215,7 @@ export function planAlliance(f,options={}){
 const increase=(b,a,id,n)=>b.stockReliable&&a.stockReliable&&quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(a.stock.get(id)??0)-(b.stock.get(id)??0)>=n;
 const consume=(b,a,costs)=>b.stockReliable&&a.stockReliable&&costs.every(({id,num})=>quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(b.stock.get(id)??0)-(a.stock.get(id)??0)>=num);
 export function verifyAlliance(op,b,a,response){
+  if(op.actionType==='donateFort')return verifyAllianceFort(op,b.fortFacts,a.fortFacts,response);
   if(!b.guildId||b.guildId!==a.guildId||b.playerId!==a.playerId)return false;const t=op.target,time=gameTimeBounds(a),beforeTime=gameTimeBounds(b);
   if(op.actionType==='upgradeTech'){
     const old=b.tech?.find(x=>x.techId===t.techId),next=a.tech?.find(x=>x.techId===t.techId),reply=response?.tech;
