@@ -180,7 +180,7 @@ test('failed atomic recovery append retains original history and unresolved prot
   try {
     const shown = await f.preview(), bytes = f.bytes(), rename = fs.renameSync; fs.renameSync = () => { throw Error('synthetic rename failure'); };
     try { await assert.rejects(() => f.confirm(shown), error => error.code === 'HISTORY_UNAVAILABLE'); } finally { fs.renameSync = rename; }
-    assert.equal(f.bytes(), bytes); assert.equal(f.service.blocked(context.accountId), true); assert.deepEqual(fs.readdirSync(f.dir), ['history.json']); assertReadOnly(f);
+    assert.equal(f.bytes(), bytes); assert.equal(f.service.blocked(context.accountId), true); assert.deepEqual(fs.readdirSync(f.dir), ['history.json','history.json.anchor']); assertReadOnly(f);
   } finally { f.cleanup(); }
 });
 

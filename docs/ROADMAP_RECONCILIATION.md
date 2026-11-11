@@ -2098,3 +2098,20 @@ R1公共合同足够供不依赖地图的后续域使用；W03资产可移植恢
 R1 W01/W02 公共合同已提交，W03资产恢复局部BLOCKED仍保留；R1/R2整阶段均未虚报完成。W05允许分支已离线交付；W06通用碎片、W04完整日报X01/金币X02/免费刷新X03、农田状态与种植/成熟收取、物资包实际兑换/权威入库、队列leadSec等待窗口及自动需求接线均尚未闭合。W07/W08其余高级成长/复制/其他模式/图纸解锁仍按原DoD连续补齐，不把纯投影当写功能。原95C/273Inventory/42P/8S以及W01–W22、R1–R8、E01–E24保持原编号与全部范围。
 
 后续文件所有权：root串行集成 registry/contracts/gameplay-page/page/文档；W19子任务独占 OperationService/Workflow/ExecutionHistory/Server 及专用测试，R2本批提交后才写这些共享文件；具名阵容Store已冻结，可交root接线；高级成长先静态还原客户端成本/实例/槽位，不复用reference独立执行器。所有并行成果冻结后统一检查/提交，不自动push/merge/reset。R8仍待R7后具体账号/请求/次数/预算/风险/清理授权，不以本Goal推导真实操作许可。
+
+
+### D.9 History 存在锚与确认后停止恢复（2026-11-11）
+
+本安全增量以 528dc6e9d8445877490fb1014dd305604fef4238 为父，随本节所在提交保存。当前未提交的 Farm/Forge/Named/Memory 协作成果另行整合，不因此宣称所属工作包完整完成。持久 Goal ACTIVE，分支、目录、原输入及真实操作边界保持 D.1/D.7。
+
+两个已复现的崩溃窗口：其一，History 记录 DISPATCHING 后文件消失，ENOENT 被误认作全新安装，且补充 Memory 尚可能没有事件；其二，动作已全部 SUCCESS+CONFIRMED、批次最终写中断，旧恢复把批次改 UNKNOWN 却没有可复核的不确定动作，产生永久锁。
+
+现有 createExecutionHistory 扩展同目录 file+'.anchor' 固定存在锚（version/kind/basename，无游戏状态）。首次写 History 前经过 writer fence，以 wx/write/fsync 保存；已读 History 或已见锚在同实例丢失均 fail closed，锚保留而 History 缺失跨重启同样拒绝。锚损坏或写/fsync失败不能生成/覆盖 History，原证据不变。旧版无锚 History 保持只读兼容，下次写迁移；GET 不创建锚。storagePath 只读导出，供同目录补充记忆依赖注入使用，不暴露写句柄。
+
+若未完成批次的所有原动作已 SUCCESS+CONFIRMED 且没有不确定派发，只读恢复投影为 CANCELLED、recovered、resumable=false、RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS，并保留 interruptedFinalStatus。不制造批次 SUCCESS，不修改原动作、预算或磁盘字节；原 UNKNOWN 绝不降级，不重建 permit 或父预算。此状态不等于失败重试许可。
+
+兼容/外部故障边界：跨重启同时丢失整个 History+anchor 证据对，或旧版仅只读、尚未写入迁移锚的 History 丢失，单靠该目录无法区分全新安装；本修复不声称防止全部外部删除。已有 Memory 的 orphan UNKNOWN 继续保守阻塞。新增文件是原 History 同目录的伴随文件，无新增目录。
+
+实际命令：node --test tests/execution-history.test.mjs tests/operation-recovery.test.mjs tests/operation-recovery-service.test.mjs tests/operation-recovery-api.test.mjs tests/run-budget-safety.test.mjs。结果 117 tests / 117 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo，2.98秒。对应本节提交的安全文件及父 528dc6e 上本次协作工作区，不是 R7 或真实 E2E。独立只读审查的107项与本次有重叠，不相加。原故障注入/账号隔离/追加复核/预算不退款断言保留；同目录精确文件断言增加 anchor，而非删除断言。git diff --check 通过。
+
+下一步继续整合 W04 单田种植、W07 装备制造收取、W08 具名阵容与首败停止 UI、W19 补充记忆及只读展示。所有真实游戏场景仍 REAL_UNVERIFIED，W03 资产来源恢复及其余外证闸门不改。

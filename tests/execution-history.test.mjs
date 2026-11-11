@@ -16,7 +16,7 @@ test('history atomically persists account-separated runs, including special dict
     const reloaded = createExecutionHistory({ file });
     assert.equal(reloaded.list('A')[0].accountId, 'A'); assert.equal(reloaded.list('B')[0].accountId, 'B');
     assert.equal(reloaded.list('__proto__')[0].accountId, '__proto__'); assert.deepEqual(reloaded.list('missing'), []);
-    assert.equal(reloaded.unresolved('A'), false); assert.deepEqual(fs.readdirSync(dir), ['history.json']);
+    assert.equal(reloaded.unresolved('A'), false); assert.deepEqual(fs.readdirSync(dir), ['history.json','history.json.anchor']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 test('restart recovers in-flight actions as UNKNOWN, never resumes or releases reservations', () => {
@@ -56,7 +56,7 @@ test('failed atomic replacement preserves original history and cleans the tempor
     const store = createExecutionHistory({ file }); store.put(run()); const before = fs.readFileSync(file, 'utf8');
     const original = fs.renameSync; fs.renameSync = () => { throw Error('synthetic rename failure'); };
     try { assert.throws(() => store.put(run('B')), /保存失败/); } finally { fs.renameSync = original; }
-    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.deepEqual(fs.readdirSync(dir), ['history.json']);
+    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.deepEqual(fs.readdirSync(dir), ['history.json','history.json.anchor']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -153,7 +153,7 @@ test('lost writer ownership rejects reconciliation before any disk replacement',
     let owned = true; const store = createExecutionHistory({ file, assertWriter() { if (!owned) throw Object.assign(new Error('synthetic ownership lost'), { code: 'WRITER_NOT_OWNED' }); } });
     store.put(run('A', 'UNKNOWN')); const before = fs.readFileSync(file, 'utf8'); owned = false;
     assert.throws(() => store.appendReconciliation('A', 'run-A', 'one', reconciliation('APPLIED')), error => error.code === 'WRITER_NOT_OWNED');
-    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.deepEqual(fs.readdirSync(dir), ['history.json']);
+    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.deepEqual(fs.readdirSync(dir), ['history.json','history.json.anchor']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -163,7 +163,7 @@ test('reconciliation atomic rename failure retains original UNKNOWN, reservation
     const store = createExecutionHistory({ file }); store.put(run('A', 'UNKNOWN')); const before = fs.readFileSync(file, 'utf8');
     const original = fs.renameSync; fs.renameSync = () => { throw Error('synthetic append rename failure'); };
     try { assert.throws(() => store.appendReconciliation('A', 'run-A', 'one', reconciliation('APPLIED')), /保存失败/); } finally { fs.renameSync = original; }
-    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.equal(store.unresolved('A'), true); assert.deepEqual(fs.readdirSync(dir), ['history.json']);
+    assert.equal(fs.readFileSync(file, 'utf8'), before); assert.equal(store.unresolved('A'), true); assert.deepEqual(fs.readdirSync(dir), ['history.json','history.json.anchor']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -175,4 +175,33 @@ test('appended recovery evidence is redacted without deleting prior failure evid
     const saved = fs.readFileSync(file, 'utf8'); assert.equal(saved.includes('synthetic-private-token'), false); assert.equal(saved.includes('synthetic-private-echo'), false);
     assert.equal(store.list('A')[0].actions[0].result, 'UNKNOWN'); assert.equal(store.unresolved('A'), true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('known History disappearing before a result fails closed both live and after restart',()=>{
+ const {dir,file}=fixture();try{const history=createExecutionHistory({file}),record=run('A','EXECUTING');record.actions[0].requestStatus='DISPATCHING';history.put(record);const original=fs.readFileSync(file,'utf8');assert.equal(fs.existsSync(file+'.anchor'),true);fs.unlinkSync(file);
+ for(const store of [history,createExecutionHistory({file})]){assert.throws(()=>store.list('A'),{code:'HISTORY_UNAVAILABLE'});assert.throws(()=>store.unresolved('A'),{code:'HISTORY_UNAVAILABLE'});assert.throws(()=>store.put(run('B')),{code:'HISTORY_UNAVAILABLE'});}assert.equal(fs.existsSync(file),false);
+ fs.writeFileSync(file,original);assert.equal(createExecutionHistory({file}).unresolved('A'),true);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('legacy History may be read without an anchor but observed disappearance is never an empty first run',()=>{
+ const {dir,file}=fixture();try{const record=run();fs.writeFileSync(file,JSON.stringify({version:1,accounts:{A:[record]}}));const history=createExecutionHistory({file});assert.equal(history.list('A').length,1);assert.equal(fs.existsSync(file+'.anchor'),false);fs.unlinkSync(file);assert.throws(()=>history.list('A'),{code:'HISTORY_UNAVAILABLE'});
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('confirmed action crash before final run write stops audit without inventing UNKNOWN or batch success',()=>{
+ const {dir,file}=fixture();try{const history=createExecutionHistory({file}),record=run('A','EXECUTING');Object.assign(record.actions[0],{requestStatus:'UNKNOWN',result:'SUCCESS',verification:{status:'CONFIRMED'},dispatched:true,unresolvedWrite:false});record.runBudget={state:'ACTIVE',reserved:{wood:4}};history.put(record);const bytes=fs.readFileSync(file,'utf8');const store=createExecutionHistory({file}),restored=store.list('A')[0];
+ assert.equal(restored.finalStatus,'CANCELLED');assert.equal(restored.recoveryDisposition,'RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS');assert.equal(restored.resumable,false);assert.equal(restored.interruptedFinalStatus,'EXECUTING');assert.deepEqual(restored.actions,record.actions);assert.deepEqual(restored.runBudget,record.runBudget);assert.equal(store.unresolved('A'),false);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('original UNKNOWN is never lowered even when all action confirmation appears complete',()=>{
+ const {dir,file}=fixture();try{const history=createExecutionHistory({file}),record=run('A','UNKNOWN');Object.assign(record.actions[0],{requestStatus:'SUCCESS',result:'SUCCESS',verification:{status:'CONFIRMED'},unresolvedWrite:false});history.put(record);const store=createExecutionHistory({file});assert.equal(store.list('A')[0].finalStatus,'UNKNOWN');assert.equal(store.unresolved('A'),true);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('incomplete or corrupt existence anchor is fail closed without overwriting original History',()=>{
+ const {dir,file}=fixture();try{const history=createExecutionHistory({file});history.put(run());const bytes=fs.readFileSync(file,'utf8');for(const value of ['','{bad',JSON.stringify({version:9})]){fs.writeFileSync(file+'.anchor',value);const store=createExecutionHistory({file});assert.throws(()=>store.list('A'),{code:'HISTORY_UNAVAILABLE'});assert.throws(()=>store.put(run('B')),{code:'HISTORY_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(fs.readFileSync(file+'.anchor','utf8'),value);}
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('an observed existence anchor cannot silently disappear into legacy compatibility',()=>{
+ const {dir,file}=fixture();try{const history=createExecutionHistory({file});history.put(run());const bytes=fs.readFileSync(file,'utf8');history.list('A');fs.unlinkSync(file+'.anchor');assert.throws(()=>history.list('A'),{code:'HISTORY_UNAVAILABLE'});assert.throws(()=>history.put(run('B')),{code:'HISTORY_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(fs.existsSync(file+'.anchor'),false);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

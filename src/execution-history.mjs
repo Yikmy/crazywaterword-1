@@ -12,6 +12,7 @@ const recoveryStatuses = new Set(['APPLIED', 'NOT_APPLIED', 'STILL_UNKNOWN']);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const fail = message => Object.assign(new Error(message), { code: 'HISTORY_UNAVAILABLE', statusCode: 409 });
 const originallyUncertain = action => action?.unresolvedWrite === true || action?.result === 'UNKNOWN' || (!(action?.result === 'SUCCESS' && action?.verification?.status === 'CONFIRMED') && ['DISPATCHING', 'EXECUTING', 'VERIFY', 'UNKNOWN'].includes(action?.requestStatus));
+export function actionWasUncertain(action) { return originallyUncertain(action); }
 export function actionNeedsReconciliation(run, action) {
   const pending = originallyUncertain(action);
   if (!pending) return false;
@@ -25,11 +26,25 @@ export function runHasUnresolvedWrites(run) {
 
 // Account keys never become filenames. Original outcomes stay immutable during reconciliation.
 export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets = () => [], assertWriter = () => {} } = {}) {
-  const live = new Set();
+  const live = new Set(), anchor=file+'.anchor';
+  let observed=false,anchorObserved=false;
+  const anchorValue={version:1,kind:'EXECUTION_HISTORY_EXISTENCE',basename:path.basename(file)};
+  function anchored(){
+    try { const value=JSON.parse(fs.readFileSync(anchor,'utf8'));if(JSON.stringify(value)!==JSON.stringify(anchorValue))throw Error('invalid anchor');anchorObserved=true;return true; }
+    catch(cause){if(cause.code==='ENOENT'&&!anchorObserved)return false;throw fail('执行历史存在锚无法读取或损坏；禁止覆盖');}
+  }
+  function ensureAnchor(){
+    if(anchored())return;
+    assertWriter();let fd;
+    try{fd=fs.openSync(anchor,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(anchorValue)+'\n','utf8');fs.fsyncSync(fd);anchorObserved=true;}
+    catch(cause){if(cause.code==='EEXIST'&&anchored())return;throw fail('执行历史存在锚保存失败；禁止新派发');}
+    finally{if(fd!==undefined)fs.closeSync(fd);}
+  }
   function read() {
     let raw;
-    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') return { version: 1, accounts: Object.create(null) }; throw fail('执行历史无法读取或损坏；已禁止新执行，原证据未修改'); }
+    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); observed=true; }
+    catch (error) { if (error.code === 'ENOENT'&&!observed&&!anchored()) return { version: 1, accounts: Object.create(null) }; throw fail('执行历史无法读取或损坏；已禁止新执行，原证据未修改'); }
+    anchored(); // A damaged existing anchor cannot be ignored even when History is readable.
     if (!object(raw) || raw.version !== 1 || !object(raw.accounts)) throw fail('执行历史版本或格式无效；原证据未修改');
     const validEvent = event => object(event) && recoveryStatuses.has(event.status) && typeof event.eventId === 'string' && Number.isFinite(Date.parse(event.timestamp)) && object(event.evidence);
     const validAction = action => object(action) && requests.has(action.requestStatus) && statuses.has(action.result) && (action.reconciliations === undefined || Array.isArray(action.reconciliations) && action.reconciliations.every(validEvent));
@@ -41,6 +56,12 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
   }
   function recover(run) {
     const copy = structuredClone(run);
+    // Actions are confirmed, but the run-level final write was interrupted.
+    // Preserve all action proof and original disk bytes; never resume or invent batch SUCCESS.
+    if(unfinished.has(copy.finalStatus)&&copy.actions.length>0&&copy.actions.every(action=>action.result==='SUCCESS'&&action.verification?.status==='CONFIRMED'&&!originallyUncertain(action))){
+      copy.interruptedFinalStatus=copy.finalStatus;copy.finalStatus='CANCELLED';copy.recovered=true;copy.resumable=false;copy.recoveryDisposition='RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS';
+      copy.stopReason='所有动作已有权威确认，仅批次终态未落盘；保留原证据，停止且不恢复执行';return copy;
+    }
     if (unfinished.has(copy.finalStatus) || copy.actions.some(action => action.unresolvedWrite === true || ['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus))) {
       copy.finalStatus = 'UNKNOWN'; copy.recovered = true;
       copy.stopReason = '进程退出时存在未完成操作；仅恢复历史，禁止自动重发，等待权威复核';
@@ -57,9 +78,10 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
+      ensureAnchor();
       const fd = fs.openSync(temporary, 'wx', 0o600);
       try { fs.writeFileSync(fd, JSON.stringify(raw, null, 2) + String.fromCharCode(10), 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-      fs.renameSync(temporary, file);
+      fs.renameSync(temporary, file); observed=true;
     } catch { throw fail('执行历史原子保存失败；停止批次，不继续发送'); }
     finally { try { fs.unlinkSync(temporary); } catch {} }
   }
@@ -88,5 +110,5 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     (actions[0].reconciliations ??= []).push(safe);
     write(raw); return structuredClone(safe);
   }
-  return { list, put, appendReconciliation, unresolved: accountId => list(accountId).some(runHasUnresolvedWrites) };
+  return Object.defineProperty({ list, put, appendReconciliation, unresolved: accountId => list(accountId).some(runHasUnresolvedWrites) },'storagePath',{value:path.resolve(file),enumerable:true});
 }
