@@ -353,6 +353,7 @@ export const PAGE = `<!doctype html>
   <section id="tab-heroes" class="hidden">
     ${CORE_GAMEPLAY_HTML.heroes}
     ${CORE_GAMEPLAY_HTML['equipment-forge']}
+    ${CORE_GAMEPLAY_HTML['equipment-growth']}
     <div class="bar">
       <button id="hero-plan">查看英雄数据</button>
       <button id="hero-run" class="primary" disabled hidden>执行养成</button>

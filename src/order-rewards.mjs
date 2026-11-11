@@ -37,7 +37,22 @@ function gameId(value) {
   return ['number', 'string'].includes(typeof value) && /^[1-9]\d*$/.test(String(value)) ? String(value) : null;
 }
 const preview = () => ({ status: 'BLOCKED_EVIDENCE', reason: 'ORDER_FINAL_REWARD_FORMULA_UNVERIFIED', rewardExp: null, rewardGold: null });
-const unknownConfig = reason => ({ status: 'UNKNOWN', reliable: false, reason, configuredBaseReward: null, finalPreview: preview(), minGoldEligible: false });
+const clientPreviewSource = 'v76 /subpackages/main/game.js SHA256 a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54 WorkerOrderPop._refreshUI:3547; CmdUtil.autoWorkerOrder:773';
+const unknownClientPreview = reason => ({ status: 'UNKNOWN', source: clientPreviewSource, scope: 'CLIENT_BASE_ONLY_BONUSES_NOT_APPLIED', reason, assets: null, rewardExp: null, rewardGold: null, minGoldEligible: false });
+const unknownConfig = reason => ({ status: 'UNKNOWN', reliable: false, reason, configuredBaseReward: null, clientBasePreview: unknownClientPreview(reason), finalPreview: preview(), minGoldEligible: false });
+function clientBasePreview(rows, special) {
+  const totals = new Map();
+  for (const row of rows) for (const asset of row.configuredReward) {
+    const amount = BigInt(asset.num) * BigInt(special ? 1 : row.requiredQuantity);
+    const total = (totals.get(asset.id) ?? 0n) + amount;
+    if (total > BigInt(Number.MAX_SAFE_INTEGER)) return unknownClientPreview('CLIENT_BASE_QUANTITY_UNSAFE');
+    totals.set(asset.id, total);
+  }
+  const assets = [...totals].map(([id, num]) => ({ id, num: Number(num) }));
+  return { status: 'CLIENT_BASE_PREVIEW', source: clientPreviewSource, scope: 'CLIENT_BASE_ONLY_BONUSES_NOT_APPLIED',
+    formula: special ? 'SPECIAL_CONFIG_REWARD_UNMULTIPLIED' : 'SUM_CONFIG_UNIT_REWARD_TIMES_REQUIREMENT_QUANTITY',
+    assets, rewardExp: assets.find(asset => asset.id === 'EXP')?.num ?? null, rewardGold: assets.find(asset => asset.id === 'GOLD')?.num ?? null, minGoldEligible: false };
+}
 
 function configuredAssets(value) {
   if (!dense(value) || !value.length) return null;
@@ -61,8 +76,8 @@ function requirements(value) {
   try { return resourceCosts(result); } catch { return null; }
 }
 
-/** Static source rows only. No quantity multiplier, special-order formula, bonus
- * or final reward is inferred; the known EXP implementation remains untouched.
+/** Static rows and the proven client base preview only. No bonus or final
+ * reward is inferred; the existing EXP/rule/execution implementation is untouched.
  * Normal requirements may repeat an item: reuse the original resource aggregator.
  */
 export function configuredBaseOrderReward(config, rawOrder) {
@@ -91,6 +106,7 @@ export function configuredBaseOrderReward(config, rawOrder) {
   });
   return { status: 'CONFIGURED_BASE_ONLY', reliable: true,
     configuredBaseReward: { basis: special ? 'SPECIAL_CONFIG_ROW' : 'PER_CONFIGURED_ITEM_UNIT', rows },
+    clientBasePreview: clientBasePreview(rows, special),
     finalPreview: preview(), minGoldEligible: false };
 }
 

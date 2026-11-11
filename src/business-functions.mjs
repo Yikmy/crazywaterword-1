@@ -27,19 +27,31 @@ export async function executeBusinessOperation(client, protocol, operation, { ad
     const args = { config, player, moduleConfig, parameters: operation.parameters ?? parameters, signal, stop, timeout };
     onStage('SURVEY');
     const facts = await adapter.survey(client, protocol, args); active();
-    const fresh = adapter.plan(facts, { ...args, selections: [operation.actionId], ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null) });
-    const candidate = fresh.actions?.find(row => row.actionId === operation.actionId);
-    if (!candidate || !equal(candidate.target, operation.target) || !equal(candidate.costs, operation.costs) || !equal(candidate.identity, operation.identity) || !equal(candidate.action, operation.action) || !equal(candidate.beforeState, operation.beforeState) || !equal(candidate.expectedState, operation.expectedState)
-      || !equal(operationBudgetClaims(candidate), operationBudgetClaims(operation)) || candidate.actionType !== operation.actionType || candidate.costSource !== operation.costSource || typeof candidate.costSource !== 'string' || !candidate.costSource) return finish('NOT_EXECUTED', { error: '目标、状态、参数或成本来源已变化，请重新规划授权' });
+    const currentCandidate = () => {
+      const fresh = adapter.plan(facts, { ...args, selections: [operation.actionId], ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null) });
+      const candidate = fresh.actions?.find(row => row.actionId === operation.actionId);
+      if (!candidate || !equal(candidate.target, operation.target) || !equal(candidate.costs, operation.costs) || !equal(candidate.identity, operation.identity) || !equal(candidate.action, operation.action) || !equal(candidate.beforeState, operation.beforeState) || !equal(candidate.expectedState, operation.expectedState)
+        || !equal(operationBudgetClaims(candidate), operationBudgetClaims(operation)) || candidate.actionType !== operation.actionType || candidate.costSource !== operation.costSource || typeof candidate.costSource !== 'string' || !candidate.costSource) return null;
+      return candidate;
+    };
+    const candidate = currentCandidate();
+    if (!candidate) return finish('NOT_EXECUTED', { error: '目标、状态、参数或成本来源已变化，请重新规划授权' });
+    // Reuse the domain planner's current eligibility and fact-age rules after
+    // each resource await, before reserving, and after synchronous persistence.
+    const assertCandidateCurrent = () => {
+      active();
+      if (!currentCandidate()) throw Object.assign(new Error('写前业务事实已过期或授权目标已变化，请重新规划授权'), { code: 'NOT_EXECUTED' });
+      active();
+    };
     const costs = resourceCosts(candidate.costs);
     assertPaymentAllowed({ ...candidate.action, costs });
     if (!protocol[action.request] || action.response && !protocol[action.response]) return finish('NOT_EXECUTED', { error: '缺少已注册业务协议' });
     onStage('RESOURCE_PREFLIGHT');
-    await validateResources(client, protocol, costs, { timeout, budget, claims: operationBudgetClaims(candidate), signal, stop, assertActive: active }); active();
+    await validateResources(client, protocol, costs, { timeout, budget, claims: operationBudgetClaims(candidate), signal, stop, assertActive: assertCandidateCurrent }); assertCandidateCurrent();
     if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size || client.uncertainWrites?.size) return finish('NOT_EXECUTED', {error:'写前连接存在未决请求或不确定响应，停止派发'});
     beforeState = candidate.beforeState;
     // The callback is synchronous: durable evidence failure must prevent transport.
-    onStage('DISPATCH_INTENT'); active();
+    onStage('DISPATCH_INTENT'); assertCandidateCurrent();
     // Conservatively retain a pending write even if the transport throws while sending.
     dispatched = true; requestStatus = 'DISPATCHING';
     if (action.response) {

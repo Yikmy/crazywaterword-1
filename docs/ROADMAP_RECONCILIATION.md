@@ -2218,4 +2218,50 @@ node --test tests/order-rewards.test.mjs tests/order-rewards-service.test.mjs te
 
 已交子域不重复开发。W04/W07/W08/W19整体仍PARTIAL，R1 W03来源恢复局部BLOCKED保留，R1/R2整阶段未虚报完成。下一独立施工：W07 C229明确已佩戴UID/正精铁成本的单次LEVEL Adapter；W08 C215源战报/站位关联离线证据还原；X02/X03有证据才扩展。root串行注册/D6/UI/文档，专域独占文件冻结后整合。
 
-E10组内增加持有图纸解锁、已解锁/缺图零派发、ids精确新增/扣图/原阵容pet不变及UNKNOWN；E08装备厂复读完整pool与镜像；E04关联typed奖励和净金币，不把基础预览当最终奖励。原E01–E24不增删，全部新增真实写REAL_UNVERIFIED。R7后另列账号/目标/请求/次数/预算/风险/清理等待R8单独授权。当前继续工程，Goal保持ACTIVE。
+E10组内增加持有图纸解锁、已解锁/缺图零派发、ids精确新增/扣图/原阵容pet不变及UNKNOWN；E09装备厂复读完整pool与镜像；E04关联typed奖励和净金币，不把基础预览当最终奖励。原E01–E24不增删，全部新增真实写REAL_UNVERIFIED。R7后另列账号/目标/请求/次数/预算/风险/清理等待R8单独授权。当前继续工程，Goal保持ACTIVE。
+
+### D.12 C229 装备升级、订单基础预览与公共派发时效修复（2026-11-11）
+
+本批父提交8cae74bba98ef43d25221743168ea7e67c166780，代码/测试/本节由同一次本地提交定位。恢复核对分支codex/phase-4-alliance-integration，原staged为空，未提交差异与交接一致。五份原始未跟踪输入保留且不暂存。父目录/仓库各级未发现AGENTS.md/TREE.md，沿用现有src/tests/docs目录。Goal ACTIVE；未连接真实游戏、读取真实凭证、创建Runtime、启动Stage Runner、操作MITM/CA或push/merge/reset。
+
+| 工作包/ID | 当前Function和调用链 | 当前分维度状态及边界 |
+|---|---|---|
+| W07 / C229、P3-6/P3-7、BIZ-H05/BIZ-R09装备LEVEL子分支 | equipment-growth#surveyEquipmentGrowth/viewEquipmentGrowth/planEquipmentGrowth/verifyEquipmentGrowth → equipmentGrowthModule → contract/registry → 唯一generic executor/Service/Ledger/History → 原Gameplay/Operations API → 英雄页装备子区/Workflow ACTION | Function EXISTING_FUNCTION；UI EXISTING_UI；Protocol STATIC_VERIFIED；允许的单次正精铁分支OFFLINE_VERIFIED；REAL_UNVERIFIED。C229完整范围PARTIAL，level=0/闲置装备升级未开放；W07其余专武/纹章/替换/精炼/升星/Pet不因此完成 |
+| W04 / C124、BIZ-W05、ORD-006 | order-rewards#configuredBaseOrderReward/clientBasePreview → 原survey/planner证据 → 原订单页 | 普通基础SUM(unitReward×requirement.num)，特殊直接配置reward且不乘需求量，OFFLINE_VERIFIED；CLIENT_BASE_ONLY_BONUSES_NOT_APPLIED，finalPreview仍BLOCKED_EVIDENCE，minGoldEligible=false。最终金币/加成/取整、X03刷新资格仍未证 |
+| W01/W02公共安全 | business-functions#executeBusinessOperation重用同adapter.plan精确候选校验 | 每次资源await后、原子reserve前、同步DISPATCH_INTENT持久化返回后重核事实时效和原授权候选；没有新executor、协议或任意Web写权限 |
+
+C229参数只有heroId与精确正int64十进制uid；默认关闭，仅明确已佩戴、level≥1、nextLevel≤配置上限、正精铁成本。复用parseEquipmentOwnership全pool/AllHero完整镜像/唯一主人/派生bag；各源保留原响应完成时间，30秒可信事实及账号/角色/世界/代次/连接/相关配置依赖均受控。成本与父子精铁/typed equipment UID声明一致，UNKNOWN保留预算/UID且不自动重发。
+
+EnhanceEquipRequest只含uid，没有专用Response；watch标签不能证明成功。verify要求完整pool与佩戴镜像同UID同字段、目标level恰好+1、精铁精确净扣、非目标装备/英雄/归属/库存不变。目标英雄仅允许服务器完整AllHero复读的power/attributes合法结构变化，不预测数值或要求战力必增。level=0/refine/star/replace不借零成本开放。D6只新增精确自有精铁及UID合同，付费/补料/购买仍硬拒。14静态Adapter加动态Stage共15合同。
+
+#### D.12.1 固定证据
+
+沿用work/e2e/20261110-b4/formation-client-evidence/manifest.json；只读重新核验v76包SHA256 4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444、包内/subpackages/main/game.js a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54、本地协议ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc及配置0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762。仅内存解包/静态读取，不执行bundle。
+
+EquipLevelBtn.ts:1065 refreshLvBtn/_toUpRequest确认EquipUpDecomposeCfg[level+1].upgradeCost及精铁；EquipUtil.ts:1087确认EquipAttrCfg[id_star].maxLv、绿首字star=0；EquipModel.ts:1077、AllHeroesModel.ts:93、HeroDetail.ts:1569、HeroUtil.ts:1673支撑pool镜像及权威派生字段。WorkerOrderPop._refreshUI:3547与CmdUtil.autoWorkerOrder:773证实客户端基础公式，配置129普通/25特殊行进入回归；未将客户端展示扩为最终服务端事实。
+
+#### D.12.2 实际测试与失败保留
+
+初次16文件404/404后，独立审查复现30秒事实过期仍派发，故该结果不是最终结论。新增RED命令：node --test --test-name-pattern 'expired equipment facts|equipment facts expiring' tests/equipment-growth.test.mjs；修复前2 tests/0 pass/2 fail，两条均确切在writes=1而期望0处失败；修复后同命令2/2 PASS。
+
+最终35文件统一定向命令：
+
+```powershell
+node --test tests/equipment-growth.test.mjs tests/equipment-growth-service.test.mjs tests/formation-unlock.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/farm-operations.test.mjs tests/farm-service.test.mjs tests/alliance.test.mjs tests/alliance-tech.test.mjs tests/museum.test.mjs tests/fleet.test.mjs tests/treasure.test.mjs tests/naval-rules.test.mjs tests/function-registry.test.mjs tests/function-contracts.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/operations-api.test.mjs tests/workflow.test.mjs tests/farm-forge-api.test.mjs tests/farm-forge-full-page.test.mjs tests/actions-safety.test.mjs tests/order-rewards.test.mjs tests/order-rewards-service.test.mjs tests/order-execution.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/operation-service.test.mjs tests/operation-adapters-integration.test.mjs tests/execution-memory-service.test.mjs tests/operation-recovery-service.test.mjs
+```
+
+实际814 tests/814 pass/0 fail/0 cancelled/0 skipped/0 todo，12.28秒。不是R7或真实E2E。历史131/98/404与本814重叠，不相加。HTTP为进程内createConsole合成边界，clientFactory/collect保持0；assembled PAGE使用实际call/operationMutation及封闭fetch；无真实连接。
+
+| 失败/审查证据 | 修复与保留行为 |
+|---|---|
+| 2×14.9秒库存读加此前0.5秒，事实30.3秒后仍Enhance派发，事后才UNKNOWN | 同planner同步重核；异步读过期0派发、0资源/UID预留、库存/等级不变 |
+| DISPATCH_INTENT同步持久化31秒后仍派发 | transport前再核，0派发；已预留精铁/UID保守保留，不发明refund |
+| 首版回归在旧post-survey计数先失败 | 零派发断言前置，两条RED精确记录危险派发，不降低断言 |
+| 原equipment注释字面换行导致ReferenceError | 上轮已修真实换行；本814含实际import/Service/UI运行 |
+| root只读静态脚本匹配/解密/转义失败及首次D.12 provider路径错误 | 均未写任何文件；改明确UNC/Stop后追加；包/entry/protocol/config哈希和独立静态语义复核保留 |
+
+#### D.12.3 当前账本、恢复及真实验收
+
+原95C/273Inventory/42P/8S、W01–W22、R1–R8、E01–E24全部保持。原a505019主表/附录继续作为历史基线，C229当前增量以本节为准，不能把协议历史行当当前无实现。W04/W06/W07/W08/W19整体仍PARTIAL，W03来源/地图恢复仍BLOCKED_EVIDENCE。E09（非E08）纳Forge与C229：pool/镜像、精铁净扣、目标派生、非目标保持及无效果UNKNOWN；E04保留最终事前金币未证；E20/E21/E23覆盖父预算/UNKNOWN/取消/隔离。所有真实写REAL_UNVERIFIED；R7尚未执行，R8其后另列具体账号/请求/次数/预算/风险/清理等待单独授权。
+
+下一独立工作：W08/C215极限列表→所选replay→BattleReport→合法站位来源链；W09/PRO002已有Fort普通自有材料捐赠；W07其余11原子成长子项核证后逐个闭环。root串行共享Registry/Contract/Service/D6/API/UI/docs，领域两文件可并行，不因局部缺证停止其他链。

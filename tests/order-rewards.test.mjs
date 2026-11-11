@@ -285,3 +285,24 @@ test('stale response facts cannot be repaired by changing only a caller summary 
   const output = f.inspect(); assert.equal(output.verification.status, 'UNKNOWN'); assert.equal(output.receivedReward, null);
   assert.equal(f.operation.result, 'SUCCESS'); assert.equal(f.operation.verification.status, 'CONFIRMED'); blockedPreview(output);
 });
+
+test('proven client base preview safely sums ordinary units but keeps final reward and MIN_GOLD blocked',()=>{
+ const c=config(),raw=order({requirements:[{id:'wood',num:2},{id:'cloth',num:3}]}),before=structuredClone({c,raw}),out=configuredBaseOrderReward(c,raw),p=out.clientBasePreview;
+ assert.equal(p.status,'CLIENT_BASE_PREVIEW');assert.equal(p.formula,'SUM_CONFIG_UNIT_REWARD_TIMES_REQUIREMENT_QUANTITY');assert.equal(p.scope,'CLIENT_BASE_ONLY_BONUSES_NOT_APPLIED');assert.equal(p.rewardGold,330);assert.equal(p.rewardExp,800);assert.equal(p.minGoldEligible,false);assert.match(p.source,/WorkerOrderPop/);blockedPreview(out);assert.deepEqual({c,raw},before);
+ p.assets[0].num=9;assert.equal(configuredBaseOrderReward(c,raw).clientBasePreview.rewardExp,800);
+ const repeated=configuredBaseOrderReward(c,order({requirements:[{id:'wood',num:1},{id:'wood',num:2}]})).clientBasePreview;assert.equal(repeated.rewardGold,90);assert.equal(repeated.rewardExp,300);
+});
+test('special base preview never multiplies configured reward by requested quantities',()=>{
+ const out=configuredBaseOrderReward(config(),order({isSpecial:true,requirements:[{id:'wood',num:999},{id:'cloth',num:1000}]}));assert.equal(out.clientBasePreview.formula,'SPECIAL_CONFIG_REWARD_UNMULTIPLIED');assert.equal(out.clientBasePreview.rewardGold,30);assert.equal(out.clientBasePreview.rewardExp,40);blockedPreview(out);
+});
+test('base preview uses every actual local normal and special row with the proven formula',()=>{
+ const local=loadConfig({file:CONFIG_PACK_PATH});for(const row of local.tables.WorkerOrderCfg.data){const out=configuredBaseOrderReward(local,order({requirements:[{id:row.itemId,num:3}]}));assert.equal(out.clientBasePreview.status,'CLIENT_BASE_PREVIEW');for(const[id,num]of row.reward)assert.equal(out.clientBasePreview.assets.find(v=>v.id===id).num,num*3);blockedPreview(out);}
+ for(const row of local.tables.WorkerSpecOrderCfg.data){const out=configuredBaseOrderReward(local,order({isSpecial:true,textId:Number(row.times),requirements:[{id:'wood',num:9}]}));assert.equal(out.clientBasePreview.status,'CLIENT_BASE_PREVIEW');for(const[id,num]of row.reward)assert.equal(out.clientBasePreview.assets.find(v=>v.id===id).num,num);blockedPreview(out);}
+});
+test('unsafe products and accumulated base totals do not destroy valid static source evidence',()=>{
+ for(const which of ['product','sum']){const c=config();c.tables.WorkerOrderCfg.data[0].reward=[['GOLD',which==='product'?Number.MAX_SAFE_INTEGER:Number.MAX_SAFE_INTEGER-1]];c.tables.WorkerOrderCfg.data[1].reward=[['GOLD',2]];const raw=which==='product'?order():order({requirements:[{id:'wood',num:1},{id:'cloth',num:1}]});const out=configuredBaseOrderReward(c,raw);assert.equal(out.reliable,true);assert.equal(out.status,'CONFIGURED_BASE_ONLY');assert.equal(out.clientBasePreview.status,'UNKNOWN');assert.equal(out.clientBasePreview.rewardGold,null);blockedPreview(out);}
+ const c=config();c.tables.WorkerOrderCfg.data[0].reward=[['GOLD',Number.MAX_SAFE_INTEGER]];const out=configuredBaseOrderReward(c,order({requirements:[{id:'wood',num:1}]}));assert.equal(out.clientBasePreview.rewardGold,Number.MAX_SAFE_INTEGER);
+});
+test('explicit base zero remains distinct from absent or invalid GOLD and cannot enable MIN_GOLD',()=>{
+ const c=config();c.tables.WorkerOrderCfg.data[0].reward=[['GOLD',0],['EXP',1]];let out=configuredBaseOrderReward(c,order());assert.equal(out.clientBasePreview.rewardGold,0);blockedPreview(out);c.tables.WorkerOrderCfg.data[0].reward=[['EXP',1]];out=configuredBaseOrderReward(c,order());assert.equal(out.clientBasePreview.rewardGold,null);blockedPreview(out);out=configuredBaseOrderReward(c,order({requirements:[{id:'missing',num:1}]}));assert.equal(out.clientBasePreview.status,'UNKNOWN');assert.equal(out.clientBasePreview.rewardGold,null);blockedPreview(out);
+});

@@ -137,3 +137,10 @@ test('ordinary preset D6 allows only the exact owned matching blueprint and neve
  for(const id of ['RUBY','钻石','4']){const a=action(2);a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
  const paid=action(2);paid.paid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
 });
+
+test('equipment D6 admits only one exact int64 UID with positive iron and no expanded growth or payment controls',()=>{
+ const action=()=>({request:'EnhanceEquipRequest',body:{uid:'9007199254740993'},costs:[{id:'精铁',num:50}]});assert.doesNotThrow(()=>assertPaymentAllowed(action()));
+ for(const mutate of [a=>a.body.uid=9007199254740992,a=>a.body.uid='0',a=>a.body.uid='01',a=>a.body.uid='-1',a=>a.body.uid='9223372036854775808',a=>a.body.uid='1.5',a=>a.body.heroId='A',a=>a.body.count=2,a=>a.body.universal=false,a=>a.body.buyMissing=true,a=>delete a.costs,a=>a.costs=[],a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.costs[0].id='GOLD',a=>a.costs.push({id:'精铁',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ for(const request of ['EquipRefineRequest','EquipStarUpRequest','EquipReplaceRequest'])assert.throws(()=>assertPaymentAllowed({...action(),request}),{code:'COST_UNKNOWN'});
+});
