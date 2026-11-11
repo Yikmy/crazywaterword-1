@@ -5,7 +5,8 @@ import { surveyCityOperations, cityView, planCityOperations, executeCityAction }
 import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
-import { operationResult } from './execution.mjs';
+import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
+import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan } from './production-planning.mjs';
 
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -49,6 +50,20 @@ export async function surveyCoreOperations(client, protocol, options = {}) {
   validateCoreOperationParameters(options.parameters);
   return surveyOrderExecution(client, protocol, { ...options, survey: surveyCityOperations });
 }
+// Explicit production survey reuses the existing city/order read set; only the
+// two already-catalogued appointment facts are added, never a second Snapshot.
+export async function surveyProductionOperations(client,protocol,options={}) {
+ const facts=await surveyCoreOperations(client,protocol,options);
+ const read=async name=>{const response=name.replace(/Request$/,"Response");if(!protocol?.[name]||!protocol?.[response])return null;assertExecutionActive(client,options);try{const body=await awaitExecution(client.request(name,{},response,options.timeout??8000),client,options);assertExecutionActive(client,options);return body;}catch(error){if(executionOutcome(error)==="CANCELLED")throw error;return null;}};
+ const appointed=await read("AppointInfoRequest"),heroes=await read("AllHeroRequest");
+ return {...facts,productionContext:{appointment:appointProduceReduce(options.config,{appointed:appointed?.heroes,heroes:heroes?.heroes,reliable:Array.isArray(appointed?.heroes)&&Array.isArray(heroes?.heroes)})}};
+}
+function productionPlanningView(facts,view,config) {
+ const appointment=facts.productionContext?.appointment??{reliable:false,seconds:null,reason:'APPOINT_SOURCE_UNKNOWN'};
+ const factories=view.factories.map(factory=>({...factory,recipes:factory.recipes.map(recipe=>({...recipe,appointmentAdjustedSeconds:produceFinalTime(recipe.produceTime,appointment.seconds),timingScope:'APPOINTMENT_ONLY_SPEED_BONUS_NOT_ESTABLISHED',packCoverage:packCoverPlan(config,{costs:recipe.costs,stock:facts.stockReliable===true?facts.stock:null})}))}));
+ const cropSupply=cropSupplyPlan(config,{stock:facts.stockReliable===true?facts.stock:null,buildings:facts.buildings,farmsReliable:facts.cityReliability?.buildings===true});
+ return {factories,appointment,cropSupply};
+}
 export function viewCoreOrders(facts, options = {}) {
   const args = context(options), result = planOrderExecution(facts, { ...args, ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null), selections: [] });
   return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated(row, args)), candidates: result.rows.map(row => gated(row, args)), notes: result.notes };
@@ -63,10 +78,10 @@ export function planCoreOrders(facts, options = {}) {
   return planOrderExecution(facts, { ...args, selections: ids });
 }
 function viewCityDomain(id, facts, options = {}) {
-  const args = context(options), view = cityView(facts, args);
+  const args = context(options), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
   const candidates = view.candidates.filter(row => kinds(id).has(row.actionType)).map(row => gated({ ...row, module: id }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
-    : { module: id, factories: view.factories, stock: view.stock, candidates, productionShortages: productionShortages(facts), productionPolicy: args.productionPolicy,
+    : { module: id, ...planning, stock: view.stock, candidates, productionShortages: productionShortages(facts), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, candidates }), notes: view.notes };
 }
 function planCityDomain(id, facts, options = {}) {
@@ -125,7 +140,7 @@ function dependencies(id, options = {}) {
   const args = context(options);
   const tableNames = id === 'orders' ? ['WorkerOrderCfg', 'WorkerSpecOrderCfg']
     : id === 'city' ? ['BuildingCfg', 'BuildingUpgradeCfg']
-      : ['BuildingCfg', 'BuildingProduceCfg', 'BuildingProduceParamCfg', 'GameParamCfg'];
+      : ['BuildingCfg', 'BuildingProduceCfg', 'BuildingProduceParamCfg', 'GameParamCfg', ...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"]];
   return { moduleConfig: args.moduleConfig, config: tableVersions(args.config, tableNames),
     ...(id === 'orders' ? { rules: structuredClone(args.rules) } : {}),
     ...(id === 'production' && args.mode === 'Automatic' ? { productionPolicy: structuredClone(args.productionPolicy) } : {}) };
@@ -144,10 +159,10 @@ export const cityModule = Object.freeze({ ...shared, id: 'city', label: '城市�
   execute: (client, protocol, operation, options) => executeCore('city', client, protocol, operation, options),
   dependencyVersions: options => dependencies('city', options), dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingUpgradeCfg']),
   evidence: evidence(['src/city-operations.mjs:surveyCityOperations', 'src/city-operations.mjs:cityView', 'src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction']) });
-export const productionModule = Object.freeze({ ...shared, id: 'production', label: '工厂生产', capabilities: Object.freeze(['C111', 'C113', 'C114', 'C115', 'C116']),
+export const productionModule = Object.freeze({ ...shared, survey:surveyProductionOperations, id: 'production', label: '工厂生产', capabilities: Object.freeze(['C111', 'C113', 'C114', 'C115', 'C116']),
   view: (facts, options) => viewCityDomain('production', facts, options), plan: (facts, options) => planCityDomain('production', facts, options),
   execute: (client, protocol, operation, options) => executeCore('production', client, protocol, operation, options),
   dependencyVersions: options => dependencies('production', options),
-  dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.GameParamCfg', 'Automatic:productionPolicy']),
+  dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg', 'config.GameParamCfg', 'Automatic:productionPolicy']),
   evidence: evidence(['src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction', 'src/production-policy.mjs:selectProductionCandidates', 'src/production-policy.mjs:productionShortages']) });
 export const CORE_OPERATION_MODULES = Object.freeze({ orders: ordersModule, city: cityModule, production: productionModule });

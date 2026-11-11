@@ -4,6 +4,7 @@ import { GAMEPLAY_MODULES, registerBusinessFunction, listBusinessFunctions } fro
 import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract } from '../src/function-contracts.mjs';
 import { createStageFunction } from '../src/stage-function.mjs';
 import { createOperationService } from '../src/operation-service.mjs';
+import { heroModule } from '../src/hero-operations.mjs';
 import { formationModule } from '../src/formation.mjs';
 import { allianceModule } from '../src/alliance.mjs';
 import { museumModule } from '../src/museum.mjs';
@@ -15,15 +16,16 @@ import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 // Every protocol type, response and account below is synthetic. No GameClient
 // connection, asset loader, default account path or persistent store is used.
 const clone = value => structuredClone(value);
-const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','stage'];
-const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES };
+const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','stage'];
+const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule };
 const tablesByModule = {
+  heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg'],
   museum: ['MuseumExpeditionStageCfg','MuseumExpeditionTeamCfg','MuseumExpeditionConditionCfg','MuseumExploreTimeFactorCfg','MuseumAchievementCfg','MuseumAreaCfg','MuseumAreaIndicatorCfg','MuseumDisplayCaseCfg','AntiqueBaseCfg'],
   fleet: ['CityCfg','AttackCityConsumeCfg','FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   treasure: ['GameplayOpenCfg','WorldParamCfg'], naval: [], stage: [], orders: ['WorkerOrderCfg','WorkerSpecOrderCfg'],
-  city: ['BuildingCfg','BuildingUpgradeCfg'], production: ['BuildingCfg','BuildingProduceCfg','BuildingProduceParamCfg','GameParamCfg'],
+  city: ['BuildingCfg','BuildingUpgradeCfg'], production: ['BuildingCfg','BuildingProduceCfg','BuildingProduceParamCfg','GameParamCfg',...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"]],
 };
 const stageParameters = (formationEnabled = false) => ({ config: { enabled: true, retryDelaySeconds: 0, maxAttempts: 1, maxStage: null, stopOnDefeat: true, formation: { enabled: formationEnabled, presetId: formationEnabled ? 2 : null } } });
 function fixture() {
@@ -89,7 +91,7 @@ async function makePlan(f, id, { mode = 'Manual', parameters = id === 'formation
 const approve = (f, plan) => f.service.authorize(f.session,{ batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map(row => row.actionId), resourceBudget: plan.resourceBudget, confirm: true });
 function noExecution(f) { assert.equal(f.writes.length,0); assert.equal(f.state.runnerPreparations,0); assert.equal(f.state.historyWrites,0); assert.equal(f.session.busy,null); }
 
-test('actual nine static adapters and dynamic Stage register as the ten contract-backed Functions', () => {
+test('actual ten static adapters and dynamic Stage register as the eleven contract-backed Functions', () => {
   const f = fixture(); assert.deepEqual(Object.keys(f.modules),allIds);
   for (const [id,module] of Object.entries(f.modules)) {
     assert.equal(module.contractVersion,1); assert.ok(Object.isFrozen(module));
@@ -110,7 +112,7 @@ test('registry rejects missing real hooks and unknown module identities', () => 
   assert.throws(() => registerBusinessFunction({ ...formationModule, id: 'untrusted' }),{ code: 'INVALID_FUNCTION_CONTRACT' });
 });
 test('registry and Service expose exact detached C/P/S, schema, permission and evidence metadata', () => {
-  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,10);
+  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,11);
   for (const entry of listed) {
     assert.deepEqual(entry.metadata,describeFunctionContract(entry.id)); assert.deepEqual(entry.capabilities,FUNCTION_CONTRACTS[entry.id].requirementIds.C);
     const throughService = f.service.moduleView(f.session.id,entry.id).functions.find(row => row.id === entry.id);
@@ -137,7 +139,7 @@ test('real domain validators reject semantically invalid fields before survey re
     assert.equal(f.reads.length,0); assert.equal(f.state.lookups,0); noExecution(f);
   }
 });
-test('ten actual dependency hooks ignore unrelated tables and bind every declared relevant table', () => {
+test('eleven actual dependency hooks ignore unrelated tables and bind every declared relevant table', () => {
   const f = fixture();
   for (const id of allIds) {
     const module = f.modules[id], base = f.options(id), before = module.dependencyVersions(base), unrelated = clone(base);

@@ -264,3 +264,40 @@ test('orders view publishes display rows without the internal transport Action',
   const f = fixture(), facts = await read(ordersModule, f), view = ordersModule.view(facts, options());
   assert.equal(view.orders[0].action, undefined); assert.ok(view.candidates[0].action, 'trusted planner candidates retain the internal catalog action until service projection');
 });
+
+test('production survey reuses core reads and adds only authoritative appointment reads with explainable projections', async () => {
+  const f=fixture(), base=f.client.request.bind(f.client);
+  const productionConfig=structuredClone(config);
+  Object.assign(productionConfig.tables,{
+    AppointEffectCfg:{data:[{effectId:'生产时间',viewType:'数值',heroAdd:[10,20,150,200],starAdd:[1,2,12,20]}]},
+    AppointPosCfg:{data:[{posId:1,effectId:'生产时间'}]},HeroCfg:{data:[{id:'appointed',qualityIndex:3}]},
+    FarmlandPlantCfg:{data:[{id:'小麦',material:['小麦种子',1]}]},SelectPackLibCfg:{data:[{selectItemId:'wood',itemId:'原料自选包',num:1,type:'道具'}]},
+  });
+  f.client.request=async(name,...args)=>{
+    if(name==='AppointInfoRequest'){f.reads.push(name);return {heroes:[{posId:1,heroId:'appointed'}]};}
+    if(name==='AllHeroRequest'){f.reads.push(name);return {heroes:[{heroId:'appointed',star:9}]};}
+    return base(name,...args);
+  };
+  const wire={...protocol,AppointInfoRequest:{},AppointInfoResponse:{},AllHeroRequest:{},AllHeroResponse:{}};
+  const args=options({config:productionConfig}), facts=await productionModule.survey(f.client,wire,args), view=productionModule.view(facts,args);
+  assert.equal(view.appointment.reliable,true);assert.equal(view.appointment.seconds,258);
+  assert.ok(view.factories.length);assert.equal(view.factories[0].recipes[0].appointmentAdjustedSeconds,0);
+  assert.equal(view.factories[0].recipes[0].timingScope,'APPOINTMENT_ONLY_SPEED_BONUS_NOT_ESTABLISHED');
+  assert.equal(view.factories[0].recipes[0].packCoverage.executable,false);
+  assert.equal(view.cropSupply.projectionOnly,true);
+  assert.equal(f.reads.filter(name=>name==='OnWaterRequest').length,1);
+  assert.equal(f.reads.filter(name=>name==='AppointInfoRequest').length,1);
+  assert.equal(f.reads.filter(name=>name==='AllHeroRequest').length,1);assert.equal(f.writes.length,0);
+});
+
+test('production missing appointment protocol or explicit star remains unknown and cannot imply instant production', async () => {
+  for(const includeProtocol of [false,true]){
+    const f=fixture(), base=f.client.request.bind(f.client);
+    f.client.request=async(name,...args)=>name==='AppointInfoRequest'?{heroes:[{posId:1,heroId:'appointed'}]}:name==='AllHeroRequest'?{heroes:[{heroId:'appointed'}]}:base(name,...args);
+    const args=options({config:{...config,tables:{...config.tables,AppointEffectCfg:{data:[{effectId:'生产时间',viewType:'数值',heroAdd:[1],starAdd:[1]}]},AppointPosCfg:{data:[{posId:1,effectId:'生产时间'}]},HeroCfg:{data:[{id:'appointed',qualityIndex:1}]}}}});
+    const wire=includeProtocol?{...protocol,AppointInfoRequest:{},AppointInfoResponse:{},AllHeroRequest:{},AllHeroResponse:{}}:protocol;
+    const view=productionModule.view(await productionModule.survey(f.client,wire,args),args);
+    assert.equal(view.appointment.reliable,false);assert.equal(view.appointment.seconds,null);
+    assert.equal(view.factories[0].recipes[0].appointmentAdjustedSeconds,null);assert.equal(f.writes.length,0);
+  }
+});

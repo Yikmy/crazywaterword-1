@@ -1,4 +1,4 @@
-import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT } from './gameplay-page.mjs';
+import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT, CORE_GAMEPLAY_HTML } from './gameplay-page.mjs';
 // This same guard is embedded in the browser and exercised by the offline tests.
 export function createAccountViewGuard() {
   let account = null;
@@ -244,6 +244,7 @@ export const PAGE = `<!doctype html>
     <div id="ops-city">尚未探测建筑。</div>
   </section>
   <section id="tab-production" class="hidden">
+    ${CORE_GAMEPLAY_HTML.production}
     <h2>生产管理</h2>
     <p class="dim">生产策略按账号保存在本地，仅限制 Automatic 本批次候选；保存配置不会启动生产。每批仍须预览与明确授权。</p>
     <div class="bar"><button id="production-policy-load">读取本地生产策略</button><button id="production-policy-save" disabled>保存本账号策略</button><button id="production-select-recommended" disabled>选择本次推荐生产</button></div>
@@ -342,6 +343,7 @@ export const PAGE = `<!doctype html>
   </section>
 
   <section id="tab-heroes" class="hidden">
+    ${CORE_GAMEPLAY_HTML.heroes}
     <div class="bar">
       <button id="hero-plan">查看英雄数据</button>
       <button id="hero-run" class="primary" disabled hidden>执行养成</button>

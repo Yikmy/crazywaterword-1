@@ -63,7 +63,12 @@ export function skillLevelMinStar(config, slot, targetLevel) {
 }
 
 // itemNum: (itemId) => number，直接吃 AllItemRequest 的结果。
-export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null, ledger = new ResourceLedger(itemNum) }) {
+export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null, ledger = new ResourceLedger(itemNum), kinds = ['level', 'star', 'skill'], atomic = false, slots = null }) {
+  // Optional narrow planning is used by the shared operation adapter. Defaults
+  // retain the legacy full-plan behavior; atomic never budgets hypothetical calls.
+  if (!Array.isArray(kinds) || Array.from(kinds).some(kind => !['level', 'star', 'skill'].includes(kind)) || new Set(kinds).size !== kinds.length
+      || typeof atomic !== 'boolean' || slots !== null && (!Array.isArray(slots) || Array.from(slots).some(slot => !Number.isInteger(slot) || slot < 0 || slot > 3) || new Set(slots).size !== slots.length)) throw new TypeError('Invalid hero planning scope');
+  const enabledKinds = new Set(kinds);
   const { byLevel, starByStar, heroById, skillUp } = buildIndex(config);
   const maxLevel = maxHeroLevelFor(playerLevel, config);
   const maxStar = maxHeroStar(config);
@@ -75,7 +80,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
   // 升星优先给战力最高的英雄，万能碎片有限时这个顺序更划算。
   const byPower = [...picked].sort((a, b) => (b.power ?? 0) - (a.power ?? 0));
 
-  for (const hero of picked) {
+  if (enabledKinds.has('level')) for (const hero of picked) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) {
       notes.push(`${hero.heroId}: HeroCfg 里没有这个英雄，跳过`);
@@ -89,7 +94,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
     let cost = 0;
     let count = 0;
     const callCosts = [];
-    for (let target = level + 1; target <= maxLevel; target += 1) {
+    for (let target = level + 1; target <= maxLevel && (!atomic || count < 1); target += 1) {
       const row = byLevel.get(target);
       if (!row) break;
       if (row.reqPlayerLv > playerLevel) break;
@@ -109,7 +114,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
   // 碎片是全局库存，多个英雄抢同一批万能碎片，所以预算要在英雄之间共享。
   const fragLeft = (item) => ledger.available(item);
 
-  for (const hero of byPower) {
+  if (enabledKinds.has('star')) for (const hero of byPower) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) continue;
     const key = QUALITY_CONSUME[cfg.quality];
@@ -126,7 +131,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
     let universalUsed = 0;
     const sameItem = universalItem === ownItem;
     const gained = [];
-    while (star < maxStar) {
+    while (star < maxStar && (!atomic || gained.length < 1)) {
       const row = starByStar.get(star + 1);
       if (!row) break;
       const need = safeResourceQuantity(row[key]);
@@ -178,19 +183,21 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
 
   const bookLeft = (item) => ledger.available(item);
 
-  for (const hero of picked) {
+  if (enabledKinds.has('skill')) for (const hero of picked) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) continue;
     const levels = hero.skillLevels ?? [];
     const star = starAfter.get(hero.heroId) ?? 0;
     for (let slot = 0; slot < Math.max(levels.length, 4); slot += 1) {
+      if (slots !== null && !slots.includes(slot)) continue;
       let cur = levels[slot] ?? 0;
+      const initialLevel = cur;
       // 等级 0 表示这个技能还没解锁，面板上直接不给升，这里也不排。
       if (cur === 0) continue;
       // 上限取自最高星级那一行（面板用的是 maxStarCfg），不是当前星级那一行。
       const cap = starByStar.get(maxStar)?.maxSkillLevel?.[slot] ?? 0;
       // 每次只升一级：目标是 cur+1，消耗取 HeroSkillUpCfg[品质_目标等级].costArr[槽位]
-      while (cur < cap) {
+      while (cur < cap && (!atomic || cur === initialLevel)) {
         const target = cur + 1;
         // 面板条件：英雄星级 >= heroStarBySkillLv(槽位, 目标等级)，不满足就点不动。
         const needStar = skillLevelMinStar(config, slot, target);
@@ -236,9 +243,8 @@ export async function runHeroPlan(client, protocol, plan, {
       let entry;
       try {
         assertExecutionActive(client, options);
-        const request = step.kind === 'level' ? 'HeroLevelUpRequest' : step.kind === 'star' ? 'HeroStarUpRequest' : step.kind === 'skill' ? 'HeroSkillLevelUpRequest' : null;
+        const { request, body } = buildHeroAction(step);
         if (!request || !protocol[request]) throw Object.assign(new Error('英雄动作协议或类型缺失'), { code: 'NOT_EXECUTED' });
-        const body = buildHeroBody(step);
         try { assertPaymentAllowed({ request, body, costs: step.costs }); }
         catch (error) { throw Object.assign(error, { code: 'NOT_EXECUTED' }); }
         const costs = step.kind === 'level' ? step.callCosts?.[i] ?? (calls === 1 ? step.costs : null) : step.costs;
@@ -263,25 +269,30 @@ export async function runHeroPlan(client, protocol, plan, {
   return results;
 }
 
-function buildHeroBody(step) {
+export function buildHeroBody(step) {
   if (step.kind === 'level') return { heroId: step.heroId };
   if (step.kind === 'star') return { heroId: step.heroId, universal: step.universal !== false };
   if (step.kind === 'skill') return { heroId: step.heroId, skillIdx: step.slot + 1 };
   throw new Error(`unknown hero step: ${step.kind}`);
 }
 
+// Shared request construction only: operation adapters must use their existing
+// generic executor rather than nesting this module's legacy transport loop.
+export function buildHeroAction(step) {
+  const requests = { level: 'HeroLevelUpRequest', star: 'HeroStarUpRequest', skill: 'HeroSkillLevelUpRequest' };
+  if (!Object.hasOwn(requests, step.kind)) throw Object.assign(new Error(`unknown hero step: ${step.kind}`), { code: 'NOT_EXECUTED' });
+  const request = requests[step.kind];
+  return { request, response: step.kind === 'star' ? 'HeroStarUpResponse' : null, body: buildHeroBody(step) };
+}
+
 // 只有 HeroStarUpRequest 在协议表里有配套的 Response，升级和技能走推送（SCUpdateHero），
 // 短观察窗口无法确认最终提交；未观察到拒绝仍返回 UNKNOWN 并停止后续写操作。
 async function sendHero(client, protocol, step, body, timeout, { signal } = {}) {
-  const request = step.kind === 'level'
-    ? 'HeroLevelUpRequest'
-    : step.kind === 'star'
-      ? 'HeroStarUpRequest'
-      : 'HeroSkillLevelUpRequest';
+  const { request, response: responseType } = buildHeroAction(step);
   if (!protocol[request]) throw Object.assign(new Error(`protocol has no type ${request}`), { code: 'NOT_EXECUTED' });
   if (request === 'HeroStarUpRequest') {
     if (!protocol.HeroStarUpResponse) throw Object.assign(new Error('protocol has no type HeroStarUpResponse'), { code: 'NOT_EXECUTED' });
-    const response = await client.request(request, body, 'HeroStarUpResponse', timeout, { mutate: true, signal });
+    const response = await client.request(request, body, responseType, timeout, { mutate: true, signal });
     return { response: 'HeroStarUpResponse', body: response };
   }
   const watched = await client.sendWatch(request, body, { window: 300, signal });

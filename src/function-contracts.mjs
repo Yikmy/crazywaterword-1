@@ -107,7 +107,19 @@ export const FUNCTION_CONTRACTS = freeze({
   production: contract('production', ['C111', 'C113', 'C114', 'C115', 'C116'], ['P1-2', 'P2-2'], ['src/core-operation-adapters.mjs#productionModule', 'src/city-operations.mjs#executeCityAction', 'src/production-policy.mjs#selectProductionCandidates'], {}, {
     implementation: { mode: 'EXISTING_EXECUTOR_ADAPTER', actions: ['startProduce', 'gainFactory', 'speedUpProduce'], blockedCapabilities: [blocked('C112:COMPLETE_DAILY_REPORT', 'Existing queue and shortages do not implement the full daily production report', 'NOT_IMPLEMENTED'), blocked('PREMIUM_OR_AD_SPEED', 'Only existing proven item acceleration path is permitted')] },
     verification: verification('verify', 'src/core-operation-adapters.mjs#verifyCoreOperation', 'Original executeCityAction queue and inventory reread; original wrapper receipt required', { executionMethod: 'execute', genericExecutorSubstitution: false }),
-    dependencyVersions: dependencies(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.GameParamCfg'], [{ when: 'mode=Automatic', keys: ['productionPolicy'] }]),
+    dependencyVersions: dependencies(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.GameParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg'], [{ when: 'mode=Automatic', keys: ['productionPolicy'] }]),
+  }),
+  heroes: contract('heroes', ['C221','C222','C223','C224'], ['P3-6','P3-7'], ['src/hero-operations.mjs#heroModule','src/heroes.mjs#planHeroes','src/heroes.mjs#buildHeroAction'], {
+    heroId: string, action: { type: 'string', enum: ['level','star','skill'] }, skillIdx: integer, allowUniversal: boolean,
+  }, {
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['LEVEL','STAR','SKILL'], blockedCapabilities: [blocked('UNIVERSAL_FRAGMENTS', 'Independent universal-fragment cost and consumption semantics are not proven')] },
+    verification: verification('verifyHeroOperation','src/hero-operations.mjs#verifyHeroOperation','Fresh AllHero plus exact single target growth and full inventory delta; LEVEL/SKILL have no invented response and remain UNKNOWN without authoritative effect'),
+    dependencyVersions: dependencies(['moduleConfig','config.HeroCfg'], [
+      { when: 'parameters.action=level', keys: ['config.HeroUpgradeCfg'] },
+      { when: 'parameters.action=star', keys: ['config.HeroStarCfg'] },
+      { when: 'parameters.action=skill', keys: ['config.HeroStarCfg','config.HeroSkillUpCfg'] },
+      { when: 'parameters.action=null', keys: ['config.HeroUpgradeCfg','config.HeroStarCfg','config.HeroSkillUpCfg'] },
+    ]),
   }),
 });
 

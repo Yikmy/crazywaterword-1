@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT } from '../src/gameplay-page.mjs';
-import { createAccountViewGuard } from '../src/page.mjs';
+import { PAGE, createAccountViewGuard } from '../src/page.mjs';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 class Element {
  constructor(tag='div'){this.tagName=tag;this.children=[];this.dataset={};this.style={};this.value='';this.checked=false;this.disabled=false;this._text='';this.attrs={};}
@@ -166,4 +166,115 @@ test('changing a Workflow core setting rejects an earlier in-flight candidate re
  const collect=h.node('wf-nodes').children[1].children.find(e=>e.dataset.workflowCandidate==='a').onclick();h.node('wf-orders-enabled').checked=true;h.node('wf-orders-enabled').onchange();
  h.respond('/api/gameplay/survey',data());await collect;
  assert.ok(!h.node('wf-nodes').children[1].children.some(e=>e.dataset.workflowSelection==='a'));assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+
+function cargoUiData(accountId='A'){
+ const value=data('fleet',accountId),fillId='fleet:cargoFill:1:1',blockedId='fleet:cargoFill:1:2',claimId='fleet:cargoClaim:2';
+ const cargoRow=(actionId,actionType,target,costs,parameters,blockedReason=null)=>({actionId,actionType,label:actionType,target,costs,parameters,executable:!blockedReason,blockedReason,costSource:'CargoShipsResponse original typed asset',beforeState:{ship:{index:target.shipIndex}},expectedState:{verifiedBy:'authoritative cargo and exact inventory'}});
+ value.config={enabled:true,cargoFill:true,cargoClaim:true};
+ value.view={candidates:[
+  cargoRow(fillId,'cargoFill',{shipIndex:1,cargoIndex:1},[{id:'<img onerror=evil()>',num:6}],{shipIndex:1,cargoIndex:1}),
+  cargoRow(blockedId,'cargoFill',{shipIndex:1,cargoIndex:2},[{id:'<img onerror=evil()>',num:6}],{shipIndex:1,cargoIndex:2},'INSUFFICIENT_CARGO_MATERIALS'),
+  cargoRow(claimId,'cargoClaim',{shipIndex:2},[],{shipIndex:2})
+ ],blocked:[],cargo:{source:'CargoShipsResponse',reliable:true,inventoryReliable:true,notes:['每船每批一个航次动作'],ships:[
+  {shipIndex:1,status:0,statusText:'采购中',arriveTime:0,reliable:true,claimActionId:null,slots:[
+   {cargoIndex:1,id:'<img onerror=evil()>',type:0,required:6,have:10,missing:0,filled:false,reliable:true,reason:null,actionId:fillId},
+   {cargoIndex:2,id:'<img onerror=evil()>',type:0,required:6,have:10,missing:0,filled:false,reliable:true,reason:'INSUFFICIENT_CARGO_MATERIALS',actionId:blockedId}
+  ]},
+  {shipIndex:2,status:2,statusText:'已返回',arriveTime:100,reliable:true,claimActionId:claimId,slots:[]},
+  {shipIndex:3,status:null,statusText:'未知',arriveTime:null,reliable:false,reason:'CARGO_SHIP_UNRELIABLE',claimActionId:null,slots:[
+   {cargoIndex:1,id:'未知物品',type:null,required:null,have:null,missing:null,filled:null,reliable:false,reason:'CARGO_FACTS_UNRELIABLE',actionId:null}
+  ]}
+ ],shortages:[{id:'<img onerror=evil()>',type:0,required:12,have:10,missing:2,reliable:true}]}};
+ return value;
+}
+async function cargoUiBoot(value=cargoUiData()){
+ const h=harness(),pending=h.run("refreshGameplay('fleet')");h.respond('/api/gameplay?module=fleet',value);await pending;return h;
+}
+function cargoUiButtons(h){
+ const result=[],visit=node=>{if(node.dataset.cargoAction)result.push(node);for(const child of node.children)visit(child);};visit(h.node('gp-fleet-cargo'));return result;
+}
+function cargoUiPlan(actionId='fleet:cargoFill:1:1'){
+ const selected=cargoUiData().view.candidates.find(row=>row.actionId===actionId);
+ return {accountId:'A',batchId:'cargo-batch',planHash:'cargo-exact-hash',mode:'Manual',actions:[structuredClone(selected)],resourceBudget:structuredClone(selected.costs),expiresAt:Date.now()+60000};
+}
+async function cargoUiPreview(h,actionId='fleet:cargoFill:1:1'){
+ cargoUiButtons(h).find(button=>button.dataset.cargoAction===actionId).onclick();
+ const pending=h.node('gp-fleet-plan').onclick();h.respond('/api/operations/plan',{plan:cargoUiPlan(actionId)});await pending;
+}
+test('Cargo professional view shows authoritative per-slot numbers and aggregated shortage once using safe text',async()=>{
+ const h=await cargoUiBoot(),box=h.node('gp-fleet-cargo');
+ assert.match(GAMEPLAY_HTML,/id="gp-fleet-cargo"/);for(const text of ['CargoShipsResponse','采购中','已返回','货船 3','CARGO_SHIP_UNRELIABLE','未知物品','<img onerror=evil()>','每船每批一个航次动作'])assert.ok(box.textContent.includes(text),text);
+ const summary=box.children.find(node=>node.tagName==='table');assert.deepEqual(summary.children[1].children.map(node=>node.textContent),['<img onerror=evil()>','12','10','2']);
+ const purchase=box.children.find(node=>node.tagName==='article'),table=purchase.children.find(node=>node.tagName==='table');
+ assert.deepEqual(table.children[1].children.slice(0,5).map(node=>node.textContent),['1','<img onerror=evil()>','6','10','0']);
+ assert.deepEqual(table.children[2].children.slice(0,5).map(node=>node.textContent),['2','<img onerror=evil()>','6','10','0']);
+ const unknown=box.children.filter(node=>node.tagName==='article')[2].children.find(node=>node.tagName==='table');assert.deepEqual(unknown.children[1].children.slice(2,5).map(node=>node.textContent),['未知','未知','未知']);
+ assert.equal(h.requests.length,1);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+test('Cargo slot and arrival buttons select exact existing Fleet candidates and Manual plan without implicit authorization',async()=>{
+ const h=await cargoUiBoot(),buttons=cargoUiButtons(h);assert.equal(buttons[0].disabled,false);assert.equal(buttons[1].disabled,true);assert.equal(buttons[2].disabled,false);
+ await cargoUiPreview(h);const request=h.requests.find(row=>row.path==='/api/operations/plan');
+ assert.deepEqual(JSON.parse(JSON.stringify(request.body)),{module:'fleet',mode:'Manual',selections:['fleet:cargoFill:1:1'],parameters:{shipIndex:1,cargoIndex:1}});
+ assert.equal(h.node('gp-fleet-authorize').disabled,false);assert.match(h.node('gp-fleet-plan-view').textContent,/cargo-exact-hash/);
+ buttons[2].onclick();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{shipIndex:2});assert.equal(h.node('gp-fleet-authorize').disabled,true);
+ const pending=h.node('gp-fleet-plan').onclick();const claimRequest=h.pending('/api/operations/plan');assert.deepEqual(JSON.parse(JSON.stringify(claimRequest.body)),{module:'fleet',mode:'Manual',selections:['fleet:cargoClaim:2'],parameters:{shipIndex:2}});
+ h.respond('/api/operations/plan',{plan:cargoUiPlan('fleet:cargoClaim:2')});await pending;
+ assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);assert.equal(h.pending('/api/gameplay/survey'),undefined);
+});
+test('Cargo buttons remain disabled for blocked or missing exact candidates and busy or stale local state',async()=>{
+ for(const change of [
+ value=>value.status.blocked=true,value=>value.status.running=true,
+ value=>{value.view.candidates[0].executable=false;value.view.candidates[0].blockedReason='UNKNOWN';},
+ value=>value.view.candidates.shift()
+ ]){
+  const value=cargoUiData();change(value);const h=await cargoUiBoot(value),button=cargoUiButtons(h)[0],before=h.node('gp-fleet-parameters').value;
+  assert.equal(button.disabled,true);button.onclick();assert.equal(h.node('gp-fleet-parameters').value,before);assert.equal(h.requests.length,1);
+ }
+ for(const set of [async h=>{h.ctx.snapshot.busy='workflow:other';const pending=h.node('gp-fleet-load').onclick();h.respond('/api/gameplay?module=fleet',cargoUiData());await pending;},async h=>{h.ctx.snapshot.connected=false;const pending=h.node('gp-fleet-load').onclick();h.respond('/api/gameplay?module=fleet',cargoUiData());await pending;},h=>h.node('gp-fleet-parameters').oninput(),h=>h.node('gp-fleet-config').oninput()]){
+  const h=await cargoUiBoot();await set(h);const button=cargoUiButtons(h)[0],before=h.node('gp-fleet-parameters').value;assert.equal(button.disabled,true);button.onclick();assert.equal(h.node('gp-fleet-parameters').value,before);assert.equal(h.pending('/api/operations/plan'),undefined);
+ }
+});
+test('Cargo pending survey disables detached buttons and account generations discard late facts and permits',async()=>{
+ const h=await cargoUiBoot(),buttons=cargoUiButtons(h),task=h.node('gp-fleet-survey').onclick();
+ assert.equal(buttons[0].disabled,true);buttons[0].onclick();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{});
+ h.select('B');h.select('A');h.respond('/api/gameplay/survey',cargoUiData());await task;
+ assert.equal(h.node('gp-fleet-cargo').textContent,'');assert.equal(h.node('gp-fleet-facts').textContent,'');assert.equal(h.run('gameplayCsrfToken()'),null);
+ buttons[2].onclick();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{});assert.equal(h.pending('/api/operations/execute'),undefined);
+ const live=await cargoUiBoot();await cargoUiPreview(live);const authorize=live.node('gp-fleet-authorize').onclick();live.select('B');live.select('A');
+ live.respond('/api/operations/authorize',{batchId:'cargo-batch',permitId:'late-cargo-permit'});await authorize;assert.equal(live.pending('/api/operations/execute'),undefined);assert.equal(live.node('gp-fleet-cargo').textContent,'');
+});
+test('Cargo edited parameters discard a late preview and cached polling preserves the draft',async()=>{
+ const h=await cargoUiBoot();cargoUiButtons(h)[0].onclick();const pending=h.node('gp-fleet-plan').onclick();
+ const draft='{"shipIndex":9,"cargoIndex":2}';h.node('gp-fleet-parameters').value=draft;h.node('gp-fleet-parameters').oninput();
+ h.respond('/api/operations/plan',{plan:cargoUiPlan()});await pending;assert.equal(h.node('gp-fleet-authorize').disabled,true);assert.doesNotMatch(h.node('gp-fleet-plan-view').textContent,/cargo-exact-hash/);
+ const poll=h.run("gameplayPoll('fleet')");h.respond('/api/gameplay?module=fleet',cargoUiData());await poll;
+ assert.equal(h.node('gp-fleet-parameters').value,draft);assert.equal(cargoUiButtons(h)[0].disabled,true);assert.equal(h.node('gp-fleet-plan').disabled,true);assert.equal(h.pending('/api/operations/authorize'),undefined);
+});
+test('port Workflow projection reuses Fleet survey and exact action selection without a second cargo executor',async()=>{
+ const h=await workflows(),graph={version:1,id:'port',name:'港口',nodes:[{id:'start',type:'START'},{id:'cargo',type:'ACTION',module:'fleet',parameters:{shipIndex:1,cargoIndex:1}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'cargo'},{from:'cargo',to:'stop'}]};
+ h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').onclick();
+ const card=h.node('wf-nodes').children[1],pending=card.children.find(node=>node.dataset.workflowCandidate==='cargo').onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/gameplay/survey').body)),{module:'fleet',parameters:{shipIndex:1,cargoIndex:1}});
+ h.respond('/api/gameplay/survey',cargoUiData());await pending;
+ const fresh=h.node('wf-nodes').children[1],select=fresh.children.find(node=>node.dataset.workflowSelection==='cargo');
+ assert.equal(select.children[2].disabled,true);select.value='fleet:cargoFill:1:1';select.onchange();
+ const selected=JSON.parse(h.node('wf-json').value).nodes[1];assert.equal(selected.module,'fleet');assert.equal(selected.selection,'fleet:cargoFill:1:1');assert.deepEqual(selected.parameters,{shipIndex:1,cargoIndex:1});
+ assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+
+const domainButtons=(h,id)=>{const out=[];const walk=node=>{if(node.dataset?.domainAction)out.push(node);for(const child of node.children||[])walk(child);};walk(h.node('gp-'+id+'-facts'));return out;};
+function growthUiData(module='heroes'){const value=data(module);value.config={enabled:true};value.view={heroes:[{heroId:'<unsafe hero>',level:1,star:2,skillLevels:[1,3],power:20}],universalExchange:'BLOCKED_EVIDENCE',appointment:{reliable:false,seconds:null,reason:'APPOINT_SOURCE_UNKNOWN'},factories:[{buildingId:'factory',recipes:[{productId:'cloth',produceTime:30,appointmentAdjustedSeconds:null,packCoverage:{reliable:false,executable:false},timingScope:'APPOINTMENT_ONLY_SPEED_BONUS_NOT_ESTABLISHED'}]}],cropSupply:{projectionOnly:true,waterlines:[{cropId:'wheat',uses:1,target:40}],seedDemand:[],surplusDemand:[]},candidates:[{...row('domain-action'),actionType:module==='heroes'?'LEVEL':'startProduce',parameters:module==='heroes'?{heroId:'A',action:'level'}:{}},{...row('domain-blocked'),action:null,executable:false,blockedReason:'BLOCKED_EVIDENCE'}]};return value;}
+async function growthUiBoot(id){const h=harness(),pending=h.run('refreshGameplay('+JSON.stringify(id)+')');h.respond('/api/gameplay?module='+id,growthUiData(id));await pending;return h;}
+for(const id of ['heroes','production']){
+ test(id+' professional view selects only a current server action and never authorizes implicitly',async()=>{const h=await growthUiBoot(id),buttons=domainButtons(h,id);assert.equal(buttons.length,2);assert.equal(buttons[0].disabled,false);assert.equal(buttons[1].disabled,true);buttons[0].onclick();assert.equal(h.node('gp-'+id+'-plan').disabled,false);const pending=h.node('gp-'+id+'-plan').onclick();assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/operations/plan').body)),{module:id,mode:'Manual',selections:['domain-action'],parameters:id==='heroes'?{heroId:'A',action:'level'}:{}});h.respond('/api/operations/plan',{plan:plan()});await pending;assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);});
+ test(id+' professional controls reject pending, dirty and cross-account detached actions',async()=>{const h=await growthUiBoot(id),buttons=domainButtons(h,id);const pending=h.node('gp-'+id+'-survey').onclick();assert.equal(buttons[0].disabled,true);buttons[0].onclick();h.select('B');h.select('A');h.respond('/api/gameplay/survey',growthUiData(id));await pending;assert.equal(h.node('gp-'+id+'-facts').textContent,'');buttons[0].onclick();assert.equal(h.node('gp-'+id+'-parameters').value,'{}');assert.equal(h.pending('/api/operations/authorize'),undefined);const live=await growthUiBoot(id);live.node('gp-'+id+'-parameters').oninput();assert.equal(domainButtons(live,id)[0].disabled,true);assert.equal(live.node('gp-'+id+'-plan').disabled,true);});
+}
+test('hero tables render hostile names as text and production projections retain unknown time and coverage',async()=>{const hero=await growthUiBoot('heroes');assert.match(hero.node('gp-heroes-facts').textContent,/<unsafe hero>/);assert.match(hero.node('gp-heroes-facts').textContent,/BLOCKED_EVIDENCE/);const production=await growthUiBoot('production');assert.match(production.node('gp-production-facts').textContent,/委任减时：未知/);assert.match(production.node('gp-production-facts').textContent,/仅投影|规划投影/);assert.match(production.node('gp-production-facts').textContent,/wheat/);assert.equal(production.requests.length,1);});
+
+test('existing hero and production pages mount each controlled UI once and Workflow modules remain unique',async()=>{
+ const ids=[...PAGE.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
+ for(const id of ['tab-heroes','tab-production','gp-heroes-section','gp-production-section','gp-heroes-plan','gp-production-plan'])assert.equal(ids.filter(value=>value===id).length,1,id);
+ const h=await workflows();h.node('wf-add').onclick();const card=h.node('wf-nodes').children.at(-1);assert.ok(card);
+ assert.match(PAGE,/gp-heroes-section/);assert.match(PAGE,/gp-production-section/);
 });

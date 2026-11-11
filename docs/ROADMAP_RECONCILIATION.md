@@ -2058,3 +2058,43 @@ D.4原32个测试文件，加tests/gameplay-view.test.mjs、run-budget.test.mjs�
 | 编辑脚本引号/路径转义解析失败 | 均在写文件前失败，改String.raw和显式Set-Location检查；无源码部分覆盖 |
 
 R1公共合同足够供不依赖地图的后续域使用；W03资产可移植恢复仍BLOCKED，R1整体不标完整交付。下一集合W04/W05/W06/W08及可提前W19；root统一改Service/Registry/Contracts/API/UI共享区，独立领域与测试可并行。后续按原DoD逐项实施，缺证只冻结子分支。W02不使C602/C603/C607全产品范围自动完整；95/273/42/8、W01–W22、E01–E24及所有REAL_UNVERIFIED保留。
+
+### D.7 R2 首批领域闭环与 W04 规划增量（2026-11-11）
+
+本节源码/测试以 `fe80056499b1fe2fad8c9ff583ff969354907d07` 为父提交，随本节所在提交定位。恢复时实际分支仍为 `codex/phase-4-alliance-integration`；原入口 `aibot-crazywaterword` 仍是无 HEAD 的独立空仓库。已核对 staged 为空、已有未提交成果属于本持续施工并由各子任务冻结交还；原五份未跟踪资料完整保留且不暂存。未重新创建 Goal，持久目标 ACTIVE。NAS 普通沙箱访问被拒后使用获准的明确 UNC 命令；PowerShell 必须先 Set-Location -ErrorAction Stop，不能依赖 workdir。
+
+| 工作包/要求 | 当前源码与调用闭环 | 状态与明确边界 |
+|---|---|---|
+| W05 / C131–134 | `fleet.mjs#cargoShortageView/fleetView/planFleet/verifyFleet` → 既有 Fleet Adapter → OperationService → ResourceLedger/History → 原 Gameplay API 与专业港口表 → Workflow Fleet ACTION | 允许的装货/到港领奖及缺货视图 OFFLINE_VERIFIED；E07/E20/E21 REAL_UNVERIFIED。货船加速仍由 D6/独立证据闸门限制，不能把这一禁止路径写成已交付可执行能力 |
+| W06 / C221–224 | `heroes.mjs#planHeroes/buildHeroBody/buildHeroAction` + `hero-operations.mjs#heroModule` → 静态 registry/contract → 原 generic executor/Service/History/API → 原英雄页单项选择 → Workflow ACTION | LEVEL/STAR/SKILL 的自有材料原子路径 OFFLINE_VERIFIED；通用碎片兑换和消费语义仍 BLOCKED_EVIDENCE，不以本分支通过宣告 W06 原 DoD 全部完成；E08/E20/E21 REAL_UNVERIFIED |
+| W04 / BIZ-R16d–g 计算增量 | `production-planning.mjs#appointEffectValue/appointProduceReduce/produceFinalTime/packCoverPlan/cropSupplyPlan` → production Adapter survey/view → 原生产页专业规划区 | 委任减时、持有包覆盖、作物水位/种子/余料纯投影 OFFLINE_VERIFIED；不自动开包/排产/购买，projectedGain 不进入库存。W04 整体 PARTIAL |
+| W08 / FRM-007 本地子域 | 已另行完成 named-formations Store 及专项测试，暂未纳本 R2 首批提交 | Store 独立离线验证不等于专业 API/UI 和应用执行闭环；后续交接继续施工 |
+| W19 | execution-memory Store 及测试已冻结，后续独立接线 | 尚未进入本 R2 首批提交；不能声称全入口拒绝记忆/历史关联已完成 |
+
+港口成本固定来自原 `CargoShipsResponse.ship[].orderItem[].asset`，装货预期奖励取对应原货格 `reward.asset`，到港预期奖励取原船 `reward`；响应不能自定义预期。每艘货船每批至多一个动作，跨船共享 Ledger。验证绑定整航次、货格、typed 奖励与完整库存净变化，EXP 跨级语义不能精确证明时保持 UNKNOWN。重复物资先合并需求再扣一次库存，未知/溢出/继承默认值不会变零。专业按钮仅选择同一个服务端 actionId，不另建 cargo 发送器。
+
+英雄复用原 planner，新增兼容默认值的 kinds/slots/atomic 只缩小候选范围。业务每次单英雄/单级/单技能槽，STAR 明确 universal=false；允许用户传 true 也 BLOCKED_EVIDENCE。AllHero 必须有明确自有标量、唯一身份及实际技能槽，Long 保真并保留合法 double 属性。验证目标精确增量、其他维度/英雄不变及完整材料净扣除，STAR 还核对 nextStar；无 typed 的 LEVEL/SKILL 不发明 Response。静默或 typed ACK 独立均不能变成功。稳定 actionId 只作 Workflow 语义选择器；identity/before/expected/costs/dependencies 仍逐批进 planHash，旧预览/permit 在等级变化后失效。
+
+原 `/api/heroes/run` 仍 403，CLI `heroes` 在 loadCredentials 前由 rejectStandaloneGameWrite 拒绝真实写；旧 runHeroPlan 仅保留兼容实现，不是新产品执行入口。真实写统一走现有受控 API，同源 CSRF、账号/代次/连接、模块默认关闭、精确批次预算、UNKNOWN/取消/迟到、持久执行历史保护均未放宽。没有扩大任意 Web 写白名单或协议表。
+
+生产附加采集复用原 core survey，只增已登记的 AppointInfo/AllHero 只读查询，不重建 Snapshot。时间范围明确为 APPOINTMENT_ONLY_SPEED_BONUS_NOT_ESTABLISHED。新增实际配置依赖 AppointEffectCfg/AppointPosCfg/HeroCfg/FarmlandPlantCfg/SelectPackLibCfg 纳入 production 版本钩子；其他业务不被这些表无关变化作废。物资包永远 executable=false，仅原料自选包/工事材料自选包可投影，需求共享包数量累计，RUBY/钻石/4 均拒绝；预计产量或合计包数溢出则 unreliable/ok=false。种子和余料建议排除含 D6 成本配方。
+
+离线统一命令：`node --test tests/production-planning.test.mjs tests/core-operation-adapters.test.mjs tests/fleet.test.mjs tests/cargo-operations.test.mjs tests/cargo-service.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/run-budget.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/resource-budget.test.mjs tests/actions-safety.test.mjs tests/cli-safety.test.mjs tests/execution-lifecycle.test.mjs tests/order-execution.test.mjs tests/city-operations.test.mjs tests/workflow.test.mjs`。
+
+实际结果 **534 tests / 534 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo，15.71秒**。23文件集成定向回归；不是 R7 全量，也不是真实 E2E。Hero 领域使用真实本地 protobuf Codec+合成状态；Cargo Service 使用真实 GameClient 本地 Codec/假 socket；HTTP 测试仅127.0.0.1临时 Console，clientFactory 禁真实 client、临时账号与临时 History。没有创建真实 Runtime、读取真实 Token、联网游戏、MITM/CA 或真实写请求。阶段前置安全/原订单/城市/Workflow/预算/CLI 断言保留。`git diff --check`通过。
+
+| 本批失败证据 | 修复及保留断言 |
+|---|---|
+| 生产纯算法首次21项18PASS/3FAIL | 补 D6 的4别名；pack乘积溢出不可 reliable/ok；排除付费余料/种子配方。原失败用例保留，另加 seed D6 回归 |
+| 新Hero请求构造对未知kind改变旧NOT_EXECUTED为UNKNOWN | 构造器恢复明确 NOT_EXECUTED，原断言通过，未改旧测试制造PASS |
+| Hero初版合法小数属性被拒、raw/parsed状态不一致 | 按实际协议 double 保真及完整原状态一致性修复，增加真实Codec用例 |
+| 静态Workflow第二个Hero节点因第一个成长导致旧全局哈希actionId失效 | 稳定语义选择器+逐批完整事实绑定；旧permit0派发、下一等级新成本/planHash专项保留 |
+| 新增Hero后3个注册计数断言仍写10 | 扩到11个真实Function，并对新增域运行原注入拒绝/依赖失效/账号隔离断言；没有删除原域 |
+| Cargo UI测试最初访问私有gpControls | 测试改走公开刷新；pending detached按钮/账号迟到保护原断言保留 |
+| 两次UI编辑脚本解析/匹配失败 | 均未写对应UI文件；采用完整匹配后原子写单文件，再语法/VM/DOM测试 |
+
+### D.8 当前恢复位置、依赖与下一步（本批提交时）
+
+R1 W01/W02 公共合同已提交，W03资产恢复局部BLOCKED仍保留；R1/R2整阶段均未虚报完成。W05允许分支已离线交付；W06通用碎片、W04完整日报X01/金币X02/免费刷新X03、农田状态与种植/成熟收取、物资包实际兑换/权威入库、队列leadSec等待窗口及自动需求接线均尚未闭合。W07/W08其余高级成长/复制/其他模式/图纸解锁仍按原DoD连续补齐，不把纯投影当写功能。原95C/273Inventory/42P/8S以及W01–W22、R1–R8、E01–E24保持原编号与全部范围。
+
+后续文件所有权：root串行集成 registry/contracts/gameplay-page/page/文档；W19子任务独占 OperationService/Workflow/ExecutionHistory/Server 及专用测试，R2本批提交后才写这些共享文件；具名阵容Store已冻结，可交root接线；高级成长先静态还原客户端成本/实例/槽位，不复用reference独立执行器。所有并行成果冻结后统一检查/提交，不自动push/merge/reset。R8仍待R7后具体账号/请求/次数/预算/风险/清理授权，不以本Goal推导真实操作许可。

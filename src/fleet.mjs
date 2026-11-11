@@ -1,5 +1,5 @@
 // Fleet/cargo adapters. Existing GameClient, Session and shared executor own execution.
-import { ResourceLedger, resourceCosts } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { loadMapAsset } from './world.mjs';
 import { parseFormation, validateFormationParameters, planFormation, catalogFrom } from './formation.mjs';
 import { strictParameters, invalid, readNavalFact, stockFacts, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, moduleConfiguration } from './naval-facts.mjs';
@@ -14,6 +14,112 @@ function parametersOf(parameters = {}) {
   if (Object.keys(formation).length) { if (!nonempty(parameters.buildingId)) throw invalid('舰队阵容必须绑定明确 buildingId'); validateFormationParameters(formation); }
   return parameters;
 }
+
+// Cargo uses protocol DisplayAssetType ITEM=0 / RESOURCE=1. The expected
+// rewards come from the original order/arrival, never from the write response.
+const cargoStatusText = Object.freeze({0:'采购中',1:'航行中',2:'已返回'});
+const cargoResourceIds = new Set(Object.values(RESOURCE_NAMES));
+const denseCargoArray = value => Array.isArray(value) && Array.from({length:value.length},(_,index)=>Object.hasOwn(value,index)).every(Boolean);
+const ownCargo = (value,key) => value && typeof value==='object' && Object.hasOwn(value,key);
+function cargoAsset(value) {
+  if (!['type','id','num'].every(key=>ownCargo(value,key)) || ![0,1].includes(value.type) || !nonempty(value.id) || value.id!==value.id.trim()) return null;
+  const num=quantity(value.num);
+  if (num===null || num<=0 || (value.type===1 && !cargoResourceIds.has(value.id)) || (value.type===0 && cargoResourceIds.has(value.id))) return null;
+  return {type:value.type,id:value.id,num};
+}
+function cargoAssets(value) {
+  if (!denseCargoArray(value) || !value.length) return null;
+  const sums=new Map();
+  for (const raw of value) {
+    const asset=cargoAsset(raw); if(!asset)return null;
+    const key=asset.type+':'+asset.id, num=(sums.get(key)?.num??0)+asset.num;
+    if(!Number.isSafeInteger(num))return null;
+    sums.set(key,{...asset,num});
+  }
+  return [...sums.values()].sort((a,b)=>a.type-b.type||a.id.localeCompare(b.id));
+}
+function cargoShip(raw) {
+  if (!['index','status','arriveTime','orderItem','reward'].every(key=>ownCargo(raw,key)) || !Number.isSafeInteger(raw.index) || raw.index<=0 || raw.index>2147483647 || ![0,1,2].includes(raw.status) || !Number.isSafeInteger(raw.arriveTime) || raw.arriveTime<0 || raw.arriveTime>2147483647 || !denseCargoArray(raw.orderItem) || !raw.orderItem.length) return null;
+  const orderItem=[];
+  for (const row of raw.orderItem) {
+    const asset=ownCargo(row,'asset')?cargoAsset(row.asset):null;
+    const reward=ownCargo(row,'reward') && ownCargo(row.reward,'asset')?cargoAssets(row.reward.asset):null;
+    if(!asset || asset.type!==0 || !ownCargo(row,'filled') || typeof row.filled!=='boolean' || !reward)return null;
+    orderItem.push({asset,filled:row.filled,reward});
+  }
+  const reward=cargoAssets(raw.reward); if(!reward)return null;
+  if(raw.status===0 ? raw.arriveTime!==0 || orderItem.every(row=>row.filled) : raw.arriveTime===0 || orderItem.some(row=>!row.filled))return null;
+  return {index:raw.index,status:raw.status,arriveTime:raw.arriveTime,orderItem,reward};
+}
+function cargoHeaderReliable(ships) {
+  return denseCargoArray(ships) && ships.every(ship=>ownCargo(ship,'index') && Number.isSafeInteger(ship.index) && ship.index>0 && ship.index<=2147483647) && new Set(ships.map(ship=>ship.index)).size===ships.length;
+}
+function cargoInventory(facts) {
+  if(facts?.stockReliable!==true)return null;
+  const sources=facts?.sources;
+  if(!sources) {
+    if(facts?.stockReliable!==true || !(facts.stock instanceof Map) || [...facts.stock].some(([id,num])=>!nonempty(id)||quantity(num)===null))return null;
+    return new Map([...facts.stock].map(([id,num])=>[id,quantity(num)]));
+  }
+  const items=sources.AllItemRequest,resources=sources.AllResourceRequest;
+  if(items?.available!==true || resources?.available!==true || !ownCargo(items.body,'items') || !ownCargo(resources.body,'list') || !denseCargoArray(items.body.items) || !denseCargoArray(resources.body.list))return null;
+  const stock=new Map();
+  for(const row of items.body.items) {
+    const id=ownCargo(row,'itemId')?row.itemId:ownCargo(row,'id')?row.id:null;
+    const num=ownCargo(row,'num')?quantity(row.num):ownCargo(row,'count')?quantity(row.count):null;
+    if(!nonempty(id)||id!==id.trim()||num===null||stock.has(id)||(ownCargo(row,'itemId')&&ownCargo(row,'id')&&row.itemId!==row.id))return null;
+    stock.set(id,num);
+  }
+  const seen=new Set();
+  for(const row of resources.body.list) {
+    if(!ownCargo(row,'res')||!ownCargo(row,'amount')||!Number.isSafeInteger(row.res)||row.res<=0||seen.has(row.res))return null;
+    const id=RESOURCE_NAMES[row.res]??String(row.res),num=quantity(row.amount);
+    if(num===null||stock.has(id))return null;
+    seen.add(row.res);stock.set(id,num);
+  }
+  return stock;
+}
+function cargoStockAmount(stock,id) {return stock instanceof Map?quantity(stock.has(id)?stock.get(id):0):null;}
+function cargoInventoryMatches(beforeFacts,afterFacts,costs,rewards) {
+  const before=cargoInventory(beforeFacts),after=cargoInventory(afterFacts);if(!before||!after)return false;
+  const delta=new Map();
+  for(const {id,num} of costs)delta.set(id,(delta.get(id)??0)-num);
+  for(const {id,num} of rewards)delta.set(id,(delta.get(id)??0)+num);
+  return [...new Set([...before.keys(),...after.keys(),...delta.keys()])].every(id=>{
+    const old=cargoStockAmount(before,id),current=cargoStockAmount(after,id),expected=old+(delta.get(id)??0);
+    return old!==null&&current!==null&&Number.isSafeInteger(expected)&&expected>=0&&current===expected;
+  });
+}
+function cargoFillExpected(ship,index) {return {cargoIndex:index+1,filled:true,reward:ship.orderItem[index].reward};}
+function cargoClaimExpected(ship) {return {oldArrivalConsumed:true,reward:ship.reward};}
+export function cargoShortageView(facts, options = {}) {
+  const candidates=options.candidates??buildCandidates(facts,options),stock=cargoInventory(facts),totals=new Map(),notes=[];
+  const header=facts?.cargoReliable===true&&cargoHeaderReliable(facts.ships),ships=[];
+  if(!header)notes.push('CARGO_SOURCE_UNRELIABLE');
+  for(const raw of header?facts.ships:[]) {
+    const parsed=cargoShip(raw),slots=[];
+    if(!parsed)notes.push('CARGO_SHIP_UNRELIABLE:'+raw.index);
+    const orders=denseCargoArray(raw.orderItem)?raw.orderItem:[];
+    for(let index=0;index<orders.length;index++) {
+      const row=orders[index],asset=ownCargo(row,'asset')?cargoAsset(row.asset):null;
+      const filled=ownCargo(row,'filled')&&typeof row.filled==='boolean'?row.filled:null;
+      const have=asset?cargoStockAmount(stock,asset.id):null,required=asset?.num??null;
+      const reliable=Boolean(parsed&&asset&&have!==null);
+      const selected=candidates.find(row=>row.actionType==='cargoFill'&&row.target.shipIndex===raw.index&&row.target.cargoIndex===index+1);
+      slots.push({cargoIndex:index+1,id:asset?.id??null,type:asset?.type??null,required,have,missing:reliable?Math.max(0,required-have):null,filled,reliable,reason:selected?.reason??(!reliable?'CARGO_FACTS_UNRELIABLE':null),actionId:selected?.actionId??null,reward:parsed?.orderItem[index]?.reward??null});
+      if(parsed?.status===0&&!filled&&asset) {
+        const key=asset.type+':'+asset.id,old=totals.get(key),sum=(old?.required??0)+asset.num;
+        totals.set(key,{id:asset.id,type:asset.type,required:old?.required===null?null:Number.isSafeInteger(sum)?sum:null});
+      }
+    }
+    const claim=candidates.find(row=>row.actionType==='cargoClaim'&&row.target.shipIndex===raw.index);
+    ships.push({shipIndex:raw.index,status:ownCargo(raw,'status')&&[0,1,2].includes(raw.status)?raw.status:null,statusText:ownCargo(raw,'status')?cargoStatusText[raw.status]??'未知':'未知',arriveTime:ownCargo(raw,'arriveTime')&&quantity(raw.arriveTime)!==null?quantity(raw.arriveTime):null,voyageIdentity:parsed?stable(parsed):null,reliable:Boolean(parsed),reason:parsed?null:'CARGO_SHIP_UNRELIABLE',claimActionId:claim?.actionId??null,claimReason:claim?.reason??null,reward:parsed?.reward??null,slots});
+  }
+  const shortages=[...totals.values()].sort((a,b)=>a.id.localeCompare(b.id)).map(row=>{const have=cargoStockAmount(stock,row.id),reliable=row.required!==null&&have!==null;return {...row,have,missing:reliable?Math.max(0,row.required-have):null,reliable};});
+  if(!stock)notes.push('CARGO_INVENTORY_UNRELIABLE');
+  return {reliable:header&&ships.every(ship=>ship.reliable),inventoryReliable:Boolean(stock),source:'CargoShipsResponse',ships,shortages,notes};
+}
+
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
 export function validateFleetConfig(value = {}) { const result = moduleConfiguration(value, FLEET_DEFAULT_CONFIG); if (!Number.isFinite(result.minimumDurabilityRatio) || result.minimumDurabilityRatio <= 0 || result.minimumDurabilityRatio > 1 || quantity(result.petrolReserve) === null || !Number.isSafeInteger(result.scenarioId) || result.scenarioId < 1) throw invalid('舰队规则无效'); if (!Number.isFinite(result.repairBelowDurabilityRatio) || result.repairBelowDurabilityRatio <= 0 || result.repairBelowDurabilityRatio > 1 || !['IMMEDIATE','WAIT_NATURAL'].includes(result.repairMode) || !Number.isSafeInteger(result.maximumRepairPetrolPerPlan) || result.maximumRepairPetrolPerPlan < 0 || result.maximumRepairPetrolPerPlan > 1e9 || result.repairPriorityBuildingIds.some(id => !nonempty(id) || id.trim() !== id || id.length > 300) || new Set(result.repairPriorityBuildingIds).size !== result.repairPriorityBuildingIds.length) throw invalid('维修阈值、模式、计划预算或优先级无效'); return result; }
 export async function surveyFleet(client, protocol, { config = null, player = null, signal, parameters = {}, moduleConfig = {} } = {}) {
@@ -43,7 +149,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
     if (result.available && Object.hasOwn(body, 'unitRepairCost') && Object.hasOwn(body, 'unitRepairTime') && Number.isFinite(body.unitRepairCost) && body.unitRepairCost > 0 && Number.isFinite(body.unitRepairTime) && body.unitRepairTime > 0) repairParams.set(fleet.buildingId, { unitRepairCost: body.unitRepairCost, unitRepairTime: body.unitRepairTime });
   }
   const ships = sources.CargoShipsRequest.body?.ship;
-  const cargoReliable = sources.CargoShipsRequest.available && Array.isArray(ships) && ships.every(ship => Number.isSafeInteger(ship.index) && ship.index > 0) && new Set(ships.map(ship => ship.index)).size === ships.length;
+  const cargoReliable = sources.CargoShipsRequest.available && cargoHeaderReliable(ships);
   const cities = sources.WorldInfoRequest.body?.cities;
   const citiesReliable = sources.WorldInfoRequest.available && Array.isArray(cities) && cities.every(city => Number.isSafeInteger(city.id) && city.id > 0) && new Set(cities.map(city => city.id)).size === cities.length;
   const guildId = quantity(sources.GuildInfoRequest.body?.guild?.guildId), playerGuild = quantity(player?.guildId);
@@ -115,24 +221,29 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, 'MoveFleetsToCityRequest', null, { buildingId: [fleet.buildingId], cityId: parameters.cityId }, { buildingId: fleet.buildingId, cityId: parameters.cityId }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     }
   }
-  for (const ship of facts.ships ?? []) {
+  for (const ship of Array.isArray(facts.ships)?facts.ships:[]) {
+    if(!ship || typeof ship!=='object')continue;
     if (parameters.shipIndex !== undefined && parameters.shipIndex !== ship.index) continue;
-    const orders = Array.isArray(ship.orderItem) ? ship.orderItem : [];
-    for (let index = 0; index < orders.length; index++) {
-      if (parameters.cargoIndex !== undefined && parameters.cargoIndex !== index + 1) continue;
-      const order = orders[index]; let costs = null; try { costs = resourceCosts([{ id: order.asset?.id, num: order.asset?.num }]); } catch {}
-      let reason = disabled('cargoFill');
-      if (!reason && (!facts.cargoReliable || !facts.stockReliable || ship.status !== 0 || order.filled !== false)) reason = 'CARGO_UNAVAILABLE';
-      if (!reason && (!costs || !costs.length)) reason = 'COST_UNKNOWN';
-      if (!reason && costs.some(cost => ['RUBY', '钻石'].includes(cost.id))) reason = 'PREMIUM_BLOCKED';
-      candidates.push(candidate('cargoFill', { shipIndex: ship.index, cargoIndex: index + 1 }, costs ?? [], 'CargoShipsResponse.orderItem.asset；不购买缺失物品', { shipIndex: ship.index, status: ship.status, order }, { filled: true }, 'FillCargoShipRequest', 'FillCargoShipResponse', { shipIndex: ship.index, cargoIndex: [index + 1] }, { shipIndex: ship.index, cargoIndex: index + 1 }, reason || (!facts.protocolReady?.FillCargoShipRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
+    const parsed=cargoShip(ship),stock=cargoInventory(facts),header=facts.cargoReliable===true&&cargoHeaderReliable(facts.ships);
+    const orders=Array.isArray(ship.orderItem)?ship.orderItem:[];
+    for(let index=0;index<orders.length;index++) {
+      if(parameters.cargoIndex!==undefined&&parameters.cargoIndex!==index+1)continue;
+      const asset=ownCargo(orders[index],'asset')?cargoAsset(orders[index].asset):null;
+      const costs=asset?[{id:asset.id,num:asset.num}]:[];
+      let reason=disabled('cargoFill');
+      if(!reason&&['RUBY','钻石'].includes(orders[index]?.asset?.id))reason='PREMIUM_BLOCKED';
+      if(!reason&&(!header||!parsed||!stock))reason='CARGO_FACTS_UNRELIABLE';
+      if(!reason&&(parsed.status!==0||parsed.orderItem[index].filled!==false))reason='CARGO_UNAVAILABLE';
+      if(!reason&&(!asset||asset.type!==0))reason='COST_UNKNOWN';
+      if(!reason&&cargoStockAmount(stock,asset.id)<asset.num)reason='INSUFFICIENT_CARGO_MATERIALS';
+      candidates.push(candidate('cargoFill',{shipIndex:ship.index,cargoIndex:index+1},costs,'CargoShipsResponse.orderItem.asset；不购买缺失物品',{ship:parsed},parsed?cargoFillExpected(parsed,index):null,'FillCargoShipRequest','FillCargoShipResponse',{shipIndex:ship.index,cargoIndex:[index+1]},{shipIndex:ship.index,cargoIndex:index+1},reason||(!facts.protocolReady?.FillCargoShipRequest?'PROTOCOL_UNAVAILABLE':null)));
     }
-    const reason = disabled('cargoClaim') || (!facts.cargoReliable || ship.status !== 2 ? 'CARGO_UNAVAILABLE' : null) || (!facts.protocolReady?.DrawShipRewardRequest ? 'PROTOCOL_UNAVAILABLE' : null);
-    candidates.push(candidate('cargoClaim', { shipIndex: ship.index }, [], '客户端 ARRIVED 分支领取现有奖励，无购买/加速', { shipIndex: ship.index, status: ship.status, orderItem: orders }, { oldArrivalConsumed: true }, 'DrawShipRewardRequest', 'DrawShipRewardResponse', { index: ship.index }, { shipIndex: ship.index }, reason));
+    const reason=disabled('cargoClaim')||(!header||!parsed||!stock?'CARGO_FACTS_UNRELIABLE':null)||(parsed.status!==2?'CARGO_UNAVAILABLE':null)||(!facts.protocolReady?.DrawShipRewardRequest?'PROTOCOL_UNAVAILABLE':null);
+    candidates.push(candidate('cargoClaim',{shipIndex:ship.index},[],'客户端 ARRIVED 分支领取现有奖励，无购买/加速',{ship:parsed},parsed?cargoClaimExpected(parsed):null,'DrawShipRewardRequest','DrawShipRewardResponse',{index:ship.index},{shipIndex:ship.index},reason));
   }
   return candidates;
 }
-export function fleetView(facts, options = {}) { return { candidates: buildCandidates(facts, options), fleets: facts.fleets ?? [], ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
   { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },
@@ -151,15 +262,16 @@ export function planFleet(facts, options = {}) {
   const repairs = ids.filter(id => byId.get(id).actionType === 'fleetRepair').sort((a,b) => (priority.get(byId.get(a).target.buildingId) ?? Number.MAX_SAFE_INTEGER) - (priority.get(byId.get(b).target.buildingId) ?? Number.MAX_SAFE_INTEGER));
   let repairIndex = 0; const ordered = ids.map(id => byId.get(id).actionType === 'fleetRepair' ? repairs[repairIndex++] : id);
   const ledger = options.ledger ?? new ResourceLedger(facts.stockReliable ? facts.stock : null);
-  const actions = [], notes = [], used = new Set(); let repairPetrol = 0;
+  const actions = [], notes = [], used = new Set(), usedCargoShips = new Set(); let repairPetrol = 0;
   for (const id of ordered) {
-    const row = byId.get(id), fleetId = row.target?.buildingId;
+    const row = byId.get(id), fleetId = row.target?.buildingId, cargoShipIndex = row.target?.shipIndex;
     if (fleetId && used.has(fleetId)) { notes.push('同一批次的舰队已被其他动作预占'); continue; }
+    if(cargoShipIndex!==undefined&&usedCargoShips.has(cargoShipIndex)){notes.push('同一货船每批仅一个精确航次动作；后续货格须重新读取并规划授权');continue;}
     const cost = row.actionType === 'fleetRepair' ? row.costs.find(item => item.id === '汽油')?.num ?? 0 : 0;
     if (row.actionType === 'fleetRepair' && cost > opts.maximumRepairPetrolPerPlan - repairPetrol) { notes.push('REPAIR_PLAN_BUDGET'); continue; }
     const chosen = selectedActions(candidates, [id], ledger, opts.petrolReserve); notes.push(...chosen.notes);
     if (!chosen.actions.length) continue;
-    actions.push(...chosen.actions); if (fleetId) used.add(fleetId); repairPetrol += cost;
+    actions.push(...chosen.actions); if (fleetId) used.add(fleetId); if(cargoShipIndex!==undefined)usedCargoShips.add(cargoShipIndex); repairPetrol += cost;
   }
   return { actions, notes };
 }
@@ -192,12 +304,25 @@ export function verifyFleet(operation, beforeFacts, afterFacts, response) {
     const arrived = [1, 3, 5].includes(after.state) && after.cityId === target.cityId && before.cityId !== target.cityId;
     return { confirmed: moving || arrived, reason: moving || arrived ? '仅证实精确舰队移动或到达；不代表攻城胜利' : '未证实精确目标移动；保留UNKNOWN' };
   }
-  if (!beforeFacts?.cargoReliable || !afterFacts?.cargoReliable) return { confirmed: false, reason: 'CargoShips权威复读缺失' };
-  const before = beforeFacts.ships.find(ship => ship.index === target?.shipIndex), after = afterFacts.ships.find(ship => ship.index === target?.shipIndex);
-  if (!before || !after) return { confirmed: false, reason: '精确货船缺失' };
-  if (type === 'cargoFill') { const old = before.orderItem?.[target.cargoIndex - 1], current = after.orderItem?.[target.cargoIndex - 1]; return { confirmed: before.status === 0 && old?.filled === false && current?.filled === true && stable(old.asset) === stable(current.asset), reason: '以精确货格filled及原资产身份复读为准；响应奖励不足以证明装货' }; }
-  if (type === 'cargoClaim') return { confirmed: before.status === 2 && [0, 1].includes(after.status) && response?.ship?.index === target.shipIndex && Array.isArray(response?.reward?.asset) && response.reward.asset.length > 0, reason: '须同时确认奖励回包、精确货船及旧到港状态已消耗' };
-  return { confirmed: false, reason: '该操作未通过业务验证' };
+  if (!['cargoFill','cargoClaim'].includes(type) || !beforeFacts?.cargoReliable || !afterFacts?.cargoReliable || !cargoHeaderReliable(beforeFacts.ships) || !cargoHeaderReliable(afterFacts.ships)) return {confirmed:false,reason:'CargoShips权威复读缺失'};
+  const before=cargoShip(beforeFacts.ships.find(ship=>ship.index===target?.shipIndex)),after=cargoShip(afterFacts.ships.find(ship=>ship.index===target?.shipIndex));
+  const unconfirmed=reason=>({confirmed:false,reason});
+  if(!before||!after||stable(operation.beforeState)!==stable({ship:before})||operation.identity!==stable({ship:before}))return unconfirmed('精确货船航次或授权前置状态不一致');
+  const reward=ownCargo(response,'reward')&&ownCargo(response.reward,'asset')?cargoAssets(response.reward.asset):null;
+  if(type==='cargoFill') {
+    const index=target.cargoIndex-1,old=before.orderItem[index],current=after.orderItem[index];
+    const action={request:'FillCargoShipRequest',response:'FillCargoShipResponse',body:{shipIndex:target.shipIndex,cargoIndex:[target.cargoIndex]}};
+    if(!Number.isSafeInteger(index)||index<0||!old||!current||before.status!==0||old.filled!==false||current.filled!==true||stable(operation.target)!==stable({shipIndex:before.index,cargoIndex:index+1})||stable(operation.action)!==stable(action)||stable(operation.costs)!==stable([{id:old.asset.id,num:old.asset.num}])||stable(operation.expectedState)!==stable(cargoFillExpected(before,index)))return unconfirmed('装货请求、精确货格或原始成本/奖励不一致');
+    const topology=before.orderItem.length===after.orderItem.length&&stable(before.reward)===stable(after.reward)&&before.orderItem.every((row,i)=>stable(row.asset)===stable(after.orderItem[i].asset)&&stable(row.reward)===stable(after.orderItem[i].reward)&&(i===index?after.orderItem[i].filled===true:row.filled===after.orderItem[i].filled));
+    const completed=after.orderItem.every(row=>row.filled),phase=completed?after.status===1&&after.arriveTime>0:after.status===0&&after.arriveTime===0;
+    const confirmed=topology&&phase&&reward!==null&&stable(reward)===stable(old.reward)&&cargoInventoryMatches(beforeFacts,afterFacts,operation.costs,old.reward);
+    return {confirmed,reason:confirmed?'原航次精确货格、预定奖励及权威库存净变化一致':'货格/航次、预定奖励或库存净变化未确认；保留UNKNOWN',responseEvidence:{rewardMatched:reward!==null&&stable(reward)===stable(old.reward)}};
+  }
+  const action={request:'DrawShipRewardRequest',response:'DrawShipRewardResponse',body:{index:target.shipIndex}},returned=ownCargo(response,'ship')?cargoShip(response.ship):null;
+  if(before.status!==2||after.status!==0||after.orderItem.some(row=>row.filled)||stable(operation.target)!==stable({shipIndex:before.index})||stable(operation.action)!==stable(action)||stable(operation.costs)!==stable([])||stable(operation.expectedState)!==stable(cargoClaimExpected(before)))return unconfirmed('到港航次、领奖请求或新采购状态不一致');
+  const confirmed=returned!==null&&stable(returned)===stable(after)&&reward!==null&&stable(reward)===stable(before.reward)&&cargoInventoryMatches(beforeFacts,afterFacts,[],before.reward);
+  return {confirmed,reason:confirmed?'到港原定奖励、精确新航次及权威库存增量一致':'奖励、返回货船或权威库存未确认；保留UNKNOWN',responseEvidence:{rewardMatched:reward!==null&&stable(reward)===stable(before.reward),shipMatched:returned!==null&&stable(returned)===stable(after)}};
+
 }
 // Re-read only the fixed scenario map used by movement cost calculations.
 // No map functions or filesystem paths are exported as dependency metadata.
