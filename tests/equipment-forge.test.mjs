@@ -22,7 +22,7 @@ const enabled={enabled:true};
 const protocol=Object.fromEntries(['OnWaterRequest','OnWaterResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse','EquipsRequest','EquipsResponse','AllHeroRequest','AllHeroResponse','MakeEquipRequest','PickMadeEquipRequest','PickMadeEquipResponse'].map(n=>[n,{}]));
 const wireProtocol=loadProtocol();
 function wire(name,value){const t=wireProtocol[name];return t.decode(t.encode(value).finish());}
-function fake({queue=idle(),afterWrite,response,watchStatus='UNKNOWN',stock={材料:20,红材料:20,GOLD:100},bag=[equip()],heroes=[hero()],buildings,clock=true,wireMode=false}={}){
+function fake({queue=idle(),afterWrite,response,watchStatus='UNKNOWN',stock={材料:20,红材料:20,GOLD:100},bag=[equip(),equip('9007199254740994')],heroes=[hero()],buildings,clock=true,wireMode=false}={}){
   const client={connected:true,factContext:{accountId:'17',generation:1},stock:new Map(Object.entries(stock)),buildings:structuredClone(buildings??[building('1装备厂',queue)]),bag:structuredClone(bag),heroes:structuredClone(heroes),reads:[],writes:[],uncertainWrites:new Map(),nowMs:1000000,
     gameClock:{read(){return clock?{status:'TRUSTED',reliable:true,nowMs:client.nowMs,earliestMs:client.nowMs,latestMs:client.nowMs,accountId:client.factContext.accountId,generation:client.factContext.generation}:null;}},
     markUnverifiedWrite(request){this.uncertainWrites.set(request,true);},confirmWatchedWrite(request){this.uncertainWrites.delete(request);},
@@ -91,8 +91,8 @@ test('maturity requires earliest trusted time and matching account-generation cl
   const f=await survey(fake({queue:making({finishTime:1000})}),params('pick'));assert.equal(plan(f,params('pick')).actions.length,1);
 });
 
-test('duplicate bag/worn UID or malformed complete ownership blocks before dispatch',async()=>{
-  for(const input of [{bag:[equip(),equip()]},{bag:[equip('9007199254740994')]},{heroes:[hero(),hero('B')]},{heroes:[hero('A',{equips:[{uid:'2'}]})]},{bag:[equip('1',{attr:Array(1)})]}]){const facts=await survey(fake(input));assert.equal(facts.ownership,null);assert.equal(plan(facts).actions.length,0);}
+test('duplicate pool UID, conflicting worn mirror or malformed complete ownership blocks before dispatch',async()=>{
+  for(const input of [{bag:[equip(),equip()]},{bag:[equip(),equip('9007199254740994',{level:1})]},{bag:[equip()]},{heroes:[hero(),hero('B')]},{heroes:[hero('A',{equips:[{uid:'2'}]})]},{bag:[equip('1',{attr:Array(1)})]}]){const facts=await survey(fake(input));assert.equal(facts.ownership,null);assert.equal(plan(facts).actions.length,0);}
 });
 
 test('inventory aliases, duplicate raw IDs and unsafe quantities remain unknown',async()=>{
@@ -142,7 +142,7 @@ test('non-target buildings and original target fields are immutable for each act
 });
 
 test('authority array ordering may change without changing equipment ownership',async()=>{
-  const p=params('pick'),{client,operation}=await prepared(p,{queue:making(),bag:[equip('7'),equip('8')],heroes:[hero('A'),hero('B',{equips:[equip('9')]})],afterWrite(c){c.bag.reverse();c.heroes.reverse();}});assert.equal((await run(client,operation,p)).status,'SUCCESS');
+  const p=params('pick'),{client,operation}=await prepared(p,{queue:making(),bag:[equip('7'),equip('8'),equip('9007199254740994'),equip('9')],heroes:[hero('A'),hero('B',{equips:[equip('9')]})],afterWrite(c){c.bag.reverse();c.heroes.reverse();}});assert.equal((await run(client,operation,p)).status,'SUCCESS');
 });
 
 test('source freshness, account/generation and projected/raw disagreement block planner',async()=>{
@@ -184,4 +184,46 @@ for(const action of ['make','pick'])test('real local codecs confirm complete for
 
 test('actual fixed config gives twelve explicit forge recipes without changing their costs',async()=>{
   const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))},client=fake({stock:{蓝武器材料:80,GOLD:5000}}),facts=await survey(client,params(),config),operation=plan(facts,params(),config).actions[0];assert.equal(facts.catalog.recipes.length,12);assert.ok(operation);assert.deepEqual(operation.costs,[{id:'蓝武器材料',num:40},{id:'GOLD',num:2000}]);assert.deepEqual(operation.expectedState.equipIds,['蓝武器1','蓝武器2']);
+});
+for(const wireMode of [false,true])test('v76 full equipment pool reconciles identical worn mirrors and exposes only idle bag '+wireMode,async()=>{
+  const client=fake({wireMode}),facts=wireMode?await surveyEquipmentForge(client,wireProtocol,options()):await survey(client);
+  assert.ok(facts.ownership);assert.deepEqual(facts.ownership.uids,['9007199254740993','9007199254740994']);
+  assert.deepEqual(facts.ownership.pool.map(row=>row.uid),facts.ownership.uids);assert.equal(facts.ownership.bag.length,1);
+  assert.deepEqual(facts.ownership.pool.find(row=>row.uid==='9007199254740994'),facts.ownership.heroes[0].equips[0]);
+  assert.deepEqual(viewEquipmentForge(facts,options()).bag.map(row=>row.uid),['9007199254740993']);
+  assert.equal(plan(facts).actions.length,1);assert.equal(client.writes.length,0);
+});
+
+test('complete mirror reconciliation rejects every content conflict, missing pool row and multiple owners',async()=>{
+  const conflicts=[row=>row.equipId='蓝武器2',row=>row.level++,row=>row.star++,row=>row.refineLv++,row=>row.attr[0].value++,row=>row.attr[0].rating=1,row=>row.rerollAttrs.push({attr:1,value:0.2}),row=>row.unrecognizedServerState=1];
+  for(const change of conflicts){const client=fake();change(client.heroes[0].equips[0]);const facts=await survey(client);assert.equal(facts.ownership,null);assert.equal(plan(facts).actions.length,0);assert.equal(client.writes.length,0);}
+  for(const setup of [c=>c.bag.pop(),c=>c.bag.push(structuredClone(c.bag[1])),c=>c.heroes[0].equips.push(structuredClone(c.heroes[0].equips[0])),c=>c.heroes.push(hero('B')),c=>c.heroes.push(hero('A',{equips:[]}))]){const client=fake();setup(client);const facts=await survey(client);assert.equal(facts.ownership,null);assert.equal(plan(facts).actions.length,0);assert.equal(client.writes.length,0);}
+});
+
+test('typed mirrored equipment still needs every own authoritative instance field',async()=>{
+  for(const side of ['pool','worn'])for(const key of ['uid','level','star','refineLv']){const client=fake({wireMode:true}),raw=side==='pool'?client.bag[1]:client.heroes[0].equips[0];delete raw[key];const facts=await surveyEquipmentForge(client,wireProtocol,options());assert.equal(facts.ownership,null);assert.equal(plan(facts).actions.length,0);assert.equal(client.writes.length,0);}
+});
+
+test('full pool bag and uid projections cannot be forged independently from both authority sources',async()=>{
+  const original=await survey(fake());for(const change of [f=>f.ownership.pool[1].level++,f=>f.ownership.pool.pop(),f=>f.ownership.bag.push(structuredClone(f.ownership.pool[1])),f=>f.ownership.uids.pop()]){const facts=structuredClone(original);change(facts);assert.equal(plan(facts).actions.length,0);}
+});
+
+for(const action of ['make','pick'])test('fresh full-pool mirror changes invalidate an old '+action+' identity before dispatch',async()=>{
+  const p=params(action),{client,operation}=await prepared(p,{queue:action==='make'?idle():making()});
+  client.bag.find(row=>row.uid==='9007199254740994').level++;client.heroes[0].equips[0].level++;
+  const fresh=await survey(client,p);assert.ok(fresh.ownership);assert.equal(plan(fresh,p).actions.length,1);
+  const result=await run(client,operation,p);assert.equal(result.status,'NOT_EXECUTED');assert.equal(client.writes.length,0);
+});
+
+for(const action of ['make','pick'])test('post-write old pool or worn mirror movement keeps '+action+' UNKNOWN without resend',async()=>{
+  for(const mutate of [c=>{c.bag.find(row=>row.uid==='9007199254740994').level++;c.heroes[0].equips[0].level++;},c=>{c.heroes[0].equips[0].attr[0].value++;},c=>{c.bag=c.bag.filter(row=>row.uid!=='9007199254740994');}]){
+    const p=params(action),{client,operation}=await prepared(p,{queue:action==='make'?idle():making(),afterWrite:mutate});const result=await run(client,operation,p);
+    assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,1);
+  }
+});
+
+test('newly picked equipment must remain idle and every old complete pool instance survives',async()=>{
+  for(const mutate of [c=>c.heroes[0].equips.push(structuredClone(c.bag.at(-1))),c=>c.heroes[0].equips=[structuredClone(c.bag.at(-1))],c=>c.bag.splice(1,1),c=>{c.bag[0]=structuredClone(c.bag.at(-1));}]){
+    const p=params('pick'),{client,operation}=await prepared(p,{queue:making(),afterWrite:mutate});const result=await run(client,operation,p);assert.equal(result.status,'UNKNOWN');assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,1);
+  }
 });

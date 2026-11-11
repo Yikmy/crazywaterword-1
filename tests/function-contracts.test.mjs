@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract, validateFunctionParameters } from '../src/function-contracts.mjs';
 import { formationModule, validateFormationParameters } from '../src/formation.mjs';
 import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
-const ids = ['equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
+const ids = ['formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
 function adapter(id, validateParameters = value => value) {
   return { id, survey() {}, view() {}, plan() {}, verify() {}, execute() {}, validateParameters, dependencyVersions() { return { moduleConfig: {} }; } };
 }
 const invalid = fn => assert.throws(fn, error => ['INVALID_PARAMETERS', 'INVALID_FUNCTION_CONTRACT'].includes(error.code));
 const stage = () => ({ config: { enabled: true, retryDelaySeconds: 0, maxAttempts: 2, maxStage: null, interStageDelay: { minSeconds: 10, maxSeconds: 11 }, formation: { enabled: false, presetId: null } } });
 
-test('thirteen trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
+test('fourteen trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
   assert.deepEqual(Object.keys(FUNCTION_CONTRACTS), ids);
   for (const id of ids) {
     const value = describeFunctionContract(id);
@@ -25,6 +25,7 @@ test('thirteen trusted contracts have detached JSON descriptions and stable capa
     assert.equal(value.permissions.arbitraryRequest, false); assert.equal(value.permissions.script, false);
     assert.equal(value.evidence.realGame, 'REAL_UNVERIFIED'); assert.equal(value.evidence.grantsPermission, false);
   }
+  assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].requirementIds.C,[]);assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].requirementIds.P,['P3-5']);assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].inventoryRequirementIds,['FRM-005']);
   assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].requirementIds.P,['P3-6','P3-7']); assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].requirementIds.C,[]); assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].inventoryRequirementIds,['BIZ-R07']);
   assert.deepEqual(FUNCTION_CONTRACTS.farm.requirementIds.C, []);assert.deepEqual(FUNCTION_CONTRACTS.farm.inventoryRequirementIds,['BIZ-R16a','BIZ-R16b','BIZ-R16c']);
   assert.deepEqual(FUNCTION_CONTRACTS.treasure.requirementIds.C, []); // World treasure is not Museum C141-C144.
@@ -97,8 +98,8 @@ test('true dependencies separate unrelated order rules and production policy', (
   assert.deepEqual(FUNCTION_CONTRACTS.naval.dependencyVersions.required, ['moduleConfig']);
   assert.equal(FUNCTION_CONTRACTS.stage.dependencyVersions.required.includes('config.StageCfg'), false); // Existing Runner consumes no StageCfg.
 });
-test('input fields match thirteen existing domain parameter interfaces without transport controls', () => {
-  const expected = { 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
+test('input fields match fourteen existing domain parameter interfaces without transport controls', () => {
+  const expected = { 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal'],

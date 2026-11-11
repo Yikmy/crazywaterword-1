@@ -1,6 +1,9 @@
 // Resident-order adapter over the existing rule, survey, action and execution layers.
 // Account authorization, account locking and persisted history belong to the caller.
 import { createHash } from 'node:crypto';
+import { createStateFact } from './state-facts.mjs';
+import { toSnapshotJson } from './game.mjs';
+import { configuredBaseOrderReward, parseReceivedOrderReward, orderRewardEvidenceScope, inspectOrderRewardEvidence } from './order-rewards.mjs';
 import { ACTIONS, buildBody } from './actions.mjs';
 import { evaluateOrder, validateOrderRules } from './order-rules.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
@@ -73,7 +76,7 @@ function actionFor(actionType, state, costs) {
 
 // Capture facts from the same surveyWorld read. An omitted order list/counter must
 // not become an authoritative empty list/zero via surveyWorld's display defaults.
-export function decorateOrderSurvey(survey, responses) {
+export function decorateOrderSurvey(survey, responses, config = null) {
   const water = responses instanceof Map ? responses.get('OnWaterRequest') : responses;
   const orders = Array.isArray(water?.workerOrder) ? water.workerOrder.map((raw) => ({
     index: own(raw, 'index') ? raw.index : null, workerId: raw?.workerId, textId: raw?.textId,
@@ -87,18 +90,20 @@ export function decorateOrderSurvey(survey, responses) {
     if (water.workerOrder[i]?.refreshTime == null) orders[i].refreshTime = 0;
   }
   return { ...survey, orderReliability: { orders: orders !== null, counter: orderNum !== null },
-    rawOrderMetadata: { orders, orderNum } };
+    rawOrderMetadata: { orders, orderNum },
+    orderRewardSources: Array.isArray(water?.workerOrder) ? water.workerOrder.map(raw => ({index:indexOf(raw?.index),evidence:configuredBaseOrderReward(config,raw)})) : [] };
 }
 export async function surveyOrderExecution(client, protocol, { survey = surveyWorld, ...options } = {}) {
-  const responses = new Map();
+  const responses = new Map(), observedAt = new Map();
   const observed = new Proxy(client, { get(target, key) {
     if (key === 'request') return async (...args) => {
-      const result = await target.request(...args); responses.set(args[0], result); return result;
+      const result = await target.request(...args); responses.set(args[0], result); observedAt.set(args[0],Date.now()); return result;
     };
     const value = Reflect.get(target, key, target);
     return typeof value === 'function' ? value.bind(target) : value;
   } });
-  return decorateOrderSurvey(await survey(observed, protocol, options), responses);
+  const facts=decorateOrderSurvey(await survey(observed, protocol, options), responses, options.config);
+  return {...facts,orderRewardObservation:{resources:toSnapshotJson(responses.get('AllResourceRequest')??null),sourceAt:observedAt.get('AllResourceRequest')??null}};
 }
 
 export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(survey?.stockReliable === true ? survey.stock : null),
@@ -129,7 +134,8 @@ export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(
     const row = { module: 'orders', actionId, selected,
       actionType, target: { index: state?.index ?? order?.index ?? null }, identity,
       beforeState: state, resourceBefore: inventory(survey, costs), decision: ruleResult.decision,
-      ruleResult, costs: operationCosts, executable, blockedReason, refreshEligibility: eligible };
+      ruleResult, costs: operationCosts, executable, blockedReason, refreshEligibility: eligible,
+      configuredRewardEvidence: survey.orderRewardSources?.find(row=>row.index===state?.index)?.evidence ?? configuredBaseOrderReward(null,null) };
     if (executable) {
       if (selected && actionType === 'SUBMIT') ledger.reserve(operationCosts);
       if (selected && actionType === 'REFRESH') refreshQuotas.set(eligible.source, refreshQuotas.get(eligible.source) - 1);
@@ -145,10 +151,11 @@ export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(
 
 export async function executeOrderOperation(client, protocol, operation, { rules, config = null, player = null,
   budget = { ledger: null }, signal, stop, assertActive = () => {}, onStep,
-  survey = surveyWorld, refreshEligibility, timeout = 15000, window = 400 } = {}) {
+  survey = surveyWorld, refreshEligibility, timeout = 15000, window = 400, rewardBinding = null, rewardContext = () => null } = {}) {
   const startedAt = new Date().toISOString();
   let beforeSurvey, afterSurvey, beforeState = null, afterState = null, requestResult = null, reservationBefore, dispatched = false, executingAction = null, refreshReservation = null;
   const costs = operation?.costs;
+  let responseObservation=null,rewardEvidence=null;
   const active = () => { assertExecutionActive(client, { signal, stop }); assertActive(); };
   const finish = (status, details = {}) => {
     if (dispatched && !['SUCCESS', 'REJECTED', 'RATE_LIMITED', 'UNKNOWN'].includes(status)) status = 'UNKNOWN';
@@ -161,6 +168,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
       reservation: { costs: Array.isArray(costs) ? costs : null, before: reservationBefore ?? [], after: reserved,
         held: unresolvedWrite, refreshQuota: refreshReservation },
       requestStatus: requestResult?.status ?? 'NOT_EXECUTED', requestResult, afterState,
+      ...(operation?.actionType==='SUBMIT'?{receivedReward:parseReceivedOrderReward(responseObservation?.value),rewardEvidence:rewardEvidence??{status:'EVIDENCE_ONLY',verification:{status:'UNKNOWN',reason:'REWARD_EVIDENCE_NOT_COLLECTED'},operationStatusUnchanged:true,minGoldEligible:false}}:{}),
       resourceAfter: afterSurvey ? inventory(afterSurvey, beforeState?.requirements) : [],
       verification: { status: dispatched ? 'UNCONFIRMED' : 'NOT_STARTED', reason: details.error ?? '动作尚未通过权威复读确认' }, ...details });
     onStep?.(result); return result;
@@ -197,7 +205,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     if (refreshReservation) budget.orderRefreshQuotas.set(refreshReservation.source, refreshReservation.after);
     reservationBefore = budget.ledger?.reserved instanceof Map ? [...budget.ledger.reserved].map(([id, num]) => ({ id, num })) : [];
     const guarded = new Proxy(client, { get(target, key) {
-      if (key === 'request') return (...args) => { if (args[4]?.mutate) { active(); dispatched = true; } return target.request(...args); };
+      if (key === 'request') return async (...args) => { if (args[4]?.mutate) { active(); dispatched = true; } const value=await target.request(...args); if(args[0]==='FinishWorkerOrderRequest'&&args[2]==='FinishWorkerOrderResponse'&&args[1]?.index===beforeState.index){responseObservation={value:toSnapshotJson(value),sourceAt:Date.now()};} return value; };
       if (key === 'sendWatch') return (...args) => { active(); dispatched = true; return target.sendWatch(...args); };
       const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
     } });
@@ -227,6 +235,10 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     const confirmed = changed && nextReliable && (operation.actionType === 'SUBMIT'
       ? afterSurvey.orderReliability.counter === true && counterAfter === counterBefore + 1
       : afterState !== null);
+    if(operation.actionType==='SUBMIT'){
+      const scope=orderRewardEvidenceScope(rewardBinding),envelope=(value,source,sourceAt)=>({binding:rewardBinding,fact:createStateFact(value,{accountId:rewardBinding?.accountId,generation:rewardBinding?.generation,source,sourceAt,scope,reliable:value!==null&&value!==undefined})});
+      rewardEvidence=inspectOrderRewardEvidence(operation,{binding:rewardBinding,currentContext:rewardContext(),response:envelope(responseObservation?.value,'FinishWorkerOrderResponse',responseObservation?.sourceAt),beforeResources:envelope(beforeSurvey.orderRewardObservation?.resources,'AllResourceResponse',beforeSurvey.orderRewardObservation?.sourceAt),afterResources:envelope(afterSurvey.orderRewardObservation?.resources,'AllResourceResponse',afterSurvey.orderRewardObservation?.sourceAt)});
+    }
     const nextDecision = next ? evaluateOrder(next, afterSurvey.stockReliable === true ? afterSurvey.stock : null, policy) : null;
     const verification = { status: confirmed ? 'CONFIRMED' : 'UNCONFIRMED', changed, counterBefore, counterAfter,
       reason: confirmed ? '权威复读确认目标订单已变化且动作条件成立' : '权威复读未能确认目标订单动作，停止本批次' };

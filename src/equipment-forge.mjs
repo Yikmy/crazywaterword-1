@@ -75,17 +75,22 @@ export function parseForgeEquipment(raw){
   const attributes=[...raw.attr,...raw.rerollAttrs];if(!attributes.every(v=>own(v,'attr')&&uint(v.attr)&&own(v,'value')&&typeof v.value==='number'&&Number.isFinite(v.value)&&(!Number.isInteger(v.value)||Number.isSafeInteger(v.value))&&(!own(v,'rating')||uint(v.rating))))return null;
   const result=toSnapshotJson(raw);result.uid=exactPositive(raw.uid);return validSnapshot(result)?result:null;
 }
-function parseOwnership(equips,heroResponse){
+export function parseEquipmentOwnership(equips,heroResponse){
   if(!own(equips,'equip')||!dense(equips.equip)||!own(heroResponse,'heroes')||!dense(heroResponse.heroes))return null;
-  const bag=equips.equip.map(parseForgeEquipment),heroes=[],seen=new Set();
-  for(const row of bag){if(!row||seen.has(row.uid))return null;seen.add(row.uid);}
+  // v76 /subpackages/main/game.js (SHA256 a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54),
+  // EquipModel.ts:1077 setData/fixupEquip/allIdleEquip: Equips is the whole pool;
+  // AllHero equips are owned mirrors. Every mirror must match its complete pool instance.
+  const pool=equips.equip.map(parseForgeEquipment),heroes=[],byUid=new Map(),owners=new Set();
+  for(const row of pool){if(!row||byUid.has(row.uid))return null;byUid.set(row.uid,row);}
   for(const raw of heroResponse.heroes){
     const hero=parseOperationHero(raw);if(!hero||!own(raw,'equips')||!dense(raw.equips))return null;
-    const worn=raw.equips.map(parseForgeEquipment);for(const row of worn){if(!row||seen.has(row.uid))return null;seen.add(row.uid);}
+    const worn=raw.equips.map(parseForgeEquipment);
+    for(const row of worn){if(!row||owners.has(row.uid)||!byUid.has(row.uid)||!same(row,byUid.get(row.uid)))return null;owners.add(row.uid);}
     hero.raw.equips=worn.sort((a,b)=>a.uid.localeCompare(b.uid));heroes.push(hero.raw);
   }
   if(new Set(heroes.map(v=>v.heroId)).size!==heroes.length)return null;
-  return {bag:bag.sort((a,b)=>a.uid.localeCompare(b.uid)),heroes:heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId)),uids:[...seen].sort()};
+  pool.sort((a,b)=>a.uid.localeCompare(b.uid));
+  return {pool,bag:pool.filter(row=>!owners.has(row.uid)),heroes:heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId)),uids:[...byUid.keys()].sort()};
 }
 function parseBuildings(water,config){
   if(!own(water,'building')||!dense(water.building)||!water.building.every(r=>own(r,'buildingId')&&id(r.buildingId)&&own(r,'level')&&uint(r.level))||new Set(water.building.map(r=>r.buildingId)).size!==water.building.length)return null;
@@ -110,8 +115,8 @@ export async function surveyEquipmentForge(client,protocol,{config,player,parame
     read('EquipsRequest','EquipsResponse'),read('AllHeroRequest','AllHeroResponse'),
   ]);active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('装备制造采集期间账号或代次改变'),{code:'CANCELLED'});
   const inputs={water:core?.rawOnWater??null,items:core?.rawAllItem??null,resources:core?.rawAllResource??null,equips:toSnapshotJson(equips??null),heroes:toSnapshotJson(heroes??null)};
-  const cat=catalog(config),rawBuildings=cat.reliable?parseBuildings(captured.get('OnWaterRequest'),config):null,rawOwnership=parseOwnership(equips,heroes),rawInventory=parseOperationInventory(captured.get('AllItemRequest'),captured.get('AllResourceRequest'));
-  const buildings=rawBuildings===null?null:parseBuildings(inputs.water,config),ownership=rawOwnership===null?null:parseOwnership(inputs.equips,inputs.heroes),inventory=rawInventory.stockReliable?parseOperationInventory(inputs.items,inputs.resources):rawInventory,time=readGameTime(client);
+  const cat=catalog(config),rawBuildings=cat.reliable?parseBuildings(captured.get('OnWaterRequest'),config):null,rawOwnership=parseEquipmentOwnership(equips,heroes),rawInventory=parseOperationInventory(captured.get('AllItemRequest'),captured.get('AllResourceRequest'));
+  const buildings=rawBuildings===null?null:parseBuildings(inputs.water,config),ownership=rawOwnership===null?null:parseEquipmentOwnership(inputs.equips,inputs.heroes),inventory=rawInventory.stockReliable?parseOperationInventory(inputs.items,inputs.resources):rawInventory,time=readGameTime(client);
   const observed={accountId:context.accountId,generation:context.generation,sourceAt,scope:{kind:'ACCOUNT'}};
   const sourceFacts=Object.fromEntries([['water','OnWaterResponse',buildings!==null],['inventory','AllItemResponse+AllResourceResponse',inventory.stockReliable],['ownership','EquipsResponse+AllHeroResponse',ownership!==null]].map(([key,src,reliable])=>[key,createStateFact(key==='water'?inputs.water:key==='inventory'?{items:inputs.items,resources:inputs.resources}:{equips:inputs.equips,heroes:inputs.heroes},{...observed,source:src,reliable})]));
   return {module:'equipment-forge',parameters,identityContext:context,season:seasonOf(context.worldId),catalog:cat,buildings,ownership,...inventory,inputs,sourceFacts,...time,
@@ -120,7 +125,7 @@ export async function surveyEquipmentForge(client,protocol,{config,player,parame
 function authority(f,config){
   const c=f?.identityContext;if(!id(c?.accountId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||f.season!==seasonOf(c.worldId)||!f.catalog?.reliable||!same(f.catalog,catalog(config)))return false;
   const fresh=(key,source)=>f.sourceFacts?.[key]?.provenance?.source===source&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:{kind:'ACCOUNT'}}).status==='FRESH';
-  const inputs=f.inputs,stock=parseOperationInventory(inputs?.items,inputs?.resources),ownership=parseOwnership(inputs?.equips,inputs?.heroes),buildings=parseBuildings(inputs?.water,config);
+  const inputs=f.inputs,stock=parseOperationInventory(inputs?.items,inputs?.resources),ownership=parseEquipmentOwnership(inputs?.equips,inputs?.heroes),buildings=parseBuildings(inputs?.water,config);
   return fresh('water','OnWaterResponse')&&fresh('inventory','AllItemResponse+AllResourceResponse')&&fresh('ownership','EquipsResponse+AllHeroResponse')
     &&same(f.sourceFacts.water.value,inputs.water)&&same(f.sourceFacts.inventory.value,{items:inputs.items,resources:inputs.resources})&&same(f.sourceFacts.ownership.value,{equips:inputs.equips,heroes:inputs.heroes})
     &&stock.stockReliable===true&&f.stockReliable===true&&f.stock instanceof Map&&same([...stock.stock],[...f.stock])&&ownership!==null&&same(ownership,f.ownership)&&buildings!==null&&same(buildings,f.buildings);
@@ -187,8 +192,9 @@ export function verifyEquipmentForge(op,b,a,response){
   }
   if(!allowedQueue(before.queue,recipe)||before.queue.finishTime>clock(b).earliest||!own(response,'equipId')||response.equipId!==before.queue.equipId)return fail('PICK_RESPONSE_OR_ORIGINAL_BATCH_MISMATCH');
   if(!own(after.raw,'equipMaking')||after.queue?.state!=='IDLE')return fail('FORGE_QUEUE_CLEAR_NOT_CONFIRMED');
-  const previous=new Set(b.ownership.uids),fresh=a.ownership.bag.filter(v=>!previous.has(v.uid));
-  if(fresh.length!==1||fresh[0].equipId!==before.queue.equipId||fresh[0].star!==before.queue.star||!same(b.ownership.bag,a.ownership.bag.filter(v=>v.uid!==fresh[0].uid)))return fail('EXACT_ONE_NEW_EQUIPMENT_UID_NOT_CONFIRMED');
+  const previous=new Set(b.ownership.uids),fresh=a.ownership.pool.filter(v=>!previous.has(v.uid));
+  if(fresh.length!==1||fresh[0].equipId!==before.queue.equipId||fresh[0].star!==before.queue.star||!a.ownership.bag.some(v=>v.uid===fresh[0].uid)
+    ||!same(b.ownership.pool,a.ownership.pool.filter(v=>v.uid!==fresh[0].uid))||!same(b.ownership.bag,a.ownership.bag.filter(v=>v.uid!==fresh[0].uid)))return fail('EXACT_ONE_NEW_EQUIPMENT_UID_NOT_CONFIRMED');
   return {confirmed:true,reason:'原精确批次、typed equipId、新唯一UID及完整权威复读共同确认收取',afterState:copy(after.raw),responseEvidence:{equipId:response.equipId,uid:fresh[0].uid,star:fresh[0].star}};
 }
 export function forgeDependencyVersions({config,moduleConfig=FORGE_DEFAULT_CONFIG}={}){return {moduleConfig:copy(moduleConfig),...Object.fromEntries(tableNames.map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};}

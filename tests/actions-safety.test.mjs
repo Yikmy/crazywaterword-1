@@ -127,3 +127,13 @@ test('forge D6 allows only exact owned-material Make and explicit zero-cost Pick
  for(const mutate of [a=>delete a.costs,a=>a.body.universal=false,a=>a.costs=[{id:'材料',num:1}],a=>a.body.buildingId='']){const a=pick();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
  for(const id of ['RUBY','钻石','4']){const a=make();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
 });
+
+test('ordinary preset D6 allows only the exact owned matching blueprint and never payment or purchase expansion',()=>{
+ const action=id=>({request:'UnlockFormationPresetRequest',body:{id},costs:[{id:'阵型'+id+'图纸',num:1}]});
+ for(let id=2;id<=24;id++)assert.doesNotThrow(()=>assertPaymentAllowed(action(id)));
+ for(const mutate of [a=>a.body.id=1,a=>a.body.id=25,a=>a.body.id='2',a=>a.body.id=2.5,a=>a.body.universal=false,a=>a.body.buyMissing=true,a=>delete a.costs,a=>a.costs=[],a=>a.costs.push({id:'材料',num:1}),a=>a.costs[0].id='阵型3图纸',a=>a.costs[0].num=2,a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.costs[0].hidden=true]){
+  const a=action(2);mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});
+ }
+ for(const id of ['RUBY','钻石','4']){const a=action(2);a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ const paid=action(2);paid.paid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+});

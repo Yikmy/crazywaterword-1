@@ -2170,3 +2170,52 @@ D.8待办按本节替代已交子分支：农田单田播种、装备厂自有�
 下一独立工作：W04订单奖励证据解析由独立order-rewards纯模块推进，root随后统一接原survey/executor/History/UI，不再创建订单执行器。X02本地WorkerOrderCfg129/129及WorkerSpecOrderCfg25/25都有EXP/GOLD，旧“没有任何金币来源”需细化为“配置基础GOLD存在，但最终预派发公式/加成链未证实”；FinishWorkerOrderResponse.reward可提供事后实际奖励，不能倒当MIN_GOLD事前事实。X01完整游戏全天产量及X03免费刷新provider仍缺证，不以工具日报/refreshTime/每日40订单上限替代。W08普通图纸解锁与极限复制继续静态核客户端分支/配置/模式，不擅自解除闸门。root独占共享文件，领域独占两文件，冻结后定向回归、记录并提交。R7后才生成R8具体授权清单；Goal保持ACTIVE。
 
 Forge静态参考定位（不属于目标仓库源码）：C:/Users/zyk-o/Documents/crazywaterword/src/equip.mjs，SHA256 7592c2112579fad5097e71e503561574966f22616b45a2eeec19eecd793e26ff；describeRecipe:49、pickRecipe:82/83、surveyEquip:97/118、planEquip:199/223–225/246–248。参考155/164省略finishTime即成熟的推断未移植，目标要求显式完整队列和可信到期。引用不代表真实游戏证据。
+
+### D.11 订单奖励证据、普通图纸解锁及装备全池修复（2026-11-11）
+
+本批父提交6901b068bbd48046da39d61d56871832f031716c，代码/测试/本节随同一次本地提交定位。分支codex/phase-4-alliance-integration；提交前main...HEAD为0/27，a505019仍祖先。原五份输入不暂存。Goal ACTIVE；没有真实连接、账号操作、凭证读取、Runtime、Stage Runner、MITM/CA、push/merge/reset。本节为原历史账本的当前增量，不以测试数推导完成需求数。
+
+| 原工作包/ID | 实际Function与调用链 | 当前边界 |
+|---|---|---|
+| W04 / C124、BIZ-W05、ORD-006 | order-rewards#configuredBaseOrderReward/parseReceivedOrderReward/orderRewardEvidenceScope/inspectOrderRewardEvidence → 原order-execution survey/plan/executor → OperationService/History → 原订单与历史页 | 配置来源及事后关联证据OFFLINE_VERIFIED；C124完整范围PARTIAL，最终事前GOLD/MIN_GOLD仍BLOCKED_EVIDENCE；X01全天产量、X03免费刷新未闭合 |
+| W08 / FRM-005、P3-5 | formation-unlock#surveyFormationUnlock/viewFormationUnlock/planFormationUnlock/verifyFormationUnlock → registry/contract → 原generic executor/Service/Ledger/History/API/Workflow → 原阵容页子区 | Function EXISTING_FUNCTION、UI EXISTING_UI、Protocol STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED；只用已持有普通图纸单目标2–24，不购买补图或自动应用；W08仍PARTIAL |
+| W07 / BIZ-R07 | equipment-forge#parseEquipmentOwnership/verifyEquipmentForge修复，原Forge调用链复用 | Equips完整pool与英雄佩戴镜像一致；bag派生闲置实例；C225–230未因此完成，W07仍PARTIAL |
+
+订单扩展不改原identity/actionId、规则、请求、成本、订单替换+orderNum递增确认或UNKNOWN。survey同轮观察AllResource及实际完成时间，不额外查询；解析确切FinishWorkerOrderResponse.reward.asset，区分ITEM GOLD和RESOURCE GOLD。诊断绑定Service拥有的account/player/world/generation/connection/run/batch/action/opaque identity/index、来源、scope、30秒时效及前余额≤响应≤后余额顺序。MATCHED只是奖励诊断，不把未变订单/UNKNOWN变SUCCESS，不释放预算或重试；收入不能补充父预算。页面仅展示证据。
+
+普通图纸复用surveyFormation、parseOperationInventory及共享执行器，没有新executor或HTTP写入口。23实际模板均精确扣对应图纸1；UnlockFormationPresetRequest只有required int32 id，没有同名Response。quiet watch不能证明成功，必须完整ids仅新增目标、完整库存仅扣对应图纸1、原Formation/英雄坐标/pet不变。own字段、可信身份、原响应完成时间、30秒时效、完整相关table.revision均纳校验。合同C=[]、inventoryRequirementIds=[FRM-005]，不虚构C编号；13静态Adapter+原动态Stage共14合同。D6仅加严格{id2..24}+匹配图纸1分支，购买仍硬拒。
+
+Forge修复依据原主客户端：pool UID唯一，每个AllHero佩戴镜像须在pool且完整逐字段相同，全英雄唯一主人；bag只过滤未佩戴。MAKE保全pool/英雄，PICK保全全部旧pool与归属，只增1匹配typed equipId/原批star的闲置UID。缺池/冲突/双主人/重复/投影篡改/写后额外变化仍阻断。parseEquipmentOwnership最小导出供后续成长复用，没有循环依赖或新目录。原错误互斥负例改为同UID内容冲突并保留重复/缺失保护，新增16项。
+
+#### D.11.1 固定静态证据及未解除闸门
+
+图纸证据沿用work/e2e/20261110-b4/formation-client-evidence/manifest.json（SHA256 40c0eff9a9e8863b9156014bb712ceb614449be55398b29240dd786364d9953d），FormationTypePanel._refreshCurFormationInfo/_onBtnOK、FormationModel/FormationUtil。v76包SHA256 4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444；包内/subpackages/main/game.js SHA256 a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54。固定协议ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc、配置0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762重新核验。仅内存读取现存包，不运行客户端。
+
+EquipModel.ts:1077 setData/fixupEquip/allIdleEquip证明全池与佩戴镜像；模块SHA256 b11a06b0209cf966d0c6634d3a74608971b0d574d035b36c8dd496aa8489c27b（切分含末尾双换行）。C229下一单次成长已有EquipDetailPop.ts:1057、EquipLevelBtn.ts:1065、EquipUtil.ts:1087成本/上限证据；AllHeroesModel.ts:93完整DisplayHero替换，HeroDetail.ts:1569展示新power、HeroUtil.ts:1673读attributes。未来只允许目标hero明确power/attributes按结构变化、其余字段一致，不预测数值；当前不计交付。
+
+X02更精确边界：129/129普通及25/25特殊配置存在EXP/GOLD。v76 WorkerOrderPop._refreshUI(line3547，模块SHA256 c7a2c410b753661c103cffc11656511d0c2a1b578b7d4d509c24d9d44041844e)普通按需求num乘unitReward累加，特殊直接spec.reward；CmdUtil.autoWorkerOrder(line773，f6d97b0ecae9778de85dada8b05f71bd50486901954d98d93cc2801be05b9423)同式。证明客户端基础预览，尚未纳本批算法，不证明最终服务端奖励。AntiqueSuitCfg2002/AntiqueEffectLibCfg存在订单金币提高，BuildingSkin/SeasonCatchup存在订单EXP加成；配套本地协议ORDER_GOLD_INC6/ORDER_EXP_INC_PERCENT12有定义（schema原包版本未登记，不冒称v76提取）。EffectModel(line1041，356949a03e2db24eadef16ca3115d81190fed4c488767cc17b5f9230c08e99af)接GameEffectResponse/SCGameEffectUpdate；1850主模块未找到最终GOLD加成应用点，取整/顺序/特殊范围未知。MIN_GOLD继续关闭。
+
+X03：WorkerOrderPop.open删除按钮level>=12，_onBtnDelete直发Deny{index}，没有配额来源；_onBtnOK刷新冷却走独立SpeedUpOrder，不能混淆。TipsDesc居民订单写15秒递增至10分钟/每日重置，不声明免费次数。OrderParam每日40及WORKER_ORDER_INC是完成上限，不是刷新配额。DispWorkerOrder/OrderOfTheDay无refreshRemaining/Used。请求无cost不证明免费/无限，X03继续BLOCKED_EVIDENCE。
+
+#### D.11.2 实际测试及失败证据
+
+父6901b06上本批冻结工作区，30文件联合命令：
+
+node --test tests/order-rewards.test.mjs tests/order-rewards-service.test.mjs tests/order-execution.test.mjs tests/core-operation-adapters.test.mjs tests/operation-service.test.mjs tests/operations-api.test.mjs tests/execution-history.test.mjs tests/execution-memory-service.test.mjs tests/operation-recovery-service.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/farm-forge-api.test.mjs tests/farm-forge-full-page.test.mjs tests/actions-safety.test.mjs tests/cli-safety.test.mjs tests/formation-unlock.test.mjs tests/formation.test.mjs tests/named-formations-service.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/workflow.test.mjs tests/operations-view.test.mjs
+
+实际747 tests/747 pass/0 fail/0 cancelled/0 skipped/0 todo，22.90秒。不是R7或真实E2E。订单用真实GameClient/本地Codec/进程内fake socket/临时History；解锁用真实Codec及合成client；HTTP为createConsole in-process，无监听，clientFactory/collect断言0；完整assembled PAGE不替换call/operationMutation。原订单47及安全/预算/历史/CLI/Workflow断言保留。独立93/139/64、root118/143/19与747重叠，不相加。git diff --check通过。
+
+| 失败/审查证据 | 修复 |
+|---|---|
+| 订单接线首轮144/145，额外active改变原request SUCCESS语义 | 移除诊断额外控制检查，保留纯观察及原47断言 |
+| 新奖励Service13/14误取rewardSource | 改真实configuredRewardEvidence，14/14，未删旧断言 |
+| 解锁脚本UI匹配失败 | 所有文件写前预检退出，无半套注册；定位真实分支再写 |
+| 四文件123/124，相关table.revision不使许可失效 | clone完整相关表及revision，原依赖测试通过 |
+| Forge互斥假设被v76模型否定 | 完整pool+镜像一致/唯一主人；原负例保留冲突，专项64/64及联合通过 |
+| D.11初次脚本换行SyntaxError、重试btoa不可用 | 均在文档写入前退出；改PowerShell单引号here-string直接追加UTF8 |
+
+#### D.11.3 恢复位置和最终验收分支
+
+已交子域不重复开发。W04/W07/W08/W19整体仍PARTIAL，R1 W03来源恢复局部BLOCKED保留，R1/R2整阶段未虚报完成。下一独立施工：W07 C229明确已佩戴UID/正精铁成本的单次LEVEL Adapter；W08 C215源战报/站位关联离线证据还原；X02/X03有证据才扩展。root串行注册/D6/UI/文档，专域独占文件冻结后整合。
+
+E10组内增加持有图纸解锁、已解锁/缺图零派发、ids精确新增/扣图/原阵容pet不变及UNKNOWN；E08装备厂复读完整pool与镜像；E04关联typed奖励和净金币，不把基础预览当最终奖励。原E01–E24不增删，全部新增真实写REAL_UNVERIFIED。R7后另列账号/目标/请求/次数/预算/风险/清理等待R8单独授权。当前继续工程，Goal保持ACTIVE。

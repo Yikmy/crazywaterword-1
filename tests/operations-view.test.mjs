@@ -519,3 +519,12 @@ test('full PAGE mismatched-account and network Memory failures fail closed while
 test('full PAGE malformed Memory contracts clear prior evidence instead of reporting an empty usable store',async()=>{
  const h=await boot();for(const invalid of [{events:null},{pendingHistoryProjection:null},{available:'yes'},{resumable:true},{retryAllowed:true}]){await loadMemory(h,memoryFixture('A',{events:[memoryEvent()]}));const pending=h.node('ops-memory-load').onclick();h.respond('/api/operations/memory','A',memoryFixture('A',invalid));await pending;assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-coverage').textContent,'');assert.match(h.node('ops-memory-hint').textContent,/合同不可靠/);}assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
 });
+
+test('order base config and typed received rewards stay evidence only without changing selection budgets or UNKNOWN',async()=>{
+ const h=await boot(),data=fixture();data.view.orders[0].configuredRewardEvidence={status:'CONFIGURED_BASE_ONLY',configuredBaseReward:{rows:[{configuredReward:[{id:'GOLD',num:2}]}]},finalPreview:{status:'BLOCKED_EVIDENCE',rewardGold:null},minGoldEligible:false};
+ await load(h,data);assert.match(h.node('ops-orders').textContent,/最终金币预览公式待证/);assert.match(h.node('ops-orders').textContent,/CONFIGURED_BASE_ONLY/);assert.match(h.node('ops-orders').textContent,/BLOCKED_EVIDENCE/);
+ assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);choose(h,submit().actionId);await preview(h);assert.match(h.node('ops-budget').textContent,/木材2/);assert.doesNotMatch(h.node('ops-budget').textContent,/GOLD/);
+ h.run("renderOperationHistory({accountId:'A',runs:[{runId:'reward-history',module:'orders',finalStatus:'UNKNOWN',resourceBudget:[{id:'木材',num:2}],actions:[{actionType:'SUBMIT',target:{index:0},result:'UNKNOWN',requestStatus:'SUCCESS',receivedReward:{status:'PARSED',receivedGold:3},rewardEvidence:{status:'EVIDENCE_ONLY',verification:{status:'MATCHED'},operationStatusUnchanged:true,minGoldEligible:false},verification:{status:'UNCONFIRMED'}}]}]})");
+ assert.match(h.node('ops-history').textContent,/UNKNOWN/);assert.match(h.node('ops-history').textContent,/receivedReward/);assert.match(h.node('ops-history').textContent,/operationStatusUnchanged/);assert.match(h.node('ops-history').textContent,/UNCONFIRMED/);
+ assert.equal(h.requests.filter(r=>new URL(r.url,'http://localhost').pathname==='/api/operations/execute').length,0);
+});

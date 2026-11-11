@@ -931,6 +931,7 @@ function renderOperationCandidates() {
     card.appendChild(el('h3', null, '订单 #' + (row.target?.index ?? before.index ?? '?') + ' · ' + (row.decision || 'REVIEW')));
     card.appendChild(el('div', null, '需求：' + operationCosts(before.requirements) + ' · 经验：' + (before.rewardExp ?? '未知')));
     for (const rule of row.ruleResult?.ruleResults || []) card.appendChild(el('div', rule.status === 'UNKNOWN' || rule.status === 'FAIL' ? 'warn' : 'dim', '优先级 ' + rule.priority + ' · ' + rule.id + ' · ' + rule.status + '：' + rule.explanation));
+    if(row.configuredRewardEvidence){const reward=el('details');reward.appendChild(el('summary',null,'配置基础奖励（最终金币预览公式待证，不作为门槛）'));reward.appendChild(el('pre',null,JSON.stringify(row.configuredRewardEvidence,null,2)));card.appendChild(reward);}
     for (const reason of row.ruleResult?.explanation || []) card.appendChild(el('div', null, reason));
     if (row.ruleResult?.inventory) card.appendChild(el('div', 'dim', '库存检查：' + row.ruleResult.inventory.status + ' · ' + (row.ruleResult.inventory.explanation || '')));
     card.appendChild(el('div', 'dim', '探测库存：' + operationCosts(row.resourceBefore)));
@@ -1134,7 +1135,7 @@ function renderOperationHistory(data) {
     card.appendChild(el('div', null, '本批次预算：' + operationCosts(run.resourceBudget)));
     for (const action of run.actions || []) {
       const actionBox = el('details', 'order-preview-card'); actionBox.appendChild(el('summary', null, action.actionType + ' · ' + operationTarget(action.target) + ' · ' + (typeof action.result === 'string' ? action.result : action.result?.status || action.requestStatus || '未知')));
-      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, requestStatus: action.requestStatus, stages: action.stages ?? null, dispatchEvidence: action.dispatchEvidence ?? null, reconciliations: action.reconciliations ?? [], afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
+      actionBox.appendChild(el('pre', null, JSON.stringify({ actionId: action.actionId, beforeState: action.beforeState, resourceReservation: action.resourceReservation, receivedReward: action.receivedReward??null, rewardEvidence: action.rewardEvidence??null, requestStatus: action.requestStatus, stages: action.stages ?? null, dispatchEvidence: action.dispatchEvidence ?? null, reconciliations: action.reconciliations ?? [], afterState: action.afterState, result: action.result, verification: action.verification, timestamp: action.timestamp, reason: action.reason }, null, 2))); card.appendChild(actionBox);
 
       const pending = action.unresolvedWrite === true || ['DISPATCHING','EXECUTING','VERIFY','UNKNOWN'].includes(action.requestStatus) || action.result === 'UNKNOWN';
       const latest = action.reconciliations?.at(-1);

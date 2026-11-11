@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'formation-unlock': contract('formation-unlock', [], ['P3-5'], ['src/formation-unlock.mjs#formationUnlockModule','src/formation-unlock.mjs#planFormationUnlock'], {presetId:integer}, {
+    inventoryRequirementIds:['FRM-005'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['UNLOCK'],blockedCapabilities:[blocked('PURCHASE_BLUEPRINT','D6 prohibits buying missing blueprints'),blocked('AUTOMATIC_APPLY','Unlock never applies a saved formation','NOT_IMPLEMENTED')]},
+    verification:verification('verifyFormationUnlock','src/formation-unlock.mjs#verifyFormationUnlock','Exact preset set addition, unchanged full formation and exact owned blueprint inventory debit; no typed response exists'),
+    dependencyVersions:dependencies(['moduleConfig','config.FormationTypeUnlockCfg','config.ItemCfg','config.FormationTypePositionCfg']),
+  }),
   'equipment-forge': contract('equipment-forge', [], ['P3-6','P3-7'], ['src/equipment-forge.mjs#equipmentForgeModule','src/equipment-forge.mjs#planEquipmentForge'], {buildingId:string,action:{type:'string',enum:['make','pick']},makeId:integer,allowUniversal:boolean}, {
     inventoryRequirementIds:['BIZ-R07'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['MAKE','PICK'],blockedCapabilities:[blocked('UNIVERSAL_EXCHANGE','Universal material consumption is not proven'),blocked('IMPLICIT_IDLE_QUEUE','Missing equipMaking does not prove an idle queue'),blocked('QUALITY_FALLBACK','Automatic lower-quality fallback is excluded')]},
@@ -57,7 +63,7 @@ export const FUNCTION_CONTRACTS = freeze({
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.FarmlandPlantCfg']),
   }),
   formation: contract('formation', ['C211', 'C212', 'C213', 'C214'], ['P1-3', 'P3-5'], ['src/formation.mjs#formationModule', 'src/formation.mjs#validateFormationParameters'], formationParameters, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['SAVE'], blockedCapabilities: [blocked('C215', 'Extreme-copy and other battle-mode formation are not implemented', 'NOT_IMPLEMENTED'), blocked('UNLOCK_PRESET', 'Paid unlock is excluded by D6')] },
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['SAVE'], blockedCapabilities: [blocked('C215', 'Extreme-copy and other battle-mode formation are not implemented', 'NOT_IMPLEMENTED'), blocked('PURCHASE_BLUEPRINT', 'Ordinary owned blueprint unlock uses formation-unlock Adapter; buying missing blueprints remains excluded by D6')] },
     verification: verification('verifyFormation', 'src/formation.mjs#verifyFormation', 'Full saved mainline formation and unchanged petUid, typed response plus fresh GetFormation; no victory claim'),
     dependencyVersions: dependencies(['moduleConfig', 'config.FormationTypePositionCfg', 'config.FormationHeroNumCfg', 'config.HeroCfg']),
   }),

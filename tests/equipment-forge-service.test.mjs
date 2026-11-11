@@ -27,7 +27,7 @@ function fixture({enabled=true,apply=true,historyFile}={}){
   const history={...durable,put(record){if(failPersist(record))throw Error('synthetic forge persistence unavailable');journal.push(structuredClone(record));return durable.put(record);}};
   const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,moduleSettings,history,getConfig:()=>structuredClone(gameConfig),loadRules:()=>({config:{version:1,enabled:true,rules:[]}}),loadProduction:()=>({config:{version:1,enabled:false}})});
   function session(accountId='account-A',queue=idle()){
-    const state={buildings:['1装备厂','2装备厂'].map(buildingId=>({buildingId,level:1,buildStartTime:0,buildFinishTime:0,equipMaking:structuredClone(queue)})),bag:[equip()],heroes:[{heroId:'A',level:1,star:1,power:'9007199254740995',skillLevels:[1],equips:[equip('9007199254740994')]}],stock:new Map([['材料',30],['GOLD',100]]),writes:[],reads:[],apply,onRead:null,onWrite:null,nowMs:1000000};
+    const state={buildings:['1装备厂','2装备厂'].map(buildingId=>({buildingId,level:1,buildStartTime:0,buildFinishTime:0,equipMaking:structuredClone(queue)})),bag:[equip(),equip('9007199254740994')],heroes:[{heroId:'A',level:1,star:1,power:'9007199254740995',skillLevels:[1],equips:[equip('9007199254740994')]}],stock:new Map([['材料',30],['GOLD',100]]),writes:[],reads:[],apply,onRead:null,onWrite:null,nowMs:1000000};
     const client={connected:true,pending:[],watchers:[],lateResponses:new Map(),uncertainWrites:new Map(),factContext:{accountId,generation:1},
       gameClock:{read(){return {status:'TRUSTED',reliable:true,nowMs:state.nowMs,earliestMs:state.nowMs,latestMs:state.nowMs,accountId,generation:client.factContext.generation};}},
       markUnverifiedWrite(name,body){this.uncertainWrites.set(JSON.stringify({name,body}),true);},confirmWatchedWrite(name,body){this.uncertainWrites.delete(JSON.stringify({name,body}));},
@@ -110,5 +110,30 @@ for(const limit of [6,8])test('registered two-forge Workflow shares '+limit+' ma
 });
 
 test('forge pick missing post queue stays durable UNKNOWN even when typed result and new UID agree',async()=>{
-  const f=fixture(),target=f.session('account-A',making());try{target.synthetic.onWrite=name=>{if(name==='PickMadeEquipRequest')delete target.synthetic.buildings[0].equipMaking;};const result=await f.execute(target,await f.displayed(target,parameters('pick')));assert.equal(result.status.finalStatus,'UNKNOWN');assert.equal(result.record.actions[0].unresolvedWrite,true);assert.equal(target.synthetic.bag.length,2);assert.equal(target.synthetic.writes.length,1);}finally{await f.cleanup();}
+  const f=fixture(),target=f.session('account-A',making());try{target.synthetic.onWrite=name=>{if(name==='PickMadeEquipRequest')delete target.synthetic.buildings[0].equipMaking;};const result=await f.execute(target,await f.displayed(target,parameters('pick')));assert.equal(result.status.finalStatus,'UNKNOWN');assert.equal(result.record.actions[0].unresolvedWrite,true);assert.equal(target.synthetic.bag.length,3);assert.equal(target.synthetic.writes.length,1);}finally{await f.cleanup();}
+});
+for(const action of ['make','pick'])test('registered '+action+' uses the full pool while UI bag excludes worn codec mirrors',async()=>{
+  const f=fixture(),target=f.session('account-A',action==='make'?idle():making());try{
+    const surveyed=await f.service.surveyModule(target,moduleId,parameters(action));assert.deepEqual(surveyed.view.bag.map(row=>row.uid),['9007199254740993']);assert.equal(target.synthetic.bag.length,2);
+    const result=await f.execute(target,await f.displayed(target,parameters(action)));assert.equal(result.record.finalStatus,'SUCCESS');assert.equal(result.record.actions[0].verification.status,'CONFIRMED');assert.equal(target.synthetic.writes.length,1);
+    assert.equal(target.synthetic.bag.find(row=>row.uid==='9007199254740994').level,target.synthetic.heroes[0].equips[0].level);
+  }finally{await f.cleanup();}
+});
+
+test('registered forge blocks a missing or conflicting full-pool mirror before any history or write',async()=>{
+  for(const mutate of [s=>s.bag.pop(),s=>s.bag[1].level++,s=>s.heroes.push({...structuredClone(s.heroes[0]),heroId:'B'})]){
+    const f=fixture(),target=f.session();try{mutate(target.synthetic);const surveyed=await f.service.surveyModule(target,moduleId,parameters());assert.equal(surveyed.view.candidates.some(row=>row.executable),false);assert.equal(target.synthetic.writes.length,0);assert.equal(f.durable.list(target.id).length,0);}finally{await f.cleanup();}
+  }
+});
+
+test('registered forge invalidates exact authorized identity after both pool and worn state change',async()=>{
+  const f=fixture(),target=f.session();try{const planned=await f.displayed(target),permit=f.authorize(target,planned);target.synthetic.bag[1].level++;target.synthetic.heroes[0].equips[0].level++;
+    f.service.execute(target,permit);await f.service.settle(target.id);const record=f.durable.list(target.id)[0];assert.equal(record.finalStatus,'NOT_EXECUTED');assert.equal(record.actions[0].dispatched,false);assert.equal(target.synthetic.writes.length,0);assert.equal(record.runBudget.reserved.resources.length,0);
+  }finally{await f.cleanup();}
+});
+
+for(const action of ['make','pick'])test('registered '+action+' persists UNKNOWN when an existing full-pool mirror changes after write',async()=>{
+  const f=fixture(),target=f.session('account-A',action==='make'?idle():making());try{target.synthetic.onWrite=()=>{target.synthetic.bag[1].level++;target.synthetic.heroes[0].equips[0].level++;};const result=await f.execute(target,await f.displayed(target,parameters(action)));
+    assert.equal(result.record.finalStatus,'UNKNOWN');assert.equal(result.record.actions[0].unresolvedWrite,true);assert.equal(target.synthetic.writes.length,1);assert.equal(f.durable.unresolved(target.id),true);await assert.rejects(f.displayed(target,parameters(action)));assert.equal(target.synthetic.writes.length,1);
+  }finally{await f.cleanup();}
 });

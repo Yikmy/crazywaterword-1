@@ -30,7 +30,7 @@ function publicAction(operation) {
   return Object.fromEntries(fields.filter(key => operation[key] !== undefined).map(key => [key, clone(operation[key])]));
 }
 function evidence(result) {
-  const fields = ['requestStatus', 'beforeState', 'resourceBefore', 'resourceAfter', 'reservation', 'resourceReservation', 'afterState', 'verification', 'nextDecision', 'reason', 'error', 'decision', 'ruleResult', 'dispatched', 'unresolvedWrite', 'beforeInventory', 'afterInventory', 'beforeInventoryReliable', 'afterInventoryReliable', 'collectedProducts'];
+  const fields = ['requestStatus', 'beforeState', 'resourceBefore', 'resourceAfter', 'reservation', 'resourceReservation', 'afterState', 'verification', 'nextDecision', 'reason', 'error', 'decision', 'ruleResult', 'dispatched', 'unresolvedWrite', 'beforeInventory', 'afterInventory', 'beforeInventoryReliable', 'afterInventoryReliable', 'collectedProducts', 'receivedReward', 'rewardEvidence'];
   return Object.fromEntries(fields.filter(key => result[key] !== undefined).map(key => [key, clone(result[key])]));
 }
 
@@ -347,6 +347,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
         const adapter = decisionMemory&&originalAdapter&&!originalAdapter.execute ? {...originalAdapter,async survey(...args){freshMemorySourceAt=clock();return originalAdapter.survey(...args);},plan(facts,options){const planned=originalAdapter.plan(facts,options);for(const fresh of planned.actions??[]){const candidate={...fresh,module:operation.module},fact=memoryFact(session,candidate,freshMemorySourceAt);assertMemoryAction(session,candidate,fact);entry.memoryFacts.set(fresh.actionId,fact);}return planned;}} : originalAdapter;
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
         const result = await executor(client, protocol, operation, { config: entry.config, rules: loadRules(session.id).config, player: session.player,
+          rewardBinding: operation.module==='orders'?{...record.executionContext,runId:record.runId,batchId:entry.public.batchId,actionId:operation.actionId,identity:operation.identity,orderIndex:operation.target.index}:null, rewardContext:()=>executionContext(session),
           allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
           ...(executor === businessExecute ? { onStage(stage) {
             if (!BUSINESS_EXECUTION_STAGES.includes(stage)) throw error('执行证据阶段无效', 'HISTORY_UNAVAILABLE');

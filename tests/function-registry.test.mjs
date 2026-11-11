@@ -4,6 +4,7 @@ import { GAMEPLAY_MODULES, registerBusinessFunction, listBusinessFunctions } fro
 import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract } from '../src/function-contracts.mjs';
 import { createStageFunction } from '../src/stage-function.mjs';
 import { createOperationService } from '../src/operation-service.mjs';
+import { formationUnlockModule } from '../src/formation-unlock.mjs';
 import { equipmentForgeModule } from '../src/equipment-forge.mjs';
 import { farmModule } from '../src/farm-operations.mjs';
 import { heroModule } from '../src/hero-operations.mjs';
@@ -18,9 +19,9 @@ import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 // Every protocol type, response and account below is synthetic. No GameClient
 // connection, asset loader, default account path or persistent store is used.
 const clone = value => structuredClone(value);
-const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','stage'];
-const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule };
-const tablesByModule = { 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
+const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','stage'];
+const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule };
+const tablesByModule = { 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
   heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg'],
@@ -93,7 +94,7 @@ async function makePlan(f, id, { mode = 'Manual', parameters = id === 'formation
 const approve = (f, plan) => f.service.authorize(f.session,{ batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map(row => row.actionId), resourceBudget: plan.resourceBudget, confirm: true });
 function noExecution(f) { assert.equal(f.writes.length,0); assert.equal(f.state.runnerPreparations,0); assert.equal(f.state.historyWrites,0); assert.equal(f.session.busy,null); }
 
-test('actual twelve static adapters and dynamic Stage register as the thirteen contract-backed Functions', () => {
+test('actual thirteen static adapters and dynamic Stage register as the fourteen contract-backed Functions', () => {
   const f = fixture(); assert.deepEqual(Object.keys(f.modules),allIds);
   for (const [id,module] of Object.entries(f.modules)) {
     assert.equal(module.contractVersion,1); assert.ok(Object.isFrozen(module));
@@ -114,7 +115,7 @@ test('registry rejects missing real hooks and unknown module identities', () => 
   assert.throws(() => registerBusinessFunction({ ...formationModule, id: 'untrusted' }),{ code: 'INVALID_FUNCTION_CONTRACT' });
 });
 test('registry and Service expose exact detached C/P/S, schema, permission and evidence metadata', () => {
-  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,13);
+  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,14);
   for (const entry of listed) {
     assert.deepEqual(entry.metadata,describeFunctionContract(entry.id)); assert.deepEqual(entry.capabilities,FUNCTION_CONTRACTS[entry.id].inventoryRequirementIds??FUNCTION_CONTRACTS[entry.id].requirementIds.C);
     const throughService = f.service.moduleView(f.session.id,entry.id).functions.find(row => row.id === entry.id);
@@ -141,7 +142,7 @@ test('real domain validators reject semantically invalid fields before survey re
     assert.equal(f.reads.length,0); assert.equal(f.state.lookups,0); noExecution(f);
   }
 });
-test('eleven actual dependency hooks ignore unrelated tables and bind every declared relevant table', () => {
+test('all actual dependency hooks ignore unrelated tables and bind every declared relevant table', () => {
   const f = fixture();
   for (const id of allIds) {
     const module = f.modules[id], base = f.options(id), before = module.dependencyVersions(base), unrelated = clone(base);
