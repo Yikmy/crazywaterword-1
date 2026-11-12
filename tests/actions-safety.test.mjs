@@ -185,3 +185,13 @@ test('exclusive STAR builder preserves required false and cannot use the legacy 
  assert.deepEqual(buildHeroAction(step),{request:'HeroExclusiveStarUpRequest',response:null,body:{heroId:'A',universal:false}});
  assert.equal((await runHeroPlan(client,protocol,{steps:[step]},{allowMutate:true}))[0].status,'NOT_EXECUTED');assert.equal(reads,0);assert.equal(writes,0);
 });
+
+test('worn badge D6 admits only exact UID, empty sacrifice list and matching positive owned EXP and GOLD',()=>{
+ const make=()=>({request:'EnhanceBadgeRequest',body:{uid:'9007199254740993',decomposeUid:[],expItemNum:5},costs:[{id:'徽章经验',num:5},{id:'GOLD',num:100}]});
+ assert.doesNotThrow(()=>assertPaymentAllowed(make()));const reversed=make();reversed.costs.reverse();assert.doesNotThrow(()=>assertPaymentAllowed(reversed));
+ for(const mutate of [a=>a.body.uid='01',a=>a.body.uid=9007199254740992,a=>a.body.uid='9223372036854775808',a=>a.body.decomposeUid.push('2'),a=>a.body.decomposeUid.extra=true,a=>delete a.body.decomposeUid,a=>a.body.expItemNum=0,a=>a.body.expItemNum=2147483648,a=>a.body.expItemNum=4,a=>a.body.buyMissing=false,a=>a.costs[0].id='万能经验',a=>a.costs[1].num=0,a=>a.costs.pop(),a=>a.costs.push({id:'其他',num:1})]){
+  const a=make();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});
+ }
+ for(const id of ['RUBY','钻石','4']){const a=make();a.costs[1].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ for(const request of ['ReplaceBadgeRequest','BadgeStarUpRequest','PutOnBadgeRequest'])assert.throws(()=>assertPaymentAllowed({...make(),request}),{code:'COST_UNKNOWN'});
+});

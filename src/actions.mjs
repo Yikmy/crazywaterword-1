@@ -307,6 +307,9 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const refineEquip=request==='EquipRefineRequest';
   const enhanceEquip=request==='EnhanceEquipRequest';
   const exactUid=value=>typeof value==='string'&&/^[1-9][0-9]*$/.test(value)&&value.length<=19&&BigInt(value)<(1n<<63n);
+  const enhanceBadge=request==='EnhanceBadgeRequest';
+  const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
+  if(enhanceBadge&&(!fields(body,['uid','decomposeUid','expItemNum'])||!exactUid(body.uid)||!emptyOwnArray(body.decomposeUid)||!positiveInt32(body.expItemNum)||!exactCosts(costs)||costs.length!==2||!costs.some(row=>row.id==='徽章经验'&&row.num===body.expItemNum)||!costs.some(row=>row.id==='GOLD')))fail('COST_UNKNOWN','纹章升级仅允许明确已佩戴UID、自有徽章经验和金币，不消耗其他徽章');
   if(enhanceEquip&&(!fields(body,['uid'])||!exactUid(body.uid)||!exactCosts(costs)||costs.length!==1||costs[0].id!=='精铁'))fail('COST_UNKNOWN','装备升级仅允许明确已佩戴UID及精确正精铁成本');
   if(refineEquip&&(!fields(body,['uid'])||!exactUid(body.uid)||!exactCosts(costs)||costs.length!==2||!['精铁','精炼石'].every(id=>costs.some(row=>row.id===id))))fail('COST_UNKNOWN','装备精炼仅允许明确已佩戴UID及精确双材料正成本');
   const unlockPreset=request==='UnlockFormationPresetRequest';
@@ -315,7 +318,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(farmPlant&&(!fields(body,['args'])||!Array.isArray(body.args)||body.args.length!==1||Reflect.ownKeys(body.args).length!==2||!fields(body.args[0],['buildingId','productId'])||!identifier(body.args[0].buildingId)||!identifier(body.args[0].productId)||!exactCosts(costs)||costs.length!==1))fail('COST_UNKNOWN','仅允许有精确种子成本的单田播种');
   if(forgeMake&&(!fields(body,['buildingId','makeId','universal'])||!identifier(body.buildingId)||!Number.isInteger(body.makeId)||body.makeId<=0||body.makeId>2147483647||body.universal!==false||!exactCosts(costs)||costs.length===0))fail('COST_UNKNOWN','装备制造仅允许精确配方、自有材料及universal=false');
   if(forgePick&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!Object.hasOwn(action,'costs')||!exactCosts(costs)||costs.length!==0))fail('COST_UNKNOWN','装备收取仅允许明确单建筑及零成本');
-  const known = exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
+  const known = exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || enhanceBadge || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
     || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {

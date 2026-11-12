@@ -2402,3 +2402,15 @@ E09 纳入 ORANGE/RED 单次专武等级、缺材料/星级/达上限零派发�
 显式 `action:'exclusive-star'` 和英雄 ID 才能规划；D6 仅接受 `HeroExclusiveStarUpRequest {heroId,universal:false}` 及两种精确自有材料。无专用响应，`nextHero` 预览不作为确认。独立复读必须证明星级恰好 +1、等级不变、两种材料净扣精确且其他状态不变（目标英雄可有合法派生变化）。写前权威时效、账号与连接隔离、两项持久预算和 `hero-exclusive` UID 均复用 C225。同一父运行下，一次升星已占用 UID 后，即使下一等级成本可支付，也不能再派发该英雄的升级。无效果/歧义保留 UNKNOWN，不重放。
 
 离线验证：D.15 的 23 文件命令追加 `tests/hero-exclusive-star.test.mjs`；共 **737/737 PASS，0 fail/cancelled/skipped/todo，24.00 秒**。包含 ORANGE/RED 真实本地 Codec、固定配置、合成账号、HTTP 授权拒绝缺任一费用、临时 History 重启、跨动作父预算及完整页面。首跑发现 Service 合成石头缺 quality、合同测试误用不含领域校验的桩；补足夹具和真实 Adapter 后通过，保留生产规则。R7 全量及真实游戏未执行。E09 增补 C226 两品质正例及门槛/缺材料/上限零派发；E20/E21/E23 加跨动作预算、无效果和重启隔离。W07 仍 PARTIAL，下一独立分支 C228 核对已佩戴徽章、经验边界和金币，不将 C227/C230 替换标完成。
+
+### D.17 C228 已佩戴徽章从零经验单次升级（2026-11-12）
+
+父提交 `6bdd1572eb74db80aee76f79debec15c6bddda1b`。W07 / C228、P3-6/P3-7、BIZ-R09 增加徽章领域 Adapter，沿用 OperationService、共享执行器、ResourceLedger、ExecutionHistory、原 Gameplay/Operations API 与 Workflow ACTION。英雄页显示已佩戴徽章的槽位、UID、当前经验、等级和两项成本；默认关闭。该原子分支 EXISTING_FUNCTION、EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。C228 完整范围与 W07 仍 PARTIAL；非零经验、升级到上限、献祭、升星、穿戴和替换各自待核。
+
+固定 v76 `BadgeLvUpPop`、`BadgeUtil`、`HeroDetailBadge` 的哈希和偏移见 `BADGE_GROWTH_EVIDENCE`。只允许明确英雄和唯一已佩戴徽章 UID，要求完整 Badges 池与全 AllHero 槽位镜像匹配，目标职业与槽位已满足配置。当前经验必须确为 0，目标等级严格低于上限；下一档 `exp` 即徽章经验用量，金币为该用量乘同档 `goldExpRadio`（固定配置首档 5 经验 / 100 GOLD）。`EnhanceBadgeRequest {uid,decomposeUid:[],expItemNum}` 只接受精确 64 位 UID、空献祭列表、两项正成本；不增加 CLI 或任意请求入口。
+
+`EnhanceBadgeResponse` 必须可验证且无返还材料；响应本身不证明效果。独立的 Badges、AllHero、AllItem、AllResource 响应检查原采集时效、账号/连接和写前写后时序。确认要求同 UID 原槽位等级恰好 +1、残余经验 0、随机属性和其余池/槽位/库存不变（仅目标英雄合法派生战力和属性可变），经验和 GOLD 恰好净扣。预算与 badge UID 派发前持久化；无效果、错效果或意外返还均保留 UNKNOWN，重启不自动重放。公开预览保留必要状态和成本，不包含内部配置或请求体。
+
+离线验证：D.16 的 24 文件定向命令追加 `tests/badge-growth.test.mjs`、`tests/badge-growth-service.test.mjs`、`tests/farm-forge-api.test.mjs`，共 **790/790 PASS，0 fail/cancelled/skipped/todo，23.87 秒**。包括真实本地 Codec、合成状态、共享执行器、磁盘历史、原 HTTP 隔离与完整页面；16 领域、4 Service 和 165 项专项与本次重叠。保留失败证据：未接 D6 时计划按未知成本阻断；修复测试的缺 required int32 夹具使其真正省略编码字段；Service 回归发现预览剥离内部 action 后误标不可执行，现保留给 Service 内部并由其在输出前删除；联合回归发现旧模块清单固定 14 个静态 Adapter，已纳入第 15 个及默认禁用/账号/CSRF 断言。未放宽成本或确认规则。不是 R7；未执行真实游戏。
+
+E09 增加当前受控徽章等级、槽位镜像、精确双扣、零派发与意外材料；E20/E21/E23 增加 UID 预算、重启和隔离复核。C227/C230 的旧/新 UID 归属、继承及返还仍需权威证据；W10 科技重置按钮在固定客户端无实现，当前协议字段不足以推断成本或退款。继续核实独立可施工的装备空槽穿戴及其他工作包，不因上述缺证停止推进。R8 仍在 R7 后单独授权。
