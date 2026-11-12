@@ -379,3 +379,15 @@ test('workflow history selection, account changes, wrong identities and failed r
   assert.match(f.node('wf-history-hint').textContent, /history unavailable/);
   assert.equal(f.node('wf-history-read').disabled, false);
 });
+
+test('workflow history renders blocked and preview-only evidence without granting permission',async()=>{
+ const h=await historyBoot(),task=h.node('wf-history-read').onclick(),detail=workflowHistoryDetail();
+ detail.nodes=[
+  {nodeId:'daily',traceResult:'BLOCKED_NO_EXECUTABLE_CANDIDATE',module:'free-gold',blockedReasons:['FREE_GOLD_CLOCK_UNKNOWN','<unsafe reason>'],batches:[]},
+  {nodeId:'task',traceResult:'AWAITING_AUTHORIZATION',module:'task-rewards',actionId:'action-preview',batchId:'batch-preview',planHash:'hash-preview',batches:[]}
+ ];
+ h.respond(workflowHistoryPath('run/one'),detail);await task;
+ const text=h.node('wf-history-detail').textContent;
+ for(const value of ['free-gold','FREE_GOLD_CLOCK_UNKNOWN','<unsafe reason>','该节点未生成可执行批次','batch-preview','hash-preview','预览本身不表示授权或派发'])assert.ok(text.includes(value),value);
+ assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.ok(h.requests.every(row=>row.body===null));
+});

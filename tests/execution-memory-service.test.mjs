@@ -7,7 +7,7 @@ import path from 'node:path';
 import {createExecutionHistory} from '../src/execution-history.mjs';
 import {createExecutionMemory} from '../src/execution-memory.mjs';
 import {createOperationService} from '../src/operation-service.mjs';
-import {createWorkflowRunner} from '../src/workflow.mjs';
+import {createWorkflowRunner,projectWorkflowExecutionHistory} from '../src/workflow.mjs';
 
 // Private TEMP storage and synthetic in-process requests only. No account data,
 // credentials, Runtime, socket, server clock sample or real transport is used.
@@ -135,6 +135,8 @@ test('Tasks refusal is shared with Loop after Service restart without automatic 
  try{f.rows.delete('two');runner=unifiedRunner(f);const paused=await runner.start('A',compileUnifiedExecution(unifiedIntent('tasks'),{modules:f.service.modules}).graph);
  const result=await f.execute(paused.plan);assert.equal(result.record.actions[0].result,'REJECTED');
  const stopped=await runner.resume();assert.equal(stopped.status,'FAILED');assert.equal(stopped.lastRun.finalStatus,'REJECTED');
+ const joined=projectWorkflowExecutionHistory('A',{...stopped,workflowId:'unified-tasks'},f.history.list('A'));
+ assert.equal(joined.unlinkedOperationCount,0);assert.equal(joined.nodes.length,1);assert.equal(joined.nodes[0].batches[0].finalStatus,'REJECTED');
  restarted=fixture({moduleId:'task-rewards',file:f.historyFile});restarted.rows.delete('two');next=unifiedRunner(restarted);
  const blocked=await next.start('A',compileUnifiedExecution(unifiedIntent('loop'),{modules:restarted.service.modules}).graph);
  assert.equal(blocked.status,'COMPLETED');assert.ok(blocked.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'));assert.match(blocked.reason,/阻塞/);

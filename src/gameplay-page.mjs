@@ -347,7 +347,10 @@ function wfHistoryRender(data) {
   box.appendChild(gpEl('p', '未关联的操作记录：' + data.unlinkedOperationCount + '。仅显示已持久化且归属一致的动作。'));
   for (const node of data.nodes) {
     box.appendChild(gpEl('h3', '节点 ' + node.nodeId + ' · ' + node.traceResult));
-    if (!node.batches.length) box.appendChild(gpEl('p', '暂无可关联批次。'));
+    if (node.module) box.appendChild(gpEl('p', '模块：' + node.module));
+    if (node.blockedReasons?.length) box.appendChild(gpEl('p', '未执行；阻塞原因：' + node.blockedReasons.join('、')));
+    if (node.batchId) box.appendChild(gpEl('p', '已预览批次：' + node.batchId + ' · 动作：' + (node.actionId || '未知') + ' · 计划哈希：' + (node.planHash || '未知')));
+    if (!node.batches.length) box.appendChild(gpEl('p', node.traceResult?.startsWith('BLOCKED_') ? '该节点未生成可执行批次。' : '暂无可关联执行；预览本身不表示授权或派发。'));
     for (const batch of node.batches) {
       box.appendChild(gpEl('p', '批次 ' + batch.batchId + ' · 操作 ' + batch.operationRunId + ' · ' + batch.finalStatus));
       const table = gpEl('table'), header = gpEl('tr');

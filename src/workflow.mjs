@@ -140,7 +140,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     return Promise.race([observed, aborted]).finally(() => ctx.cancel.signal.removeEventListener('abort', listener));
   }
   function next(ctx, result = 'ALWAYS') { const edges = ctx.graph.edges.filter(edge => edge.from === ctx.nodeId), edge = edges.find(entry => entry.when === result) ?? edges.find(entry => (entry.when ?? 'ALWAYS') === 'ALWAYS'); if (!edge) throw fail('工作流出口未匹配', 'WORKFLOW_UNKNOWN'); return edge.to; }
-  async function trace(ctx, node, result) { ctx.trace.push({ nodeId: node.id, type: node.type, result, timestamp: now() }); await onUpdate(getStatus()); }
+  async function trace(ctx, node, result, evidence = {}) { ctx.trace.push({ nodeId: node.id, type: node.type, result, timestamp: now(), ...(node.module ? {module:node.module} : {}), ...evidence }); await onUpdate(getStatus()); }
   async function advance(ctx) {
     try {
       ctx.status = 'RUNNING';
@@ -159,7 +159,10 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
             if (surveyed?.accountId !== ctx.accountId || surveyed.module !== node.module || !Array.isArray(surveyed.view?.candidates)) throw fail('唯一候选缺少同账号同模块调查', 'WORKFLOW_UNKNOWN');
             ctx.survey = surveyed; ctx.surveyModule = node.module;
             const candidates = surveyed.view.candidates.filter(row => row.executable === true);
-            if (!candidates.length) { await trace(ctx, node, 'BLOCKED_NO_EXECUTABLE_CANDIDATE'); ctx.nodeId = next(ctx); continue; }
+            if (!candidates.length) {
+              const blockedReasons = [...new Set(surveyed.view.candidates.map(row => row.blockedReason).filter(reason => text(reason) && reason.length <= 512))].slice(0,50);
+              await trace(ctx, node, 'BLOCKED_NO_EXECUTABLE_CANDIDATE', {blockedReasons:blockedReasons.length?blockedReasons:['NO_EXECUTABLE_CANDIDATE']}); ctx.nodeId = next(ctx); continue;
+            }
             if (candidates.length !== 1 || !text(candidates[0].actionId)) throw fail('存在多个候选或候选身份不明；须选择明确操作', 'WORKFLOW_UNKNOWN');
             selectedId = candidates[0].actionId;
           }
@@ -167,12 +170,12 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
           try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx); }
           catch (error) {
             current(ctx);
-            if (node.selection?.unique === true && error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY'); ctx.nodeId = next(ctx); continue; }
+            if (node.selection?.unique === true && error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY', {actionId:selectedId,blockedReasons:['REJECTION_MEMORY_ACTIVE']}); ctx.nodeId = next(ctx); continue; }
             throw error;
           }
           if (!plain(plan) || !text(plan.batchId) || plan.accountId !== ctx.accountId || !Array.isArray(plan.actions) || plan.actions.length !== 1 || !text(plan.actions[0].actionId)) throw fail('操作服务未返回可单次确认的账号计划', 'WORKFLOW_UNKNOWN');
           if (plan.actions[0].actionId !== selectedId || plan.module && plan.module !== node.module) throw fail('计划与工作流精确操作选择不一致', 'WORKFLOW_UNKNOWN');
-          ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION'); break;
+          ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION', {actionId:selectedId,batchId:plan.batchId,...(plan.planHash?{planHash:plan.planHash}:{})}); break;
         }
         if (node.type === 'WAIT') { ctx.status = 'WAITING'; let timer; try { await cancelled(ctx, new Promise(resolve => { timer = setTimeout(resolve, node.durationMs); })); } finally { clearTimeout(timer); } ctx.status = 'RUNNING'; current(ctx); await trace(ctx, node, 'WAITED'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'BRANCH') { if (!['PASS','FAIL'].includes(ctx.lastResult)) throw fail('分支缺少已验证的条件结果', 'WORKFLOW_UNKNOWN'); await trace(ctx, node, ctx.lastResult); ctx.nodeId = next(ctx, ctx.lastResult); continue; }
@@ -229,7 +232,6 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
           refused.actions[0].actionId === ctx.waitingPlan.actions[0].actionId && refused.actions[0].result === 'REJECTED' &&
           refused.actions[0].requestStatus === 'REJECTED' && refused.actions[0].unresolvedWrite === false) {
         ctx.lastRun = copy(refused);
-        await trace(ctx, ctx.graph.nodes.find(node => node.id === ctx.nodeId), 'REJECTED');
         await finish(ctx, 'FAILED', '当前批次确定拒绝；共享拒绝记忆保留，停止后续执行');
         return getStatus();
       }
@@ -257,6 +259,19 @@ const ids = (rows, pick) => {
   const values = rows.map(pick);
   return values.every(historyId) && new Set(values).size === values.length ? values : null;
 };
+const TRACE_EVIDENCE_FIELDS = ['module','actionId','batchId','planHash'];
+function traceEvidence(row) {
+  const evidence={};
+  for(const key of TRACE_EVIDENCE_FIELDS)if(row[key]!==undefined){
+    if(!(key==='actionId' ? typeof row[key]==='string'&&row[key].length>0&&row[key].length<=1000&&row[key].trim()===row[key] : historyId(row[key])))throw fail('工作流trace身份无效');
+    evidence[key]=row[key];
+  }
+  if(row.blockedReasons!==undefined){
+    if(!Array.isArray(row.blockedReasons)||row.blockedReasons.length>50||row.blockedReasons.some(reason=>!historyId(reason)))throw fail('工作流阻塞原因无效');
+    evidence.blockedReasons=[...row.blockedReasons];
+  }
+  return evidence;
+}
 const sameIds = (left, right) => left && right && left.length === right.length && left.every((id, index) => id === right[index]);
 
 // Audit the records already present in the two stores. The current graph can
@@ -270,7 +285,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
   for (const row of trace) {
     if (row?.type !== 'ACTION' || !text(row.nodeId)) continue;
     if (nodes.has(row.nodeId)) duplicateNodes.add(row.nodeId);
-    else nodes.set(row.nodeId, { nodeId: row.nodeId, traceResult: row.result, timestamp: row.timestamp ?? null, batches: [] });
+    else nodes.set(row.nodeId, { nodeId: row.nodeId, traceResult: row.result, timestamp: row.timestamp ?? null, ...traceEvidence(row), batches: [] });
   }
   for (const nodeId of duplicateNodes) nodes.delete(nodeId);
 
@@ -287,7 +302,12 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
     if (![run.workflowId, run.parentRunId, plan?.parentRunId].includes(workflowRunId)) continue;
     const node = nodes.get(run.workflowNodeId), batchId = plan?.batchId;
     const actionIds = ids(run.actions, row => row?.actionId);
-    if (!node || run.workflowId !== workflowRunId || run.parentRunId !== workflowRunId || plan?.parentRunId !== workflowRunId ||
+    if (!node || node.traceResult?.startsWith('BLOCKED_') ||
+        node.module !== undefined && node.module !== run.module ||
+        node.batchId !== undefined && node.batchId !== batchId ||
+        node.planHash !== undefined && node.planHash !== plan?.planHash ||
+        node.actionId !== undefined && (actionIds?.length !== 1 || actionIds[0] !== node.actionId) ||
+        run.workflowId !== workflowRunId || run.parentRunId !== workflowRunId || plan?.parentRunId !== workflowRunId ||
         run.workflowDefinitionId !== workflowDefinitionId || plan?.workflowDefinitionId !== workflowDefinitionId ||
         plan?.workflowNodeId !== node.nodeId || plan?.accountId !== accountId ||
         runCounts.get(run.runId) !== 1 || batchCounts.get(batchId) !== 1 || authorization?.batchId !== batchId ||
@@ -334,7 +354,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) 
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;
-    if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]]))); }
+    if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => ({...Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]])),...traceEvidence(row)})); }
     const raw = read(), account = entry(raw, accountId); account.history = [safe, ...account.history.filter(existing => existing.runId !== safe.runId)]; write(raw); return copy(safe);
   }
   function history(accountId, { liveRunId = null, runId = null } = {}) {

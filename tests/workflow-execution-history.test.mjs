@@ -11,7 +11,7 @@ process.env.CW_CONFIG_PACK = path.join(dir, 'absent-config.json');
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const { createExecutionHistory } = await import('../src/execution-history.mjs');
-const { createWorkflowStore } = await import('../src/workflow.mjs');
+const { createWorkflowStore, projectWorkflowExecutionHistory } = await import('../src/workflow.mjs');
 
 const origin = 'http://127.0.0.1:17321', workflowFile = path.join(dir, 'workflows.json');
 const account = id => ({ id, label: 'synthetic-' + id, url: 'wss://example.invalid', login: {
@@ -203,4 +203,38 @@ test('interrupted workflow links only unambiguous exact-account evidence and ret
   assert.equal(unavailable.status, 409);
   assert.equal(unavailable.data.code, 'HISTORY_UNAVAILABLE');
   assert.equal(fs.readFileSync(f.file, 'utf8'), '{synthetic corrupt history');
+});
+
+test('persisted blocked and preview identities survive restart without inventing dispatch or linking conflicting batches',async t=>{
+ const f=fixture('blocked-preview');t.after(()=>f.close());
+ const runId='blocked-preview-run',workflowId='blocked-preview-graph',at='2026-11-13T01:00:00.000Z';
+ const trace=[
+  {nodeId:'blocked',type:'ACTION',result:'BLOCKED_NO_EXECUTABLE_CANDIDATE',module:'free-gold',blockedReasons:['FREE_GOLD_CLOCK_UNKNOWN'],timestamp:at},
+  {nodeId:'preview',type:'ACTION',result:'AWAITING_AUTHORIZATION',module:'formation',actionId:'exact-action',batchId:'exact-batch',planHash:'exact-hash',timestamp:at,permitId:'discard-this-permit',body:{token:'discard-this-token'}},
+ ];
+ f.workflowStore.record('A',{runId,workflowId,status:'AWAITING_AUTHORIZATION',trace});
+ const bytes=fs.readFileSync(workflowFile,'utf8'),result=await f.request(historyUrl('A',runId));
+ assert.equal(result.status,200);assert.equal(result.data.status,'RECOVERED_STOPPED');assert.equal(result.data.resumable,false);
+ assert.equal(result.data.nodes[0].module,'free-gold');assert.deepEqual(result.data.nodes[0].blockedReasons,['FREE_GOLD_CLOCK_UNKNOWN']);
+ assert.equal(result.data.nodes[1].batchId,'exact-batch');assert.equal(result.data.nodes[1].planHash,'exact-hash');
+ assert.deepEqual(result.data.nodes.map(node=>node.batches),[[],[]]);assert.equal(f.sent.length,0);assert.equal(f.sessions.size,0);
+ assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);assert.doesNotMatch(bytes,/discard-this-permit|discard-this-token/);
+ const persisted=f.workflowStore.history('A',{runId})[0];
+ const operation={accountId:'A',runId:'exact-operation',workflowId:runId,parentRunId:runId,workflowDefinitionId:workflowId,workflowNodeId:'preview',module:'formation',finalStatus:'SUCCESS',
+  planSummary:{accountId:'A',parentRunId:runId,workflowDefinitionId:workflowId,workflowNodeId:'preview',batchId:'exact-batch',planHash:'exact-hash',actions:[{actionId:'exact-action'}]},
+  authorizationSummary:{batchId:'exact-batch',actionIds:['exact-action']},actions:[{actionId:'exact-action',result:'SUCCESS',requestStatus:'SUCCESS',verification:{status:'CONFIRMED'}}]};
+ assert.equal(projectWorkflowExecutionHistory('A',persisted,[operation]).nodes[1].batches.length,1);
+ for(const mutate of [
+  row=>row.planSummary.planHash='different-hash',
+  row=>{row.module='free-gold';},
+  row=>{row.workflowNodeId='blocked';row.planSummary.workflowNodeId='blocked';row.module='free-gold';},
+  row=>{row.actions[0].actionId='other';row.planSummary.actions[0].actionId='other';row.authorizationSummary.actionIds=['other'];}
+ ]){
+  const changed=structuredClone(operation);mutate(changed);const joined=projectWorkflowExecutionHistory('A',persisted,[changed]);
+  assert.equal(joined.unlinkedOperationCount,1);assert.deepEqual(joined.nodes.map(node=>node.batches),[[],[]]);
+ }
+ for(const extra of [{module:''},{blockedReasons:[' '.repeat(3)]},{batchId:42},{blockedReasons:Array(51).fill('too-many')}]){
+  assert.throws(()=>f.workflowStore.record('A',{runId:'invalid-trace',workflowId,status:'COMPLETED',trace:[{...trace[0],...extra}]}));
+ }
+ assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
 });
