@@ -48,7 +48,7 @@ function dailyTasks(body,config) {
     const activity=count(definition,'point'),experience=count(definition,'exp');
     return {taskId,title:described.title,description:described.desc,progress,targetProgress:target,rewardClaimed,eligible,status,
       configuredReward:activity!==null&&experience!==null?{activity,experience}:null,
-      executable:false,blockedReason:'DAILY_TASK_CLAIM_CONTRACT_UNVERIFIED',...(taskId===1010?{functionId:'pirate-sweep'}:{})};
+      executable:false,blockedReason:'DAILY_TASK_CLAIM_CONTRACT_UNVERIFIED',...(taskId===1010?{functionId:'pirate-sweep'}:taskId===1006?{functionId:'free-gold'}:{})};
   });
   const complete=row=>row.progress!==null&&row.targetProgress!==null&&row.targetProgress>0;
   return {status:tasks.every(row=>row.eligible!==null)?'AVAILABLE':'PARTIAL',reason:tasks.some(row=>row.eligible===null)?'DAILY_TASK_FIELDS_UNKNOWN':null,rows:tasks,
@@ -121,8 +121,8 @@ function freeGoldView(body,config) {
   const total=matches.length===1?count(matches[0],'paramValue'):null,known=used!==null&&total!==null&&used<=total;
   const remaining=known?total-used:null;
   return {status:known?'AVAILABLE':'UNKNOWN',reason:known?null:'FREE_GOLD_COUNT_OR_CONFIG_UNKNOWN',used,total,remaining,paidUsed,resetMarker,minimumGold,
-    eligible:known?remaining>0:null,executable:false,blockedReason:'FREE_GOLD_SETTLEMENT_UNVERIFIED',configSource:'OfflineParamCfg.免费点金次数',
-    note:'freeTimes 为本次缓存中的已用次数；重置字段和 minGold 保留原值，未推定日界或 gold/ratio 的实际净入。仅普通免费模式，付费点金仍受 D6 禁止。'};
+    eligible:known?remaining>0:null,executable:false,blockedReason:'USE_FREE_GOLD_FUNCTION',configSource:'OfflineParamCfg.免费点金次数',
+    note:'freeTimes 为本次缓存中的已用次数；领取请进入普通免费点金 Function，重新探测可信时段、单次授权并复读结算。缓存不构成资格授权，未推定日界或实际到账；付费点金仍受 D6 禁止。'};
 }
 function giftView(body) {
   const drawn=list(own(body,'drawnPack'),text),heroId=own(body,'heroId'),resetMarker=count(body,'resetTime');

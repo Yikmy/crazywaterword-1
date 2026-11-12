@@ -345,6 +345,7 @@ export const PAGE = `<!doctype html>
     <pre id="tasks-view">只读展示主线、支线、成就与每日订单的缓存状态。</pre>
     ${CORE_GAMEPLAY_HTML['task-rewards']}
     ${CORE_GAMEPLAY_HTML['afk-level-rewards']}
+    ${CORE_GAMEPLAY_HTML['free-gold']}
 
     <h2>海面</h2>
     <div class="bar">
@@ -1802,6 +1803,8 @@ function renderDailyChecklist(data) {
     box.appendChild(table(['已用','配置上限','剩余','有免费次数','重置标记原值','minGold 原值'],[[
       known(gold.used),known(gold.total),known(gold.remaining),gold.eligible===true?'是':gold.eligible===false?'否':'未知',known(gold.resetMarker),known(gold.minimumGold)
     ]]));box.appendChild(el('p','dim',gold.note));
+    const scope=viewGuard.capture(),link=el('button','','打开普通免费点金');link.type='button';
+    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-free-gold-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
   }
   if(view.vip){
     box.appendChild(el('h3','','VIP · 采集等级 '+known(view.vip.vipLevel)));

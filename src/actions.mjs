@@ -316,6 +316,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
   const sweepPirate=request==='PirateSweepRequest';
   if(request==='DrawAfkLevelRewardRequest'&&(!fields(body,['level'])||!positiveInt32(body.level)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','挂机等级奖励仅允许精确 level 与明确零支出');
+  if(request==='ClickGoldRequest'&&(!fields(body,['times','free'])||body.times!==1||body.free!==true||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','普通免费点金仅允许 times=1、free=true 与明确零支出');
   if(request==='GotAchievementRewardRequest'&&(!fields(body,['id'])||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','成就奖励仅允许精确 id 与明确零支出');
   if(['DrawMainTaskRewardRequest','GotBranchTaskRewardRequest'].includes(request)&&(!fields(body,['taskId'])||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','任务奖励只允许精确 taskId 与明确零支出');
   if(sweepPirate&&(!fields(body,['uid','cityId'])||!positiveInt32(body.uid)||!positiveInt32(body.cityId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','海面扫荡仅允许明确UID和城市且不消耗普通资源');

@@ -281,7 +281,7 @@ export const DAILY_DRIVERS = {
         const count = Math.min(freeLeft, remaining);
         const actions = [];
         for (let i = 0; i < count; i += 1) {
-          actions.push({ request: 'ClickGoldRequest', body: { times: 1, free: true }, response: 'ClickGoldResponse', cost: '免费次数', note: '免费点金 x1' });
+          actions.push({ request: 'ClickGoldRequest', body: { times: 1, free: true }, response: 'ClickGoldResponse', costs: [], cost: '免费次数', note: '免费点金 x1' });
         }
         return { status: 'ready', actions };
       }
@@ -546,7 +546,8 @@ export async function runDailies(client, protocol, survey, options = {}) {
           break;
         }
         // Enforce D6 before doing even a refresh for a forbidden planned action.
-        assertPaymentAllowed({ ...action, paid: action.paid || entry.status === 'paid' }, settings);
+        const planned = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
+        assertPaymentAllowed({ ...planned, paid: action.paid || entry.status === 'paid' }, settings);
         // Reuse the same survey/driver to check current server state and config before each write.
         const fresh = await surveyDailies(client, protocol, settings);
         const current = fresh.tasks.find((item) => item.task.id === entry.task.id);

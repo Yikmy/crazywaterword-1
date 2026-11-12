@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'free-gold': contract('free-gold',[],['P6-2'],['src/free-gold.mjs#freeGoldModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
+    inventoryRequirementIds:['BIZ-D06'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PAID_OR_BULK','Only one ordinary free click is allowed; never spend RUBY or infer a server day')]},
+    verification:verification('verifyFreeGold','src/free-gold.mjs#verifyFreeGold','Single typed gold receipt plus independent complete inventory and freeTimes +1 under the same unexpired server resetTime; all other balances and paid counters unchanged'),
+    dependencyVersions:dependencies(['moduleConfig','config.OfflineParamCfg']),
+  }),
   'afk-level-rewards': contract('afk-level-rewards',[],['P6-2'],['src/afk-level-rewards.mjs#afkLevelRewardsModule','src/actions.mjs#ACTIONS'],{level:integer},{
     inventoryRequirementIds:['BIZ-R10'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PERIOD_INCOME_AND_UPGRADE','Time-dependent income and income-before-upgrade require separate authoritative contracts')]},
