@@ -202,3 +202,12 @@ test('daily VIP configuration never displays static level eligibility as a claim
   h.run('renderDailies('+JSON.stringify(data)+')');const text=h.node('dailies-table').textContent;
   assert.match(text,/VIP · 采集等级 2/);assert.match(text,/RUBY × 10.*未知/);assert.match(text,/月卡不代替 VIP/);assert.doesNotMatch(text,/可领|直接领取|已领/);
 });
+
+
+test('cached achievement int64 and free gold facts render through assembled page without reward or write claims',async()=>{
+ const h=await boot(),before=h.requests.length,data={stale:true,checklist:{tasks:{rows:[],counts:{total:0}},activity:{daily:{activity:null,tiers:[]},weekly:{activity:null,tiers:[]}},gift:{status:'UNKNOWN'},
+  achievements:{rows:[{id:1001,progress:'9007199254740993',targetProgress:'9007199254740993',status:'ELIGIBLE'}],counts:{total:1}},freeGold:{used:1,total:3,remaining:2,eligible:true,resetMarker:1780000000,minimumGold:3000,note:'gold/ratio 实际净入待核实；免费观察，付费点金受 D6 禁止'},
+  sources:{daily:{status:'UNKNOWN'},gift:{status:'UNKNOWN'},achievements:{status:'AVAILABLE'},freeGold:{status:'AVAILABLE'}},note:'缓存观察不授权执行'}};
+ h.run('renderDailies('+JSON.stringify(data)+')');const text=h.node('dailies-table').textContent;assert.match(text,/成就.*1001.*9007199254740993\/9007199254740993.*达到门槛.*奖励映射与领取结算待核实/);assert.match(text,/普通免费点金.*1.*3.*2.*1780000000.*3000/);assert.match(text,/gold\/ratio 实际净入待核实/);assert.doesNotMatch(text,/可领取|免费领取|直接执行|已到账/);assert.equal(h.requests.length,before);
+ data.checklist.achievements={rows:[],counts:{total:null}};data.checklist.freeGold={used:null,total:null,remaining:null,eligible:null,resetMarker:null,minimumGold:null,note:'未知'};h.run('renderDailies('+JSON.stringify(data)+')');assert.match(h.node('dailies-table').textContent,/成就列表未知/);assert.match(h.node('dailies-table').textContent,/普通免费点金.*未知/);assert.equal(h.requests.length,before);
+});

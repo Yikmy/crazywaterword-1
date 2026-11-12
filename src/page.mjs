@@ -1789,6 +1789,20 @@ function renderDailyChecklist(data) {
     if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
   }
   box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','仅显示免费赠礼状态；领取合同待核实']]));
+  if(view.achievements){
+    box.appendChild(el('h3','','成就 · 缓存已领观察与进度'));
+    box.appendChild(table(['成就 ID','精确进度','已领 / 门槛状态','当前限制'],view.achievements.rows.map(row=>[
+      row.id,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知','奖励映射与领取结算待核实'
+    ])));
+    if(!view.achievements.rows.length)box.appendChild(el('p','dim',view.achievements.counts.total===0?'本次缓存的成就列表为空':'成就列表未知'));
+  }
+  if(view.freeGold){
+    const gold=view.freeGold;
+    box.appendChild(el('h3','','普通免费点金 · 缓存次数'));
+    box.appendChild(table(['已用','配置上限','剩余','有免费次数','重置标记原值','minGold 原值'],[[
+      known(gold.used),known(gold.total),known(gold.remaining),gold.eligible===true?'是':gold.eligible===false?'否':'未知',known(gold.resetMarker),known(gold.minimumGold)
+    ]]));box.appendChild(el('p','dim',gold.note));
+  }
   if(view.vip){
     box.appendChild(el('h3','','VIP · 采集等级 '+known(view.vip.vipLevel)));
     box.appendChild(table(['配置包等级','等级条件','配置奖励','每日领取状态'],view.vip.configuredPackages.map(row=>[

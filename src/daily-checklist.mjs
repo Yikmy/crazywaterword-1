@@ -87,6 +87,43 @@ function activityView(body,config,kind) {
   base.nextAt=known&&pending.length?Math.min(...pending.map(row=>row.requiredActivity)):null;
   return {...base,status:known?'AVAILABLE':'PARTIAL',reason:known?null:unknownClaim?'CLAIMED_TIER_UNRECOGNIZED':'ACTIVITY_FIELDS_OR_THRESHOLDS_UNKNOWN'};
 }
+// Achievement counters are signed int64, unlike the daily task int32 fields.
+// Never round them through Number or inherit protobuf scalar defaults.
+function decimalCount(value) {
+  let parsed;
+  if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;parsed=BigInt(value);}
+  else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)parsed=BigInt(value);
+  else if(object(value)) {
+    const low=own(value,'low'),high=own(value,'high');
+    if(!Number.isInteger(low)||!Number.isInteger(high)||low< -2147483648||low>2147483647||high< -2147483648||high>2147483647||own(value,'unsigned')!==false)return null;
+    parsed=(BigInt(high)<<32n)+BigInt(low>>>0);
+  } else return null;
+  return parsed>=0n&&parsed<(1n<<63n)?String(parsed):null;
+}
+function achievementsView(body) {
+  const raw=own(body,'task'),unknown={status:'UNKNOWN',reason:'ACHIEVEMENT_LIST_UNKNOWN',rows:[],counts:{total:null,completed:null,claimed:null,eligible:null}};
+  if(!dense(raw)||!raw.every(row=>positive(own(row,'id')))||new Set(raw.map(row=>own(row,'id'))).size!==raw.length)return unknown;
+  const rows=raw.map(row=>{
+    const id=own(row,'id'),progress=decimalCount(own(row,'progress')),target=decimalCount(own(row,'targetProgress')),claimed=own(row,'rewardClaimed');
+    const rewardClaimed=typeof claimed==='boolean'?claimed:null,complete=progress!==null&&target!==null&&BigInt(target)>0n?BigInt(progress)>=BigInt(target):null;
+    const eligible=complete!==null&&rewardClaimed!==null?complete&&!rewardClaimed:null;
+    return {id,progress,targetProgress:target,rewardClaimed,complete,eligible,status:rewardClaimed===true?'CLAIMED':eligible===null?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE',
+      configuredRewards:null,executable:false,blockedReason:'ACHIEVEMENT_REWARD_MAPPING_UNVERIFIED'};
+  });
+  const countKnown=(key,predicate)=>rows.every(row=>row[key]!==null)?rows.filter(predicate).length:null;
+  return {status:rows.every(row=>row.eligible!==null)?'AVAILABLE':'PARTIAL',reason:rows.some(row=>row.eligible===null)?'ACHIEVEMENT_FIELDS_UNKNOWN':null,rows,
+    counts:{total:rows.length,completed:countKnown('complete',row=>row.complete),claimed:countKnown('rewardClaimed',row=>row.rewardClaimed),eligible:countKnown('eligible',row=>row.eligible)},
+    note:'仅显示服务器成就 ID、精确进度和已领观察；奖励映射与领取结算待核实。'};
+}
+function freeGoldView(body,config) {
+  const info=own(body,'clickGoldInfo'),used=count(info,'freeTimes'),paidUsed=count(info,'paidTimes'),resetMarker=count(info,'resetTime'),minimumGold=count(info,'minGold');
+  const rows=table(config,'OfflineParamCfg'),matches=dense(rows)?rows.filter(row=>own(row,'paramName')==='免费点金次数'):[];
+  const total=matches.length===1?count(matches[0],'paramValue'):null,known=used!==null&&total!==null&&used<=total;
+  const remaining=known?total-used:null;
+  return {status:known?'AVAILABLE':'UNKNOWN',reason:known?null:'FREE_GOLD_COUNT_OR_CONFIG_UNKNOWN',used,total,remaining,paidUsed,resetMarker,minimumGold,
+    eligible:known?remaining>0:null,executable:false,blockedReason:'FREE_GOLD_SETTLEMENT_UNVERIFIED',configSource:'OfflineParamCfg.免费点金次数',
+    note:'freeTimes 为本次缓存中的已用次数；重置字段和 minGold 保留原值，未推定日界或 gold/ratio 的实际净入。仅普通免费模式，付费点金仍受 D6 禁止。'};
+}
 function giftView(body) {
   const drawn=list(own(body,'drawnPack'),text),heroId=own(body,'heroId'),resetMarker=count(body,'resetTime');
   const known=drawn!==null&&text(heroId),gift=known?planDailyGift({drawnPack:drawn,heroId,resetTime:resetMarker}):null;
@@ -111,14 +148,15 @@ function vipView(state,config) {
     note:'VIP 等级为本次采集的连接观察值。配置包仅供查看；等级条件不证明每日礼包可领，月卡不代替 VIP。'};
 }
 export function dailyChecklist(state,{config=null}={}) {
-  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest');
-  return {readOnly:true,vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
-    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info},
+  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest');
+  return {readOnly:true,achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
 export function formatDailyChecklist(view) {
   const known=v=>v??'未知',c=view.tasks.counts;
   return ['每日任务：'+known(c.completed)+'/'+known(c.total)+' 完成，'+known(c.eligible)+' 项达到领奖门槛',
+    '成就：'+known(view.achievements.counts.eligible)+' 项达到门槛；普通免费点金剩余 '+known(view.freeGold.remaining),
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
     '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',view.note].join('\n');
 }

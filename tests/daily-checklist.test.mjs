@@ -139,3 +139,46 @@ test('explicit observed VIP zero is separate from unknown and invalid package co
   for(const mutate of[c=>delete c.tables.VipFreeCfg,c=>c.tables.VipFreeCfg.data.push(clone(c.tables.VipFreeCfg.data[0]))]){const c=clone(config);mutate(c);const v=dailyChecklist(s,{config:c}).vip;assert.equal(v.configStatus,'UNKNOWN');assert.equal(v.vipLevel,0);assert.deepEqual(v.configuredPackages,[]);}
   const c=clone(config);c.tables.VipFreeCfg.data[0].reward=[['RUBY',-1]];assert.equal(dailyChecklist(s,{config:c}).vip.configuredPackages[0].configuredRewards,null);
 });
+
+
+function observed(s,request,body,{snapshot=false}={}) {
+ s.raw[request]=snapshot?toSnapshotJson(typed(request,body)):typed(request,body);s.outcomes[request]={status:'SUCCESS',updatedAt:'2026-11-12T01:00:00Z'};s.ok[request]=clone(body);return s;
+}
+test('real Codec achievements preserve signed int64 progress exactly, distinguish empty and unknown and never invent rewards',()=>{
+ for(const snapshot of[false,true]){
+  const s=observed(fixture(),'AchievementInfoRequest',{task:[{id:1001,progress:'9007199254740993',targetProgress:'9007199254740993',rewardClaimed:false},{id:1002,progress:'1',targetProgress:'2',rewardClaimed:false},{id:1003,progress:'2',targetProgress:'2',rewardClaimed:true}]},{snapshot});
+  const v=dailyChecklist(s,{config});assert.deepEqual(v.achievements.counts,{total:3,completed:2,claimed:1,eligible:1});assert.equal(v.achievements.rows[0].progress,'9007199254740993');assert.deepEqual(v.achievements.rows.map(row=>row.status),['ELIGIBLE','INCOMPLETE','CLAIMED']);assert.ok(v.achievements.rows.every(row=>row.configuredRewards===null&&row.executable===false&&!Object.hasOwn(row,'action')));assert.equal(v.sources.achievements.observedAt,'2026-11-12T01:00:00Z');assert.match(formatDailyChecklist(v),/成就：1 项达到门槛/);
+ }
+ const s=observed(fixture(),'AchievementInfoRequest',{task:[]});assert.equal(dailyChecklist(s,{config}).achievements.counts.total,0);delete s.raw.AchievementInfoRequest;assert.equal(dailyChecklist(s,{config}).achievements.counts.total,null);
+});
+for(const key of['progress','targetProgress','rewardClaimed'])test('achievement omitted own field remains unknown '+key,()=>{
+ const body={task:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false}]};delete body.task[0][key];const s=observed(fixture(),'AchievementInfoRequest',body),v=dailyChecklist(s,{config}).achievements;assert.equal(v.rows[0].eligible,null);assert.equal(v.counts.eligible,null);assert.equal(v.status,'PARTIAL');
+});
+test('achievement duplicate/invalid IDs, out-of-range counters, unsafe numbers and inherited getters stay unknown',()=>{
+ for(const task of[[{id:1},{id:1}],[{id:0}],[{id:'1'}]]){const s=fixture();s.raw.AchievementInfoRequest={task};s.outcomes.AchievementInfoRequest={status:'SUCCESS'};assert.equal(dailyChecklist(s,{config}).achievements.counts.total,null);}
+ for(const value of[-1,Number.MAX_SAFE_INTEGER+1,'9223372036854775808','-1','01',{low:1,high:0,unsigned:true}]){const s=fixture();s.raw.AchievementInfoRequest={task:[{id:1,progress:value,targetProgress:'1',rewardClaimed:false}]};s.outcomes.AchievementInfoRequest={status:'SUCCESS'};assert.equal(dailyChecklist(s,{config}).achievements.rows[0].eligible,null);}
+ const s=fixture(),row=Object.create({progress:1,targetProgress:1,rewardClaimed:false});row.id=1;Object.defineProperty(row,'progress',{enumerable:true,get(){throw Error('must not execute');}});s.raw.AchievementInfoRequest={task:[row]};s.outcomes.AchievementInfoRequest={status:'SUCCESS'};assert.equal(dailyChecklist(s,{config}).achievements.rows[0].eligible,null);
+});
+test('ordinary free gold uses observed used direction and unique configured cap, without claiming settlement or a game day',()=>{
+ const s=observed(fixture(),'AfkInfoRequest',{clickGoldInfo:{freeTimes:1,paidTimes:0,minGold:3000,resetTime:1780000000,maxPaidTimes:7}}),v=dailyChecklist(s,{config});
+ assert.deepEqual([v.freeGold.used,v.freeGold.total,v.freeGold.remaining,v.freeGold.eligible],[1,3,2,true]);assert.equal(v.freeGold.minimumGold,3000);assert.equal(v.freeGold.resetMarker,1780000000);assert.equal(v.freeGold.executable,false);assert.equal(v.freeGold.gameDay,undefined);assert.equal(v.freeGold.action,undefined);assert.match(formatDailyChecklist(v),/免费点金剩余 2/);
+ for(const used of[0,3,4]){s.raw.AfkInfoRequest=typed('AfkInfoRequest',{clickGoldInfo:{freeTimes:used}});const g=dailyChecklist(s,{config}).freeGold;assert.equal(g.remaining,used<=3?3-used:null);assert.equal(g.eligible,used<3?true:used===3?false:null);assert.equal(g.resetMarker,null);}
+});
+test('free gold omitted counts, inherited defaults and ambiguous config do not fabricate free uses',()=>{
+ const s=observed(fixture(),'AfkInfoRequest',{clickGoldInfo:{paidTimes:0}});assert.equal(dailyChecklist(s,{config}).freeGold.remaining,null);
+ s.raw.AfkInfoRequest=typed('AfkInfoRequest',{clickGoldInfo:{freeTimes:0}});
+ for(const change of[c=>delete c.tables.OfflineParamCfg,c=>c.tables.OfflineParamCfg.data.push({paramName:'免费点金次数',paramValue:3}),c=>c.tables.OfflineParamCfg.data.find(row=>row.paramName==='免费点金次数').paramValue=-1]){const c=clone(config);change(c);const v=dailyChecklist(s,{config:c});assert.equal(v.freeGold.remaining,null);assert.equal(v.tasks.counts.total,3);}
+});
+test('failed current achievement and gold sources cannot reuse stale successful bodies or erase independent daily tasks',()=>{
+ const s=observed(observed(fixture(),'AchievementInfoRequest',{task:[{id:1,progress:1,targetProgress:1,rewardClaimed:false}]}),'AfkInfoRequest',{clickGoldInfo:{freeTimes:0}});
+ for(const name of['AchievementInfoRequest','AfkInfoRequest'])s.outcomes[name]={status:'UNKNOWN'};
+ const v=dailyChecklist(s,{config});assert.equal(v.achievements.counts.total,null);assert.equal(v.freeGold.remaining,null);assert.equal(v.tasks.counts.eligible,1);assert.equal(v.gift.eligible,true);
+});
+
+
+test('unchanged 48-query collector feeds exact achievement and free gold observations without any write signal',async()=>{
+ const {collectState,ENTRY_QUERIES}=await import('../src/game.mjs'),protocol=loadProtocol(),calls=[];
+ const bodies={AchievementInfoRequest:{task:[{id:1001,progress:'9223372036854775807',targetProgress:'9223372036854775807',rewardClaimed:false}]},AfkInfoRequest:{clickGoldInfo:{freeTimes:0,paidTimes:0,minGold:3000,resetTime:1780000000,maxPaidTimes:7}}};
+ const client={connected:true,async request(name,body,response){calls.push(name);return protocol[response].decode(protocol[response].encode(bodies[name]??{}).finish());},send(){throw Error('No signal');},sendWatch(){throw Error('No write');}};
+ const state=await collectState(client,protocol),v=dailyChecklist(state,{config});assert.equal(calls.length,48);assert.deepEqual(calls.slice().sort(),ENTRY_QUERIES.map(row=>row.name).sort());assert.equal(v.achievements.rows[0].progress,'9223372036854775807');assert.equal(v.achievements.rows[0].eligible,true);assert.equal(v.freeGold.remaining,3);assert.equal(v.freeGold.executable,false);
+});

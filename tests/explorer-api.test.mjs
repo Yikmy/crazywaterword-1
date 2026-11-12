@@ -142,7 +142,9 @@ test('daily checklist preserves independent partial cached sources across accoun
   try {
     for(const id of ['account-A','account-B']) {
       const raw={DailyTaskInfoRequest:{dailyTask:[{id:1001,progress:id==='account-A'?1:0,targetProgress:1,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[],weeklyRewardClaimed:[],dailyResetTime:1780000000},
-        DailyGiftPackRequest:{drawnPack:id==='account-A'?[]:['赠礼'],heroId:id,resetTime:1780000000}};
+        DailyGiftPackRequest:{drawnPack:id==='account-A'?[]:['赠礼'],heroId:id,resetTime:1780000000},
+        AchievementInfoRequest:{task:[{id:1001,progress:id==='account-A'?'9007199254740993':'0',targetProgress:'9007199254740993',rewardClaimed:false}]},
+        AfkInfoRequest:{clickGoldInfo:{freeTimes:id==='account-A'?0:3,paidTimes:0,minGold:3000,resetTime:1780000000,maxPaidTimes:7}}};
       const snapshot={raw,ok:structuredClone(raw),outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS',updatedAt:'2026-11-12T01:00:00Z'}])),failed:{}};
       app.sessions.set(id,cached(snapshot,id+'-time'));
     }
@@ -152,6 +154,7 @@ test('daily checklist preserves independent partial cached sources across accoun
     assert.equal(a.status,200);assert.equal(b.status,200);assert.equal(a.data.accountId,'account-A');assert.equal(b.data.accountId,'account-B');
     assert.equal(a.data.checklist.tasks.counts.eligible,1);assert.equal(b.data.checklist.tasks.counts.eligible,0);
     assert.equal(a.data.checklist.gift.eligible,true);assert.equal(b.data.checklist.gift.eligible,false);assert.equal(a.data.checklist.vip.vipLevel,2);assert.equal(b.data.checklist.vip.vipLevel,null);assert.equal(a.data.checklist.vip.eligible,null);
+    assert.equal(a.data.checklist.achievements.rows[0].progress,'9007199254740993');assert.equal(a.data.checklist.achievements.counts.eligible,1);assert.equal(b.data.checklist.achievements.counts.eligible,0);assert.equal(a.data.checklist.achievements.rows[0].configuredRewards,null);assert.equal(a.data.checklist.freeGold.remaining,3);assert.equal(b.data.checklist.freeGold.remaining,0);assert.equal(a.data.checklist.freeGold.executable,false);
     assert.equal(a.data.checklist.activity.weekly.tiers[0].eligible,false);assert.equal(a.data.stale,true);
     assert.equal(b.text.includes('account-A'),false);assert.equal(a.text.includes('account-B'),false);
     assert.equal(JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot])),before);
@@ -159,6 +162,9 @@ test('daily checklist preserves independent partial cached sources across accoun
     const partial=await app.call('?account=account-A','GET','/api/dailies');
     assert.equal(partial.status,200);assert.equal(partial.data.checklist.tasks.counts.total,null);assert.equal(partial.data.checklist.gift.eligible,true);assert.doesNotMatch(partial.text,/hidden/);
     const other=await app.call('?account=account-B','GET','/api/dailies');assert.equal(other.data.checklist.tasks.counts.total,1);
+    app.sessions.get('account-A').snapshot.outcomes.AchievementInfoRequest.status='FAILED';app.sessions.get('account-A').snapshot.outcomes.AfkInfoRequest.status='UNKNOWN';
+    const noStale=await app.call('?account=account-A','GET','/api/dailies');assert.equal(noStale.data.checklist.achievements.counts.total,null);assert.equal(noStale.data.checklist.freeGold.remaining,null);assert.equal(noStale.data.checklist.gift.eligible,true);
+    const intact=await app.call('?account=account-B','GET','/api/dailies');assert.equal(intact.data.checklist.achievements.counts.total,1);assert.equal(intact.data.checklist.freeGold.remaining,0);
     const malformed=app.sessions.get('account-A').snapshot;
     delete malformed.failed.DailyTaskInfoRequest;malformed.ok.DailyTaskInfoRequest={dailyTask:{invalid:true}};
     for(const name of ['AllItemRequest','AllResourceRequest','AfkInfoRequest','RecruitInfoRequest'])malformed.ok[name]={};
