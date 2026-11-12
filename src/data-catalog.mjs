@@ -137,6 +137,7 @@ const freezeQueryMetadata = value => {
 };
 const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
 const uses = {
+  antiqueSummary: consumer('antiqueSummary','surveyAntiqueSummary','src/antique-summary.mjs:surveyAntiqueSummary',['global','camps','professions','effects']),
   formation: consumer('formation', 'surveyFormation', 'src/formation.mjs:surveyFormation', ['formation', 'presets', 'heroes']),
   alliance: consumer('alliance', 'surveyAlliance', 'src/alliance.mjs:surveyAlliance', ['guild', 'members', 'aids', 'order', 'counters', 'stock', 'technology', 'seasonStage']),
   museum: consumer('museum', 'surveyMuseum', 'src/museum.mjs:surveyMuseum', ['exploreStages', 'exhibitions', 'revenue', 'achievements', 'heroes', 'antiques', 'stock']),
@@ -157,6 +158,7 @@ const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], require
   policy: 'Exact explicitly selected positive int32 treasure uid, shared by rank and defence reads; never a dispatch request' };
 // [request, consumers, result authority, allowed parameter shape, domain, notes]
 const businessReads = [
+  ['AntiqueAttrSummaryRequest',['antiqueSummary'],accountScope,emptyParameters,'collections','Explicit typed current-account attribute summary only; no cultivation, exchange or activation'],
   ['GetFormationRequest', ['formation'], { ...accountScope, key: 'MAINLINE_MODULE_1' }, mainlineParameters, 'heroes', 'Complete formation with exact hero positions and optional pet UID; does not prove save success by itself'],
   ['MyFormationPresetRequest', ['formation', 'fleet'], accountScope, emptyParameters, 'heroes', 'Unlocked formation layouts; not saved complete teams'],
   ['AllHeroRequest', ['formation', 'museum', 'fleet'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],

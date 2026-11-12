@@ -1,3 +1,4 @@
+import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
 import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -177,6 +178,18 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     try { const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: session.abort.signal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
       const facts = await adapter.survey(client, protocol, options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
+  }
+  async function surveyAntiqueAttributes(session,payload={}) {
+    exact(payload,[]);
+    const release=acquire(session,'operations:READ:antiqueSummary'),generation=session.generation,client=session.client;
+    const contextHash=operationDigest(executionContext(session));
+    try {
+      plans.delete(session.id);
+      const config=getConfig(),facts=await surveyAntiqueSummary(client,protocol,{signal:session.abort.signal});
+      current(session,generation,client);
+      if(operationDigest(executionContext(session))!==contextHash)throw error('古董属性读取期间账号角色或世界已变化','CANCELLED');
+      return {accountId:session.id,view:antiqueSummaryView(facts,{config}),surveyedAt:now(),readOnly:true,source:'AntiqueAttrSummaryResponse'};
+    } finally {release();}
   }
   function namedStorage() { if(!namedStore)throw error('当前存储未配置具名阵容','NAMED_FORMATION_UNAVAILABLE');return namedStore; }
   function namedInput(payload,keys) {
@@ -477,7 +490,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },

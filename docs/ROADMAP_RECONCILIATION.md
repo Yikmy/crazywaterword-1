@@ -2448,3 +2448,15 @@ E09 增加当前受控徽章等级、槽位镜像、精确双扣、零派发与�
 **421/421 PASS，0 fail/cancelled/skipped/todo，7.35 秒**。独立代码复核未发现待修问题；29 项领域/服务复核与本次重叠。包括真实本地 Codec、共享执行器与磁盘派发前历史、空成本 UID 预算、无效果 UNKNOWN/重启、完整页面/账号隔离和原装备/LEVEL 分支。首轮页面测试选到新增 PUT-ON 样例而误查已佩戴表，已按模块和动作种类选择原 LEVEL 夹具，未改业务规则。不是 R7，未连接真实游戏。
 
 W11/C144 静态复核仍缺可恢复的“待领/已领”权威身份：Complete 在计时结束后打开临时结果页，Reward 由该页发送；可选 exploreStage 不足以区分重启前后领取状态。保持缺证，不以收益或空响应替代。并行推进 PRO-007 只读古董属性总览与 W12 扫荡只读事实；完整结算、培养及扫荡执行范围不因这些只读增量缩小。E09/E20/E21/E23 增加徽章精确空槽与未决恢复验收。R8 仍在 R7 后由 Owner 单独授权。
+
+### D.21 W11/PRO-007 古董属性只读总览（2026-11-12）
+
+父提交 `b29ba89c26296818ae5ac2d4770d69c547349c87`。新增独立 Antique 只读子边界 `surveyAntiqueSummary → antiqueSummaryView → OperationService.surveyAntiqueAttributes → POST /api/antiques/summary`，在博物馆页提供显式查询。它是 PRO-007 的“汇总”分支，不把 Museum 展陈、藏品数量或属性查询算作激活/培养/兑换/精通已完成；PRO-007 与 W11 全包仍 PARTIAL。汇总分支 Function/UI EXISTING、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED，不伪造没有写动作的完整写入 Function。
+
+固定 v76 `AntiqueView._onBtnTips`（byte 307873，模块 SHA256 `2058e8b78473a77e274b78db728ac74338dda0ee2d3264bd3276edd337eb8731`）只发 `AntiqueAttrSummaryRequest {}`，响应独立提供 items 和 effects。包/入口哈希在 `ANTIQUE_SUMMARY_EVIDENCE`。属性按全局、仅 heroCamp、仅 heroProf 分组；不展平双重范围、重复属性/效果或损坏字段。attr/value 缺失不能借 protobuf 默认值冒充零；明确空结果与 UNKNOWN 分开。可选 AdditionAttrOverviewCfg、HeroFactionCfg、HeroCareerCfg、AntiqueEffectLibCfg 只补名称和显示类型，不补数值或猜百分比/符号换算。页面“原值/类型”分列。
+
+现有会话必须 READY，Origin/CSRF/JSON、唯一精确账号与空参数检查在领域请求前完成；拒绝额外查询/请求字段，不创建 Session、客户端或全量采集。读取沿用账号互斥锁，撤销旧服务端计划；账号/角色/世界/连接代际变化或取消后不返回旧结果。页面独立显式触发、读取中清空旧值、切换账号丢弃迟到响应；无需启用养成配置，不创建历史、预算、许可或写入。仅增加 DOMAIN_SURVEY_ONLY 元数据：业务读取目录 29 项，其中 13 项非入口读；原 ENTRY_QUERIES 与 Explorer 48 项不变。
+
+离线证据：领域/目录/完整页面 95/95，独立合成 HTTP handler API 14/14。联合命令 `node --test tests/antique-summary.test.mjs tests/antique-summary-api.test.mjs tests/data-catalog.test.mjs tests/explorer-view.test.mjs tests/farm-forge-full-page.test.mjs tests/gameplay-api.test.mjs tests/gameplay-view.test.mjs tests/museum.test.mjs tests/museum-shortage.test.mjs tests/operation-service.test.mjs tests/function-registry.test.mjs tests/function-contracts.test.mjs tests/phase2-api.test.mjs tests/stage-api.test.mjs tests/pirate-sweep.test.mjs` 为 **325/325 PASS，0 fail/cancelled/skipped/todo，7.41 秒**（含 8 项并行 W12 测试，由 D.22 另提交）。最后仅将表头明确为“原值/类型”。真实本地 Codec/固定配置、独立作用域、显式零与缺字段、失败/取消、六种互斥和四类延迟身份变化均覆盖。首跑新增页面测试误用不存在的 harness 接口，按原 run/viewGuard 方式切换后通过，未改变隔离规则。
+
+E14 增加汇总作用域、原值/单位、明确空/UNKNOWN、只读和账号切换验收。未执行 R7 或真实游戏；培养/兑换/精通及 C144 结算身份缺证继续保留，R8 不提前。

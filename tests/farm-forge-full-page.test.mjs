@@ -301,3 +301,41 @@ test('Museum shows physical material shortages and unknown inventory with writes
  assert.ok(rows.some(row=>row[0]==='9'&&row[7]==='本次远征已开始'));assert.match(box.textContent,/材料倍率：2/);
  assert.equal(h.node('gp-museum-plan').disabled,true);assert.equal(h.node('gp-museum-authorize').disabled,true);assert.equal(writes(h).length,0);
 });
+
+const antiqueResult = (accountId='A',view={status:'AVAILABLE',reason:null,global:[{attr:1,name:'生命',value:0,viewType:'数值'}],camps:[{id:'阵营A',name:'兄弟会',attributes:[{attr:1,name:'生命',value:3.5,viewType:'数值'}]}],professions:[{id:'射手',name:'射手',attributes:[{attr:1,name:'生命',value:4.75,viewType:'数值'}]}],effects:[{effectId:'测试效果',description:'生产速度',value:0.125,viewType:'百分比'}]}) => ({accountId,view,readOnly:true,source:'AntiqueAttrSummaryResponse',surveyedAt:new Date().toISOString()});
+async function antiquePage(){
+ const h=await boot(),task=h.node('gp-museum-load').onclick();
+ h.respond('/api/gameplay',{accountId:'A',module:'museum',csrfToken:'synthetic-csrf-A',config:{enabled:false},status:{running:false,blocked:false},view:{candidates:[]}},{module:'museum'});
+ await task;return h;
+}
+test('Antique attribute summary is an explicit account-scoped read with separate scope/value/unit columns',async()=>{
+ const h=await antiquePage(),button=h.node('antique-summary-read'),before=h.requests.length;
+ assert.equal(button.disabled,false);assert.equal(writes(h).length,0);
+ const task=button.onclick();
+ assert.equal(button.disabled,true);
+ assertMutation(h.pending('/api/antiques/summary'),'/api/antiques/summary',{});
+ assert.equal(h.requests.length,before+1);
+ h.respond('/api/antiques/summary',antiqueResult());await task;
+ const box=h.node('antique-summary-view'),rows=descendants(box).filter(node=>node.tagName.toLowerCase()==='tr').map(node=>node.children.map(cell=>cell.textContent));
+ for(const row of [['全局','生命','0','数值'],['阵营 · 兄弟会','生命','3.5','数值'],['职业 · 射手','生命','4.75','数值'],['生产速度','0.125','百分比']])assert.ok(rows.some(actual=>JSON.stringify(actual)===JSON.stringify(row)),JSON.stringify(row));
+ assert.equal(h.node('gp-museum-plan').disabled,true);assert.equal(h.node('gp-museum-authorize').disabled,true);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
+ assert.equal(button.disabled,false);
+});
+test('Antique page distinguishes an empty known summary from unknown and erases stale values during a new read',async()=>{
+ const h=await antiquePage(),button=h.node('antique-summary-read'),view=h.node('antique-summary-view');
+ for(const [data,expected] of [[antiqueResult(),/生产速度/],[antiqueResult('A',{status:'UNKNOWN',reason:'READ_FAILED'}),/无法确认/],[antiqueResult('A',{status:'AVAILABLE',global:[],camps:[],professions:[],effects:[]}),/没有属性或特殊效果/]]){
+  const task=button.onclick();assert.equal(view.textContent,'');h.respond('/api/antiques/summary',data);await task;assert.match(view.textContent,expected);
+ }
+ assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
+test('Antique summary ignores a detached result after account selection and rejects a foreign account response',async()=>{
+ const h=await antiquePage(),button=h.node('antique-summary-read'),task=button.onclick();
+ h.run("current='B';viewGuard.select('B');resetGameplay();");h.respond('/api/antiques/summary',antiqueResult());await task;
+ assert.equal(h.node('antique-summary-view').textContent,'');
+ assert.equal(button.disabled,true);
+ h.run("current='A';viewGuard.select('A');resetGameplay();");
+ const loading=h.node('gp-museum-load').onclick();h.respond('/api/gameplay',{accountId:'A',module:'museum',csrfToken:'synthetic-csrf-A',config:{enabled:false},status:{},view:{candidates:[]}},{module:'museum'});await loading;
+ const foreign=button.onclick();h.respond('/api/antiques/summary',antiqueResult('B'));await foreign;
+ assert.equal(h.node('antique-summary-view').textContent,'');assert.match(h.node('antique-summary-hint').textContent,/响应.*不匹配|账号/);
+});

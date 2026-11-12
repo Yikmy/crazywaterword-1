@@ -662,7 +662,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/memory', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
       const namedFormationRoute=new Set(['GET /api/formations/named','POST /api/formations/named/save','POST /api/formations/named/rename','POST /api/formations/named/overwrite','POST /api/formations/named/delete','POST /api/formations/named/prepare']).has(route);
       const extremeFormationRoute=new Set(['POST /api/formations/extreme/survey','POST /api/formations/extreme/prepare']).has(route);
-      const gameplayRoute=new Set(['GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
+      const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
       if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
@@ -681,6 +681,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (!id || parsed.searchParams.getAll('account').length !== 1) { json({ error: '必须指定唯一精确账号 ID' }, 400); return; }
         if (!loadStore().accounts.some(account => account.id === id)) { json({ error: '没有这个账号' }, 404); return; }
         if(namedFormationRoute&&(parsed.searchParams.getAll('account').length!==1||[...parsed.searchParams.keys()].some(key=>key!=='account')))throw Object.assign(Error('具名阵容需唯一精确账号且不接受其他查询字段'),{code:'INVALID_INPUT',statusCode:400});
+        if(route==='POST /api/antiques/summary'&&[...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('古董属性查询只接受唯一精确账号'),{code:'INVALID_INPUT',statusCode:400});
         if(extremeFormationRoute&&[...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('极限来源需唯一精确账号且不接受其他查询字段'),{code:'INVALID_INPUT',statusCode:400});
         if(route==='GET /api/formations/named'){json({...operations.namedFormations(id),csrfToken:operationCsrf});return;}
         if (stageRoute && req.method === 'GET') { json(stageView(id, sessions.get(id))); return; }
@@ -721,6 +722,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if(route==='POST /api/formations/named/save'){json(await operations.saveNamedFormation(session,payload));return;}
         if(route==='POST /api/formations/named/overwrite'){json(await operations.overwriteNamedFormation(session,payload));return;}
         if(route==='POST /api/formations/named/prepare'){json(await operations.prepareNamedFormation(session,payload));return;}
+        if(route==='POST /api/antiques/summary'){fields([]);json({...await operations.surveyAntiqueAttributes(session,payload),csrfToken:operationCsrf});return;}
         if (route==='POST /api/gameplay/survey') {fields(['module','parameters']);json({...await operations.surveyModule(session,payload.module,payload.parameters??{}),csrfToken:operationCsrf});return;}
         if (route==='POST /api/workflows/start') {fields(['graph']);validateWorkflow(payload.graph,{modules:operations.modules});const runner=workflowRunner(id);if(runner.getStatus().running)throw Object.assign(new Error('账号工作流正在运行'),{code:'WORKFLOW_BUSY',statusCode:409});runner.start(id,payload.graph).catch(cause=>emit(session,'error',cause.message));await Promise.resolve();json(workflowView(id));return;}
         if (route === 'POST /api/operations/survey') {
