@@ -19,7 +19,7 @@ export const DATA_DOMAINS = Object.freeze([
 
 // [request, display name, primary domain, existing summary fields, related domains]
 const entries = [
-  ['AllItemRequest', '库存道具', 'resources', ['items']],
+  ['AllItemRequest', '库存道具', 'resources', ['items', 'fishing.inventory.owned'], ['collections']],
   ['AllResourceRequest', '玩家资源', 'resources', ['resources']],
   ['AllHeroRequest', '英雄', 'heroes', ['heroes.count', 'heroes.power', 'heroes.list']],
   ['GetFormationRequest', '英雄阵型', 'heroes', ['heroes.formation']],
@@ -35,12 +35,12 @@ const entries = [
   ['AfkInfoRequest', '挂机收益与点金摘要', 'tasks', ['afk', 'clickGold'], ['resources']],
   ['MonthCardRequest', '月卡', 'recruitment', ['monthCard'], ['activities']],
   ['AllAntiqueRequest', '藏品', 'collections', ['antiques']],
-  ['OnWaterRequest', '建筑、生产与居民订单', 'city', ['buildings', 'water'], ['resources', 'orders']],
-  ['FishEncyclopediaRequest', '鱼类图鉴', 'collections', ['fish']],
+  ['OnWaterRequest', '建筑、生产与居民订单', 'city', ['buildings', 'water', 'fishing.level'], ['resources', 'orders', 'collections']],
+  ['FishEncyclopediaRequest', '鱼类图鉴', 'collections', ['fish', 'fishing.collection']],
   ['CargoShipsRequest', '货船', 'fleets', ['cargo']],
   ['AppointInfoRequest', '英雄任命', 'heroes', ['heroes.appointed']],
   ['ChatRecordRequest', '聊天记录', 'guild', []],
-  ['GameEffectRequest', '游戏效果', 'collections', []],
+  ['GameEffectRequest', '游戏效果', 'collections', ['fishing.inventory.capacity']],
   ['AllGuildAbstractionRequest', '公会摘要', 'guild', ['guild']],
   ['MyFleetsRequest', '我的舰队', 'fleets', ['fleets'], ['map']],
   ['PirateKillRecordRequest', '海盗击杀记录', 'battle', [], ['fleets']],
@@ -107,7 +107,10 @@ export function exploreSnapshot(snapshot, { domain = null, config = null, update
     if (status === 'SUCCESS' && entry.hasParsedView) {
       try {
         // Isolate each source so failure in an unrelated query cannot erase its view.
-        const view = summarize({ ok: { [entry.request]: ok[entry.request] }, failed: {} }, { config });
+        const isolated = { ok: { [entry.request]: ok[entry.request] }, failed: {} };
+        if (Object.hasOwn(state, 'raw')) isolated.raw = Object.hasOwn(state.raw ?? {}, entry.request) ? { [entry.request]: state.raw[entry.request] } : {};
+        if (Object.hasOwn(state, 'outcomes')) isolated.outcomes = Object.hasOwn(outcomes, entry.request) ? { [entry.request]: outcome } : {};
+        const view = summarize(isolated, { config });
         parsed = Object.fromEntries(entry.parsedFields.map((field) => [field, fieldOf(view, field)]));
       } catch {
         parseError = '已有业务解析无法处理本次响应；可查看原始响应';

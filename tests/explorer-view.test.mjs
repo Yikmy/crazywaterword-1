@@ -76,8 +76,8 @@ test('Explorer renders all 48 queries and 12 domains with original and existing 
     if (entry.hasParsedView) assert.match(h.node('explorer-parsed').textContent, new RegExp(entry.request));
     else assert.match(h.node('explorer-parsed').textContent, /尚无专门解析/);
   }
-  assert.equal(DATA_CATALOG.filter((entry) => entry.hasParsedView).length, 27);
-  assert.equal(DATA_CATALOG.filter((entry) => !entry.hasParsedView).length, 21);
+  assert.equal(DATA_CATALOG.filter((entry) => entry.hasParsedView).length, 28);
+  assert.equal(DATA_CATALOG.filter((entry) => !entry.hasParsedView).length, 20);
 });
 
 test('domain and case-insensitive business/request/response search filter cached entries without more fetches', async () => {
@@ -150,4 +150,52 @@ test('JSON content renders as literal text and precision notes and parser errors
   assert.match(h.node('explorer-error').textContent, /解析错误：existing parser rejected response/);
   assert.match(h.node('explorer-parsed').textContent, /业务解析失败/);
   assert.match(h.node('explorer-raw').textContent, /<img src=x/);
+});
+
+
+function fishingOverview(account = 'A') {
+  return { ...overview(account), accountId: account, updatedAt: '2026-11-12T05:00:00Z', snapshotStale: true, snapshotStatus: 'PARTIAL',
+    fishing: { level: { level: 2, enhance: null }, inventory: { owned: '9007199254740993', capacity: 500, remaining: 0, full: true },
+      collection: { collectedCount: 4, totalScore: 70, claimedScore: 20, availableScore: 50, rewardId: 1,
+        nextStage: { stage: 2, requiredScore: 50, missingScore: 0, eligible: true, rewards: [{ id: 'RUBY', num: 150 }, { id: '<img src=x>', num: 30 }] } } } };
+}
+async function readFishing(h, body = fishingOverview(), ok = true) {
+  const task = h.node('fishing-read').onclick(); h.respond('/api/overview', 'A', body, ok); await task;
+}
+
+test('full fishing page renders cached score eligibility, exact stock and unknown fields with GET only', async () => {
+  const h = await boot(), before = h.requests.length;
+  await readFishing(h);
+  assert.match(PAGE, /data-tab="fishing"/);
+  const text = h.node('fishing-facts').textContent;
+  for (const value of ['9007199254740993', '未知', '500', '鱼库存已达到容量', '图鉴第 2 档', '已达积分门槛', '钻石', '150', '<img src=x>', '待捕鱼、收线剩余时间和续接状态：未知']) assert.ok(text.includes(value), value);
+  assert.match(h.node('fishing-meta').textContent, /历史缓存.*部分来源读取失败/);
+  assert.doesNotMatch(text, /可以领取|立即领取/);
+  assert.deepEqual(h.requests.slice(before).map(r => [new URL(r.url, 'http://localhost').pathname, r.options.method || 'GET']), [['/api/overview', 'GET']]);
+  const missing = fishingOverview(); missing.fishing.inventory = { owned: null, capacity: 500, remaining: null, full: null };
+  missing.fishing.collection.nextStage = { stage: 2, requiredScore: 50, missingScore: null, eligible: null };
+  await readFishing(h, missing);
+  assert.match(h.node('fishing-facts').textContent, /积分资格未知/);
+  assert.doesNotMatch(h.node('fishing-facts').textContent, /已达积分门槛|鱼库存已达到容量/);
+  missing.fishing.collection = { complete: true };
+  await readFishing(h, missing);
+  assert.match(h.node('fishing-facts').textContent, /当前配置中的图鉴档位已领完/);
+});
+
+test('fishing cache clears on failure, mismatched account and account changes, and ignores late replies', async () => {
+  const h = await boot(); await readFishing(h);
+  const old = h.node('fishing-read').onclick(); h.run("selectAccount('B')");
+  assert.equal(h.node('fishing-facts').textContent, '');
+  h.respond('/api/overview', 'A', fishingOverview()); await old;
+  assert.equal(h.node('fishing-facts').textContent, '');
+  h.run("selectAccount('A')"); await readFishing(h);
+  await readFishing(h, fishingOverview('B'));
+  assert.equal(h.node('fishing-facts').textContent, '');
+  assert.match(h.node('hint').textContent, /账号不匹配/);
+  await readFishing(h); await readFishing(h, { error: 'cache unavailable' }, false);
+  assert.equal(h.node('fishing-facts').textContent, '');
+  assert.match(h.node('fishing-meta').textContent, /无法读取本账号缓存/);
+  await readFishing(h, overview('A'));
+  assert.match(h.node('fishing-meta').textContent, /尚未采集本账号/);
+  assert.equal(h.node('fishing-facts').textContent, '');
 });

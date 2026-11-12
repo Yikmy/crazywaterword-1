@@ -2,6 +2,7 @@ import { normalize } from './worlds.mjs';
 import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
 import { pirateSweepView, observePirateVipLevel } from './pirate-sweep.mjs';
+import { fishingView } from './fishing-view.mjs';
 import { capturePirateQuotaContext, observePirateMonthCards, observePirateQuotaClock } from './pirate-quota.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
@@ -247,6 +248,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     guide: q.GuideInfoRequest?.guide ?? null,
     cargo: asArray(q.CargoShipsRequest?.ship).length,
     fish: q.FishEncyclopediaRequest ?? null,
+    fishing: fishingView(state, { config }),
   };
   const failures = state.failed || {};
   const sources = { resources: "AllResourceRequest", items: "AllItemRequest", heroes: "AllHeroRequest", afk: "AfkInfoRequest", clickGold: "AfkInfoRequest", daily: "DailyTaskInfoRequest", achievements: "AchievementInfoRequest", mainTask: "MainTaskInfoRequest", email: "EmailBoxRequest", buildings: "OnWaterRequest", water: "OnWaterRequest", resFields: "MyResFieldsRequest", fleets: "MyFleetsRequest", guild: "AllGuildAbstractionRequest", counters: "CounterInfoRequest", recruit: "RecruitInfoRequest", antiques: "AllAntiqueRequest", pets: "AllPetRequest", equips: "EquipsRequest", pirates: "AllPirateRequest", worldBoss: "WorldBossInfoRequest", season: "SeasonRankInfoRequest", week: "WeekInfoRequest", monthCard: "MonthCardRequest", guide: "GuideInfoRequest", cargo: "CargoShipsRequest", fish: "FishEncyclopediaRequest" };
@@ -309,6 +311,13 @@ export function formatState(view) {
   lines.push(`招募: 英雄${view.recruit?.hero?.recruitTimes ?? '-'}次 下次保底${view.recruit?.hero?.nextLuck ?? '-'} | 藏品${view.recruit?.antique?.recruitTimes ?? '-'}次`);
   lines.push(`藏品 ${view.antiques?.count ?? 0} 件 大师lv${view.antiques?.masterLv ?? '-'} | 宠物 ${view.pets} | 装备 ${view.equips} | 月卡 ${JSON.stringify(view.monthCard)}`);
   lines.push(`新手引导: ${JSON.stringify(view.guide)} | 主线 ${JSON.stringify(view.mainTask)}`);
+  const fishing = view.fishing;
+  if (fishing) {
+    const { inventory, collection } = fishing, next = collection.nextStage, known = value => value ?? '未知';
+    lines.push('钓鱼库存: 鱼 '+known(inventory.owned)+' / '+known(inventory.capacity)+'，图鉴可用积分 '+known(collection.availableScore)+'；待捕状态未知。');
+    if (next) lines.push('  图鉴第 '+next.stage+' 档需 '+next.requiredScore+' 积分；'+(next.eligible===true?'已达积分门槛':next.eligible===false?'还差 '+next.missingScore+' 积分':'积分资格未知')+'。');
+    else if (collection.complete===true) lines.push('  当前配置中的图鉴档位已领完。');
+  }
   if (view.fish) lines.push(`鱼类图鉴: ${JSON.stringify(view.fish)}`);
   const prefixes = { AllResourceRequest: "资源:", OnWaterRequest: "水上建筑", MyResFieldsRequest: "世界:", MyFleetsRequest: "世界:", CargoShipsRequest: "世界:", AllPirateRequest: "世界:", AllGuildAbstractionRequest: "公会候选:", CounterInfoRequest: "每日计数:", RecruitInfoRequest: "招募:", AllAntiqueRequest: "藏品 ", AllPetRequest: "藏品 ", EquipsRequest: "藏品 ", MonthCardRequest: "藏品 " };
   for (const name of failed) {

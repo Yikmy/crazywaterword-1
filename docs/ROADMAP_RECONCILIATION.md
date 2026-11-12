@@ -2,7 +2,15 @@
 
 审计日期：2026-11-11（Asia/Shanghai）。源码基线：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。Planning Only；本报告的新增Function/API均为未来施工约定，本轮没有实施。
 
-> 当前执行状态见附录D：Owner后续已授权 COMPLETE_CRAZYWATER_PLATFORM_R1_R8，Goal ACTIVE；以下原Planning Only审计内容保留为历史基线。
+> 当前执行状态以本页当前工作包状态及附录D交接为准：COMPLETE_CRAZYWATER_PLATFORM_R1_R8 保持 ACTIVE；原 Planning Only 内容与 D.1–D.28 保留为历史证据。
+
+2026-11-12 执行策略按 Owner 的 REDUCE_GATE_AND_TOKEN_OVERHEAD 修正：沿用原 R/W/E/X 与需求编号，只保留统一运行时安全合同、具体业务缺证操作和最终 R7/R8 控制。R1–R6 按影响范围定向测试，冻结后统一 R7 全量；只维护下表，不新增 Gate、阶段或原子报告。账号、授权、预算、D6、UNKNOWN 持久化与零自动重放要求不变。
+
+| 工作包 | 已完成能力 | 当前下一项 | 真正阻塞 | 最后提交 | 对应测试 |
+|---|---|---|---|---|---|
+| W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 本行所在 W13 提交（父 bd2c76f） | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
+
+R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的独立真实操作授权。
 
 ## 1. 结论、计数与范围
 

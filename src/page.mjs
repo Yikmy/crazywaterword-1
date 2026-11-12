@@ -152,7 +152,7 @@ export const PAGE = `<!doctype html>
     <button data-tab="production">生产管理</button>
     <button data-tab="operations-history">执行历史</button>
     <button data-tab="stages">自动闯关</button>
-    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="pirate-sweep">海面扫荡</button><button data-tab="workflow">工作流</button>
+    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="pirate-sweep">海面扫荡</button><button data-tab="fishing">钓鱼</button><button data-tab="workflow">工作流</button>
     <button data-tab="idle">任务与海面</button>
     <button data-tab="heroes">英雄</button>
     <button data-tab="dailies">日常</button>
@@ -174,6 +174,13 @@ export const PAGE = `<!doctype html>
     <h2>主力英雄</h2><div class="icons" id="hero-strip"><span class="dim">连接后显示</span></div>
     <h2>运行记录</h2>
     <div id="log"></div>
+  </section>
+
+  <section id="tab-fishing" class="hidden">
+    <h2>钓鱼与鱼类图鉴</h2>
+    <p class="dim">显示本账号最近一次采集的钓鱼等级、鱼库存和图鉴奖励进度。</p>
+    <div class="bar"><button id="fishing-read" type="button">读取缓存</button><span id="fishing-meta" class="dim" aria-live="polite">尚未读取本账号缓存。</span></div>
+    <div id="fishing-facts"></div>
   </section>
 
   <section id="tab-explorer" class="hidden">
@@ -520,6 +527,7 @@ function selectAccount(id) {
   resetStages();
   resetOperations();
   resetGameplay();
+  renderFishing(null);
   for (const id of ['who', 'res', 'items', 'hero-strip', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
   $('sync-info').textContent = '尚未采集，请先连接账号并刷新数据';
   $('cred-show').disabled = false;
@@ -587,7 +595,34 @@ function domainResult(data, request) {
   if (outcome) return { readable: false, empty: '查询未执行，数据未知' + (outcome.error ? '：' + outcome.error : '') };
   return data.updatedAt ? { readable: true, empty: '本次查询为空' } : { readable: false, empty: '尚未采集，数据未知' };
 }
+function renderFishing(data, readFailed = false) {
+  const box = clear($('fishing-facts'));
+  const view = data?.fishing, stamp = data?.updatedAt;
+  $('fishing-meta').textContent = readFailed ? '无法读取本账号缓存。' : !stamp ? '尚未采集本账号的钓鱼数据。' :
+    '最近采集：' + when(stamp) + (data.snapshotStale ? '（历史缓存）' : '') + (data.snapshotStatus === 'PARTIAL' ? '；部分来源读取失败。' : '。');
+  if (!view || !stamp) return;
+  const { level, inventory, collection } = view, known = value => value == null ? '未知' : String(value);
+  box.appendChild(table(['钓鱼等级', '强化', '鱼库存', '原料容量', '剩余空间'], [[
+    known(level?.level), known(level?.enhance), known(inventory?.owned), known(inventory?.capacity), known(inventory?.remaining),
+  ]]));
+  if (inventory?.full === true) box.appendChild(el('p', 'warn', '本次采集显示鱼库存已达到容量。'));
+  box.appendChild(table(['已发现鱼种', '图鉴总积分', '已用积分', '可用积分', '已领奖档位'], [[
+    known(collection?.collectedCount), known(collection?.totalScore), known(collection?.claimedScore),
+    known(collection?.availableScore), known(collection?.rewardId),
+  ]]));
+  const next = collection?.nextStage;
+  if (next) {
+    const eligibility = next.eligible === true ? '已达积分门槛' : next.eligible === false ? '还差 ' + known(next.missingScore) + ' 积分' : '积分资格未知';
+    box.appendChild(el('h3', null, '图鉴第 ' + next.stage + ' 档'));
+    box.appendChild(el('p', null, '本档需 ' + known(next.requiredScore) + ' 积分；' + eligibility + '。'));
+    if (Array.isArray(next.rewards) && next.rewards.length) {
+      box.appendChild(table(['配置奖励', '数量'], next.rewards.map(row => [row.id === 'RUBY' ? '钻石' : row.id, known(row.num)])));
+    }
+  } else box.appendChild(el('p', 'dim', collection?.complete === true ? '当前配置中的图鉴档位已领完。' : '下一档奖励资格未知。'));
+  box.appendChild(el('p', 'dim', '待捕鱼、收线剩余时间和续接状态：未知。此页只读。'));
+}
 function renderOverview(data) {
+  renderFishing(data);
   const role = data.player || {};
   const status = data.status || {};
   const states = { IDLE: '未连接', CONNECTING: '连接中', READY: '已连接', FAILED: '连接失败', REJECTED: '登录失效或被拒绝', CLOSED: '连接已断开', STOPPED: '已停止' };
@@ -620,14 +655,18 @@ async function refreshOverview(base = viewGuard.capture()) {
   try {
     const data = await call('/api/overview', undefined, scope);
     viewGuard.assert(scope);
+    if (data.account?.id !== scope.account || data.accountId !== undefined && data.accountId !== scope.account) throw Error('概览账号不匹配');
     snapshot = data.status;
     const account = accounts.find((entry) => entry.id === scope.account);
     if (account) account.status = data.status;
     renderAccountSelect(); renderAccounts(); renderOverview(data);
     $('hint').textContent = '';
     $('busy').textContent = data.status.busy ? '执行中: ' + data.status.busy : '';
-  } catch (error) { if (viewGuard.current(scope)) $('hint').textContent = error.message; }
+  } catch (error) {
+    if (viewGuard.current(scope)) { $('hint').textContent = error.message; renderFishing(null, true); }
+  }
 }
+$('fishing-read').onclick = () => refreshOverview();
 function renderLoop(data) { $('loop-view').textContent = data.running ? '存在运行任务' : '未运行'; }
 async function refreshLoop() { await readView('loop', '/api/loop', renderLoop, 'loop-hint'); }
 $('tasks-plan').onclick = () => readView('tasks', '/api/tasks', (data) => { $('tasks-view').textContent = data.text; }, 'tasks-hint');

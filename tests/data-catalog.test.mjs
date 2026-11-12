@@ -2,16 +2,16 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DATA_DOMAINS, DATA_CATALOG, exploreSnapshot } from '../src/data-catalog.mjs';
-import { ENTRY_QUERIES, summarize } from '../src/game.mjs';
+import { collectState, ENTRY_QUERIES, formatState, summarize } from '../src/game.mjs';
 
-const successful = () => ({ ok: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, {}])), failed: {}, outcomes: {} });
+const successful = () => ({ ok: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, {}])), failed: {}, outcomes: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, { status: 'SUCCESS' }])) });
 
-test('one catalog covers exactly 48 existing queries, 12 domains, 27 summary views and 21 raw-only entries', () => {
+test('one catalog covers exactly 48 existing queries, 12 domains, 28 summary views and 20 raw-only entries', () => {
   assert.equal(DATA_DOMAINS.length, 12); assert.equal(new Set(DATA_DOMAINS.map(({ id }) => id)).size, 12);
   assert.equal(DATA_CATALOG.length, 48); assert.equal(new Set(DATA_CATALOG.map(({ request }) => request)).size, 48);
   assert.deepEqual(DATA_CATALOG.map(({ request }) => request), ENTRY_QUERIES.map(({ name }) => name));
-  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => hasParsedView).length, 27);
-  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => !hasParsedView).length, 21);
+  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => hasParsedView).length, 28);
+  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => !hasParsedView).length, 20);
   for (const entry of DATA_CATALOG) {
     assert.equal(entry.response, entry.request.replace(/Request$/, 'Response'));
     assert.ok(entry.name); assert.equal(entry.domains[0], entry.domain);
@@ -35,7 +35,7 @@ test('related domain filters share existing queries without duplicating the glob
   assert.throws(() => exploreSnapshot(null, { domain: 'not-a-domain' }), /未知数据业务域/);
 });
 
-test('all 27 parsed views reuse existing summary fields and keep all 21 raw-only responses', () => {
+test('all 28 parsed views reuse summary fields and keep all 20 raw-only responses', () => {
   const state = successful(); const result = exploreSnapshot(state);
   assert.equal(result.entries.length, 48);
   for (const entry of result.entries) {
@@ -77,11 +77,11 @@ test('corrupt success metadata cannot turn a missing response into successful em
   assert.equal(entry.status, 'FAILED'); assert.equal(entry.raw, null); assert.equal(entry.parsed, null);
 });
 
-test('all 27 parsed query links preserve distinct synthetic business values', () => {
+test('all 28 parsed query links preserve distinct synthetic business values', () => {
   // Expectations are handwritten from the existing business contract, not generated
   // by summarize: a wrong catalog field or cross-query link must fail this test.
   const cases = [
-    ['AllItemRequest', { items: [{ itemId: 101, num: 103 }] }, { items: { kinds: 1, total: 103, top: [{ itemId: 101, num: 103 }] } }],
+    ['AllItemRequest', { items: [{ itemId: 101, num: 103 }] }, { items: { kinds: 1, total: 103, top: [{ itemId: 101, num: 103 }] }, 'fishing.inventory.owned': null }],
     ['AllResourceRequest', { list: [{ res: 102, amount: 107 }] }, { resources: [{ res: 102, amount: 107, name: undefined }] }],
     ['AllHeroRequest', { heroes: [{ heroId: 'hero-103', level: 11, star: 3, power: 109, skinId: 13 }] }, { 'heroes.count': 1, 'heroes.power': 109, 'heroes.list': [{ heroId: 'hero-103', level: 11, star: 3, power: 109, skinId: 13 }] }],
     ['GetFormationRequest', { formation: { heroPositions: [{ heroId: 'formation-104', pos: { x: 7, y: 8 } }] } }, { 'heroes.formation': [{ heroId: 'formation-104', x: 7, y: 8 }] }],
@@ -95,8 +95,12 @@ test('all 27 parsed query links preserve distinct synthetic business values', ()
     ['AfkInfoRequest', { afkInfo: { level: 113, afkStartTime: 213, afkFinishTime: 0, rewardedLevel: 110 }, clickGoldInfo: { times: 313 } }, { afk: { level: 113, startTime: 213, finishTime: 0, rewardedLevel: 110, capped: false, pendingLevels: 3 }, clickGold: { times: 313 } }],
     ['MonthCardRequest', { cardItem: [{ type: 114, endTime: 1, gotDailyReward: true }] }, { monthCard: [{ type: 114, active: false, endTime: 1, gotDailyReward: true }] }],
     ['AllAntiqueRequest', { antiques: [{ id: 115 }], masterLv: 215, suits: [{ id: 315 }, { id: 415 }] }, { antiques: { count: 1, masterLv: 215, suits: 2 } }],
-    ['OnWaterRequest', { building: [{ buildingId: 116, level: 6, auto: true, buildStartTime: 216, buildFinishTime: 316, factory: { autoProductId: 416, finishedProducts: [{ id: 516 }] }, product: { asset: [{ id: 616 }] } }], autoProduceEndTime: 716, autoProduceForever: true, autoFarming: false, fishingLevel: { level: 8 }, salvageLevel: { level: 9 }, divingLevel: { level: 10 }, orderOfTheDay: { id: 816 } }, { buildings: [{ buildingId: 116, level: 6, auto: true, building: { start: 216, finish: 316 }, factory: { autoProductId: 416, finished: [{ id: 516 }] }, product: [{ id: 616 }] }], water: { autoProduceEndTime: 716, autoProduceForever: true, autoFarming: false, fishingLevel: 8, salvageLevel: 9, divingLevel: 10, orderOfTheDay: { id: 816 } } }],
-    ['FishEncyclopediaRequest', { species: [117] }, { fish: { species: [117] } }],
+    ['OnWaterRequest', { building: [{ buildingId: 116, level: 6, auto: true, buildStartTime: 216, buildFinishTime: 316, factory: { autoProductId: 416, finishedProducts: [{ id: 516 }] }, product: { asset: [{ id: 616 }] } }], autoProduceEndTime: 716, autoProduceForever: true, autoFarming: false, fishingLevel: { level: 8 }, salvageLevel: { level: 9 }, divingLevel: { level: 10 }, orderOfTheDay: { id: 816 } }, { buildings: [{ buildingId: 116, level: 6, auto: true, building: { start: 216, finish: 316 }, factory: { autoProductId: 416, finished: [{ id: 516 }] }, product: [{ id: 616 }] }], water: { autoProduceEndTime: 716, autoProduceForever: true, autoFarming: false, fishingLevel: 8, salvageLevel: 9, divingLevel: 10, orderOfTheDay: { id: 816 } }, 'fishing.level': { level: 8, enhance: null, criticalRate: null, status: 'PARTIAL', reason: 'FISHING_LEVEL_FIELDS_INCOMPLETE' } }],
+    ['FishEncyclopediaRequest', { species: [117] }, { fish: { species: [117] }, 'fishing.collection': {
+      rewardId: null, collectedIds: null, collectedCount: null, catalogCount: null, totalScore: null,
+      claimedScore: null, availableScore: null, nextStage: null, complete: null, status: 'UNKNOWN', reason: 'FISHING_FISH_LIST_UNKNOWN',
+    } }],
+    ['GameEffectRequest', { effects: [{ id: 16, value: 528 }] }, { 'fishing.inventory.capacity': 528 }],
     ['CargoShipsRequest', { ship: [{ id: 118 }, { id: 218 }, { id: 318 }] }, { cargo: 3 }],
     ['AppointInfoRequest', { heroes: [{ heroId: 'appointed-119', posId: 219 }] }, { 'heroes.appointed': [{ heroId: 'appointed-119', posId: 219 }] }],
     ['AllGuildAbstractionRequest', { guilds: [{ id: 'guild-120', level: 12 }] }, { guild: [{ id: 'guild-120', level: 12 }] }],
@@ -109,7 +113,7 @@ test('all 27 parsed query links preserve distinct synthetic business values', ()
     ['CounterInfoRequest', { counters: [{ type: 127, num: 227 }] }, { counters: [{ type: 127, num: 227 }] }],
     ['AllPirateRequest', { pirates: [{ id: 128 }], sweepTimes: 228 }, { pirates: { count: 1, sweepTimes: 228 } }],
   ];
-  assert.equal(cases.length, 27);
+  assert.equal(cases.length, 28);
   const ok = Object.fromEntries(cases.map(([request, body]) => [request, body]));
   const entries = new Map(exploreSnapshot({ ok, failed: {} }).entries.map((entry) => [entry.request, entry]));
   for (const [request, , expected] of cases) {
@@ -172,4 +176,47 @@ test('all nine existing domain read surveys consume exactly the registered read 
  assert.deepEqual([...new Set(calls.map(call=>call.request))].sort(),BUSINESS_QUERY_CATALOG.map(row=>row.request).sort());
  for(const call of calls){const row=BUSINESS_QUERY_CATALOG.find(entry=>entry.request===call.request);assert.ok(row.consumers.some(use=>use.module===call.module),call.module+':'+call.request);assert.equal(row.response,call.response);assert.deepEqual(validateBusinessQueryParameters(call.request,call.body),call.body);}
  assert.deepEqual(calls.find(call=>call.module==='fleet'&&call.request==='WorldInfoRequest').body,{screenCenter:{x:0,y:0}});assert.deepEqual(calls.find(call=>call.request==='FleetRepairParamRequest').body,{buildingId:'synthetic-fleet'});
+});
+
+test('real codec fishing facts reach the unchanged collector, CLI summary and exact Explorer source fields', async () => {
+  const protocol = loadProtocol(), sent = [];
+  const bodies = {
+    FishEncyclopediaRequest: { fishList: [7, 2], rewardId: 1 },
+    AllItemRequest: { items: [{ itemId: '鱼', num: '9007199254740993' }] },
+    GameEffectRequest: { effects: [{ id: 16, value: 500 }] },
+    OnWaterRequest: { fishingLevel: { level: 2, enhance: 0, criticalRate: 0.25 } },
+  };
+  const config = { tables: {
+    FishBaseCfg: { data: [{ fishId: 2, score: 10 }, { fishId: 7, score: 15 }] },
+    FishStageCfg: { data: [{ stage: 1, star: 20, reward: [['RUBY', 100]] }, { stage: 2, star: 10, reward: [['加速器', 1]] }] },
+  } };
+  const client = { async request(name, _body, response) {
+    sent.push(name);
+    return protocol[response].decode(protocol[response].encode(bodies[name] ?? {}).finish());
+  } };
+  const snapshot = await collectState(client, protocol), summary = summarize(snapshot, { config });
+  assert.deepEqual(sent, ENTRY_QUERIES.map(row => row.name));
+  assert.deepEqual(summary.fish.fishList, [7, 2]);
+  assert.equal(summary.fishing.inventory.owned, '9007199254740993');
+  assert.equal(summary.fishing.inventory.capacity, 500);
+  assert.equal(summary.fishing.inventory.full, true);
+  assert.equal(summary.fishing.collection.availableScore, 5);
+  assert.equal(summary.fishing.collection.nextStage.eligible, false);
+  assert.equal(summary.fishing.collection.nextStage.missingScore, 5);
+  assert.match(formatState(summary), /钓鱼库存: 鱼 9007199254740993 \/ 500，图鉴可用积分 5/);
+
+  const entries = new Map(exploreSnapshot(snapshot, { domain: 'collections', config }).entries.map(row => [row.request, row]));
+  assert.equal(entries.get('AllItemRequest').parsed['fishing.inventory.owned'], '9007199254740993');
+  assert.equal(entries.get('AllItemRequest').rawSource, 'decoded-exact');
+  assert.equal(entries.get('GameEffectRequest').parsed['fishing.inventory.capacity'], 500);
+  assert.equal(entries.get('OnWaterRequest').parsed['fishing.level'].level, 2);
+  assert.equal(entries.get('FishEncyclopediaRequest').parsed['fishing.collection'].nextStage.missingScore, 5);
+  assert.equal(entries.get('FishEncyclopediaRequest').parsed.fish.rewardId, 1);
+
+  snapshot.outcomes.GameEffectRequest = { status: 'FAILED', error: 'synthetic failure' };
+  const failed = summarize(snapshot, { config });
+  assert.equal(failed.fishing.inventory.capacity, null);
+  assert.equal(failed.fishing.inventory.owned, '9007199254740993');
+  assert.equal(failed.fishing.collection.availableScore, 5);
+  assert.equal(exploreSnapshot(snapshot, { config }).entries.find(row => row.request === 'GameEffectRequest').parsed, null);
 });

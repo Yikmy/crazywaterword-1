@@ -17,8 +17,8 @@ async function harness() {
   let creates = 0, collects = 0;
   const app = createConsole({ port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { creates++; throw Error('Explorer must never create a client'); }, collect: () => { collects++; throw Error('Explorer must never collect'); } });
   await app.listen();
-  const call = (query = '', method = 'GET') => new Promise((resolve, reject) => {
-    const req = http.request('http://127.0.0.1:' + app.server.address().port + '/api/data-explorer' + query, { method, headers: { connection: 'close' } }, (res) => {
+  const call = (query = '', method = 'GET', endpoint = '/api/data-explorer') => new Promise((resolve, reject) => {
+    const req = http.request('http://127.0.0.1:' + app.server.address().port + endpoint + query, { method, headers: { connection: 'close' } }, (res) => {
       let text = ''; res.setEncoding('utf8'); res.on('data', (chunk) => text += chunk); res.on('end', () => resolve({ status: res.statusCode, text, data: JSON.parse(text) }));
     });
     req.on('error', reject); req.end();
@@ -92,3 +92,46 @@ test('raw and parsed data remain visible together, failures stay null, exports a
 });
 
 test.after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+
+
+test('overview and Explorer expose only the selected cached fishing sources without game requests', async () => {
+  const app = await harness();
+  try {
+    const config = (await import('../src/config.mjs')).getConfig();
+    assert.ok(config.tables.FishStageCfg.data.length);
+    for (const id of ['account-A', 'account-B']) {
+      const ok = {
+        AllItemRequest: { items: [{ itemId: '鱼', num: id === 'account-A' ? '9007199254740993' : 2 }] },
+        GameEffectRequest: { effects: [{ id: 16, value: 100 }] },
+        FishEncyclopediaRequest: { fishList: [14, 7, 2, 1], rewardId: 1 },
+        OnWaterRequest: { fishingLevel: { level: 2, enhance: 0, criticalRate: 0 } },
+      };
+      const outcomes = Object.fromEntries(Object.keys(ok).map(key => [key, { status: 'SUCCESS' }]));
+      app.sessions.set(id, cached({ ok, raw: structuredClone(ok), outcomes, failed: {} }, id + '-time'));
+    }
+    const [a, b] = await Promise.all(['account-A', 'account-B'].map(id => app.call('?account=' + id, 'GET', '/api/overview')));
+    assert.equal(a.status, 200); assert.equal(b.status, 200);
+    assert.equal(a.data.accountId, 'account-A'); assert.equal(b.data.accountId, 'account-B');
+    assert.equal(a.data.fishing.inventory.owned, '9007199254740993');
+    assert.equal(b.data.fishing.inventory.owned, 2);
+    assert.equal(a.data.fishing.collection.availableScore, 50);
+    assert.equal(a.data.fishing.collection.nextStage.eligible, true);
+    assert.equal(a.data.fishing.pendingCatch.status, 'UNKNOWN');
+    assert.equal(a.data.snapshotStale, true);
+    assert.equal(b.text.includes('9007199254740993'), false);
+    const state = app.sessions.get('account-A').snapshot;
+    state.failed.GameEffectRequest = 'synthetic capacity failure';
+    state.outcomes.GameEffectRequest.status = 'FAILED';
+    const failed = await app.call('?account=account-A', 'GET', '/api/overview');
+    assert.equal(failed.data.snapshotStatus, 'PARTIAL');
+    assert.equal(failed.data.fishing.inventory.capacity, null);
+    assert.equal(failed.data.fishing.inventory.owned, '9007199254740993');
+    assert.equal(failed.data.fishing.collection.availableScore, 50);
+    const explorer = await app.call('?account=account-A&domain=collections');
+    const entries = new Map(explorer.data.entries.map(row => [row.request, row]));
+    assert.equal(entries.get('GameEffectRequest').parsed, null);
+    assert.equal(entries.get('AllItemRequest').parsed['fishing.inventory.owned'], '9007199254740993');
+    assert.equal(entries.get('FishEncyclopediaRequest').parsed['fishing.collection'].nextStage.eligible, true);
+    assert.deepEqual(app.counts(), { creates: 0, collects: 0 });
+  } finally { await app.close(); }
+});

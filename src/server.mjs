@@ -381,6 +381,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         list: (view.heroes?.list ?? []).slice(0, 12).map((hero) => ({ ...hero, icon: heroCard(hero.heroId) ?? heroIcon(hero.heroId) })),
       },
       water: view.water,
+      fishing: view.fishing,
       resFields: view.resFields,
       monthCard: view.monthCard,
       unreadable: Object.keys(failed),
