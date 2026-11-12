@@ -48,7 +48,7 @@ export const FUNCTION_CONTRACTS = freeze({
     inventoryRequirementIds:['BIZ-D06'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PAID_OR_BULK','Only one ordinary free click is allowed; never spend RUBY or infer a server day')]},
     verification:verification('verifyFreeGold','src/free-gold.mjs#verifyFreeGold','Single typed gold receipt plus independent complete inventory and freeTimes +1 under the same unexpired server resetTime; all other balances and paid counters unchanged'),
-    dependencyVersions:dependencies(['moduleConfig','config.OfflineParamCfg']),
+    dependencyVersions:dependencies(['moduleConfig','config.OfflineParamCfg','config.ModuleOpenCfg']),
   }),
   'afk-level-rewards': contract('afk-level-rewards',[],['P6-2'],['src/afk-level-rewards.mjs#afkLevelRewardsModule','src/actions.mjs#ACTIONS'],{level:integer},{
     inventoryRequirementIds:['BIZ-R10'],

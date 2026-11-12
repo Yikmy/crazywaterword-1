@@ -17,7 +17,7 @@ import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
 // Fixed local codecs/config, matching-Ping clock, synthetic account and transport only.
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish());
-const config=()=>({tables:{OfflineParamCfg:clone(actual.tables.OfflineParamCfg)}});
+const config=()=>({tables:{OfflineParamCfg:clone(actual.tables.OfflineParamCfg),ModuleOpenCfg:clone(actual.tables.ModuleOpenCfg)}});
 function fixture({codec=true,apply=true,receipt={result:[{gold:7500,ratio:2}]}}={}) {
  const state={wall:1000000,mono:100,info:{freeTimes:0,paidTimes:0,minGold:7500,resetTime:2000,maxPaidTimes:10},stock:[{itemId:'unrelated',num:9}],resources:[{res:3,amount:100},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
  const clock=trustedGameClock({accountId:'synthetic-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
@@ -31,7 +31,7 @@ function fixture({codec=true,apply=true,receipt={result:[{gold:7500,ratio:2}]}}=
   let value=n==='ClickGoldInfoRequest'?{info:state.info}:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  }};
- const options={config:config(),moduleConfig:{enabled:true},parameters:{},player:{playerId:'9007199254740993',worldId:'17'}};
+ const options={config:config(),moduleConfig:{enabled:true},parameters:{},player:{playerId:'9007199254740993',worldId:'17',level:10}};
  return {state,client,options};
 }
 async function ready(extra={}){const f=fixture(extra),facts=await surveyFreeGold(f.client,protocol,f.options),row=viewFreeGold(facts,f.options).candidates[0],operation=planFreeGold(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,operation};}
@@ -137,4 +137,16 @@ test('slow sibling never renews gold fact age, and sampling cancellation sends n
 test('free gold dependencies bind only the config used for its actual free cap',()=>{
  const f=fixture(),before=freeGoldDependencyVersions(f.options),unrelated=clone(f.options.config);unrelated.tables.Unrelated={data:[]};assert.deepEqual(freeGoldDependencyVersions({...f.options,config:unrelated}),before);
  const changed=clone(f.options.config);changed.tables.OfflineParamCfg.revision=2;assert.notDeepEqual(freeGoldDependencyVersions({...f.options,config:changed}),before);
+});
+
+test('free gold requires its exact configured module level and live explicit player level',async()=>{
+ for(const [mutate,reason] of[
+  [f=>f.options.player.level=2,'FREE_GOLD_LEVEL_LOCKED'],
+  [f=>delete f.options.player.level,'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN'],
+  [f=>delete f.options.config.tables.ModuleOpenCfg,'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN'],
+  [f=>f.options.config.tables.ModuleOpenCfg.data.push({moduleId:'点金',playerLevel:3}),'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN'],
+  [f=>f.options.config.tables.ModuleOpenCfg.data.find(r=>r.moduleId==='点金').playerLevel=0,'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN']
+ ]){const f=fixture();mutate(f);const facts=await surveyFreeGold(f.client,protocol,f.options);assert.equal(viewFreeGold(facts,f.options).candidates[0].blockedReason,reason);assert.equal(f.state.writes.length,0);}
+ const f=await ready();f.options.player.level=2;assert.equal(planFreeGold(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);
+ const changed=clone(f.options.config);changed.tables.ModuleOpenCfg.revision=2;assert.notDeepEqual(freeGoldDependencyVersions({...f.options,config:changed}),freeGoldDependencyVersions(f.options));
 });

@@ -17,10 +17,11 @@ const text=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
 const fields=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,Object.prototype].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable&&own(v,k));
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
+const configNames=['OfflineParamCfg','ModuleOpenCfg'];
 const sources={gold:'ClickGoldInfoResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
 const liveFacts=new WeakMap(),costSource='Fixed v76 DianJinPop._checkNormalClickGold; OfflineParamCfg.免费点金次数; exactly times=1/free=true, zero resource debit';
 export const FREE_GOLD_EVIDENCE=Object.freeze({
- source:'Fixed v76 main/game.js DianJinPop.ts',byteOffset:1706469,
+ source:'Fixed v76 main/game.js DianJinPop.ts; JumpProxy/ModuleOpenUtil',byteOffset:1706469,openCheckByteOffset:3851566,
  semantics:'freeTimes is used count; resetTime minus timer.getServerTime is seconds remaining; result[i].gold is displayed as GOLD without multiplying ratio',
  realGame:'REAL_UNVERIFIED'
 });
@@ -41,7 +42,7 @@ function roleId(v) {
 }
 function contextOf(client,player) {
  const c=client.factContext,role=k=>{const id=own(player,k)?roleId(player[k]):null;return own(c,k)&&roleId(c[k])!==id?null:id;};
- return {accountId:text(c?.accountId)?c.accountId:null,generation:Number.isSafeInteger(c?.generation)&&c.generation>=0?c.generation:null,connectionId:text(c?.connectionId)?c.connectionId:null,playerId:role('playerId'),worldId:role('worldId')};
+ return {accountId:text(c?.accountId)?c.accountId:null,generation:Number.isSafeInteger(c?.generation)&&c.generation>=0?c.generation:null,connectionId:text(c?.connectionId)?c.connectionId:null,playerId:role('playerId'),worldId:role('worldId'),playerLevel:own(player,'level')&&positive(player.level)?player.level:null};
 }
 function clockOf(client,context) {
  let c;try{c=client.gameClock?.read(context);}catch{return null;}
@@ -72,7 +73,7 @@ export async function surveyFreeGold(client,protocol,{config,player,parameters={
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('点金采集期间账号或连接变化'),{code:'CANCELLED'});
  const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),gold=parseGold(raw.gold),inventory=parseOperationInventory(raw.items,raw.resources);
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:k==='gold'?gold!==null:inventory.stockReliable})]));
- const f={module:moduleId,parameters,context,configEvidence:{tables:{OfflineParamCfg:copy(config?.tables?.OfflineParamCfg??null)}},inputs,sourceFacts,gold,...inventory,state:gold&&inventory.stockReliable?snapshot(inputs,context):null,available:Object.keys(protocol??{}),notes,startClock,endClock};
+ const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,gold,...inventory,state:gold&&inventory.stockReliable?snapshot(inputs,context):null,available:Object.keys(protocol??{}),notes,startClock,endClock};
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 function authority(f) {
@@ -91,15 +92,21 @@ function limit(config) {
  const matched=rows.filter(r=>own(r,'paramName')&&r.paramName==='免费点金次数');
  return matched.length===1&&own(matched[0],'paramValue')&&positive(matched[0].paramValue)?matched[0].paramValue:null;
 }
+function gate(config) {
+ const rows=config?.tables?.ModuleOpenCfg?.data;if(!dense(rows))return null;
+ const matched=rows.filter(r=>own(r,'moduleId')&&r.moduleId==='点金');
+ return matched.length===1&&own(matched[0],'playerLevel')&&positive(matched[0].playerLevel)?matched[0].playerLevel:null;
+}
 function candidate(f,{config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {
- const cap=same(config?.tables?.OfflineParamCfg??null,f?.configEvidence?.tables?.OfflineParamCfg??null)?limit(f?.configEvidence):null;
+ const configMatches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null));
+ const cap=configMatches?limit(f?.configEvidence):null,requiredLevel=configMatches?gate(f?.configEvidence):null;
  const valid=authority(f),period=valid?currentPeriod(f):null,beforeState=copy(f?.state??null);
- const blockedReason=!validateFreeGoldConfig(moduleConfig).enabled?'FREE_GOLD_DISABLED':!valid?'FREE_GOLD_AUTHORITY_UNKNOWN':cap===null?'FREE_GOLD_LIMIT_UNKNOWN':!period?'FREE_GOLD_PERIOD_UNKNOWN':f.gold.freeTimes>=cap?'FREE_GOLD_EXHAUSTED':!f.stock.has('GOLD')?'GOLD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
- const reset=f?.gold?.resetTime??null,slot=f?.gold?f.gold.freeTimes+1:null,identity=hash({beforeState,cap});
+ const blockedReason=!validateFreeGoldConfig(moduleConfig).enabled?'FREE_GOLD_DISABLED':!valid?'FREE_GOLD_AUTHORITY_UNKNOWN':cap===null?'FREE_GOLD_LIMIT_UNKNOWN':requiredLevel===null||!positive(f.context.playerLevel)?'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN':f.context.playerLevel<requiredLevel?'FREE_GOLD_LEVEL_LOCKED':!period?'FREE_GOLD_PERIOD_UNKNOWN':f.gold.freeTimes>=cap?'FREE_GOLD_EXHAUSTED':!f.stock.has('GOLD')?'GOLD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const reset=f?.gold?.resetTime??null,slot=f?.gold?f.gold.freeTimes+1:null,identity=hash({beforeState,cap,requiredLevel});
  const budgetClaims={resources:[],quotas:[{id:moduleId+':reset:'+reset,num:1}],uids:[{type:moduleId,id:reset+':'+slot}]};
  // The random amount is authorized as an exact typed-receipt rule, never guessed.
  const expectedState=beforeState?{context:copy(beforeState.context),gold:{...beforeState.gold,freeTimes:slot},inventoryRule:{kind:'EXACT_GOLD_RECEIPT',before:copy(beforeState.inventory),source:'ClickGoldResponse.result[0].gold',otherBalances:'UNCHANGED'}}:null;
- return {module:moduleId,actionId:moduleId+':'+reset+':'+slot+':'+identity,actionType:'CLAIM',target:{resetTime:reset,usedBefore:f?.gold?.freeTimes??null},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'普通免费点金 ×1',limit:cap,remaining:cap!==null&&f?.gold&&f.gold.freeTimes<=cap?cap-f.gold.freeTimes:null,
+ return {module:moduleId,actionId:moduleId+':'+reset+':'+slot+':'+identity,actionType:'CLAIM',target:{resetTime:reset,usedBefore:f?.gold?.freeTimes??null},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'普通免费点金 ×1',requiredLevel,limit:cap,remaining:cap!==null&&f?.gold&&f.gold.freeTimes<=cap?cap-f.gold.freeTimes:null,
   ...(blockedReason===null?{action:{request,response,body:{times:1,free:true}}}:{})};
 }
 export function viewFreeGold(f,options={}) {
@@ -126,5 +133,5 @@ export function verifyFreeGold(operation,before,after,result) {
  if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,expected))return no('独立复读未同时确认同重置标记免费次数加一和精确 GOLD 净入，或无关状态变化');
  return {confirmed:true,afterState:copy(after.state),reason:'单次免费 typed GOLD 回执与同周期计次、完整库存净入共同确认',responseEvidence:{gold:receipt.gold,resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes,usedAfter:after.gold.freeTimes}};
 }
-export function freeGoldDependencyVersions({config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeGoldConfig(moduleConfig),tables:{OfflineParamCfg:copy(config?.tables?.OfflineParamCfg??null)}};}
+export function freeGoldDependencyVersions({config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeGoldConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const freeGoldModule=Object.freeze({id:moduleId,label:'普通免费点金',capabilities:Object.freeze(['BIZ-D06']),defaultConfig:FREE_GOLD_DEFAULT_CONFIG,validateConfig:validateFreeGoldConfig,validateParameters:validateFreeGoldParameters,survey:surveyFreeGold,view:viewFreeGold,plan:planFreeGold,verify:verifyFreeGold,dependencyVersions:freeGoldDependencyVersions});
