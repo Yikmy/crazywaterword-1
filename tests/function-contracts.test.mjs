@@ -4,14 +4,14 @@ import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract,
 import { formationModule, validateFormationParameters } from '../src/formation.mjs';
 import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 import { heroModule } from '../src/hero-operations.mjs';
-const ids = ['badge-growth','equipment-growth','formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
+const ids = ['antique-growth','badge-growth','equipment-growth','formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
 function adapter(id, validateParameters = value => value) {
   return { id, survey() {}, view() {}, plan() {}, verify() {}, execute() {}, validateParameters, dependencyVersions() { return { moduleConfig: {} }; } };
 }
 const invalid = fn => assert.throws(fn, error => ['INVALID_PARAMETERS', 'INVALID_FUNCTION_CONTRACT'].includes(error.code));
 const stage = () => ({ config: { enabled: true, retryDelaySeconds: 0, maxAttempts: 2, maxStage: null, interStageDelay: { minSeconds: 10, maxSeconds: 11 }, formation: { enabled: false, presetId: null } } });
 
-test('sixteen trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
+test('seventeen trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
   assert.deepEqual(Object.keys(FUNCTION_CONTRACTS), ids);
   for (const id of ids) {
     const value = describeFunctionContract(id);
@@ -100,8 +100,8 @@ test('true dependencies separate unrelated order rules and production policy', (
   assert.deepEqual(FUNCTION_CONTRACTS.naval.dependencyVersions.required, ['moduleConfig']);
   assert.equal(FUNCTION_CONTRACTS.stage.dependencyVersions.required.includes('config.StageCfg'), false); // Existing Runner consumes no StageCfg.
 });
-test('input fields match sixteen existing domain parameter interfaces without transport controls', () => {
-  const expected = { 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
+test('input fields match seventeen existing domain parameter interfaces without transport controls', () => {
+  const expected = { 'antique-growth':['antiqueId','action'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal'],
@@ -194,4 +194,12 @@ test('equipment empty-slot wear has a dedicated no-replacement action and depend
  const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.implementation.actions.includes('PUT-ON'));assert.ok(c.inputSchema.properties.action.enum.includes('put-on'));
  assert.deepEqual(c.requirementIds.C,['C229']);assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='STAR_REPLACE'&&!row.executable));
  assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=put-on').keys,['config.ModuleOpenCfg']);
+});
+
+test('PRO-007 uses an independent antique contract rather than remapping Museum exploration capabilities',()=>{
+ const c=FUNCTION_CONTRACTS['antique-growth'];
+ assert.deepEqual(c.requirementIds.C,[]);assert.deepEqual(c.inventoryRequirementIds,['PRO-007']);
+ assert.deepEqual(c.implementation.actions,['ACTIVATE','STAR']);assert.equal(c.verification.authoritativeRead,true);
+ assert.deepEqual(c.inputSchema.properties.action.enum,['activate','star']);
+ assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='UNIVERSAL_SUIT_EXCHANGE_MASTER'&&!row.executable));
 });

@@ -215,3 +215,17 @@ test('empty-slot badge D6 accepts exact owned UID, hero, slot and explicit zero 
  const paid=make();paid.costs.push({id:'RUBY',num:1});assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
  assert.throws(()=>assertPaymentAllowed({...make(),request:'BadgeReplaceRequest'}),{code:'COST_UNKNOWN'});
 });
+
+test('Antique D6 admits only exact owned dedicated fragments and never universal or expanded requests',()=>{
+ for(const request of ['ActivateAntiqueRequest','AntiqueStarUpRequest']){
+  const make=()=>({request,body:{id:'藏品蓝1',...(request==='AntiqueStarUpRequest'?{universal:false}:{})},costs:[{id:'藏品蓝1碎片',num:2}]});
+  assert.doesNotThrow(()=>assertPaymentAllowed(make()));
+  for(const mutate of [a=>a.body.id='',a=>a.body.id=' 藏品蓝1',a=>a.body.num=2,a=>a.body.buyMissing=true,a=>a.costs=[],a=>delete a.costs,a=>a.costs=null,a=>a.costs[0].id='蓝藏万能碎片',a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.costs[0].extra=1,a=>a.costs.push({id:'GOLD',num:1})]){
+   const a=make();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});
+  }
+  if(request==='AntiqueStarUpRequest')for(const value of [undefined,true,null,0,'false']){const a=make();if(value===undefined)delete a.body.universal;else a.body.universal=value;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+  else{const a=make();a.body.universal=false;assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
+  const paid=make();paid.costs[0].id='RUBY';assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+ }
+ for(const request of ['AntiqueSuitLevelUpRequest','AntiqueFragExchangeRequest','AntiqueMasterLevelUpRequest'])assert.throws(()=>assertPaymentAllowed({request,body:{id:'藏品蓝1'},costs:[{id:'藏品蓝1碎片',num:1}]}),{code:'COST_UNKNOWN'});
+});

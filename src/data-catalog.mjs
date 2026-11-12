@@ -137,6 +137,7 @@ const freezeQueryMetadata = value => {
 };
 const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
 const uses = {
+  'antique-growth': consumer('antique-growth','surveyAntiqueGrowth','src/antique-growth.mjs:surveyAntiqueGrowth',['antiques','suits','masterLv','stock']),
   antiqueSummary: consumer('antiqueSummary','surveyAntiqueSummary','src/antique-summary.mjs:surveyAntiqueSummary',['global','camps','professions','effects']),
   formation: consumer('formation', 'surveyFormation', 'src/formation.mjs:surveyFormation', ['formation', 'presets', 'heroes']),
   alliance: consumer('alliance', 'surveyAlliance', 'src/alliance.mjs:surveyAlliance', ['guild', 'members', 'aids', 'order', 'counters', 'stock', 'technology', 'seasonStage']),
@@ -162,8 +163,8 @@ const businessReads = [
   ['GetFormationRequest', ['formation'], { ...accountScope, key: 'MAINLINE_MODULE_1' }, mainlineParameters, 'heroes', 'Complete formation with exact hero positions and optional pet UID; does not prove save success by itself'],
   ['MyFormationPresetRequest', ['formation', 'fleet'], accountScope, emptyParameters, 'heroes', 'Unlocked formation layouts; not saved complete teams'],
   ['AllHeroRequest', ['formation', 'museum', 'fleet'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],
-  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
-  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
+  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
+  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
   ['GuildInfoRequest', ['alliance', 'fleet'], guildScope, emptyParameters, 'guild', 'Current guild identity and welfare watermark; fleet derives guild index'],
   ['GuildMemberRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current titleList members; absent online flag remains unknown'],
   ['GuildAidListRequest', ['alliance'], guildScope, aidParameters, 'guild', 'Exact request, asker, item and expiry identity; type is fixed zero'],
@@ -174,7 +175,7 @@ const businessReads = [
   ['GuildTechInfoRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current technology levels require exact reliable parsing'],
   ['SeasonTaskStageRequest', ['alliance'], { ...accountScope, binding: ['accountId', 'generation', 'worldId', 'season'] }, emptyParameters, 'activities', 'Explicit stage presence is mandatory; user season cannot replace current world evidence'],
   ['MuseumInfoRequest', ['museum'], accountScope, emptyParameters, 'collections', 'Explore stages, exhibitions, revenue and claimed achievement markers; no settlement claim'],
-  ['AllAntiqueRequest', ['museum'], accountScope, emptyParameters, 'collections', 'Owned antique IDs only; no exhibit or collection write'],
+  ['AllAntiqueRequest', ['museum','antique-growth'], accountScope, emptyParameters, 'collections', 'Owned antique identities/stars, suits and mastery for display and exact activation/star verification; the query performs no write'],
   ['MyFleetsRequest', ['fleet', 'treasure', 'naval'], accountScope, emptyParameters, 'fleets', 'Fleet states and exact building IDs; no authority over fleet formation payload'],
   ['CargoShipsRequest', ['fleet'], accountScope, emptyParameters, 'fleets', 'Ship and cargo slot state; no fill, claim or acceleration'],
   ['WorldInfoRequest', ['fleet', 'naval'], { kind: 'CURRENT_RESPONSE_ONLY', binding: ['accountId', 'generation', 'screenCenter'], key: 'SCREEN_CENTER', completeness: 'CURRENT_RESPONSE_ONLY' }, worldParameters, 'map', 'Observed cities/fleets in this response only; not a complete world or continuous global target registry'],

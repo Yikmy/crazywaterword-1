@@ -1,3 +1,4 @@
+import { antiqueGrowthModule } from '../src/antique-growth.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GAMEPLAY_MODULES, registerBusinessFunction, listBusinessFunctions } from '../src/function-registry.mjs';
@@ -21,9 +22,9 @@ import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 // Every protocol type, response and account below is synthetic. No GameClient
 // connection, asset loader, default account path or persistent store is used.
 const clone = value => structuredClone(value);
-const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','stage'];
-const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule, 'equipment-growth':equipmentGrowthModule, 'badge-growth':badgeGrowthModule };
-const tablesByModule = { 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
+const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','stage'];
+const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule, 'equipment-growth':equipmentGrowthModule, 'badge-growth':badgeGrowthModule, 'antique-growth':antiqueGrowthModule };
+const tablesByModule = { 'antique-growth':['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg'], 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
   heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg','WorldFortCfg','FortDonateMaterialCfg','FortParamCfg','FortSeasonUnlockCfg','ItemCfg'],
@@ -96,7 +97,7 @@ async function makePlan(f, id, { mode = 'Manual', parameters = id === 'formation
 const approve = (f, plan) => f.service.authorize(f.session,{ batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map(row => row.actionId), resourceBudget: plan.resourceBudget, confirm: true });
 function noExecution(f) { assert.equal(f.writes.length,0); assert.equal(f.state.runnerPreparations,0); assert.equal(f.state.historyWrites,0); assert.equal(f.session.busy,null); }
 
-test('fifteen static adapters and dynamic Stage register as sixteen contract-backed Functions', () => {
+test('sixteen static adapters and dynamic Stage register as seventeen contract-backed Functions', () => {
   const f = fixture(); assert.deepEqual(Object.keys(f.modules),allIds);
   for (const [id,module] of Object.entries(f.modules)) {
     assert.equal(module.contractVersion,1); assert.ok(Object.isFrozen(module));
@@ -117,7 +118,7 @@ test('registry rejects missing real hooks and unknown module identities', () => 
   assert.throws(() => registerBusinessFunction({ ...formationModule, id: 'untrusted' }),{ code: 'INVALID_FUNCTION_CONTRACT' });
 });
 test('registry and Service expose exact detached C/P/S, schema, permission and evidence metadata', () => {
-  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,16);
+  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,17);
   for (const entry of listed) {
     assert.deepEqual(entry.metadata,describeFunctionContract(entry.id)); assert.deepEqual(entry.capabilities,FUNCTION_CONTRACTS[entry.id].inventoryRequirementIds??FUNCTION_CONTRACTS[entry.id].requirementIds.C);
     const throughService = f.service.moduleView(f.session.id,entry.id).functions.find(row => row.id === entry.id);
@@ -278,5 +279,25 @@ test('badge empty-slot wear binds the feature gate but does not bind upgrade pri
  const changed=clone(options);changed.config.tables.ModuleOpenCfg.revision++;assert.notDeepEqual(f.modules['badge-growth'].dependencyVersions(changed),custom);
  const priceChanged=clone(options);priceChanged.config.tables.HeroBadgeLevelCfg.revision++;assert.deepEqual(f.modules['badge-growth'].dependencyVersions(priceChanged),custom);
  const level={...options,parameters:{heroId:'A',uid:'9007199254740993'}};assert.deepEqual(declared.dependencyVersions(level),f.modules['badge-growth'].dependencyVersions(level));
+ noExecution(f);
+});
+
+test('antique activation binds derived-suit rules while STAR binds only its price table',()=>{
+ const f=fixture(),raw={...antiqueGrowthModule};delete raw.dependencyVersions;
+ const declared=registerBusinessFunction(raw);
+ for(const action of ['activate','star',null]){
+  const options=clone(f.options('antique-growth'));options.parameters=action?{action,antiqueId:'测试藏品'}:{};
+  const adapter=f.modules['antique-growth'],versions=adapter.dependencyVersions(options);
+  assert.deepEqual(declared.dependencyVersions(options),versions);
+  assert.deepEqual(Object.keys(versions),['moduleConfig','config.ModuleOpenCfg','config.AntiqueBaseCfg',...(action!=='star'?['config.AntiqueSuitCfg']:[]),...(action!=='activate'?['config.AntiqueStarCfg']:[])]);
+  for(const name of ['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg']){
+   const changed=clone(options);changed.config.tables[name].revision=2;
+   const bound=Object.hasOwn(versions,'config.'+name);
+   if(bound)assert.notDeepEqual(adapter.dependencyVersions(changed),versions,name);
+   else assert.deepEqual(adapter.dependencyVersions(changed),versions,name);
+  }
+  const unrelated=clone(options);unrelated.config.tables.UnrelatedCfg.revision=2;
+  assert.deepEqual(adapter.dependencyVersions(unrelated),versions);
+ }
  noExecution(f);
 });

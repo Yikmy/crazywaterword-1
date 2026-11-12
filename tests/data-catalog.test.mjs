@@ -157,15 +157,16 @@ test('parameter validator accepts only existing survey body shapes and copies ca
  for(const body of [null,[],new Date(),Object.create({module:1}),JSON.parse('{"module":1,"__proto__":{}}')])assert.throws(()=>validateBusinessQueryParameters('GetFormationRequest',body),{code:'INVALID_QUERY_PARAMETERS'});
 });
 
-test('all seven existing domain read surveys consume exactly the registered read queries and parameter restrictions',async()=>{
+test('all eight existing domain read surveys consume exactly the registered read queries and parameter restrictions',async()=>{
  const [{surveyFormation},{surveyAlliance},{surveyMuseum},{surveyFleet},{surveyTreasure},{surveyNaval}]=await Promise.all([import('../src/formation.mjs'),import('../src/alliance.mjs'),import('../src/museum.mjs'),import('../src/fleet.mjs'),import('../src/treasure.mjs'),import('../src/naval-rules.mjs')]);
+ const {surveyAntiqueGrowth}=await import('../src/antique-growth.mjs');
  const {surveyAntiqueSummary}=await import('../src/antique-summary.mjs');
  const calls=[],protocol=Object.fromEntries(BUSINESS_QUERY_CATALOG.flatMap(row=>[[row.request,{}],[row.response,{}]]));
  const rawFleet={buildingId:'synthetic-fleet',state:1,durability:100,maxDura:200,cityId:1,targetCityId:0,treasureLootUid:0,autoFight:{isOn:false,todayTimes:0}};
  const responses={MyFleetsRequest:{fleets:[rawFleet]},AllItemRequest:{items:[]},AllResourceRequest:{list:[]},FleetRepairParamRequest:{unitRepairCost:1,unitRepairTime:1},WorldInfoRequest:{cities:[],fleets:[]}};
  let module=null;const client={connected:true,gameClock:{read:()=>({status:'TRUSTED',reliable:true,nowMs:100000,earliestMs:100000,latestMs:100000})},async request(request,body,response){calls.push({module,request,body:structuredClone(body),response});return structuredClone(responses[request]??{});},send(){throw Error('Forbidden write');},sendWatch(){throw Error('Forbidden watched write');}};
  const player={playerId:'1',worldId:1000001,mainlineStage:1,level:30};
- for(const [id,survey,options] of [['antiqueSummary',surveyAntiqueSummary,{}],['formation',surveyFormation,{}],['alliance',surveyAlliance,{}],['museum',surveyMuseum,{}],['fleet',surveyFleet,{moduleConfig:{repair:true,formation:true}}],['treasure',surveyTreasure,{parameters:{uid:7}}],['naval',surveyNaval,{parameters:{screenCenter:{x:10,y:-20}}}]]){module=id;await survey(client,protocol,{config:{tables:{}},player,...options});}
+ for(const [id,survey,options] of [['antique-growth',surveyAntiqueGrowth,{}],['antiqueSummary',surveyAntiqueSummary,{}],['formation',surveyFormation,{}],['alliance',surveyAlliance,{}],['museum',surveyMuseum,{}],['fleet',surveyFleet,{moduleConfig:{repair:true,formation:true}}],['treasure',surveyTreasure,{parameters:{uid:7}}],['naval',surveyNaval,{parameters:{screenCenter:{x:10,y:-20}}}]]){module=id;await survey(client,protocol,{config:{tables:{}},player,...options});}
  assert.deepEqual([...new Set(calls.map(call=>call.request))].sort(),BUSINESS_QUERY_CATALOG.map(row=>row.request).sort());
  for(const call of calls){const row=BUSINESS_QUERY_CATALOG.find(entry=>entry.request===call.request);assert.ok(row.consumers.some(use=>use.module===call.module),call.module+':'+call.request);assert.equal(row.response,call.response);assert.deepEqual(validateBusinessQueryParameters(call.request,call.body),call.body);}
  assert.deepEqual(calls.find(call=>call.module==='fleet'&&call.request==='WorldInfoRequest').body,{screenCenter:{x:0,y:0}});assert.deepEqual(calls.find(call=>call.request==='FleetRepairParamRequest').body,{buildingId:'synthetic-fleet'});

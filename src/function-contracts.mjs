@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'antique-growth': contract('antique-growth',[],['P2-7'],['src/antique-growth.mjs#antiqueGrowthModule','src/antique-growth.mjs#planAntiqueGrowth'],{antiqueId:string,action:{type:'string',enum:['activate','star']}},{
+    inventoryRequirementIds:['PRO-007'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['ACTIVATE','STAR'],blockedCapabilities:[blocked('UNIVERSAL_SUIT_EXCHANGE_MASTER','Universal fragments, suit upgrades, fragment exchange and mastery require independent contracts')]},
+    verification:verification('verifyAntiqueGrowth','src/antique-growth.mjs#verifyAntiqueGrowth','Independent complete AllAntique/AllItem/AllResource reads confirm exact activation or one star, dedicated fragment debit, owned entity identity and all unrelated state'),
+    dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.AntiqueBaseCfg'],[{when:'parameters.action=activate',keys:['config.AntiqueSuitCfg']},{when:'parameters.action=star',keys:['config.AntiqueStarCfg']},{when:'parameters.action=null',keys:['config.AntiqueSuitCfg','config.AntiqueStarCfg']}]),
+  }),
   'badge-growth': contract('badge-growth', ['C228'], ['P3-6','P3-7'], ['src/badge-growth.mjs#badgeGrowthModule','src/badge-growth.mjs#planBadgeGrowth'], {heroId:string,uid:string,action:{type:'string',enum:['put-on']},pos:integer}, {
     implementation:{mode:'CONTROLLED_WRITE',actions:['LEVEL','PUT-ON'],additionalRequirementIds:['BIZ-R09'],blockedCapabilities:[blocked('PARTIAL_XP_OR_CAP','This branch starts at zero XP and lands below the cap'),blocked('SACRIFICE_OR_REPLACE','Sacrifice, badge replacement and other badge actions require separate contracts')]},
     verification:verification('verifyBadgeGrowth','src/badge-growth.mjs#verifyBadgeGrowth','Full badge pool, hero slots and inventory confirm either one exact level with a typed no-material receipt and EXP/GOLD debits, or one owned idle UID in the exact empty eligible slot with unchanged pool and stock'),

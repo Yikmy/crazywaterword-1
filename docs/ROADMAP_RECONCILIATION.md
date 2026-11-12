@@ -2470,3 +2470,21 @@ E14 增加汇总作用域、原值/单位、明确空/UNKNOWN、只读和账号�
 静态 v76 PiratePop/PirateUtil 的已核包/模块哈希和 UTF8 偏移保留在 `PIRATE_SWEEP_READ_EVIDENCE`。总额计算线索为 PirateParamCfg 基数 + VipLevelCfg 当前等级效果 + 有效月卡效果；月卡是否有效依赖服务器时间。LoginResponse.vip 与 SCVipUpdate 有初始/推送来源，但现有 GameClient 没有持续跟踪当前 VIP，且无新鲜 VipInfoRequest；不能拿登录旧值、基数 10 或两条固定月卡配置当前零加成猜实时额度。DailyReset 时区也不能统一假定 UTC+8。下一步应核实并实现完整当前账号 VIP/卡/可信游戏日生命周期，再接共享预算与复读，不把本只读分支当执行完成。
 
 `node --test tests/pirate-sweep.test.mjs tests/data-catalog.test.mjs tests/explorer-view.test.mjs`：**28/28 PASS，0 fail/cancelled/skipped/todo，1.64 秒**（8 项新增专项）；另随 D.21 的 15 文件联合 **325/325 PASS，7.41 秒**，是重叠证据，不累计。真实本地 Codec、原 collector 和合成快照检查显式零/缺失、原始字段保留、坏/重复记录、失败来源与原 48 请求集合；CLI 显式区分已用、未知总额、未知剩余，不暗示可执行。未运行 R7 或真实游戏。E15 增加次数方向、UNKNOWN 与等级关系只读验收，原执行和真实验收条件保留。
+
+### D.23 W11/PRO-007 藏品激活与专属碎片单次升星（2026-11-12）
+
+父提交 `1a70729be976eb4faf4d11be4dc1dfbd4c276964`。新增独立 antique-growth Adapter 与静态 Function 合同，复用 OperationService、共享执行器、ResourceLedger、ExecutionHistory、原 Gameplay/Operations API 和 Workflow ACTION。博物馆页增加藏品/自有碎片表、藏品选择、激活/升星种类及单项候选；选择只改草稿，重新探测、预览和精确授权后才可执行。默认关闭。当前静态 Adapter 16 个、含动态 Stage 共 17 个合同；PRO-007 保持独立 Inventory ID，不冒用 C141–C144。此两个原子分支 EXISTING_FUNCTION/EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED；PRO-007、W11 全包仍 PARTIAL。
+
+固定 v76 包/入口/本地协议/配置已重新只读核实，具体字节偏移、原始模块 SHA256 和摘要边界在 `ANTIQUE_GROWTH_EVIDENCE`。TopOperateView/ModuleOpenUtil 的“藏品”门槛取唯一 ModuleOpenCfg（固定 10 级）。AntiqueItem 激活发 `ActivateAntiqueRequest {id}`，消耗该 AntiqueBaseCfg.activeFrag 数量的 `antiqueId+'碎片'`；AntiqueDetailPop 单次升星发 `AntiqueStarUpRequest {id,universal:false}`，取下一档 AntiqueStarCfg，按 BLUE/PURPLE/ORANGE/RED 分支消费对应专属碎片；固定 25 档连续配置决定上限。不得购买补齐、消耗万能碎片或混入套装/兑换/精通请求。两者均无专用 Response，观察窗口不证明成功。
+
+权威读取完整 AllAntique（antiques/suits/masterLv）、AllItem 和 AllResource，拒绝缺字段、重复、损坏与原型默认值冒充状态。激活要求目标原不存在，复读明确出现同 ID 的自有零星条目；省略 star 或其他初始值保留 UNKNOWN。升星要求已有精确条目，恰好 +1。目标以外藏品、精通、套装身份和等级保持，专属碎片必须精确净扣，其余库存不变。ACTIVATE 仅对 AntiqueSuitCfg 明确“拥有紫色藏品”关联的既有套装，允许服务器 effectiveNum/advEffectValue 派生值变化；仅验证值形状和受影响身份，不声称验证了奖励公式、阈值、增量或因果关联。新套装身份/等级、其他套装变化仍 UNKNOWN；STAR 无此派生豁免。激活绑定套装规则且不绑定升星价格，STAR 只绑定其价格，默认查看绑定并集。
+
+事实以私有 WeakMap 绑定原始账号/角色/世界/代际/连接、内容摘要及各来源时间，序列化克隆、字段篡改、旧来源续期不能授权。慢兄弟读取不得刷新早已过期的藏品事实；相同完整响应重排行不改变计划身份。资源与唯一 `{type:'antique',id:antiqueId}` 实体预算派发前持久化，任何无效果/非预期变化保留 UNKNOWN 与预算，重启不自动重发。公开计划身份使用 SHA256 摘要，避免携带完整库存与配置；内部请求和 configEvidence 不公开。业务读取目录同步登记实际三来源的 antique-growth 消费关系，保持原 48 采集与 29/13 业务读数量不变。
+
+离线命令（启动前对全部 34 个路径逐一 Test-Path）：
+
+`node --test tests/antique-growth.test.mjs tests/antique-growth-service.test.mjs tests/antique-summary.test.mjs tests/antique-summary-api.test.mjs tests/actions-safety.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/gameplay-settings.test.mjs tests/farm-forge-full-page.test.mjs tests/farm-forge-api.test.mjs tests/gameplay-api.test.mjs tests/gameplay-view.test.mjs tests/museum.test.mjs tests/museum-shortage.test.mjs tests/operation-service.test.mjs tests/execution-history.test.mjs tests/resource-budget.test.mjs tests/run-budget.test.mjs tests/run-budget-safety.test.mjs tests/run-budget-service.test.mjs tests/workflow.test.mjs tests/equipment-growth.test.mjs tests/equipment-growth-service.test.mjs tests/equipment-put-on.test.mjs tests/badge-growth.test.mjs tests/badge-growth-service.test.mjs tests/badge-put-on.test.mjs tests/pirate-sweep.test.mjs tests/data-catalog.test.mjs tests/explorer-view.test.mjs tests/hero-operations.test.mjs tests/hero-service.test.mjs tests/hero-exclusive-star.test.mjs tests/hero-exclusive-service.test.mjs`
+
+最终 **838/838 PASS，0 fail/cancelled/skipped/todo，12.88 秒**。15 项领域、6 项真实本地 Service/Codec/磁盘历史与 218 项合同/页面/HTTP 隔离证据均与此重叠，不累计。覆盖当前固定配置、紫色派生范围、完整库存/藏品归一化、门槛/上限/余额、成本与唯一实体预算、修改/过期/账号变化、无专用响应和 UNKNOWN 恢复，保留原装备/徽章/英雄/Museum/Workflow/预算回归。首轮共享测试尚固定 16 个合同，已按新增第 17 个校准；复核发现库存返回顺序影响身份，已仅将计划库存按 ID 排序并新增实际重排行测试；最终复核将公开 identity 改摘要后重新跑完整命令。D.20 命令中 resource-ledger.test.mjs、business-functions.test.mjs 当前并不存在，不能将它们算作已运行文件；421 的原始结果保留。本次使用实际 resource-budget/run-budget/run-budget-safety/run-budget-service，并先验路径，纠正覆盖范围。
+
+E14 增加激活/单星、对应碎片、明确零星/缺失、既有套装派生观察和意外身份/精通变化；E20/E21/E23 增加实体预算持久化、无效果 UNKNOWN、重启与隔离。后续仍需逐项完成 PRO-007 套装升级、碎片兑换、精通和万能材料独立合同，以及 C144 结算恢复身份、W12 可靠额度等原工作包。未运行 R7、真实游戏或 R8，未 push/merge；总目标继续 ACTIVE，R8 必须在 R7 后由 Owner 单独授权。
