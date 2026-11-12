@@ -2424,3 +2424,13 @@ E09 增加当前受控徽章等级、槽位镜像、精确双扣、零派发与�
 写后独立复读须确认完整池、库存与其他英雄和槽位不变，同一 UID 原属性完整地进入目标空槽，仅目标英雄可有合法派生变化；原读数必须新鲜且时序不倒退。无效果、状态不全或非预期变化保留 UNKNOWN 和 UID，重启不重放。页面选择模式只改变草稿，需指定英雄、重新探测并单次授权。不开放替换、卸下、分解、装备消耗或付费行为。
 
 离线验证：D.17 的 27 文件定向命令追加 `tests/equipment-put-on.test.mjs`，共 **816/816 PASS，0 fail/cancelled/skipped/todo，23.78 秒**。原 LEVEL/REFINE 领域 48 项保留；新增真实本地 Codec、会话开启门槛、空槽、库存与 UID 预留、未知恢复、完整页面及父预算。首轮专项发现 D6 的通用成本默认值会接纳显式 null，以及页面测试假设每次有材料，已改为只接受真实空数组并断言明确显示无资源消耗。未执行 R7 或真实游戏。E09 增加同 UID 空槽穿戴、占用/不明零派发、库存不变与无效果 UNKNOWN；E20/E21/E23 增加零资源 UID 预算和重启防重发。C227/C230、W10 重置缺证保持；并行继续 W11/C142 只读远征材料缺口。
+
+### D.19 W11/C142 博物馆远征材料缺口（2026-11-12）
+
+父提交 `280050c9739e6ddf8345d2689705f556782c0278`。C142 的结构化只读缺口已接入现有 `surveyMuseum → museumView → /api/gameplay → 博物馆页`，不增写入口或历史，不要求启用写入或选择英雄。Function/UI EXISTING、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED；W11 仍有其他工作，C144 结算/领取仍需证据。
+
+材料需求只取当前空闲且已解锁远征的 `MuseumInfoResponse.exploreStages[].expedition.cost.asset`，按本次明确倍率和当前玩家门槛缩放。v76 `BuildTeamPop` SHA256 `d50da1c7564449c1766a4641ec9a490dc8b148da5989b1690fab2e26e90a9f6a`（byte 968567），`MuseumUtil` SHA256 `20c6ece1398050221661ec9fc01c8a863602d2134b7359d2a93038d1314e26c1`（byte 4808198）；固定倍率 1/2/3 的玩家门槛分别 1/30/40。已开始或待结算的远征不引用旧成本；成本或倍率无法确认时不猜配置回退。使用完整物品/资源读取，缺读、重复或冲突库存时，已知需求仍显示，持有与缺口为未知；只有可信完整库存未列该材料才视为零。
+
+输出需求、持有、实际缺口、配置保留量、含保留量缺口。物理状态与配置保留政策分开；即使材料足够，原计划仍可能因库存线或累计预算被拒。只提取原 planner 的倍率和费用计算供只读视图复用，保持原出发条件、保留规则、授权和派发不变。
+
+`node --test tests/museum-shortage.test.mjs tests/museum.test.mjs tests/farm-forge-full-page.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/function-registry.test.mjs`：**235/235 PASS，0 fail/cancelled/skipped/todo，7.57 秒**。首跑完整页面测试把模拟 DOM 的标签假定为大写；按标签大小写无关选择后通过，数字、未知和禁用状态仍逐项核对。覆盖固定配置、合成只读响应、原出发报价/保留量一致性和完整页面；未运行 R7 或真实游戏。E14 增加倍率、可信/不可信库存、保留量和已开始远征的只读验收。后续可继续核证同类独立装备/徽章分支及 W11 结算证据；保留 C227/C230 替换和 W10 重置的缺证闸门。

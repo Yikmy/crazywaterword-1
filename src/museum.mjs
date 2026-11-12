@@ -5,6 +5,7 @@ import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockF
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { allianceId } from './alliance.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 const rows=(c,n)=>c?.tables?.[n]?.data??[];
 const text=s=>typeof s==='string'&&s.trim().length>0;
 const unique=(a,key)=>Array.isArray(a)&&new Set(a.map(key)).size===a.length;
@@ -52,15 +53,52 @@ export async function surveyMuseum(client,protocol,{player=null,signal,parameter
   return {module:'museum',available,playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),...readGameTime(client),
     antiques,antiquesReliable:!!antiques&&antiques.every(text)&&unique(antiques,id=>id),stages,stagesReliable:!!stages&&stages.every(stageValid)&&unique(stages,s=>s.stageId),heroes,heroesReliable:!!heroes&&heroes.every(text)&&unique(heroes,id=>id),exhibitions,
     exhibitionsReliable:!!exhibitions&&exhibitions.every(e=>e.exhibitionId!==null&&e.exhibitionId>0&&e.level!==null)&&unique(exhibitions,e=>e.exhibitionId),
-    uncollectedRevenue:quantity(field(info,'uncollectedRevenue')),topPopularity:quantity(field(info,'topPopularity')),claimedAchievements:claimed,claimedReliable:!!claimed&&claimed.every(n=>n!==null)&&unique(claimed,n=>n),stock,stockReliable,parameters,notes};
+    shortageStockReliable:parseOperationInventory(items,resources).stockReliable,uncollectedRevenue:quantity(field(info,'uncollectedRevenue')),topPopularity:quantity(field(info,'topPopularity')),claimedAchievements:claimed,claimedReliable:!!claimed&&claimed.every(n=>n!==null)&&unique(claimed,n=>n),stock,stockReliable,parameters,notes};
 }
 const stateOf=(s,f)=>{const time=gameTimeBounds(f);return !stageValid(s)||time.now===null?'UNKNOWN':!s.expedition||s.expedition.endTime===0?'IDLE':s.expedition.endTime>time.latest?'EXPLORING':s.expedition.endTime<=time.earliest?'COMPLETE_UNSETTLED':'UNKNOWN';};
 function unlocked(f,c,s){const cfg=rows(c,'MuseumExpeditionStageCfg').filter(r=>r.stageId===s.stageId);if(cfg.length!==1||!Array.isArray(cfg[0].areaLevelReq))return null;const req=cfg[0].areaLevelReq;if(req.length===0)return true;if(req.length!==2||!f.exhibitionsReliable||quantity(req[0])===null||quantity(req[1])===null)return null;return f.exhibitions.some(e=>e.exhibitionId===req[0]&&e.level>=req[1]);}
+function canUseExploreFactor(f,config,factor){
+  const factors=rows(config,'MuseumExploreTimeFactorCfg').filter(row=>row.factor===factor);
+  return factors.length===1&&quantity(factors[0].playerLevel)!==null&&!(f.playerLevel<factors[0].playerLevel);
+}
+function scaleExploreCosts(base,factor){
+  return costsOf(base.map(({id,num})=>({id,num:Number.isSafeInteger(num*factor)?num*factor:null})));
+}
+function projectExplorationMaterials(f,config,parameters,display,moduleConfig){
+  const factor=parameters.factor??1;
+  const result={factor,reason:null,stages:[]};
+  if(!f.playerId)return {...result,reason:'PLAYER_IDENTITY_UNKNOWN'};
+  if(!f.stagesReliable)return {...result,reason:'EXPEDITION_STATE_UNKNOWN'};
+  const relevant=display.filter(row=>parameters.stageId===undefined||row.stageId===parameters.stageId);
+  if(parameters.stageId!==undefined&&!relevant.length)return {...result,reason:'STAGE_NOT_OBSERVED'};
+  const knownFactor=quantity(f.playerLevel)!==null&&canUseExploreFactor(f,config,factor);
+  const knownStock=f.shortageStockReliable===true&&f.stockReliable===true&&f.stock instanceof Map;
+  const reserves=new Map(moduleConfig.stockItemIds.map((id,index)=>[id,moduleConfig.stockReserveQuantities[index]]));
+  result.stages=relevant.map(stage=>{
+    const row={stageId:stage.stageId,status:'UNKNOWN',reason:null,materials:[]};
+    if(stage.expedition?.endTime>0)return {...row,status:'NOT_APPLICABLE',reason:'EXPEDITION_ALREADY_STARTED'};
+    if(stage.unlocked!==true)return {...row,status:stage.unlocked===false?'NOT_APPLICABLE':'UNKNOWN',reason:stage.unlocked===false?'STAGE_LOCKED':'STAGE_UNLOCK_UNKNOWN'};
+    if(!knownFactor)return {...row,reason:'TIME_FACTOR_LOCKED_OR_UNKNOWN'};
+    const base=stage.expedition?.cost;
+    if(!validAssets(base)||!base.length)return {...row,reason:'AUTHORITATIVE_EXPEDITION_COST_UNKNOWN'};
+    const costs=scaleExploreCosts(base,factor);
+    if(costs===null)return {...row,reason:'AUTHORITATIVE_EXPEDITION_COST_UNKNOWN'};
+    const materials=costs.map(({id,num:required})=>{
+      const have=knownStock?quantity(f.stock.has(id)?f.stock.get(id):0):null;
+      const reserve=reserves.get(id)??0;
+      return {id,required,have,missing:have===null?null:Math.max(0,required-have),reserve,
+        missingWithReserve:have===null?null:quantity(Math.max(0,required-have+reserve))};
+    });
+    if(!knownStock||materials.some(asset=>asset.missing===null))return {...row,reason:'INVENTORY_UNKNOWN',materials};
+    return {...row,status:materials.some(asset=>asset.missing>0)?'SHORTAGE':'AVAILABLE',materials};
+  });
+  return result;
+}
 export function museumView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const time=gameTimeBounds(f),candidates=[],blocked=[],notes=[...(f.notes??[])];
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason}),enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
   const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:'museum:'+type+':'+encodeURIComponent(stable(target)),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
-  if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[]};
+  if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[],explorationMaterials:projectExplorationMaterials(f,config,parameters,[],moduleConfig)};
   if(parameters.payment==='PREMIUM')block('speedExplore','PREMIUM_BLOCKED');
   const busy=f.stagesReliable?f.stages.filter(s=>s.expedition?.endTime>0):null,busyHeroes=new Set(busy?.flatMap(s=>s.expedition.heroIds)??[]);
   const teamCfg=rows(config,'MuseumExpeditionTeamCfg'),teamKnown=teamCfg.length>0&&teamCfg.every(r=>quantity(r.teamCount)!==null&&quantity(r.playerLevel)!==null)&&quantity(f.playerLevel)!==null;
@@ -88,11 +126,11 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
       if(!condition||quantity(condition.heroCount)===null||condition.heroCount<=0){block('startExplore','HERO_COUNT_UNKNOWN',target);continue;}
       const heroIds=parameters.heroIds;
       if(!heroIds||heroIds.length!==condition.heroCount||!f.heroesReliable||heroIds.some(id=>!f.heroes.includes(id)||busyHeroes.has(id))){block('startExplore','HERO_SELECTION_MISSING_UNKNOWN_OR_BUSY',target);continue;}
-      const factor=parameters.factor??1,factorRows=rows(config,'MuseumExploreTimeFactorCfg').filter(r=>r.factor===factor);
-      if(factorRows.length!==1||quantity(factorRows[0].playerLevel)===null||f.playerLevel<factorRows[0].playerLevel){block('startExplore','TIME_FACTOR_LOCKED_OR_UNKNOWN',target);continue;}
+      const factor=parameters.factor??1;
+      if(!canUseExploreFactor(f,config,factor)){block('startExplore','TIME_FACTOR_LOCKED_OR_UNKNOWN',target);continue;}
       const base=s.expedition?.cost;
       if(!validAssets(base)||!base.length){block('startExplore','AUTHORITATIVE_EXPEDITION_COST_UNKNOWN',target);continue;}
-      const costs=costsOf(base.map(a=>({id:a.id,num:Number.isSafeInteger(a.num*factor)?a.num*factor:null})));
+      const costs=scaleExploreCosts(base,factor);
       add('exploration','startExplore',{stageId:s.stageId,heroIds:[...heroIds],factor},{stage:s,busyStageIds:busy.map(x=>x.stageId),teamCount},costs,'MuseumInfoResponse.exploreStages.expedition.cost.asset × MuseumExploreTimeFactorCfg.factor; BuildTeamPop.ts:439','MuseumStartExploreRequest',{stageId:s.stageId,heroIds:[...heroIds],factor},'MuseumStartExploreResponse',{activeExpedition:true,heroIds:[...heroIds],factor});
     }
   }
@@ -171,7 +209,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
     }
   }
 
-  return {candidates,blocked,notes,stages:display,teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
+  return {candidates,blocked,notes,stages:display,explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
 }
 export function planMuseum(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
