@@ -2508,3 +2508,20 @@ E14 增加激活/单星、对应碎片、明确零星/缺失、既有套装派�
 首轮审查复现共享 D6 的成本数组子类可覆写迭代方法，导致实际 RUBY 被伪装。现 Ruby 检查调用原生 some，exactCosts 要求标准数组及逐索引 own data descriptor；新增 RUBY 子类、普通伪成本子类和 getter 成本回归，原复现已拒绝。付费硬边界、精确资源形状及原测试均保留。Service 初跑 31/31 成功，因复制全部无关配置耗时 89.31 秒，随后仅投影七张完整相关配置表，不删行或伪造配置，并追加五项持久化失败后纳入最终联合回归。只将已合法的 exchange 模式改为 unknown-mode 的非法参数断言，没有删除失败用例或放宽确认。
 
 E14 增加套装首次免费激活、品质成员门槛、精通等级/星数门槛、双成本、明确精通响应、兑换精确扣入与非目标状态；E20/E21/E23 增加零成本实体预留、磁盘失败零传输、收入不扩预算、UNKNOWN 重启与页面账号隔离。原五份未跟踪输入的 SHA256 与历史基线一致。未运行 R7、真实游戏或 R8，未 push/merge；Goal 保持 ACTIVE，R8 仍须在 R7 后由 Owner 单独授权。
+### D.25 W12 同连接连续 VIP 等级权威与只读观察（2026-11-12）
+
+父提交 `2097f7d362a17a6ec98205bd763d96baa9db1073`。在真实 GameClient 内用私有 WeakMap 跟踪当前连接的 VIP_LEVEL，实际调用链为 `readVipLevel → collectState.sessionFacts.vipLevel → pirateSweepView → summarize/formatState`，不是孤立工具。此基础与只读分支 EXISTING_FUNCTION、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED；W12/C151 仍 PARTIAL，没有增加扫荡写动作或把额度猜为已知。
+
+固定 v76 的 ModelManager byte 4644292、更新方法 byte 4664885，模块 SHA256 `43daf7b7886502e2eb33949b2f552dd736da3f4ad34f10cedc391e9c5516be7e`；包/入口/协议指纹与前轮一致，详见 LIVE_VIP_LEVEL_EVIDENCE。Model 直接替换 VIP 字段，不支持把缺 vipLevel 的 push 当作保留旧等级。实际登录字段为 `LoginResponse.playerInfo.vip.vipLevel`，更正 D.22 的简写；本增量只证明等级，不声称 vipExp 或其他 VIP 信息完整。
+
+登录锚点要求明确 own result=0、完整精确 playerId/worldId、own VIP 非负 int32 等级，以及构造者账号/代际、当前 connectionId/socket；明确零与 protobuf 原型默认零分开。锚定发生在 READY 发布前；有效有序 SCVipUpdate 在 message/pending 观察者前更新等级。缺/坏字段、无序 VIP 更新、序列缺口、解码失败或身份/连接变化永久使本次登录权威失效，后续推送不能自行续期，必须新登录；重复帧不污染当前等级。connect 起始和每个 terminal 清空，旧登录/旧 socket 回调不能污染新连接。没有登录上下文的旧客户端仍可使用原只读传输，但 VIP 为 UNKNOWN；不改变心跳阈值和普通传输序列行为。
+
+收集器保持原 48 请求集合，不增 Vip 查询、信号或写请求。开始采集时捕获账号/代际/连接，全部读取结束后只调用一次当前等级读取，返回后再核同一上下文；期间发生切换则 UNKNOWN。导出统一标记 OBSERVED 和采集时间，表示历史显示数据，不能把缓存重新当成 live CURRENT；缺字段、继承字段、坏值、失败读取和旧 loginResponse 均不回填。CLI 明示“本次采集的连接观察值”，扫荡 total/remaining 仍为 null；下一次采集必须再次访问 live tracker。
+
+启动前逐一 Test-Path 检查实际 51 文件：D.24 的 36 文件集合，追加 `tests/client-vip-facts.test.mjs`、`tests/client-lifecycle.test.mjs`、`tests/client-clock-facts.test.mjs`、`tests/client-unverified-write.test.mjs`、`tests/business-transport-freshness.test.mjs`、`tests/execution-lifecycle.test.mjs`、`tests/state-facts.test.mjs`、`tests/server-runtime.test.mjs`、`tests/explorer-api.test.mjs`、`tests/gameplay-locks.test.mjs`、`tests/gameplay-execution.test.mjs`、`tests/operations-api.test.mjs`、`tests/operation-recovery-api.test.mjs`、`tests/execution-memory-api.test.mjs`、`tests/stages-api.test.mjs`。随后一次 `node --test` 联合 **1122/1122 PASS，0 fail/cancelled/skipped/todo，21.28 秒**。17 项新真实 GameClient/Codec/合成 socket 测试、4 项只读消费者测试和四文件 65 项专项均与本次重叠，不累计。覆盖精确大 ID、显式零/缺字段、登录前后观察时序、VIP 更新与监听、缺口/重复/无序/解码失败、五种 terminal、拒绝重登、旧未完成登录回调、双账号和 actual client→48 查询采集→只读显示。根审查发现 ResendFailed/SCChannelExpired 原先先发布 message 再进入清理，已在发布前先使 VIP 失效，并测试监听器窗口直接读取也为 UNKNOWN。
+
+下一步原范围不变：完整当前月卡与可信游戏日未闭合，总额、剩余、日额度预算、扫荡派发和复读仍待施工。静态核实月卡交付 push 仅有 endTime 无类型，不能局部猜更新；应使卡权威失效并显式重查，且防查询期间新交付覆盖。月卡到期需可信时间区间，-1 永久卡与跨到期边界分别处理。游戏计时器用 originLang，LoginRequest.language 是当前 UI lang，两者不等；native manifest、私有语言配置和正常 WeChat 默认路径也不能直接从当前 Session 反推，应先限定可信日策略来源，不把所有账号一律当 UTC+8。
+
+补充 D.24 直接万能升星限制的进一步证据：Detail byte 248632–248828 只证明专属与万能合计足够；Util byte 302496 只返回总需求；StarUp body 无材料分配字段且无专用费用回执。物品 push 是最终余额、Model 直接替换，不能据此推断预授权扣款顺序，所以不假定 dedicated-first。未激活路径 byte 255741 只校验专属碎片，byte 256578 的 Activate 请求仅 id，开关不影响激活。独立兑换不能冒充此混合扣款合同完成。
+
+E15 增加 VIP 等级权威/历史观察分离、推送断流与日策略未知；E23 增加重连与跨上下文隔离。原五份未跟踪资料保留。未执行 R7、真实游戏、R8、push 或 merge；总 Goal 继续 ACTIVE，R8 仍在 R7 后由 Owner 单独授权。

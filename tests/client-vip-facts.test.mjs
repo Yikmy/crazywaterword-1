@@ -1,0 +1,241 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { GameClient, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { createCodec } from '../src/codec.mjs';
+import { loadProtocol } from '../src/proto.mjs';
+import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
+
+const protocol = loadProtocol(), codec = createCodec(protocol);
+const player = (vipLevel = 0) => ({ playerId: '9007199254740993', worldId: '9', vip: { vipLevel, vipExp: '0' } });
+const login = (vipLevel = 0) => ({ result: 0, initSeqNo: 12, playerInfo: player(vipLevel) });
+function fixture({ accountId = 'vip-account', generation = 3, connectionId = 'vip-connection' } = {}) {
+  const sockets = [], errors = [];
+  class Socket {
+    constructor() { this.readyState = 0; this.sent = []; this.closes = []; sockets.push(this); }
+    send(bytes) { assert.equal(this.readyState, 1); this.sent.push(codec.decode(bytes)); }
+    close(code, reason) { this.readyState = 3; this.closes.push({ code, reason }); }
+    open() { this.readyState = 1; this.onopen?.(); }
+    receive(name, body, seq = 0) { this.onmessage?.({ data: codec.encode(name, seq, body) }); }
+    end() { this.readyState = 3; this.onclose?.({ code: 1006 }); }
+  }
+  const client = new GameClient({ protocol, accountId, generation, WebSocketImpl: Socket });
+  client.factContext = { accountId, generation, ...(connectionId === null ? {} : { connectionId }) };
+  client.on('error', error => errors.push(error));
+  async function ready(body = login(), beforeReply) {
+    const pending = client.connect({}), socket = sockets.at(-1); socket.open(); beforeReply?.(socket);
+    socket.receive('LoginResponse', body); await pending; return socket;
+  }
+  return { client, sockets, errors, ready };
+}
+const current = (client, level, source = 'LoginResponse.playerInfo.vip') => {
+  const result = client.readVipLevel();
+  assert.equal(result.status, 'CURRENT'); assert.equal(result.reliable, true); assert.equal(result.vipLevel, level);
+  assert.equal(result.source, source); assert.equal(result.reason, null);
+  assert.equal(result.playerId, '9007199254740993'); assert.equal(result.worldId, '9');
+  return result;
+};
+const unknown = (client, reason) => {
+  const result = client.readVipLevel();
+  assert.equal(result.status, 'UNKNOWN'); assert.equal(result.reliable, false);
+  assert.equal(result.vipLevel, null); assert.equal(result.source, null);
+  if (reason) assert.equal(result.reason, reason);
+  return result;
+};
+
+test('real GameClient seeds explicit zero VIP before READY listeners and returns independent plain exact-ID facts', async t => {
+  const f = fixture(); t.after(() => f.client.stop());
+  unknown(f.client);
+  let duringReady; f.client.on('state', ({ state }) => { if (state === 'READY') duringReady = f.client.readVipLevel(); });
+  await f.ready(login(0));
+  assert.equal(duringReady.status, 'CURRENT'); assert.equal(duringReady.vipLevel, 0);
+  const result = current(f.client, 0);
+  assert.deepEqual(Object.keys(result), ['status', 'reliable', 'vipLevel', 'source', 'reason', 'accountId', 'generation', 'connectionId', 'playerId', 'worldId']);
+  assert.equal(Object.getPrototypeOf(result), Object.prototype);
+  assert.deepEqual([result.accountId, result.generation, result.connectionId], ['vip-account', 3, 'vip-connection']);
+  result.vipLevel = 999; result.playerId = '5'; current(f.client, 0);
+  f.client.loginResponse.playerInfo.vip.vipLevel = 99; current(f.client, 0);
+  assert.equal(Object.keys(f.client).some(key => /vip/i.test(key)), false);
+  assert.equal(LIVE_VIP_LEVEL_EVIDENCE.modelManager.methodByteOffset, 4664885);
+});
+
+test('missing wire scalar defaults never become login VIP zero or explicit login success', async t => {
+  const variants = [
+    { initSeqNo: 12, playerInfo: player() },
+    { result: 0, playerInfo: { ...player(), vip: { vipExp: '0' } } },
+    { result: 0, playerInfo: { ...player(), vip: {} } },
+    { result: 0, playerInfo: { playerId: '17', worldId: '9' } },
+    { result: 0, playerInfo: { worldId: '9', vip: { vipLevel: 0 } } },
+    { result: 0, playerInfo: { playerId: '17', vip: { vipLevel: 0 } } },
+    { result: 0, playerInfo: { ...player(), playerId: '0' } },
+    { result: 0, playerInfo: { ...player(), worldId: '0' } },
+    { result: 0, playerInfo: player(-1) },
+  ];
+  for (const body of variants) {
+    const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(body);
+    assert.equal(f.client.connected, true); unknown(f.client);
+    socket.receive('SCVipUpdate', { vipLevel: 5 }, 1); unknown(f.client);
+  }
+});
+
+test('accepted sequenced VIP updates replace level before message listeners and ignore unrelated vipExp availability', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(1));
+  let observed; f.client.on('message', ({ name }) => { if (name === 'SCVipUpdate') observed = f.client.readVipLevel(); });
+  socket.receive('SCVipUpdate', { vipLevel: 4 }, 1);
+  assert.equal(observed.vipLevel, 4); current(f.client, 4, 'SCVipUpdate');
+  socket.receive('SCVipUpdate', { vipLevel: 0, vipExp: '99' }, 2); current(f.client, 0, 'SCVipUpdate');
+});
+
+test('missing or invalid push level permanently invalidates this connection, even after later complete updates', async t => {
+  for (const body of [{ vipExp: '99' }, {}, { vipLevel: -1 }]) {
+    const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(2));
+    socket.receive('SCVipUpdate', body, 1); unknown(f.client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID');
+    socket.receive('SCVipUpdate', { vipLevel: 8 }, 2); unknown(f.client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID');
+    f.client.stop(); await f.ready(login(3)); current(f.client, 3);
+  }
+});
+
+test('sequence gap invalidates VIP before drop observers; recovered contiguous delivery cannot renew the old baseline', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(1));
+  socket.receive('SCVipUpdate', { vipLevel: 2 }, 1); current(f.client, 2, 'SCVipUpdate');
+  let dropped; f.client.on('drop', event => { if (event.reason === 'gap') dropped = f.client.readVipLevel(); });
+  socket.receive('SCVipUpdate', { vipLevel: 4 }, 3);
+  assert.equal(dropped.status, 'UNKNOWN'); unknown(f.client, 'VIP_STREAM_SEQUENCE_GAP');
+  assert.equal(socket.sent.filter(row => row.name === 'Nack').length, 1);
+  socket.receive('SCVipUpdate', { vipLevel: 3 }, 2); socket.receive('SCVipUpdate', { vipLevel: 4 }, 3);
+  unknown(f.client, 'VIP_STREAM_SEQUENCE_GAP');
+});
+
+test('duplicate delivery changes neither current VIP nor authority, and valid sequence wrap stays continuous', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(1));
+  socket.receive('SCVipUpdate', { vipLevel: 2 }, MAX_SEQ);
+  socket.receive('SCVipUpdate', { vipLevel: 99 }, MAX_SEQ); current(f.client, 2, 'SCVipUpdate');
+  socket.receive('SCVipUpdate', { vipLevel: 3 }, 1); current(f.client, 3, 'SCVipUpdate');
+  socket.receive('SCVipUpdate', {}, 1); current(f.client, 3, 'SCVipUpdate');
+});
+
+test('decode failure invalidates authority before error listeners and later valid frames cannot recover it', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(2));
+  let atError; f.client.on('error', () => { atError = f.client.readVipLevel(); });
+  socket.onmessage({ data: new Uint8Array([1, 2, 3]) });
+  assert.equal(atError.status, 'UNKNOWN'); unknown(f.client, 'VIP_STREAM_DECODE_FAILED');
+  socket.receive('SCVipUpdate', { vipLevel: 4 }, 1); unknown(f.client, 'VIP_STREAM_DECODE_FAILED');
+});
+
+test('unsequenced VIP pushes cannot establish ordered continuous authority', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(2));
+  socket.receive('SCVipUpdate', { vipLevel: 3 }, 0); unknown(f.client, 'VIP_UPDATE_SEQUENCE_UNKNOWN');
+  socket.receive('SCVipUpdate', { vipLevel: 4 }, 1); unknown(f.client, 'VIP_UPDATE_SEQUENCE_UNKNOWN');
+});
+
+test('terminal paths clear VIP before state observers; relogin creates a fresh socket baseline and ignores old socket closures', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const oldSocket = await f.ready(login(2)), oldMessage = oldSocket.onmessage, oldClose = oldSocket.onclose;
+  let ended; f.client.on('state', ({ state }) => { if (state === 'STOPPED') ended = f.client.readVipLevel(); });
+  f.client.stop(); assert.equal(ended.status, 'UNKNOWN'); unknown(f.client);
+  const fresh = await f.ready(login(5)); current(f.client, 5);
+  oldMessage({ data: codec.encode('SCVipUpdate', 1, { vipLevel: 99 }) }); oldClose({ code: 1006 });
+  current(f.client, 5); assert.equal(f.client.socket, fresh);
+  fresh.end(); unknown(f.client); await f.ready(login(6)); current(f.client, 6);
+});
+
+test('connection identity or owner context changes fail closed and restoring public context cannot revive a baseline', async t => {
+  for (const key of ['accountId', 'generation', 'connectionId']) {
+    const f = fixture(); t.after(() => f.client.stop()); await f.ready(login(2));
+    const old = f.client.factContext[key]; f.client.factContext[key] = key === 'generation' ? old + 1 : 'changed';
+    unknown(f.client, 'VIP_CONTEXT_UNKNOWN_OR_CHANGED'); f.client.factContext[key] = old; unknown(f.client);
+  }
+  const f = fixture(); t.after(() => f.client.stop()); await f.ready(login(2)); const socket = f.client.socket;
+  f.client.socket = { readyState: 1, close() {} }; unknown(f.client, 'VIP_CONNECTION_NOT_CURRENT');
+  f.client.socket = socket; unknown(f.client);
+});
+
+test('default clients and incomplete account context retain ordinary transport with unknown VIP authority', async t => {
+  for (const options of [{ accountId: null }, { connectionId: null }, { accountId: '' }]) {
+    const f = fixture(options); t.after(() => f.client.stop()); await f.ready(login(2));
+    assert.equal(f.client.connected, true); unknown(f.client);
+  }
+});
+
+test('two live accounts and returned or public login copies cannot cross-seed VIP state', async t => {
+  const a = fixture({ accountId: 'account-A', connectionId: 'connection-A' }), b = fixture({ accountId: 'account-B', connectionId: 'connection-B' });
+  t.after(() => { a.client.stop(); b.client.stop(); });
+  const socketA = await a.ready(login(2)), socketB = await b.ready(login(4));
+  socketA.receive('SCVipUpdate', { vipLevel: 6 }, 1);
+  assert.equal(current(a.client, 6, 'SCVipUpdate').accountId, 'account-A'); current(b.client, 4);
+  a.client.stop(); unknown(a.client); socketB.receive('SCVipUpdate', { vipLevel: 7 }, 1); current(b.client, 7, 'SCVipUpdate');
+});
+
+test('real live VIP tracker flows through the unchanged 48-query collector into pirate display observations', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(1)), reads = [];
+  f.client.request = async (name, _body, response) => {
+    reads.push(name);
+    if (name === 'MonthCardRequest') socket.receive('SCVipUpdate', { vipLevel: 4 }, 1);
+    const body = name === 'AllPirateRequest' ? { pirates: [], sweepTimes: 2 } : {};
+    return protocol[response].decode(protocol[response].encode(body).finish());
+  };
+  const snapshot = await collectState(f.client, protocol), view = summarize(snapshot);
+  assert.deepEqual(reads, ENTRY_QUERIES.map(row => row.name));
+  assert.equal(reads.length, 48);
+  assert.deepEqual(snapshot.sessionFacts.vipLevel, {
+    status: 'OBSERVED', reliable: true, vipLevel: 4, source: 'SCVipUpdate', reason: null,
+    accountId: 'vip-account', generation: 3, connectionId: 'vip-connection',
+    playerId: '9007199254740993', worldId: '9', observedAt: snapshot.sessionFacts.vipLevel.observedAt,
+  });
+  assert.equal(view.pirateSweep.vipLevel, 4); assert.equal(view.pirateSweep.vipLevelStatus, 'OBSERVED');
+  assert.equal(view.pirateSweep.usedSweeps, 2);
+  assert.equal(view.pirateSweep.totalSweeps, null); assert.equal(view.pirateSweep.remainingSweeps, null);
+  assert.match(formatState(view), /VIP 等级：4；本次采集的连接观察值/);
+  // The previous snapshot stays a display observation; the next collection must consult live authority again.
+  socket.receive('SCVipUpdate', { vipLevel: 7 }, 3); unknown(f.client, 'VIP_STREAM_SEQUENCE_GAP');
+  reads.length = 0;
+  const invalid = await collectState(f.client, protocol), invalidView = summarize(invalid);
+  assert.equal(reads.length, 48); assert.equal(invalid.sessionFacts.vipLevel.status, 'UNKNOWN');
+  assert.equal(invalidView.pirateSweep.vipLevel, null); assert.equal(invalidView.pirateSweep.totalSweeps, null);
+  assert.match(formatState(invalidView), /VIP 等级：未知；连接权威未知/);
+});
+
+test('context changes during real client collection cannot export another connection VIP observation', async t => {
+  const f = fixture(); t.after(() => f.client.stop()); await f.ready(login(2));
+  const reads = [];
+  f.client.request = async (name, _body, response) => {
+    reads.push(name);
+    if (name === 'MonthCardRequest') f.client.factContext.connectionId = 'changed-during-collection';
+    return protocol[response].decode(protocol[response].encode({}).finish());
+  };
+  const snapshot = await collectState(f.client, protocol);
+  assert.equal(reads.length, 48); assert.equal(snapshot.sessionFacts.vipLevel.status, 'UNKNOWN');
+  assert.equal(summarize(snapshot).pirateSweep.vipLevel, null); unknown(f.client);
+});
+
+test('every terminal connection path removes a live VIP baseline and rejected relogin cannot retain it', async t => {
+  for (const terminate of [
+    (f, socket) => socket.receive('SCChannelExpired', { reason: 'synthetic' }, 1),
+    (f, socket) => socket.receive('ResendFailed', { seqNo: 1 }, 1),
+    (f, socket) => socket.onerror(),
+    (f, socket) => socket.end(),
+    f => { f.client.lastPingTimestamp = Date.now() - 1001; f.client.tick(); },
+  ]) {
+    const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(3));
+    terminate(f, socket); assert.equal(f.client.connected, false); unknown(f.client);
+    const rejected = assert.rejects(f.client.connect({}), /login rejected/), retry = f.sockets.at(-1);
+    retry.open(); retry.receive('LoginResponse', { result: 3 }); await rejected; unknown(f.client);
+  }
+});
+
+test('stale callbacks from an unfinished old login cannot seed or replace a newer VIP baseline', async t => {
+  const f = fixture(); t.after(() => f.client.stop());
+  const rejected = assert.rejects(f.client.connect({}), /client stopped/), old = f.sockets[0], stale = old.onmessage;
+  old.open(); f.client.stop(); await rejected;
+  await f.ready(login(2)); current(f.client, 2);
+  stale({ data: codec.encode('LoginResponse', 0, login(99)) }); current(f.client, 2);
+});
+
+test('accepted terminal protocol messages invalidate VIP before public message observers run', async t => {
+  for (const name of ['SCChannelExpired', 'ResendFailed']) {
+    const f = fixture(); t.after(() => f.client.stop()); const socket = await f.ready(login(3));
+    let observed;
+    f.client.on('message', message => { if (message.name === name) observed = f.client.readVipLevel(); });
+    socket.receive(name, name === 'SCChannelExpired' ? { reason: 'synthetic' } : { seqNo: 1 }, 1);
+    assert.equal(observed.status, 'UNKNOWN'); assert.equal(observed.vipLevel, null);
+    assert.equal(observed.reason, 'VIP_CONNECTION_ENDED'); assert.equal(f.client.connected, false); unknown(f.client);
+  }
+});

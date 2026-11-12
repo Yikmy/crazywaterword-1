@@ -17,6 +17,46 @@ const dense = value => Array.isArray(value) && value.length <= 10000
   && Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index))
     .every(descriptor => descriptor?.enumerable && Object.hasOwn(descriptor, 'value'));
 
+const exactId = value => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) < (1n << 63n);
+const contextText = value => typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value;
+const vipScope = value => contextText(ownValue(value, 'accountId')) && contextText(ownValue(value, 'connectionId'))
+  && Number.isSafeInteger(ownValue(value, 'generation')) && ownValue(value, 'generation') >= 0;
+const vipUnknown = reason => ({ status: 'UNKNOWN', reliable: false, vipLevel: null, source: null, reason });
+const vipSource = value => ['LoginResponse.playerInfo.vip', 'SCVipUpdate'].includes(value);
+
+// This serializable observation is display-only. A saved snapshot never grants
+// authority for a write; a future quota survey must ask the live connection again.
+export function observePirateVipLevel(client, collectionContext) {
+  if (!vipScope(collectionContext) || !vipScope(client?.factContext)
+      || ['accountId', 'generation', 'connectionId'].some(key => collectionContext[key] !== ownValue(client.factContext, key)))
+    return vipUnknown('VIP_COLLECTION_CONTEXT_CHANGED_OR_UNKNOWN');
+  let value;
+  try {
+    if (typeof client?.readVipLevel !== 'function') return vipUnknown('VIP_TRACKER_UNAVAILABLE');
+    value = client.readVipLevel();
+  } catch { return vipUnknown('VIP_TRACKER_READ_FAILED'); }
+  if (ownValue(value, 'status') !== 'CURRENT' || ownValue(value, 'reliable') !== true)
+    return vipUnknown(contextText(ownValue(value, 'reason')) ? value.reason : 'VIP_LEVEL_UNKNOWN');
+  if (!vipScope(value) || !uint(ownValue(value, 'vipLevel')) || !vipSource(ownValue(value, 'source'))
+      || !exactId(ownValue(value, 'playerId')) || !exactId(ownValue(value, 'worldId'))
+      || ['accountId', 'generation', 'connectionId'].some(key => collectionContext[key] !== ownValue(value, key)
+        || collectionContext[key] !== ownValue(client.factContext, key)))
+    return vipUnknown('VIP_TRACKER_CONTEXT_OR_VALUE_INVALID');
+  return { status: 'OBSERVED', reliable: true, vipLevel: value.vipLevel, source: value.source, reason: null,
+    accountId: value.accountId, generation: value.generation, connectionId: value.connectionId,
+    playerId: value.playerId, worldId: value.worldId, observedAt: Date.now() };
+}
+function vipLevelView(state) {
+  const value = ownValue(ownValue(state, 'sessionFacts'), 'vipLevel');
+  const valid = ownValue(value, 'status') === 'OBSERVED' && ownValue(value, 'reliable') === true
+    && vipScope(value) && uint(ownValue(value, 'vipLevel')) && vipSource(ownValue(value, 'source'))
+    && exactId(ownValue(value, 'playerId')) && exactId(ownValue(value, 'worldId'))
+    && Number.isSafeInteger(ownValue(value, 'observedAt')) && ownValue(value, 'observedAt') >= 0;
+  return { vipLevel: valid ? value.vipLevel : null, vipLevelStatus: valid ? 'OBSERVED' : 'UNKNOWN',
+    vipLevelSource: valid ? value.source : null,
+    vipLevelReason: valid ? null : contextText(ownValue(value, 'reason')) ? value.reason : 'VIP_NOT_OBSERVED' };
+}
+
 // Prefer the collector's lossless own-field snapshot; do not resurrect old data.
 function observed(state, name) {
   if (Object.hasOwn(state?.failed ?? {}, name)) return null;
@@ -43,6 +83,7 @@ export function pirateSweepView(state) {
   const kill = killLevels(observed(state, 'PirateKillRecordRequest'));
   const used = ownValue(pirates, 'sweepTimes');
   const result = {
+    ...vipLevelView(state),
     usedSweeps: uint(used) ? used : null,
     totalSweeps: null,
     remainingSweeps: null,

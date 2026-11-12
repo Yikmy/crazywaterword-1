@@ -37,11 +37,94 @@ export function isSeqNoInRange(seq, right) {
   return (seq >= 1 && seq <= right) || (seq >= MAX_SEQ + left && seq <= MAX_SEQ);
 }
 
+// Only this module can own or renew a live VIP-level authority.
+const liveVipLevels = new WeakMap();
+const vipOwn = (value, key) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  ? Object.getOwnPropertyDescriptor(value, key) : null;
+const vipValue = (value, key) => {
+  const descriptor = vipOwn(value, key);
+  return descriptor?.enumerable && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+};
+const vipText = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value;
+const vipGeneration = value => Number.isSafeInteger(value) && value >= 0;
+const vipLevel = value => Number.isInteger(value) && value >= 0 && value <= 2147483647;
+function vipIdentity(value) {
+  let exact = value;
+  if (typeof value === 'number') exact = Number.isSafeInteger(value) && value > 0 ? BigInt(value) : null;
+  else if (typeof value === 'string') exact = /^[1-9][0-9]{0,18}$/.test(value) ? BigInt(value) : null;
+  else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const low = vipValue(value, 'low'), high = vipValue(value, 'high'), unsigned = vipValue(value, 'unsigned');
+    const int32 = part => Number.isInteger(part) && part >= -2147483648 && part <= 2147483647;
+    if (!int32(low) || !int32(high) || unsigned !== undefined && typeof unsigned !== 'boolean'
+        || Reflect.ownKeys(value).some(key => !['low', 'high', 'unsigned'].includes(key))) return null;
+    const bits = BigInt(high >>> 0) << 32n | BigInt(low >>> 0);
+    exact = unsigned === true ? bits : BigInt.asIntN(64, bits);
+  }
+  return typeof exact === 'bigint' && exact > 0n && exact < (1n << 63n) ? String(exact) : null;
+}
+function vipContext(client) {
+  const context = vipValue(client, 'factContext');
+  return { accountId: vipValue(context, 'accountId') ?? null, generation: vipValue(context, 'generation') ?? null,
+    connectionId: vipValue(context, 'connectionId') ?? null };
+}
+const sameVipContext = (a, b) => a?.accountId === b?.accountId && a?.generation === b?.generation && a?.connectionId === b?.connectionId;
+function resetVipLevel(client, reason) {
+  const previous = liveVipLevels.get(client), context = vipContext(client);
+  liveVipLevels.set(client, { owner: previous?.owner ?? null, context, socket: null, identity: null,
+    level: null, source: null, reason, invalid: false, seeded: false });
+}
+function invalidateVipLevel(client, reason) {
+  const state = liveVipLevels.get(client);
+  if (state) { state.level = null; state.source = null; state.reason = reason; state.invalid = true; }
+}
+function vipCurrentContext(client, state) {
+  const context = vipContext(client);
+  return vipText(context.accountId) && vipGeneration(context.generation) && vipText(context.connectionId)
+    && context.accountId === state?.owner?.accountId && context.generation === state?.owner?.generation
+    && sameVipContext(state.context, context);
+}
+function seedVipLevel(client, body, socket) {
+  const state = liveVipLevels.get(client);
+  if (state?.invalid) return;
+  if (!state || state.socket !== socket || !vipCurrentContext(client, state)) { invalidateVipLevel(client, 'VIP_CONTEXT_UNKNOWN_OR_CHANGED'); return; }
+  if (vipValue(body, 'result') !== 0) { invalidateVipLevel(client, 'VIP_LOGIN_RESULT_NOT_EXPLICIT_SUCCESS'); return; }
+  const player = vipValue(body, 'playerInfo'), playerId = vipIdentity(vipValue(player, 'playerId')), worldId = vipIdentity(vipValue(player, 'worldId'));
+  if (!playerId || !worldId || vipOwn(player, 'id') && vipIdentity(vipValue(player, 'id')) !== playerId) {
+    invalidateVipLevel(client, 'VIP_PLAYER_IDENTITY_UNKNOWN'); return;
+  }
+  state.identity = { playerId, worldId };
+  const level = vipValue(vipValue(player, 'vip'), 'vipLevel');
+  if (!vipLevel(level)) { invalidateVipLevel(client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID'); return; }
+  state.level = level; state.source = 'LoginResponse.playerInfo.vip'; state.reason = null; state.seeded = true;
+}
+function updateVipLevel(client, body, seq) {
+  const state = liveVipLevels.get(client);
+  if (!state || state.invalid) return;
+  if (!client.connected || state.socket !== client.socket || !vipCurrentContext(client, state)) {
+    invalidateVipLevel(client, 'VIP_CONTEXT_UNKNOWN_OR_CHANGED'); return;
+  }
+  if (!state.seeded) { invalidateVipLevel(client, 'VIP_LOGIN_BASELINE_UNKNOWN'); return; }
+  if (!Number.isInteger(seq) || seq <= 0 || seq > MAX_SEQ) { invalidateVipLevel(client, 'VIP_UPDATE_SEQUENCE_UNKNOWN'); return; }
+  const level = vipValue(body, 'vipLevel');
+  if (!vipLevel(level)) { invalidateVipLevel(client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID'); return; }
+  state.level = level; state.source = 'SCVipUpdate'; state.reason = null;
+}
+export const LIVE_VIP_LEVEL_EVIDENCE = Object.freeze({
+  packageSha256: '4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',
+  entrySha256: 'a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54',
+  protocolSha256: 'ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc',
+  modelManager: Object.freeze({ byteOffset: 4644292, methodByteOffset: 4664885, sha256: '43daf7b7886502e2eb33949b2f552dd736da3f4ad34f10cedc391e9c5516be7e' }),
+  digestScope: 'System.register start through next System.register start, including trailing whitespace',
+  scope: 'CONTINUOUS_CONNECTION_VIP_LEVEL_ONLY', realGame: 'REAL_UNVERIFIED',
+});
+
 export class GameClient extends EventEmitter {
   constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket, assertTransport = () => {}, accountId = null, generation = 0, gameClock = null } = {}) {
     super();
     this.assertTransport = assertTransport;
     this.factContext = { accountId, generation };
+    liveVipLevels.set(this, { owner: { accountId, generation } });
+    resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
     this.gameClock = gameClock ?? (typeof accountId === 'string' && accountId ? trustedGameClock({ accountId, generation }) : { reset() {}, markPing() {}, observePong() {}, read: () => ({ status: 'UNKNOWN', reliable: false, reason: 'CONTEXT_UNKNOWN' }) });
     this.url = url;
     this.login = login;
@@ -76,6 +159,20 @@ export class GameClient extends EventEmitter {
     return this.state === 'READY' && this.socket !== null && this.socket.readyState === 1;
   }
 
+  readVipLevel() {
+    const state = liveVipLevels.get(this), context = vipContext(this);
+    if (state && !vipCurrentContext(this, state)) invalidateVipLevel(this, 'VIP_CONTEXT_UNKNOWN_OR_CHANGED');
+    else if (state?.seeded && (!this.connected || state.socket !== this.socket)) invalidateVipLevel(this, 'VIP_CONNECTION_NOT_CURRENT');
+    const current = Boolean(state && !state.invalid && state.seeded && this.connected && state.socket === this.socket
+      && vipCurrentContext(this, state) && vipLevel(state.level));
+    return { status: current ? 'CURRENT' : 'UNKNOWN', reliable: current, vipLevel: current ? state.level : null,
+      source: current ? state.source : null, reason: current ? null : state?.reason ?? 'VIP_LOGIN_BASELINE_UNKNOWN',
+      accountId: vipText(context.accountId) ? context.accountId : null, generation: vipGeneration(context.generation) ? context.generation : null,
+      connectionId: vipText(context.connectionId) ? context.connectionId : null,
+      playerId: state && sameVipContext(state.context, context) ? state.identity?.playerId ?? null : null,
+      worldId: state && sameVipContext(state.context, context) ? state.identity?.worldId ?? null : null };
+  }
+
   setState(state, detail) {
     this.state = state;
     this.emit('state', { state, detail });
@@ -87,6 +184,7 @@ export class GameClient extends EventEmitter {
     if (this.state === 'READY' && this.connected) return Promise.resolve(this.loginResponse);
     this.stopping = false;
     this.gameClock.reset();
+    resetVipLevel(this, 'VIP_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
     this.loginPromise = promise;
@@ -98,6 +196,7 @@ export class GameClient extends EventEmitter {
       const socket = new this.WebSocketImpl(this.url);
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
+      liveVipLevels.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
       const current = () => this.loginAttempt === attempt && this.socket === socket;
       attempt.timer = setTimeout(() => {
@@ -137,6 +236,7 @@ export class GameClient extends EventEmitter {
           this.nextAckSeqNo = null;
           this.lastResponseAt = Date.now();
           this.loginResponse = body;
+          seedVipLevel(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
           socket.onclose = (closed) => { if (this.socket === socket) this.onClose(closed); };
           socket.onerror = () => {
@@ -168,6 +268,7 @@ export class GameClient extends EventEmitter {
 
   // Every terminal path releases resources before publishing its final state.
   finishConnection(state, error, reason = state.toLowerCase()) {
+    resetVipLevel(this, 'VIP_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
     this.gameClock.reset();
     const attempt = this.loginAttempt;
@@ -436,6 +537,7 @@ export class GameClient extends EventEmitter {
     try {
       decoded = this.codec.decode(data);
     } catch (error) {
+      invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
       this.emit('error', new Error(`decode failed: ${error.message}`));
       return;
     }
@@ -444,6 +546,8 @@ export class GameClient extends EventEmitter {
     if (name === 'PingResponse' && this.tryHandlePong(body)) return;
 
     if (!this.handleSeqNo(seq, name)) return;
+    if (name === 'ResendFailed' || name === 'SCChannelExpired') invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
+    if (name === 'SCVipUpdate') updateVipLevel(this, body, seq);
     this.emit('message', { seq, name, body });
 
     if (name === 'ResendFailed') {
@@ -484,6 +588,7 @@ export class GameClient extends EventEmitter {
           this.ack(this.recvSeqNo);
           this.emit('drop', { reason: 'duplicate', name, seq, recvSeqNo: this.recvSeqNo });
         } else {
+          invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
           this.sendNack(this.recvSeqNo);
           this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });
         }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, summarize, formatState, toSnapshotJson } from '../src/game.mjs';
-import { pirateSweepView } from '../src/pirate-sweep.mjs';
+import { pirateSweepView, observePirateVipLevel } from '../src/pirate-sweep.mjs';
 
 const protocol = loadProtocol();
 const typed = (name, value) => protocol[name].decode(protocol[name].encode(value).finish());
@@ -141,4 +141,62 @@ test('summary and CLI distinguish used from unknown total/remaining and do not i
   const missing = summarize({ ok: {}, failed: {} });
   assert.equal(missing.pirateSweep.usedSweeps, null);
   assert.match(formatState(missing), /野怪扫荡：已用 未知，总额 未知，剩余 未知/);
+});
+
+const vipContext={accountId:'offline-vip-A',generation:4,connectionId:'offline-vip-connection'};
+const currentVip=(extra={})=>({status:'CURRENT',reliable:true,vipLevel:0,source:'LoginResponse.playerInfo.vip',reason:null,...vipContext,playerId:'17',worldId:'9',...extra});
+const vipClient=(value=currentVip())=>({factContext:{...vipContext},readVipLevel(){return value;}});
+
+test('VIP snapshot is explicitly a display observation and cannot manufacture a sweep quota',()=>{
+ const client=vipClient(),observation=observePirateVipLevel(client,{...vipContext});
+ assert.equal(observation.status,'OBSERVED');assert.equal(observation.vipLevel,0);assert.equal(observation.source,'LoginResponse.playerInfo.vip');
+ const sample=state([],[],0);sample.sessionFacts={vipLevel:observation};
+ const view=summarize(sample);
+ assert.equal(view.pirateSweep.vipLevel,0);assert.equal(view.pirateSweep.vipLevelStatus,'OBSERVED');
+ assert.equal(view.pirateSweep.totalSweeps,null);assert.equal(view.pirateSweep.remainingSweeps,null);
+ assert.match(formatState(view),/VIP 等级：0；本次采集的连接观察值/);
+ // The snapshot remains historical display data after the connection disappears.
+ client.factContext.connectionId='disconnected';
+ assert.equal(pirateSweepView(sample).vipLevelStatus,'OBSERVED');
+ assert.equal(observePirateVipLevel(client,vipContext).vipLevel,null);
+ assert.equal(Object.hasOwn(view.pirateSweep,'executable'),false);
+});
+
+test('VIP read observation rejects absent, inherited, unsafe and cross-context provider values',()=>{
+ for(const bad of [
+  null,{},currentVip({status:'UNKNOWN',reliable:false,vipLevel:5,reason:'VIP_STREAM_GAP'}),
+  currentVip({status:'OBSERVED'}),currentVip({reliable:false}),currentVip({vipLevel:-1}),
+  currentVip({vipLevel:'0'}),currentVip({vipLevel:2147483648}),currentVip({source:'LoginResponse.default'}),
+  currentVip({accountId:'other'}),currentVip({generation:5}),currentVip({connectionId:'other'}),
+  currentVip({playerId:'01'}),currentVip({worldId:'9223372036854775808'}),Object.create(currentVip()),
+ ]){
+  const value=observePirateVipLevel(vipClient(bad),vipContext);assert.equal(value.status,'UNKNOWN');assert.equal(value.vipLevel,null);
+ }
+ const getter=currentVip();Object.defineProperty(getter,'vipLevel',{get(){throw Error('getter invoked');},enumerable:true});
+ assert.equal(observePirateVipLevel(vipClient(getter),vipContext).status,'UNKNOWN');
+ const throws=vipClient();throws.readVipLevel=()=>{throw Error('sensitive provider failure');};
+ assert.deepEqual(observePirateVipLevel(throws,vipContext),{status:'UNKNOWN',reliable:false,vipLevel:null,source:null,reason:'VIP_TRACKER_READ_FAILED'});
+ const contextChanged=vipClient();contextChanged.readVipLevel=function(){this.factContext.generation++;return currentVip();};
+ assert.equal(observePirateVipLevel(contextChanged,vipContext).status,'UNKNOWN');
+ const missing=vipClient();delete missing.readVipLevel;assert.equal(observePirateVipLevel(missing,vipContext).reason,'VIP_TRACKER_UNAVAILABLE');
+});
+
+test('collector reads final live VIP once, adds no request and drops identity changes during its 48 reads',async()=>{
+ for(const change of [false,true]){
+  const sent=[],client=vipClient();let vipReads=0;
+  client.readVipLevel=()=>{vipReads++;return currentVip({vipLevel:3,source:'SCVipUpdate'});};
+  client.request=async name=>{sent.push(name);if(change&&name==='AllPirateRequest')client.factContext.generation++;return state([],[],0).ok[name]??{};};
+  const snapshot=await collectState(client,protocol),view=summarize(snapshot);
+  assert.equal(sent.length,48);assert.equal(sent.includes('VipInfoRequest'),false);assert.equal(sent.includes('PirateSweepRequest'),false);
+  assert.equal(vipReads,change?0:1);assert.equal(snapshot.sessionFacts.vipLevel.status,change?'UNKNOWN':'OBSERVED');
+  assert.equal(view.pirateSweep.vipLevel,change?null:3);
+  assert.equal(view.pirateSweep.totalSweeps,null);assert.equal(view.pirateSweep.remainingSweeps,null);
+ }
+});
+
+test('malformed or default-backed cached VIP observations remain unknown without reviving login data',()=>{
+ for(const observation of [null,{},Object.create({status:'OBSERVED',reliable:true,vipLevel:0}),{...currentVip(),status:'OBSERVED',observedAt:NaN},{...currentVip(),status:'OBSERVED',observedAt:Date.now(),vipLevel:undefined}]){
+  const sample=state();sample.sessionFacts={vipLevel:observation};sample.loginResponse={vip:{vipLevel:8}};
+  const view=pirateSweepView(sample);assert.equal(view.vipLevel,null);assert.equal(view.vipLevelStatus,'UNKNOWN');assert.equal(view.totalSweeps,null);
+ }
 });

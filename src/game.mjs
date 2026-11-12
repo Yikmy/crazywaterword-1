@@ -1,7 +1,7 @@
 import { normalize } from './worlds.mjs';
 import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
-import { pirateSweepView } from './pirate-sweep.mjs';
+import { pirateSweepView, observePirateVipLevel } from './pirate-sweep.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -103,6 +103,7 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
   const job = { listeners: new Set(onResult ? [onResult] : []), promise: null };
   job.promise = Promise.resolve().then(async () => {
     const ok = {}, failed = {}, outcomes = {}, raw = {}, facts = {};
+    const vipContext = Object.fromEntries(['accountId', 'generation', 'connectionId'].map(key => [key, client.factContext?.[key]]));
     const notify = (name, body, error) => { for (const listener of job.listeners) { try { listener(name, body, error); } catch {} } };
     // ENTRY_SIGNALS remain protocol evidence; data refresh never sends them.
     await Promise.all(ENTRY_QUERIES.map(async (query) => {
@@ -126,7 +127,7 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
         failed[query.name] = reason; finish('FAILED', reason); notify(query.name, null, new Error(reason));
       }
     }));
-    return { ok, failed, outcomes, raw, facts };
+    return { ok, failed, outcomes, raw, facts, sessionFacts: { vipLevel: observePirateVipLevel(client, vipContext) } };
   }).finally(() => { if (collections.get(client) === job) collections.delete(client); });
   collections.set(client, job); return job.promise;
 }
@@ -284,6 +285,7 @@ export function formatState(view) {
   }
   lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}`);
   const sweep = view.pirateSweep;
+  lines.push('  VIP 等级：'+(sweep?.vipLevel ?? '未知')+'；'+(sweep?.vipLevelStatus==='OBSERVED'?'本次采集的连接观察值':'连接权威未知')+'，仅作为额度组件查看。');
   lines.push(`  野怪扫荡：已用 ${sweep?.usedSweeps ?? '未知'}，总额 ${sweep?.totalSweeps ?? '未知'}，剩余 ${sweep?.remainingSweeps ?? '未知'}；等级关系仅供查看。`);
   lines.push(`  自动生产至 ${clock(view.water.autoProduceEndTime)} 永久=${view.water.autoProduceForever} 自动种植=${view.water.autoFarming}`);
   lines.push(`  钓鱼lv${view.water.fishingLevel ?? '-'} 打捞lv${view.water.salvageLevel ?? '-'} 潜水lv${view.water.divingLevel ?? '-'}`);
