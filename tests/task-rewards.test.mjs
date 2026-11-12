@@ -18,13 +18,13 @@ import { createExecutionHistory } from '../src/execution-history.mjs';
 const protocol=loadProtocol(), actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v), wire=(name,body)=>protocol[name].decode(protocol[name].encode(body).finish());
 const enabled={enabled:true}, parameters={kind:'main',taskId:1}, player=()=>({playerId:'9007199254740993',worldId:'17'});
-function cfg(){return {tables:{MainTaskCfg:clone(actual.tables.MainTaskCfg),BranchTaskCfg:clone(actual.tables.BranchTaskCfg),ItemCfg:clone(actual.tables.ItemCfg)}};}
+function cfg(){return {tables:{MainTaskCfg:clone(actual.tables.MainTaskCfg),BranchTaskCfg:clone(actual.tables.BranchTaskCfg),AchievementTaskCfg:clone(actual.tables.AchievementTaskCfg),ItemCfg:clone(actual.tables.ItemCfg)}};}
 function fake({codec=true,apply=true,context={},overrides={},watchStatus='UNKNOWN'}={}){
- const state={tasks:{task:{taskId:1,progress:15,rewardClaimed:false},branch:[{taskId:8001,progress:1},{taskId:8002,progress:0}]},stock:new Map([['塑料',20],['unrelated',7]]),resources:[{res:1,amount:100},{res:3,amount:200}],reads:[],writes:[],onRead:null,onWrite:null,overrides,apply};
+ const state={achievements:{task:[{id:1001,progress:'9223372036854775807',targetProgress:'9223372036854775807',rewardClaimed:false},{id:1002,progress:'0',targetProgress:'1',rewardClaimed:false}]},tasks:{task:{taskId:1,progress:15,rewardClaimed:false},branch:[{taskId:8001,progress:1},{taskId:8002,progress:0}]},stock:new Map([['塑料',20],['unrelated',7]]),resources:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}],reads:[],writes:[],onRead:null,onWrite:null,overrides,apply};
  const client={connected:true,factContext:{accountId:'synthetic-A',generation:3,connectionId:'offline-tasks',...context},pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),
   markUnverifiedWrite(n,b){this.uncertainWrites.set(JSON.stringify([n,b]),true);},confirmWatchedWrite(n,b){this.uncertainWrites.delete(JSON.stringify([n,b]));},
-  async request(n,b,r,_timeout,options){assert.equal(options?.mutate,undefined);if(codec)wire(n,b);state.reads.push(n);await state.onRead?.(n);let value=n==='MainTaskInfoRequest'?state.tasks:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected synthetic read '+n);return codec?wire(r,value):clone(value);},
-  async sendWatch(n,b,options){options?.beforeDispatch?.();wire(n,b);state.writes.push({name:n,body:clone(b)});if(state.apply){const kind=n==='DrawMainTaskRewardRequest'?'main':'branch',row=actual.tables[kind==='main'?'MainTaskCfg':'BranchTaskCfg'].data.find(row=>row.taskId===b.taskId);if(kind==='main')state.tasks.task.rewardClaimed=true;else state.tasks.branch=state.tasks.branch.filter(row=>row.taskId!==b.taskId);for(const[id,num]of row.reward){if(id==='EXP')state.resources[0].amount+=num;else state.stock.set(id,(state.stock.get(id)??0)+num);}}await state.onWrite?.(n,b);return {status:watchStatus};},
+  async request(n,b,r,_timeout,options){assert.equal(options?.mutate,undefined);if(codec)wire(n,b);state.reads.push(n);await state.onRead?.(n);let value=n==='AchievementInfoRequest'?state.achievements:n==='MainTaskInfoRequest'?state.tasks:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected synthetic read '+n);return codec?wire(r,value):clone(value);},
+  async sendWatch(n,b,options){options?.beforeDispatch?.();wire(n,b);state.writes.push({name:n,body:clone(b)});if(state.apply&&n==='GotAchievementRewardRequest'){state.achievements.task.find(row=>row.id===b.id).rewardClaimed=true;state.resources.find(row=>row.res===4).amount+=20;}else if(state.apply){const kind=n==='DrawMainTaskRewardRequest'?'main':'branch',row=actual.tables[kind==='main'?'MainTaskCfg':'BranchTaskCfg'].data.find(row=>row.taskId===b.taskId);if(kind==='main')state.tasks.task.rewardClaimed=true;else state.tasks.branch=state.tasks.branch.filter(row=>row.taskId!==b.taskId);for(const[id,num]of row.reward){if(id==='EXP')state.resources[0].amount+=num;else state.stock.set(id,(state.stock.get(id)??0)+num);}}await state.onWrite?.(n,b);return {status:watchStatus};},
  };return {client,state};
 }
 const opts=(config,extra={})=>({config,player:player(),parameters,moduleConfig:enabled,...extra});
@@ -33,7 +33,7 @@ async function claimed(f,mutate){await f.client.sendWatch(f.operation.action.req
 
 test('default disabled semantics adapter has strict fields, paired exact ID and no caller getters',()=>{
  assert.equal(taskRewardsModule.execute,undefined);assert.deepEqual(taskRewardsModule.defaultConfig,{enabled:false});assert.deepEqual(taskRewardsModule.capabilities,['C502','C503']);assert.deepEqual(validateTaskRewardsParameters({}),{});assert.deepEqual(validateTaskRewardsParameters({kind:'branch',taskId:2147483647}),{kind:'branch',taskId:2147483647});
- for(const v of[null,[],{kind:'main'},{taskId:1},{kind:'achievement',taskId:1},{kind:'main',taskId:0},{kind:'main',taskId:'1'},{kind:'branch',taskId:2147483648},{kind:'main',taskId:1,request:'Buy'},Object.create(parameters)])assert.throws(()=>validateTaskRewardsParameters(v),{code:'INVALID_PARAMETERS'});
+ for(const v of[null,[],{kind:'main'},{taskId:1},{kind:'unknown',taskId:1},{kind:'main',taskId:0},{kind:'main',taskId:'1'},{kind:'branch',taskId:2147483648},{kind:'main',taskId:1,request:'Buy'},Object.create(parameters)])assert.throws(()=>validateTaskRewardsParameters(v),{code:'INVALID_PARAMETERS'});
  const getter={};Object.defineProperty(getter,'kind',{enumerable:true,get(){throw Error('must not execute');}});assert.throws(()=>validateTaskRewardsParameters(getter),{code:'INVALID_PARAMETERS'});
  for(const v of[{enabled:1},{enabled:true,automatic:true},Object.create({enabled:true})])assert.throws(()=>validateTaskRewardsConfig(v),{code:'INVALID_PARAMETERS'});
 });
@@ -78,13 +78,13 @@ test('shared executor performs fresh eligibility, confirms observed reward and k
  for(const mode of['no-permit','disabled','state-changed','forged']){const f=await ready();if(mode==='disabled')f.options.moduleConfig={enabled:false};if(mode==='state-changed')f.state.tasks.task.progress++;if(mode==='forged')f.operation.expectedState.inventory=[];const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:mode!=='no-permit'});assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);}
 });
 
-function serviceFixture(t,{apply=true,watchStatus='UNKNOWN',enabled=true,file=null}={}){
+function serviceFixture(t,{apply=true,watchStatus='UNKNOWN',enabled=true,file=null,selectedParameters=parameters}={}){
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-tasks-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(clone(row));return durable.put(row);}},config=cfg(),f=fake({apply,watchStatus});
  const session={id:'synthetic-A',client:f.client,player:player(),generation:3,connectionId:'offline-tasks',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:{enabled}})},getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  const send=f.client.sendWatch.bind(f.client);f.client.sendWatch=async(...args)=>{f.state.durableBeforeWrite=clone(journal.at(-1));return send(...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
- async function plan(){const read=await service.surveyModule(session,'task-rewards',parameters),row=read.view.candidates[0];assert.ok(row.executable);return service.plan(session,{module:'task-rewards',mode:'Manual',parameters,selections:[row.actionId]});}
+ async function plan(){const read=await service.surveyModule(session,'task-rewards',selectedParameters),row=read.view.candidates[0];assert.ok(row.executable);return service.plan(session,{module:'task-rewards',mode:'Manual',parameters:selectedParameters,selections:[row.actionId]});}
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true});
  async function run(p){const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};}
  return {...f,session,service,config,durable,history,journal,file,plan,authorize,run};
@@ -123,4 +123,91 @@ test('branch removal cannot confirm changed main, another removal or wrong rewar
 });
 test('cancellation after send retains durable UNKNOWN and never repeats the command',async t=>{
  const f=serviceFixture(t),plan=await f.plan();f.state.onWrite=()=>f.session.abort.abort();const {record}=await f.run(plan);assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].unresolvedWrite,true);assert.equal(f.state.writes.length,1);assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),true);
+});
+
+const achievementParameters={kind:'achievement',taskId:1001};
+const readyAchievement=(input={},extra={})=>ready(input,{parameters:achievementParameters,...extra});
+test('achievement uses fixed v76 ID/config mapping, exact signed int64 and an empty debit',async()=>{
+ const f=await readyAchievement();assert.ok(f.operation,JSON.stringify(viewTaskRewards(f.facts,f.options)));assert.deepEqual(validateTaskRewardsParameters(achievementParameters),achievementParameters);
+ assert.deepEqual(f.state.reads,['AchievementInfoRequest','AllItemRequest','AllResourceRequest']);
+ assert.equal(f.operation.progress,'9223372036854775807');assert.equal(f.operation.requiredProgress,'9223372036854775807');
+ assert.deepEqual(f.operation.action,{request:'GotAchievementRewardRequest',response:null,body:{id:1001}});
+ assert.deepEqual(f.operation.rewards,[{id:'RUBY',num:20}]);assert.deepEqual(f.operation.costs,[]);
+ assert.deepEqual(f.operation.budgetClaims.uids,[{type:'task-reward',id:'achievement:1001'}]);
+ const after=await claimed(f);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);
+ assert.equal(planTaskRewards(after,{...f.options,selections:[f.operation.actionId]}).actions.length,0);
+});
+for(const [label,raw] of [
+ ['missing task',{}],['sparse', {task:Array(1)}],
+ ['duplicate',{task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:false},{id:1001,progress:'1',targetProgress:'1',rewardClaimed:false}]}],
+ ...['progress','targetProgress','rewardClaimed'].map(key=>{const row={id:1001,progress:'1',targetProgress:'1',rewardClaimed:false};delete row[key];return ['missing '+key,{task:[row]}];}),
+ ...[-1,9007199254740992,'9223372036854775808','01',{low:1,high:0,unsigned:true}].map(progress=>['invalid int64 '+JSON.stringify(progress),{task:[{id:1001,progress,targetProgress:'1',rewardClaimed:false}]}]),
+ ['zero target',{task:[{id:1001,progress:'1',targetProgress:'0',rewardClaimed:false}]}],
+])test('achievement cannot infer authority: '+label,async()=>{
+ const f=await readyAchievement({codec:false,overrides:{AchievementInfoRequest:raw}});
+ assert.equal(f.operation,undefined);assert.equal(f.state.writes.length,0);
+});
+test('achievement blocks incomplete, claimed, unknown IDs, ambiguous rewards, and absent resource balance',async()=>{
+ for(const overrides of[{parameters:{kind:'achievement',taskId:1002}},{parameters:{kind:'achievement',taskId:999999}}])assert.equal((await readyAchievement({},overrides)).operation,undefined);
+ for(const mutate of [
+  f=>f.state.achievements.task[0].rewardClaimed=true,
+  f=>f.state.resources=f.state.resources.filter(row=>row.res!==4),
+  f=>f.config.tables.AchievementTaskCfg.data.push(clone(f.config.tables.AchievementTaskCfg.data[0])),
+  f=>f.config.tables.AchievementTaskCfg.data[0].reward=['RUBY',0],
+  f=>f.config.tables.AchievementTaskCfg.data[0].reward=['unknown-reward',1]
+ ]){const f=await readyAchievement();mutate(f);const facts=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(planTaskRewards(facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);}
+});
+test('achievement facts cannot be cloned, altered, renewed or reused on another connection',async()=>{
+ for(const mutate of [
+  f=>f.facts=clone(f.facts),f=>f.facts.inputs.tasks.task[0].targetProgress='1',
+  f=>f.facts.configEvidence.tables.AchievementTaskCfg.data[0].reward=['RUBY',999],
+  f=>f.facts.sourceFacts.tasks.provenance.sourceAt=Date.now()+1000,
+  f=>f.client.factContext.connectionId='new',f=>f.client.factContext.generation++,
+  f=>f.client.factContext.accountId='B',f=>f.options.player.worldId='18',f=>f.client.connected=false
+ ]){const f=await readyAchievement();mutate(f);assert.equal(planTaskRewards(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);}
+});
+for(const [label,mutate] of [
+ ['reward absent',s=>s.resources.find(row=>row.res===4).amount-=20],
+ ['extra reward',s=>s.resources.find(row=>row.res===4).amount++],
+ ['other task changes',s=>s.achievements.task[1].progress='1'],
+ ['target changes',s=>s.achievements.task[0].targetProgress='1'],
+ ['task removed',s=>s.achievements.task.shift()],
+ ['wrong claim',s=>{s.achievements.task[0].rewardClaimed=false;s.achievements.task[1].rewardClaimed=true;}],
+ ['unrelated debit',s=>s.resources.find(row=>row.res===3).amount--]
+])test('achievement uncertain settlement: '+label,async()=>{
+ const f=await readyAchievement(),after=await claimed(f,mutate);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,false);
+});
+test('achievement D6 permits only exact ID with explicit zero debit',()=>{
+ assert.doesNotThrow(()=>assertPaymentAllowed({request:'GotAchievementRewardRequest',body:{id:1001},costs:[]}));
+ for(const action of [
+ {body:{id:1001}},{body:{id:0},costs:[]},{body:{id:1001,buy:false},costs:[]},
+ {body:{id:1001},costs:[{id:'RUBY',num:1}]},{body:{id:1001},costs:[{id:'GOLD',num:1}]}
+ ])assert.throws(()=>assertPaymentAllowed({request:'GotAchievementRewardRequest',...action}));
+});
+for(const apply of[true,false])test('achievement shared executor independently settles or retains UNKNOWN '+apply,async()=>{
+ const f=await readyAchievement({apply}),result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budgetFor(f)});
+ assert.equal(result.status,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.client.uncertainWrites.size,apply?0:1);
+});
+for(const apply of[true,false])test('achievement Service persists UID intent and durable success/UNKNOWN across restart '+apply,async t=>{
+ const f=serviceFixture(t,{apply,selectedParameters:achievementParameters}),p=await f.plan(),{record}=await f.run(p);
+ assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);
+ assert.equal(f.state.durableBeforeWrite.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');
+ assert.deepEqual(f.state.durableBeforeWrite.runBudget.reserved.uids,[{type:'task-reward',id:'achievement:1001'}]);
+ const restarted=serviceFixture(t,{file:f.file,selectedParameters:achievementParameters});
+ if(!apply){await assert.rejects(restarted.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restarted.state.writes.length,0);}
+ assert.equal(createExecutionHistory({file:f.file}).list(f.session.id)[0].finalStatus,apply?'SUCCESS':'UNKNOWN');
+});
+test('achievement late result on replaced connection cannot confirm or continue',async()=>{
+ const f=await readyAchievement();let release;f.state.onWrite=()=>new Promise(resolve=>release=resolve);
+ const pending=executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budgetFor(f)});
+ for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);
+ assert.ok(release);f.client.factContext.connectionId='replacement';release();
+ const result=await pending;assert.notEqual(result.status,'SUCCESS');assert.equal(f.state.writes.length,1);
+});
+
+test('registered Achievement Workflow pauses for the exact existing Service batch and resumes only after verified history',async t=>{
+ const parameters=achievementParameters,f=serviceFixture(t,{selectedParameters:parameters}),surveyed=await f.service.surveyModule(f.session,'task-rewards',parameters),actionId=surveyed.view.candidates[0].actionId;
+ const graph={version:1,id:'synthetic-tasks-workflow',name:'Synthetic tasks',budget:{resources:[],quotas:[],uids:[{type:'task-reward',id:'achievement:1001'}]},nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'task-rewards',parameters},{id:'a',type:'ACTION',module:'task-rewards',parameters,selection:actionId},{id:'v',type:'VERIFY',module:'task-rewards'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};
+ assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let result=await runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.equal((await runner.resume()).status,'AWAITING_AUTHORIZATION');const plan=result.plan;await f.run(plan);result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.state.writes.length,1);const record=f.durable.list(f.session.id)[0];assert.equal(record.workflowId,result.runId);assert.equal(record.workflowNodeId,'a');assert.equal(record.workflowDefinitionId,graph.id);
 });

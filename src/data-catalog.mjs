@@ -168,6 +168,7 @@ const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], require
 const businessReads = [
   ['EmailBoxRequest',['mail'],{...accountScope,key:'EXACT_PAGE_NO',completeness:'CURRENT_PAGE_ONLY'},{mode:'PAGE_NO',allowedKeys:['pageNo'],requiredKeys:['pageNo'],integerRange:[0,2147483647],arbitraryFields:false},'tasks','Explicit exact page only; total never proves page count, complete enumeration or snapshot consistency'],
   ['AfkInfoRequest',['afk-level-rewards'],accountScope,emptyParameters,'tasks','Exact observed AFK level, rewarded milestone and unchanged income interval; no inferred time units'],
+  ['AchievementInfoRequest',['task-rewards'],accountScope,emptyParameters,'tasks','Explicit achievement kind and exact ID; complete observed list with signed int64 progress and explicit claim flags'],
   ['MainTaskInfoRequest',['task-rewards'],accountScope,emptyParameters,'tasks','Exact main task claim flag and complete branch membership; missing fields remain unknown'],
   ['MonthCardRequest',['pirate-sweep'],accountScope,emptyParameters,'activities','Complete typed replacement list bound to the current login; a delivery push invalidates the list'],
   ['PirateKillRecordRequest',['pirate-sweep'],accountScope,emptyParameters,'fleets','Complete current kill thresholds for the selected pirate type; absence never grants first-kill eligibility'],

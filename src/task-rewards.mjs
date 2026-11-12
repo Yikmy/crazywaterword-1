@@ -1,4 +1,4 @@
-// W16/C502/C503: exact main/branch reward IDs; the shared executor owns writes.
+// W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
 import { taskTarget } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
@@ -19,16 +19,42 @@ const fields = (v,keys) => plain(v) && Reflect.ownKeys(v).every(k => keys.includ
 const dense = v => Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && v.length <= 10000 && Reflect.ownKeys(v).length === v.length+1 && Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&own(d,'value'));
 const invalid = message => Object.assign(new Error(message), {code:'INVALID_PARAMETERS',statusCode:400});
 const sources = { tasks:'MainTaskInfoResponse', items:'AllItemResponse', resources:'AllResourceResponse' };
-const configNames = ['MainTaskCfg','BranchTaskCfg','ItemCfg'];
-const requestOf = kind => kind === 'main' ? 'DrawMainTaskRewardRequest' : 'GotBranchTaskRewardRequest';
-const costSource = 'Existing tasks.mjs taskTarget; MainTaskCfg/BranchTaskCfg.reward; one exact taskId, no resource debit or purchase';
+const configNames = ['MainTaskCfg','BranchTaskCfg','AchievementTaskCfg','ItemCfg'];
+const sourcesFor = parameters => parameters?.kind==='achievement'?{...sources,tasks:'AchievementInfoResponse'}:sources;
+const liveAchievementFacts = new WeakMap();
+const sealOf = f => hash({parameters:f.parameters,inputs:f.inputs,context:f.context,configEvidence:f.configEvidence,sourceFacts:f.sourceFacts,available:f.available});
+export const ACHIEVEMENT_REWARD_EVIDENCE = Object.freeze({
+  source:'Fixed v76 main/game.js; FunctionPreviewItem.initData/_toGotReward and AchievementUtil.achieveTaskCfg',
+  functionPreviewItemByte:2823786, achievementModelByte:24520,
+  semantics:'DispAchievementTask.id -> AchievementTaskCfg.taskId; flat reward; exact {id}; observed progress/targetProgress and explicit rewardClaimed'
+});
+// Preserve signed int64 precision and reject inherited/default scalar values.
+function decimalCount(value) {
+  let n;
+  if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;n=BigInt(value);}
+  else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)n=BigInt(value);
+  else if(value&&typeof value==='object'&&own(value,'low')&&own(value,'high')&&own(value,'unsigned')&&value.unsigned===false&&[value.low,value.high].every(v=>Number.isInteger(v)&&v>=-2147483648&&v<=2147483647))n=(BigInt(value.high)<<32n)+BigInt(value.low>>>0);
+  else return null;
+  return n>=0n&&n<(1n<<63n)?String(n):null;
+}
+function parseAchievements(raw) {
+  if(!own(raw,'task')||!dense(raw.task))return null;
+  const rows=raw.task.map(row=>{
+    const progress=own(row,'progress')?decimalCount(row.progress):null,targetProgress=own(row,'targetProgress')?decimalCount(row.targetProgress):null;
+    return own(row,'id')&&positive(row.id)&&progress!==null&&targetProgress!==null&&BigInt(targetProgress)>0n&&own(row,'rewardClaimed')&&typeof row.rewardClaimed==='boolean'?{taskId:row.id,progress,targetProgress,rewardClaimed:row.rewardClaimed}:null;
+  });
+  return rows.some(row=>row===null)||new Set(rows.map(row=>row.taskId)).size!==rows.length?null:{achievements:rows.sort((a,b)=>a.taskId-b.taskId)};
+}
+const parseFor = (raw,parameters) => parameters?.kind==='achievement'?parseAchievements(raw):parseTasks(raw);
+const requestOf = kind => kind==='achievement'?'GotAchievementRewardRequest':kind === 'main' ? 'DrawMainTaskRewardRequest' : 'GotBranchTaskRewardRequest';
+const costSource = 'Existing taskTarget and fixed v76 achievement ID mapping; MainTaskCfg/BranchTaskCfg/AchievementTaskCfg.reward; one exact task ID, no resource debit or purchase';
 export const TASK_REWARDS_DEFAULT_CONFIG = Object.freeze({enabled:false});
 export function validateTaskRewardsConfig(v={}) {
   if (!fields(v,['enabled']) || own(v,'enabled') && typeof v.enabled !== 'boolean') throw invalid('任务奖励配置只接受 enabled 布尔值');
   return {enabled:v.enabled??false};
 }
 export function validateTaskRewardsParameters(v={}) {
-  if (!fields(v,['kind','taskId']) || own(v,'kind') && !['main','branch'].includes(v.kind) || own(v,'taskId') && !positive(v.taskId) || own(v,'kind') !== own(v,'taskId')) throw invalid('任务奖励须同时指定 kind(main/branch) 与正整数 taskId，或留空读取候选');
+  if (!fields(v,['kind','taskId']) || own(v,'kind') && !['main','branch','achievement'].includes(v.kind) || own(v,'taskId') && !positive(v.taskId) || own(v,'kind') !== own(v,'taskId')) throw invalid('任务奖励须同时指定 kind(main/branch/achievement) 与正整数 taskId，或留空读取候选');
   return own(v,'taskId') ? {kind:v.kind,taskId:v.taskId} : {};
 }
 function roleId(value) {
@@ -56,15 +82,15 @@ function parseTasks(raw) {
   return {main,branch:branch.sort((a,b)=>a.taskId-b.taskId)};
 }
 const stockState = stock => [...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
-function snapshot(inputs,context) {
-  const tasks=parseTasks(inputs?.tasks),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
+function snapshot(inputs,context,parameters) {
+  const tasks=parseFor(inputs?.tasks,parameters),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
   return tasks&&inventory.stockReliable?{context,tasks,inventory:stockState(inventory.stock)}:null;
 }
 export async function surveyTaskRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateTaskRewardsParameters(parameters);
-  const options={signal,stop},context=contextOf(client,player),notes=[];
+  const options={signal,stop},context=contextOf(client,player),notes=[],readSources=sourcesFor(parameters);
   const active=()=>assertExecutionActive(client,options); active();
-  const observations=await Promise.all(Object.entries(sources).map(async([key,response])=>{
+  const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
     const request=response.replace(/Response$/,'Request'); active();
     if (!protocol?.[request] || !protocol?.[response]) {notes.push(request+': PROTOCOL_UNAVAILABLE');return [key,null,null];}
     try { const value=await awaitExecution(client.request(request,{},response,timeout,{signal}),client,options);return [key,value,Date.now()]; }
@@ -72,25 +98,31 @@ export async function surveyTaskRewards(client,protocol,{config,player,parameter
   }));
   active(); if(!same(context,contextOf(client,player)))throw Object.assign(new Error('任务采集期间账号或连接改变'),{code:'CANCELLED'});
   const raw=Object.fromEntries(observations.map(([key,value])=>[key,value])),inputs=toSnapshotJson(raw);
-  const tasks=parseTasks(raw.tasks),inventory=parseOperationInventory(raw.items,raw.resources);
-  const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:sources[key],sourceAt,scope,reliable:key==='tasks'?tasks!==null:inventory.stockReliable})]));
-  return {module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,tasks,...inventory,state:tasks&&inventory.stockReliable?snapshot(inputs,context):null,available:Object.keys(protocol??{}),notes};
+  const tasks=parseFor(raw.tasks,parameters),inventory=parseOperationInventory(raw.items,raw.resources);
+  const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:readSources[key],sourceAt,scope,reliable:key==='tasks'?tasks!==null:inventory.stockReliable})]));
+  const facts={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,tasks,...inventory,state:tasks&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes};
+  if(parameters.kind==='achievement')liveAchievementFacts.set(facts,{client,player,seal:sealOf(facts)});
+  return facts;
 }
 function authority(f) {
   const c=f?.context;
   if(!identifier(c?.accountId)||!identifier(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
-  const state=snapshot(f.inputs,c);
+  if(f.parameters?.kind==='achievement') {
+    const live=liveAchievementFacts.get(f);
+    if(!live||live.client.connected!==true||!same(contextOf(live.client,live.player),c)||live.seal!==sealOf(f))return false;
+  }
+  const state=snapshot(f.inputs,c,f.parameters);
   const parsed=parseOperationInventory(f.inputs?.items,f.inputs?.resources);
   if(!same(state,f.state)||!same(f.tasks,state?.tasks)||!same([...f.stock].sort(),[...parsed.stock].sort()))return false;
-  return Object.entries(sources).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
+  return Object.entries(sourcesFor(f.parameters)).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
-function definition(config,kind,taskId) {
-  const rows=config?.tables?.[kind==='main'?'MainTaskCfg':'BranchTaskCfg']?.data;
+function definition(config,kind,taskId,task) {
+  const rows=config?.tables?.[kind==='achievement'?'AchievementTaskCfg':kind==='main'?'MainTaskCfg':'BranchTaskCfg']?.data;
   if(!dense(rows)||rows.some(row=>!own(row,'taskId')||!positive(row.taskId))||new Set(rows.map(row=>row.taskId)).size!==rows.length)return null;
-  const row=rows.find(row=>row.taskId===taskId),target=taskTarget(row),rewards=row?.reward;
+  const row=rows.find(row=>row.taskId===taskId),target=kind==='achievement'?task?.targetProgress:taskTarget(row),rewards=kind==='achievement'?(dense(row?.reward)&&row.reward.length===2?[row.reward]:null):row?.reward;
   const itemRows=config?.tables?.ItemCfg?.data,known=new Set(Object.values(RESOURCE_NAMES));
   if(dense(itemRows))for(const item of itemRows)if(own(item,'id')&&identifier(item.id))known.add(item.id);
-  if(!Number.isSafeInteger(target)||target<=0||!dense(rewards)||!rewards.length)return null;
+  if((kind==='achievement'?(decimalCount(target)===null||BigInt(target)<=0n):!Number.isSafeInteger(target)||target<=0)||!dense(rewards)||!rewards.length)return null;
   const seen=new Set(),parsed=[];
   for(const pair of rewards) {
     if(!dense(pair)||pair.length!==2||!known.has(pair[0])||seen.has(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0)return null;
@@ -101,7 +133,8 @@ function definition(config,kind,taskId) {
 function expected(f,p,def) {
   if(!f?.state||!def)return null;
   const state=copy(f.state);
-  if(p.kind==='main')state.tasks.main.rewardClaimed=true;
+  if(p.kind==='achievement')state.tasks.achievements.find(row=>row.taskId===p.taskId).rewardClaimed=true;
+  else if(p.kind==='main')state.tasks.main.rewardClaimed=true;
   else state.tasks.branch=state.tasks.branch.filter(row=>row.taskId!==p.taskId);
   const stock=new Map(f.stock);
   for(const reward of def.rewards) {
@@ -111,19 +144,19 @@ function expected(f,p,def) {
   state.inventory=stockState(stock);return state;
 }
 function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
-  const def=same(configNames.map(name=>config?.tables?.[name]??null),configNames.map(name=>f?.configEvidence?.tables?.[name]??null))?definition(f.configEvidence,p.kind,p.taskId):null,task=p.kind==='main'?f?.tasks?.main:f?.tasks?.branch?.find(row=>row.taskId===p.taskId);
+  const task=p.kind==='achievement'?f?.tasks?.achievements?.find(row=>row.taskId===p.taskId):p.kind==='main'?f?.tasks?.main:f?.tasks?.branch?.find(row=>row.taskId===p.taskId),def=same(configNames.map(name=>config?.tables?.[name]??null),configNames.map(name=>f?.configEvidence?.tables?.[name]??null))?definition(f.configEvidence,p.kind,p.taskId,task):null;
   const after=authority(f)&&task?.taskId===p.taskId?expected(f,p,def):null;
-  let blockedReason=!validateTaskRewardsConfig(moduleConfig).enabled?'TASK_REWARDS_DISABLED':!authority(f)?'TASK_AUTHORITY_UNKNOWN':!def?'TASK_CONFIG_OR_REWARD_UNKNOWN':task?.taskId!==p.taskId?'TASK_NOT_PRESENT':p.kind==='main'&&task.rewardClaimed?'TASK_ALREADY_CLAIMED':task.progress<def.target?'TASK_INCOMPLETE':!after?'REWARD_BALANCE_UNKNOWN':!f.available?.includes(requestOf(p.kind))?'PROTOCOL_UNAVAILABLE':null;
+  let blockedReason=!validateTaskRewardsConfig(moduleConfig).enabled?'TASK_REWARDS_DISABLED':!authority(f)?'TASK_AUTHORITY_UNKNOWN':!def?'TASK_CONFIG_OR_REWARD_UNKNOWN':task?.taskId!==p.taskId?'TASK_NOT_PRESENT':['main','achievement'].includes(p.kind)&&task.rewardClaimed?'TASK_ALREADY_CLAIMED':BigInt(task.progress)<BigInt(def.target)?'TASK_INCOMPLETE':!after?'REWARD_BALANCE_UNKNOWN':!f.available?.includes(requestOf(p.kind))?'PROTOCOL_UNAVAILABLE':null;
   const beforeState=copy(f?.state??null),identity=hash({p,beforeState,def}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:p.kind+':'+p.taskId}]};
   return {module:moduleId,capabilityId:'C503',actionId:moduleId+':'+p.kind+':'+p.taskId+':'+identity,actionType:'CLAIM',target:copy(p),parameters:copy(p),identity,beforeState,expectedState:after,
-    costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,
-    ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:{taskId:p.taskId}}}:{})};
+    costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,
+    ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId}}}:{})};
 }
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{}),choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
   ];
-  return {module:moduleId,tasks:copy(f?.tasks??null),candidates:choices.map(p=>candidate(f,p,options)),notes:[...(f?.notes??[]),'主线仅确认同任务明确已领及精确奖励净入；任务前移不推定成功。成就与每日订单空请求尚未接入。']};
+  return {module:moduleId,tasks:copy(f?.tasks??null),candidates:choices.map(p=>candidate(f,p,options)),notes:[...(f?.notes??[]),'主线仅确认同任务明确已领及精确奖励净入；任务前移不推定成功。成就请指定 kind=achievement 与精确 taskId，复读仅接受同 ID 已领及配置奖励净入；每日订单空请求尚未接入。']};
 }
 export function planTaskRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
   parameters=validateTaskRewardsParameters(parameters);

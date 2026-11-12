@@ -63,7 +63,7 @@ const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',
 }};
 const cases = [
   {module:'afk-level-rewards',actionId:'afk-level-rewards:2:synthetic-exact',actionType:'CLAIM',parameters:{level:2},costs:[],facts:{afk:{level:5,rewardedLevel:0}},blockedReason:'AFK_LEVEL_TOO_LOW'},
-  ...['main','branch'].map(kind=>({module:'task-rewards',actionId:'task-rewards:'+kind+':synthetic-exact',actionType:'CLAIM',parameters:{kind,taskId:kind==='main'?1:8001},costs:[],facts:{},blockedReason:'TASK_INCOMPLETE'})),
+  ...['main','branch','achievement'].map(kind=>({module:'task-rewards',actionId:'task-rewards:'+kind+':synthetic-exact',actionType:'CLAIM',parameters:{kind,taskId:kind==='achievement'?1001:kind==='main'?1:8001},costs:[],facts:{},blockedReason:'TASK_INCOMPLETE'})),
   pirateCase,
   ...[
    {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:0,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:0,effectiveNum:0,advEffectValue:0}]}},

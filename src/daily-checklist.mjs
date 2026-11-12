@@ -108,12 +108,12 @@ function achievementsView(body) {
     const rewardClaimed=typeof claimed==='boolean'?claimed:null,complete=progress!==null&&target!==null&&BigInt(target)>0n?BigInt(progress)>=BigInt(target):null;
     const eligible=complete!==null&&rewardClaimed!==null?complete&&!rewardClaimed:null;
     return {id,progress,targetProgress:target,rewardClaimed,complete,eligible,status:rewardClaimed===true?'CLAIMED':eligible===null?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE',
-      configuredRewards:null,executable:false,blockedReason:'ACHIEVEMENT_REWARD_MAPPING_UNVERIFIED'};
+      configuredRewards:null,executable:false,blockedReason:'USE_TASK_REWARDS_FUNCTION'};
   });
   const countKnown=(key,predicate)=>rows.every(row=>row[key]!==null)?rows.filter(predicate).length:null;
   return {status:rows.every(row=>row.eligible!==null)?'AVAILABLE':'PARTIAL',reason:rows.some(row=>row.eligible===null)?'ACHIEVEMENT_FIELDS_UNKNOWN':null,rows,
     counts:{total:rows.length,completed:countKnown('complete',row=>row.complete),claimed:countKnown('rewardClaimed',row=>row.rewardClaimed),eligible:countKnown('eligible',row=>row.eligible)},
-    note:'仅显示服务器成就 ID、精确进度和已领观察；奖励映射与领取结算待核实。'};
+    note:'缓存仅显示成就 ID、精确进度和已领观察；领取请进入任务奖励 Function，指定 kind=achievement 与 taskId，重新探测并逐批授权。'};
 }
 function freeGoldView(body,config) {
   const info=own(body,'clickGoldInfo'),used=count(info,'freeTimes'),paidUsed=count(info,'paidTimes'),resetMarker=count(info,'resetTime'),minimumGold=count(info,'minGold');
