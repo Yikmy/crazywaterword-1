@@ -343,6 +343,7 @@ export const PAGE = `<!doctype html>
       <span id="tasks-hint" class="warn"></span>
     </div>
     <pre id="tasks-view">只读展示主线、支线、成就与每日订单的缓存状态。</pre>
+    ${CORE_GAMEPLAY_HTML['task-rewards']}
 
     <h2>海面</h2>
     <div class="bar">

@@ -172,6 +172,7 @@ export const ACTIONS = {
     request: 'DrawMainTaskRewardRequest',
     response: null,
     mutate: true,
+    costs: [],
     desc: '领取主线（成长任务）奖励',
     params: ['taskId'],
     body: ({ taskId }) => ({ taskId: Number(taskId) }),
@@ -180,6 +181,7 @@ export const ACTIONS = {
     request: 'GotBranchTaskRewardRequest',
     response: null,
     mutate: true,
+    costs: [],
     desc: '领取支线任务奖励',
     params: ['taskId'],
     body: ({ taskId }) => ({ taskId: Number(taskId) }),
@@ -311,6 +313,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if((activateAntique||starAntique)&&(!fields(body,starAntique?['id','universal']:['id'])||!identifier(body.id)||starAntique&&body.universal!==false||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.id+'碎片'))fail('COST_UNKNOWN','藏品成长仅允许明确藏品及其自有专用碎片，禁止万能碎片或购买补齐');
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
   const sweepPirate=request==='PirateSweepRequest';
+  if(['DrawMainTaskRewardRequest','GotBranchTaskRewardRequest'].includes(request)&&(!fields(body,['taskId'])||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','任务奖励只允许精确 taskId 与明确零支出');
   if(sweepPirate&&(!fields(body,['uid','cityId'])||!positiveInt32(body.uid)||!positiveInt32(body.cityId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','海面扫荡仅允许明确UID和城市且不消耗普通资源');
   const suitAntique=request==='AntiqueSuitLevelUpRequest',masterAntique=request==='AntiqueMasterLevelUpRequest',exchangeAntique=request==='AntiqueFragExchangeRequest';
   const suitXp=['蓝藏品经验','紫藏品经验','橙藏品经验','红藏品经验'],universalFragments=['蓝藏万能碎片','紫藏万能碎片','橙藏万能碎片','红藏万能碎片'];

@@ -44,6 +44,11 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'task-rewards': contract('task-rewards',['C502','C503'],['P6-2'],['src/task-rewards.mjs#taskRewardsModule','src/tasks.mjs#taskTarget'],{kind:{type:'string',enum:['main','branch']},taskId:integer},{
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('ACHIEVEMENT_AND_DAILY_ORDER','Separate achievement evidence and empty daily-order reward request require their own exact authorization contract')]},
+    verification:verification('verifyTaskReward','src/task-rewards.mjs#verifyTaskReward','Independent task and complete inventory reads confirm same main task explicitly claimed or exact branch removal, unchanged other tasks and exact configured reward net income; main task advancement remains UNKNOWN'),
+    dependencyVersions:dependencies(['moduleConfig','config.MainTaskCfg','config.BranchTaskCfg','config.ItemCfg']),
+  }),
   'pirate-sweep': contract('pirate-sweep',['C151'],['P2-8'],['src/pirate-operations.mjs#pirateSweepModule','src/pirate-operations.mjs#planPirateSweep'],{uid:integer,cityId:integer,allowLowerLevel:boolean},{
     implementation:{mode:'CONTROLLED_WRITE',actions:['SWEEP'],blockedCapabilities:[blocked('FIRST_KILL_OR_COMBAT','A higher level requires an independently verified combat contract'),blocked('PAID_OR_BULK_SWEEP','Only one ordinary daily sweep of the exact observed target is admitted')]},
     verification:verification('verifyPirateSweep','src/pirate-operations.mjs#verifyPirateSweep','Fresh same-day quota, one exact increment of used, unchanged target pool and kill records; no assumed reward or target transition'),
