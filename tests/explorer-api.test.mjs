@@ -146,11 +146,12 @@ test('daily checklist preserves independent partial cached sources across accoun
       const snapshot={raw,ok:structuredClone(raw),outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS',updatedAt:'2026-11-12T01:00:00Z'}])),failed:{}};
       app.sessions.set(id,cached(snapshot,id+'-time'));
     }
+    app.sessions.get('account-A').snapshot.sessionFacts={vipLevel:{status:'OBSERVED',reliable:true,vipLevel:2,source:'SCVipUpdate',reason:null,accountId:'account-A',generation:0,connectionId:'offline-A',playerId:'9007199254740993',worldId:'17',observedAt:Date.now()}};
     const before=JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot]));
     const [a,b]=await Promise.all(['account-A','account-B'].map(id=>app.call('?account='+id,'GET','/api/dailies')));
     assert.equal(a.status,200);assert.equal(b.status,200);assert.equal(a.data.accountId,'account-A');assert.equal(b.data.accountId,'account-B');
     assert.equal(a.data.checklist.tasks.counts.eligible,1);assert.equal(b.data.checklist.tasks.counts.eligible,0);
-    assert.equal(a.data.checklist.gift.eligible,true);assert.equal(b.data.checklist.gift.eligible,false);
+    assert.equal(a.data.checklist.gift.eligible,true);assert.equal(b.data.checklist.gift.eligible,false);assert.equal(a.data.checklist.vip.vipLevel,2);assert.equal(b.data.checklist.vip.vipLevel,null);assert.equal(a.data.checklist.vip.eligible,null);
     assert.equal(a.data.checklist.activity.weekly.tiers[0].eligible,false);assert.equal(a.data.stale,true);
     assert.equal(b.text.includes('account-A'),false);assert.equal(a.text.includes('account-B'),false);
     assert.equal(JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot])),before);

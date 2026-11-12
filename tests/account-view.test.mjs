@@ -192,3 +192,13 @@ test('daily checklist renders unknowns and threshold eligibility without claimin
   const task=h.node('dailies-plan').onclick();h.respond('/api/dailies','A',data);await task;assert.match(h.node('dailies-table').textContent,/合成日常/);
   assert.ok(h.requests.every(r=>(r.options.method||'GET')==='GET'));
 });
+
+
+test('daily VIP configuration never displays static level eligibility as a claimable reward',async()=>{
+  const h=await boot();
+  const data={checklist:{tasks:{rows:[],counts:{total:0}},activity:{daily:{activity:null,tiers:[]},weekly:{activity:null,tiers:[]}},gift:{status:'UNKNOWN'},
+    vip:{vipLevel:2,configuredPackages:[{level:1,levelConditionMet:true,configuredRewards:[{id:'RUBY',num:10}]}],note:'等级与配置未证明每日礼包资格；月卡不代替 VIP。'},
+    sources:{daily:{status:'UNKNOWN'},gift:{status:'UNKNOWN'}},note:'缓存观察'}};
+  h.run('renderDailies('+JSON.stringify(data)+')');const text=h.node('dailies-table').textContent;
+  assert.match(text,/VIP · 采集等级 2/);assert.match(text,/RUBY × 10.*未知/);assert.match(text,/月卡不代替 VIP/);assert.doesNotMatch(text,/可领|直接领取|已领/);
+});

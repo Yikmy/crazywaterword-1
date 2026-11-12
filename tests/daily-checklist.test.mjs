@@ -117,3 +117,25 @@ test('incomplete season coverage blocks only affected tier threshold and reward'
   const c=clone(config);c.tables.DailyActivityRewardCfg.data=c.tables.DailyActivityRewardCfg.data.filter(row=>row.id!==5||row.season===1);
   const v=dailyChecklist(fixture(),{config:c});assert.equal(v.activity.daily.tiers[4].eligible,null);assert.equal(v.activity.daily.tiers[4].requiredActivity,null);assert.equal(v.activity.daily.tiers[4].configuredRewards,null);assert.equal(v.activity.daily.tiers[4].rewardReason,'SEASON_CONFIG_INCOMPLETE');assert.equal(v.activity.daily.tiers[1].eligible,true);assert.equal(v.activity.weekly.status,'AVAILABLE');
 });
+
+
+const vipObservation=(extra={})=>({status:'OBSERVED',reliable:true,vipLevel:2,source:'SCVipUpdate',reason:null,accountId:'synthetic-A',generation:3,connectionId:'offline-vip',playerId:'9007199254740993',worldId:'17',observedAt:Date.now(),...extra});
+test('VIP reuses the existing collector tracker observation, shows only level conditions and static package configuration',()=>{
+  const s=fixture();s.sessionFacts={vipLevel:vipObservation()};const v=dailyChecklist(s,{config}).vip;
+  assert.equal(v.vipLevel,2);assert.equal(v.vipLevelStatus,'OBSERVED');assert.equal(v.vipLevelSource,'SCVipUpdate');
+  assert.equal(v.configuredPackages[0].levelConditionMet,true);assert.equal(v.configuredPackages[1].levelConditionMet,true);assert.equal(v.configuredPackages[2].levelConditionMet,false);
+  assert.deepEqual(v.configuredPackages[0].configuredRewards,config.tables.VipFreeCfg.data[0].reward.map(([id,num])=>({id,num})));
+  assert.ok(v.configuredPackages.every(row=>row.claimStatus==='UNKNOWN'&&row.eligible===null&&row.executable===false));assert.equal(v.claimStatus,'UNKNOWN');
+});
+test('public login VIP, month cards or an omitted/invalid tracker never grant VIP reward eligibility',()=>{
+  const s=fixture();s.player={vip:{vipLevel:99,dailyReward:[{vipLevel:1,isGot:false}]}};s.ok.MonthCardRequest={cardItem:[{type:1,endTime:-1}]};
+  for(const observed of[undefined,vipObservation({source:'MonthCardResponse'}),vipObservation({reliable:false}),vipObservation({status:'UNKNOWN'}),vipObservation({playerId:'0'}),vipObservation({vipLevel:-1}),vipObservation({connectionId:''})]){
+    s.sessionFacts={vipLevel:observed};const v=dailyChecklist(s,{config}).vip;assert.equal(v.vipLevel,null);assert.equal(v.eligible,null);assert.ok(v.configuredPackages.every(row=>row.levelConditionMet===null&&row.eligible===null));
+  }
+});
+test('explicit observed VIP zero is separate from unknown and invalid package config does not erase observed level',()=>{
+  const s=fixture();s.sessionFacts={vipLevel:vipObservation({vipLevel:0,source:'LoginResponse.playerInfo.vip'})};
+  const v=dailyChecklist(s,{config}).vip;assert.equal(v.vipLevel,0);assert.ok(v.configuredPackages.every(row=>row.levelConditionMet===false));
+  for(const mutate of[c=>delete c.tables.VipFreeCfg,c=>c.tables.VipFreeCfg.data.push(clone(c.tables.VipFreeCfg.data[0]))]){const c=clone(config);mutate(c);const v=dailyChecklist(s,{config:c}).vip;assert.equal(v.configStatus,'UNKNOWN');assert.equal(v.vipLevel,0);assert.deepEqual(v.configuredPackages,[]);}
+  const c=clone(config);c.tables.VipFreeCfg.data[0].reward=[['RUBY',-1]];assert.equal(dailyChecklist(s,{config:c}).vip.configuredPackages[0].configuredRewards,null);
+});

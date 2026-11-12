@@ -1788,6 +1788,13 @@ function renderDailyChecklist(data) {
     if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
   }
   box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','仅显示免费赠礼状态；领取合同待核实']]));
+  if(view.vip){
+    box.appendChild(el('h3','','VIP · 采集等级 '+known(view.vip.vipLevel)));
+    box.appendChild(table(['配置包等级','等级条件','配置奖励','每日领取状态'],view.vip.configuredPackages.map(row=>[
+      row.level,row.levelConditionMet===null?'未知':row.levelConditionMet?'满足':'未满足',
+      row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):'未知','未知'
+    ])));box.appendChild(el('p','dim',view.vip.note));
+  }
   const source=view.sources;
   $('dailies-view').textContent=(data.stale?'缓存已过期；':'')+'每日任务来源 '+source.daily.status+' / '+(source.daily.observedAt||'采集时间未知')+'；赠礼来源 '+source.gift.status+' / '+(source.gift.observedAt||'采集时间未知')+String.fromCharCode(10)+view.note;
 }

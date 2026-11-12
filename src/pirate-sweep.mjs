@@ -48,7 +48,7 @@ export function observePirateVipLevel(client, collectionContext) {
     accountId: value.accountId, generation: value.generation, connectionId: value.connectionId,
     playerId: value.playerId, worldId: value.worldId, observedAt: Date.now() };
 }
-function vipLevelView(state) {
+export function vipLevelView(state) {
   const value = ownValue(ownValue(state, 'sessionFacts'), 'vipLevel');
   const valid = ownValue(value, 'status') === 'OBSERVED' && ownValue(value, 'reliable') === true
     && vipScope(value) && uint(ownValue(value, 'vipLevel')) && vipSource(ownValue(value, 'source'))

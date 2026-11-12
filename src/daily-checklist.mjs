@@ -1,3 +1,4 @@
+import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
 import { CHEST_TABLE, claimableDailyTasks, describeDailyTask, planDailyGift } from './dailies.mjs';
 
@@ -93,9 +94,25 @@ function giftView(body) {
     status:known?gift.freeAvailable?'ELIGIBLE':'CLAIMED':'UNKNOWN',reason:known?null:'DAILY_GIFT_STATE_UNKNOWN',
     executable:false,blockedReason:'FREE_GIFT_CLAIM_CONTRACT_UNVERIFIED'};
 }
+function vipView(state,config) {
+  // Reuse the existing connection tracker observation; public LoginResponse.vip
+  // and MonthCardResponse cannot seed or renew VIP authority.
+  const level=vipLevelView(state),rows=table(config,'VipFreeCfg');
+  const valid=dense(rows)&&rows.length>0&&rows.every(row=>positive(own(row,'level')))&&new Set(rows.map(row=>own(row,'level'))).size===rows.length;
+  const configured=valid?rows.map(row=>{
+    const levelRequired=own(row,'level'),raw=own(row,'reward');
+    const known=dense(raw)&&raw.length>0&&raw.every(pair=>dense(pair)&&pair.length===2&&text(pair[0])&&Number.isSafeInteger(pair[1])&&pair[1]>0)&&new Set(raw.map(pair=>pair[0])).size===raw.length;
+    return {level:levelRequired,levelConditionMet:level.vipLevel===null?null:level.vipLevel>=levelRequired,
+      configuredRewards:known?raw.map(pair=>({id:pair[0],num:pair[1]})):null,claimStatus:'UNKNOWN',eligible:null,executable:false,
+      blockedReason:'VIP_DAILY_REWARD_AUTHORITY_UNAVAILABLE'};
+  }).sort((a,b)=>a.level-b.level):[];
+  return {...level,configuredPackages:configured,configStatus:valid?'AVAILABLE':'UNKNOWN',configSource:'VipFreeCfg',
+    claimStatus:'UNKNOWN',eligible:null,executable:false,blockedReason:'VIP_DAILY_REWARD_AUTHORITY_UNAVAILABLE',
+    note:'VIP 等级为本次采集的连接观察值。配置包仅供查看；等级条件不证明每日礼包可领，月卡不代替 VIP。'};
+}
 export function dailyChecklist(state,{config=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest');
-  return {readOnly:true,tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+  return {readOnly:true,vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
     gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
@@ -103,5 +120,5 @@ export function formatDailyChecklist(view) {
   const known=v=>v??'未知',c=view.tasks.counts;
   return ['每日任务：'+known(c.completed)+'/'+known(c.total)+' 完成，'+known(c.eligible)+' 项达到领奖门槛',
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
-    '免费赠礼：'+labels[view.gift.status],view.note].join('\n');
+    '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',view.note].join('\n');
 }

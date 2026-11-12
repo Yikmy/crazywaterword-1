@@ -1,3 +1,4 @@
+import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GameClient, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
@@ -181,6 +182,7 @@ test('real live VIP tracker flows through the unchanged 48-query collector into 
     playerId: '9007199254740993', worldId: '9', observedAt: snapshot.sessionFacts.vipLevel.observedAt,
   });
   assert.equal(view.pirateSweep.vipLevel, 4); assert.equal(view.pirateSweep.vipLevelStatus, 'OBSERVED');
+  const checklist=dailyChecklist(snapshot);assert.equal(checklist.vip.vipLevel,4);assert.equal(checklist.vip.claimStatus,'UNKNOWN');assert.equal(checklist.vip.executable,false);
   assert.equal(view.pirateSweep.usedSweeps, 2);
   assert.equal(view.pirateSweep.totalSweeps, null); assert.equal(view.pirateSweep.remainingSweeps, null);
   assert.match(formatState(view), /VIP 等级：4；本次采集的连接观察值/);
@@ -190,6 +192,7 @@ test('real live VIP tracker flows through the unchanged 48-query collector into 
   const invalid = await collectState(f.client, protocol), invalidView = summarize(invalid);
   assert.equal(reads.length, 48); assert.equal(invalid.sessionFacts.vipLevel.status, 'UNKNOWN');
   assert.equal(invalidView.pirateSweep.vipLevel, null); assert.equal(invalidView.pirateSweep.totalSweeps, null);
+  assert.equal(dailyChecklist(invalid).vip.vipLevel,null);assert.equal(dailyChecklist(invalid).vip.eligible,null);
   assert.match(formatState(invalidView), /VIP 等级：未知；连接权威未知/);
 });
 
