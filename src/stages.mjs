@@ -163,11 +163,23 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
       view.error = stageError(error ?? problem('STAGE_ERROR', reason), new Date(now()).toISOString(), client?.login);
       view.stopReason = view.error.message;
       view.uncertain = true;
-      append({ outcome: 'ERROR', reason: view.error.message, code: view.error.code, at: view.error.at });
-      setState('ERROR');
     } else if (pendingRequest) {
       // Cancellation cannot revoke a request already sent to the game.
       view.uncertain = true;
+    }
+    try {
+      const persisted = run.journal?.finish({ runId: run.id, kind, at: new Date(now()).toISOString(), reason: view.stopReason, code: view.error?.code });
+      if (persisted === 'NOT_EXECUTED' && view.error?.code === 'HISTORY_UNAVAILABLE') view.uncertain = false;
+    } catch (cause) {
+      // The previous durable intent remains authoritative if finishing fails.
+      // Never retry a request to compensate for a failed local history write.
+      view.stopKind = 'ERROR';
+      view.error = stageError(cause, new Date(now()).toISOString(), client?.login);
+      view.stopReason = view.error.message;
+    }
+    if (view.stopKind === 'ERROR') {
+      append({ outcome: 'ERROR', reason: view.error.message, code: view.error.code, at: view.error.at });
+      setState('ERROR');
     }
     setState('STOPPED');
   }
@@ -225,14 +237,20 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
           if (allowed === false || allowed && typeof allowed.then === 'function') throw problem('DISPATCH_CANCELLED', '可信发送检查已拒绝本次挑战');
           assertActive(run);
         }
+        // The standalone entry persists the intent synchronously before the
+        // request can enter the transport. Operation/Workflow own their history.
+        const attempt = view.attempts + 1;
+        run.journal?.dispatch({ runId: run.id, stage: progress, attempt, at: new Date(now()).toISOString() });
+        assertActive(run);
         // No read/skip/query is sent here. All battles are strictly serialized.
-        view.attempts += 1;
+        view.attempts = attempt;
         const sentinel = {};
         pendingRequest = sentinel;
         let original;
         try {
           original = Promise.resolve(client.request('ChallengeStageRequest',
-            { stage: progress }, 'ChallengeStageResponse', 15000, { mutate: true, signal }));
+            { stage: progress }, 'ChallengeStageResponse', 15000, { mutate: true, signal,
+              ...(run.journal ? { beforeDispatch: () => assertActive(run) } : {}) }));
         } catch (error) {
           if (pendingRequest === sentinel) pendingRequest = null;
           throw error;
@@ -250,6 +268,7 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
         assertActive(run);
         const result = parseStageResult(answer.body, { stage: progress, player, resolvePlayerSide, battleMode });
         assertActive(run);
+        run.journal?.settle({ runId: run.id, stage: progress, attempt, at: new Date(now()).toISOString(), result });
         let formationContext = null, moduleSettings = null;
         try { formationContext = typeof formationFacts === 'function' ? formationFacts() : formationFacts; moduleSettings = typeof formationModuleConfig === 'function' ? formationModuleConfig() : formationModuleConfig; } catch { /* Missing recommendation facts do not trigger another battle or a formation write. */ }
         const analysis = battleAnalysis(answer.body, { stage: progress, player, battleMode, formationFacts: moduleSettings?.mainlineEnabled === true ? formationContext : null, moduleConfig: moduleSettings ?? undefined });
@@ -315,7 +334,10 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
       if (activeRun === run && run.active) finish(run, 'ERROR', error.message, error);
     }
   }
-  function start(config, { allowMutate = false, formationEvidence = null, beforeDispatch = null } = {}) {
+  function start(config, { allowMutate = false, formationEvidence = null, beforeDispatch = null, journal = null } = {}) {
+    if (journal !== null && ['start', 'dispatch', 'settle', 'finish'].some(method => typeof journal?.[method] !== 'function')) {
+      throw problem('HISTORY_UNAVAILABLE', '独立闯关历史接口无效');
+    }
     if (beforeDispatch !== null && typeof beforeDispatch !== 'function') throw problem('INVALID_GUARD', '可信发送检查必须为同步函数');
     if (!allowMutate) throw problem('MUTATION_NOT_AUTHORIZED', '自动闯关会改变游戏状态，需要明确授权', 403);
     const clean = validateStageConfig(config ?? defaultStageConfig());
@@ -341,7 +363,8 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
     }
     let cancel;
     const cancelled = new Promise((resolve) => { cancel = resolve; });
-    const run = { id: randomUUID(), active: true, cancel, cancelled, timer: null, handlers: [], abortHandler: null, beforeDispatch };
+    const run = { id: randomUUID(), active: true, cancel, cancelled, timer: null, handlers: [], abortHandler: null, beforeDispatch, journal };
+    journal?.start({ runId: run.id, stage: progress, at: new Date(now()).toISOString(), config: clean });
     activeRun = run;
     view = { ...view, runId: run.id, state: 'STARTING', running: true, currentStage: progress,
       nextStage: progress, attempts: 0, consecutiveFailures: 0, lastResult: null, retryAt: null, nextStageAt: null,

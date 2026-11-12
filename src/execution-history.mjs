@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR } from './accounts.mjs';
 import { redact } from './security.mjs';
+import { isConfirmedStandaloneDefeat } from './stage-history.mjs';
 
 export const EXECUTION_HISTORY_PATH = path.join(DATA_DIR, 'execution-history.json');
 const statuses = new Set(['EXECUTING', 'VERIFY', 'RESOURCE_PREFLIGHT', 'SUCCESS', 'FAILED', 'UNKNOWN', 'CANCELLED', 'RATE_LIMITED', 'REJECTED', 'NOT_EXECUTED']);
@@ -57,13 +58,16 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
   function recover(run) {
     const copy = structuredClone(run);
     // Actions are confirmed, but the run-level final write was interrupted.
+    // Standalone Stage has a verified defeat result distinct from an unknown write.
     // Preserve all action proof and original disk bytes; never resume or invent batch SUCCESS.
-    if(unfinished.has(copy.finalStatus)&&copy.actions.length>0&&copy.actions.every(action=>action.result==='SUCCESS'&&action.verification?.status==='CONFIRMED'&&!originallyUncertain(action))){
+    const confirmed = action => action.verification?.status === 'CONFIRMED' && !originallyUncertain(action) &&
+      (action.result === 'SUCCESS' || isConfirmedStandaloneDefeat(copy, action));
+    if(unfinished.has(copy.finalStatus)&&copy.actions.length>0&&copy.actions.every(confirmed)){
       copy.interruptedFinalStatus=copy.finalStatus;copy.finalStatus='CANCELLED';copy.recovered=true;copy.resumable=false;copy.recoveryDisposition='RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS';
       copy.stopReason='所有动作已有权威确认，仅批次终态未落盘；保留原证据，停止且不恢复执行';return copy;
     }
     if (unfinished.has(copy.finalStatus) || copy.actions.some(action => action.unresolvedWrite === true || ['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus))) {
-      copy.finalStatus = 'UNKNOWN'; copy.recovered = true;
+      copy.finalStatus = 'UNKNOWN'; copy.recovered = true; copy.resumable = false;
       copy.stopReason = '进程退出时存在未完成操作；仅恢复历史，禁止自动重发，等待权威复核';
       for (const action of copy.actions) if (['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus)) { action.result = 'UNKNOWN'; action.requestStatus = 'UNKNOWN'; }
     }

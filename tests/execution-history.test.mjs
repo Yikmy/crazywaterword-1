@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createExecutionHistory } from '../src/execution-history.mjs';
+import { createStandaloneStageJournal } from '../src/stage-history.mjs';
 
 function fixture() { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-history-')); return { dir, file: path.join(dir, 'history.json') }; }
 function run(id = 'A', status = 'SUCCESS') { return { accountId: id, runId: 'run-' + id, module: 'orders', finalStatus: status,
@@ -204,4 +205,23 @@ test('incomplete or corrupt existence anchor is fail closed without overwriting 
 test('an observed existence anchor cannot silently disappear into legacy compatibility',()=>{
  const {dir,file}=fixture();try{const history=createExecutionHistory({file});history.put(run());const bytes=fs.readFileSync(file,'utf8');history.list('A');fs.unlinkSync(file+'.anchor');assert.throws(()=>history.list('A'),{code:'HISTORY_UNAVAILABLE'});assert.throws(()=>history.put(run('B')),{code:'HISTORY_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(fs.existsSync(file+'.anchor'),false);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('interrupted standalone Stage with an already verified defeat recovers only the stopped run', () => {
+  const { dir, file } = fixture();
+  try {
+    const journal = createStandaloneStageJournal(createExecutionHistory({file}), {accountId: 'A'});
+    const event = {runId: 'standalone-defeat', stage: 41, attempt: 1, at: '2026-11-11T00:00:00.000Z'};
+    journal.start({...event, config: {maxAttempts: 1}});
+    journal.dispatch(event);
+    journal.settle({...event, result: {stage: 41, isLeftWin: false, playerSide: 'LEFT', outcome: 'FAILED'}});
+    const restarted = createExecutionHistory({file});
+    const recovered = restarted.list('A')[0];
+    assert.equal(recovered.finalStatus, 'CANCELLED');
+    assert.equal(recovered.recoveryDisposition, 'RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS');
+    assert.equal(recovered.resumable, false);
+    assert.equal(recovered.actions[0].result, 'FAILED');
+    assert.equal(restarted.unresolved('A'), false);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).accounts.A[0].finalStatus, 'EXECUTING');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

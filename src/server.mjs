@@ -8,6 +8,7 @@ import { createExecutionMemory } from './execution-memory.mjs';
 import { createNamedFormationStore } from './named-formations.mjs';
 import { GAMEPLAY_MODULES, registerBusinessFunction } from './function-registry.mjs';
 import { createStageFunction } from './stage-function.mjs';
+import { createStandaloneStageJournal } from './stage-history.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -15,7 +16,7 @@ import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
-import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
+import { collectState, summarize, formatState, ENTRY_QUERIES, toSnapshotJson } from './game.mjs';
 import { exploreSnapshot } from './data-catalog.mjs';
 import { getConfig, APPID, RESOURCE } from './config.mjs';
 import { defaultOrderRules, validateOrderRules, ORDER_RULE_TYPES, evaluateOrders } from './order-rules.mjs';
@@ -133,8 +134,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   const operationCsrf = randomUUID();
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
+  const history = operationOptions.history ?? createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() });
   const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:registerBusinessFunction(stageFunction)}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
-    history: createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() }), ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, assertWriter: () => writerOwnership.assertOwned() });
+    ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, history, assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
   const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets});
@@ -760,11 +762,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (session.collectionPromise || session.busy || session.loop?.running) {
           json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
         }
-        if (operations.running(id) || operations.blocked(id)) { json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return; }
         const instance = session.client, generation = session.generation;
         // GameClient can coalesce identical requests; never attach a new run to an old battle.
         if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
           json({ error: '连接存在未决请求或归属不确定，请先重新连接', code: 'RESPONSE_UNCERTAIN' }, 409); return;
+        }
+        if (operations.running(id) || operations.blocked(id)) {
+          json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return;
         }
         const formationEvidence=await operations.assertFormationReady(session,config.formation);
         // Formation preflight yields and releases its own lock. Recheck synchronously
@@ -777,9 +781,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (session.collectionPromise || session.busy || session.workflowOwner || session.loop?.running) {
           json({ error: '账号有其他任务运行中', code: 'ACCOUNT_BUSY' }, 409); return;
         }
-        if (operations.running(id) || operations.blocked(id)) {
-          json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return;
-        }
         if (stageStatus?.running || stageStatus?.inFlight) {
           json({ error: '该账号已有闯关或未决战斗', code: 'STAGE_BUSY' }, 409); return;
         }
@@ -789,8 +790,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (instance.pending?.length || instance.watchers?.length || instance.promptUncertain || instance.lateResponses?.size || instance.uncertainWrites?.size) {
           json({ error: '连接或主线存在未决结果，禁止启动新主线', code: 'RESPONSE_UNCERTAIN' }, 409); return;
         }
+        if (operations.running(id) || operations.blocked(id)) {
+          json({ error: '账号存在城市/订单执行或历史未决操作', code: 'RECOVERY_UNCERTAIN' }, 409); return;
+        }
         prepareStageRunner(session);
-        session.stageRunner.start(config, { allowMutate: true, formationEvidence });
+        const journal = createStandaloneStageJournal(history, toSnapshotJson({ accountId: id, generation,
+          connectionId: session.connectionId ?? null, playerId: session.player?.playerId ?? null, worldId: session.player?.worldId ?? null }));
+        session.stageRunner.start(config, { allowMutate: true, formationEvidence, journal });
         json(stageView(id, session)); return;
       }
       if (route === 'POST /api/refresh') {

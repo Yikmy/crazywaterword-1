@@ -11,6 +11,7 @@ process.env.CW_DATA_DIR = sandbox;
 process.env.CW_CONFIG_PACK = path.join(sandbox, 'no-config.json');
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
+const { createExecutionHistory } = await import('../src/execution-history.mjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const token = 'synthetic-stages-token', sign = 'synthetic-stages-sign';
 const credential = id => ({ id, label: 'label-' + id, url: 'wss://example.invalid/ws', login: { eworldParams: { openId: id, token, sign, timestamp: 1 } } });
@@ -18,10 +19,11 @@ const config = extra => ({ enabled: true, retryDelaySeconds: 10, maxAttempts: nu
 const response = (stage, win = true) => ({ initialData: { mainlineStage: stage }, stats: { isLeftWin: win } });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 class FakeClient extends EventEmitter {
-  constructor() { super(); this.connected = false; this.state = 'IDLE'; this.requests = []; this.pending = []; this.watchers = []; }
+  constructor(onRequest) { super(); this.onRequest = onRequest; this.connected = false; this.state = 'IDLE'; this.requests = []; this.pending = []; this.watchers = []; }
   async connect(login) { this.connected = true; this.state = 'READY'; this.emit('state', { state: 'READY' }); return { playerInfo: { nickname: login.eworldParams.openId, mainlineStage: 41 } }; }
   request(name, body, responseName) {
     assert.equal(name, 'ChallengeStageRequest'); assert.equal(responseName, 'ChallengeStageResponse');
+    this.onRequest?.(body);
     const gate = deferred(); const item = { name, body, ...gate }; this.requests.push(item); this.pending.push(item);
     return gate.promise.finally(() => { this.pending = this.pending.filter(entry => entry !== item); });
   }
@@ -29,12 +31,22 @@ class FakeClient extends EventEmitter {
   rejectPending() { for (const entry of this.pending.splice(0)) entry.reject?.(Object.assign(new Error('synthetic connection stopped'), { code: 'CANCELLED' })); }
   expire(state) { this.connected = false; this.state = state; this.emit('state', { state }); this.rejectPending(); }
 }
-async function harness({ side = () => 'LEFT', collect, productionSide = false, stageClock } = {}) {
+async function harness({ side = () => 'LEFT', collect, productionSide = false, stageClock, onRequest, failPut,
+  historyFile = path.join(fs.mkdtempSync(path.join(sandbox, 'journal-')), 'history.json') } = {}) {
+  const history = createExecutionHistory({file: historyFile, secrets: () => [token, sign]});
+  if (failPut) {
+    const put = history.put;
+    history.put = record => {
+      if (failPut(record)) throw Object.assign(Error('synthetic disk failure'), { code: 'HISTORY_UNAVAILABLE', statusCode: 409 });
+      return put(record);
+    };
+  }
   saveStore({ version: 1, activeId: 'A', accounts: [credential('A'), credential('B')] });
   const clients = []; let collections = 0;
   const app = createConsole({ port: 0, protocol: { ChallengeStageRequest: {}, ChallengeStageResponse: {} },
     ...(productionSide ? {} : { stageSideResolver: side }), stageClock, tracePath: path.join(sandbox, 'trace.log'),
-    clientFactory: () => { const client = new FakeClient(); clients.push(client); return client; },
+    operationOptions: {history},
+    clientFactory: () => { const client = new FakeClient(onRequest); clients.push(client); return client; },
     collect: (...args) => { collections++; return collect ? collect(...args) : { ok: {}, failed: {} }; } });
   await app.listen();
   const origin = 'http://127.0.0.1:' + app.server.address().port;
@@ -57,7 +69,7 @@ async function harness({ side = () => 'LEFT', collect, productionSide = false, s
   const connect = id => call('/api/connect', { id, method: 'POST', body: {} });
   const start = (id = 'A', extra = {}) => call('/api/stages/start', { id, method: 'POST', body: { confirm: true, config: config(extra) } });
   const stop = id => call('/api/stages/stop', { id, method: 'POST', body: {} });
-  return { ...app, clients, origin, rawCall, call, connect, start, stop, get collections() { return collections; } };
+  return { ...app, clients, origin, rawCall, call, connect, start, stop, historyFile, get collections() { return collections; } };
 }
 
 test('production side gap blocks before Runtime allocation or game request; HTTP cannot supply a side resolver', async () => {
@@ -139,7 +151,7 @@ test('A and B run independently with isolated results and neither starts another
     assert.equal((await app.call('/api/stages', { id: 'B' })).data.runner.lastResult.outcome, 'FAILED');
   } finally { await app.close(); }
 });
-test('stop retains old battle lock and late responses cannot populate a new run; explicit reconnect permits fresh state', async () => {
+test('stop retains unresolved battle evidence through late responses, reconnect and console restart', async () => {
   const app = await harness();
   try {
     await app.connect('A'); await app.start();
@@ -151,12 +163,28 @@ test('stop retains old battle lock and late responses cannot populate a new run;
     assert.equal(old.getStatus().lastResult, null); assert.equal(old.getStatus().runId, runId);
     assert.equal((await app.start()).status, 409);
     await app.call('/api/disconnect', { method: 'POST' }); await app.connect('A');
-    assert.equal((await app.start('A', { maxAttempts: 1 })).status, 200);
-    const fresh = app.sessions.get('A').stageRunner;
-    assert.notEqual(fresh.getStatus().runId, runId);
-    app.clients[1].requests[0].resolve(response(41)); await fresh.completion;
-    assert.equal(fresh.getStatus().attempts, 1);
+    assert.equal((await app.start('A', { maxAttempts: 1 })).data.code, 'RECOVERY_UNCERTAIN');
+    assert.equal(app.clients[1].requests.length, 0);
+    const log = (await app.call('/api/operations/history')).data.runs[0];
+    assert.equal(log.runId, runId); assert.equal(log.finalStatus, 'UNKNOWN');
+    assert.equal(log.actions[0].afterState, null);
   } finally { await app.close(); }
+  const restarted = await harness({historyFile: app.historyFile});
+  try {
+    await restarted.connect('A');
+    const status = (await restarted.call('/api/operations')).data;
+    assert.equal(status.status.blocked, true);
+    const otherWrite = await restarted.rawCall('/api/operations/plan', {method: 'POST',
+      headers: {origin: restarted.origin, 'x-cw-csrf': status.csrfToken},
+      body: {module: 'orders', mode: 'Manual', selections: ['synthetic-order']}});
+    assert.equal(otherWrite.status, 409);
+    assert.equal(otherWrite.data.code, 'RECOVERY_UNCERTAIN');
+    assert.equal((await restarted.start('A', {maxAttempts: 1})).data.code, 'RECOVERY_UNCERTAIN');
+    assert.equal(restarted.clients[0].requests.length, 0);
+    const log = (await restarted.call('/api/operations/history')).data.runs[0];
+    assert.equal(log.finalStatus, 'UNKNOWN'); assert.equal(log.resumable, false);
+    assert.equal(log.actions[0].result, 'UNKNOWN');
+  } finally { await restarted.close(); }
 });
 test('disconnect, account expiry and deletion cancel the runner and remove its client listeners', async () => {
   for (const terminal of ['disconnect', 'EXPIRED', 'delete']) {
@@ -368,5 +396,78 @@ test('Stage unknown payload fields are rejected after a real CSRF read and befor
     const session = app.sessions.get('A'), client = app.clients[0];
     const connected = await app.call('/api/stages/start', { method: 'POST', body: { confirm: true, config: config(), playerSide: 'LEFT' } });
     assert.equal(connected.status, 400); assert.equal(app.sessions.get('A'), session); assert.equal(app.clients.length, 1); assert.equal(client.requests.length, 0);
+  } finally { await app.close(); }
+});
+
+test('standalone Stage writes each intent before send and commits each verified result before the next battle', async () => {
+  const preSend = [];
+  const app = await harness({productionSide: true, onRequest(body) {
+    preSend.push({stage: body.stage, run: JSON.parse(fs.readFileSync(app.historyFile, 'utf8')).accounts.A[0]});
+  }});
+  try {
+    await app.connect('A'); await app.start('A', {maxAttempts: 2, stopOnDefeat: true});
+    const runner = app.sessions.get('A').stageRunner, client = app.clients[0];
+    const battle = (stage, win) => ({initialData: {mainlineStage: stage, battleType: 1}, stats: {isLeftWin: win}, token});
+    assert.equal(preSend.length, 1);
+    const stored = preSend[0].run;
+    assert.equal(stored.runId, runner.getStatus().runId);
+    assert.equal(stored.authorizationSummary.batchId, stored.runId);
+    assert.equal(stored.actions[0].requestStatus, 'DISPATCHING');
+    assert.equal(stored.actions[0].target.stage, 41);
+    const before = fs.readFileSync(app.historyFile, 'utf8');
+    const crashRead = createExecutionHistory({file: app.historyFile});
+    assert.equal(crashRead.list('A')[0].actions[0].result, 'UNKNOWN');
+    assert.equal(crashRead.unresolved('A'), true);
+    assert.equal(fs.readFileSync(app.historyFile, 'utf8'), before, 'restart projection cannot rewrite evidence');
+    client.requests[0].resolve(battle(41, true));
+    await tick();
+    assert.equal(preSend.length, 2);
+    const [first, second] = preSend[1].run.actions;
+    assert.equal(first.result, 'SUCCESS');
+    assert.deepEqual(first.afterState, {stage: 41, outcome: 'SUCCESS', isLeftWin: true, playerSide: 'LEFT'});
+    assert.equal(first.verification.status, 'CONFIRMED');
+    assert.equal(second.requestStatus, 'DISPATCHING');
+    assert.equal(preSend[1].stage, second.target.stage);
+    client.requests[1].resolve(battle(42, false));
+    await runner.completion;
+    const log = (await app.call('/api/operations/history')).data.runs[0];
+    assert.equal(log.finalStatus, 'FAILED'); assert.equal(log.stopKind, 'DEFEAT_STOPPED');
+    assert.equal(log.actions[1].result, 'FAILED');
+    assert.equal(log.actions[1].verification.status, 'CONFIRMED');
+    assert.equal((await app.call('/api/operations')).data.status.blocked, false);
+    assert.deepEqual((await app.call('/api/operations/history', {id: 'B'})).data.runs, []);
+    assert.equal(fs.readFileSync(app.historyFile, 'utf8').includes(token), false);
+  } finally { await app.close(); }
+});
+
+test('disk failure writing standalone dispatch intent sends zero battles and records no false uncertainty', async () => {
+  const app = await harness({failPut: run => run.actions.at(-1)?.requestStatus === 'DISPATCHING'});
+  try {
+    await app.connect('A'); await app.start('A', {maxAttempts: 1});
+    const runner = app.sessions.get('A').stageRunner;
+    await runner.completion;
+    assert.equal(app.clients[0].requests.length, 0);
+    assert.equal(runner.getStatus().error.code, 'HISTORY_UNAVAILABLE');
+    assert.equal(runner.getStatus().attempts, 0);
+    assert.equal(runner.getStatus().uncertain, false);
+    const log = (await app.call('/api/operations/history')).data.runs[0];
+    assert.equal(log.finalStatus, 'NOT_EXECUTED'); assert.deepEqual(log.actions, []);
+  } finally { await app.close(); }
+});
+
+test('disk failure writing standalone result stops the next battle and retains the prior intent as UNKNOWN', async () => {
+  const app = await harness({failPut: run => run.actions.at(-1)?.requestStatus === 'SUCCESS'});
+  try {
+    await app.connect('A'); await app.start('A', {maxAttempts: 2});
+    const runner = app.sessions.get('A').stageRunner;
+    app.clients[0].requests[0].resolve(response(41));
+    await runner.completion;
+    assert.equal(runner.getStatus().error.code, 'HISTORY_UNAVAILABLE');
+    assert.equal(app.clients[0].requests.length, 1);
+    const log = (await app.call('/api/operations/history')).data.runs[0];
+    assert.equal(log.finalStatus, 'UNKNOWN');
+    assert.equal(log.actions[0].requestStatus, 'UNKNOWN');
+    assert.equal(log.actions[0].afterState, null);
+    assert.equal((await app.call('/api/operations')).data.status.blocked, true);
   } finally { await app.close(); }
 });

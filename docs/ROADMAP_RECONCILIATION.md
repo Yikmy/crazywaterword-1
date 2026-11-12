@@ -2525,3 +2525,11 @@ E14 增加套装首次免费激活、品质成员门槛、精通等级/星数门
 补充 D.24 直接万能升星限制的进一步证据：Detail byte 248632–248828 只证明专属与万能合计足够；Util byte 302496 只返回总需求；StarUp body 无材料分配字段且无专用费用回执。物品 push 是最终余额、Model 直接替换，不能据此推断预授权扣款顺序，所以不假定 dedicated-first。未激活路径 byte 255741 只校验专属碎片，byte 256578 的 Activate 请求仅 id，开关不影响激活。独立兑换不能冒充此混合扣款合同完成。
 
 E15 增加 VIP 等级权威/历史观察分离、推送断流与日策略未知；E23 增加重连与跨上下文隔离。原五份未跟踪资料保留。未执行 R7、真实游戏、R8、push 或 merge；总 Goal 继续 ACTIVE，R8 仍在 R7 后由 Owner 单独授权。
+
+### D.26 W19 独立闯关逐场持久历史（2026-11-12）
+
+基线 c2e4968。POST /api/stages/start 继续走原账号、授权、阵容和会话门禁，复用原 StageRunner 与唯一共享 ExecutionHistory；Operation/Workflow 路径不重复写历史。每场 ChallengeStageRequest 前同步持久化账号/世代/连接、关卡、序号及 DISPATCH_INTENT，原主线解析器确认该关、阵营和明确胜负后才保存结果并允许下一场。派发意图落盘失败时零请求；结果落盘失败、派发后取消或无法归属时停止后续请求并保留 UNKNOWN。重连和重启只读恢复，未决记录会阻止新的受控写操作；迟到响应不解除拦截，也不自动重发。已确认胜负且只缺批次终态时，只读恢复为已停止并保留逐场证据。
+
+五文件联合测试：tests/stages.test.mjs、tests/stages-api.test.mjs、tests/stage-function.test.mjs、tests/execution-history.test.mjs、tests/operation-recovery-api.test.mjs，98/98 PASS，0 fail/cancelled/skipped/todo（6.25 秒）。全量离线 Node 测试及 29 组自检也由并行施工者运行通过；自检沿用素材未同步时的既有跳过条件。
+
+W19 仍 PARTIAL：Loop/Tasks/Dailies 各入口的历史和拒绝记忆覆盖、可信冷却/日界策略、主线未决写的权威解除仍待施工。E20/E21/E23 增加逐场持久化、磁盘故障、取消和重启隔离。真实游戏仍 REAL_UNVERIFIED；原范围、R7/R8 状态与授权门禁不变。
