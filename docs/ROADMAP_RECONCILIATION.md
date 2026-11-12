@@ -2533,3 +2533,15 @@ E15 增加 VIP 等级权威/历史观察分离、推送断流与日策略未知�
 五文件联合测试：tests/stages.test.mjs、tests/stages-api.test.mjs、tests/stage-function.test.mjs、tests/execution-history.test.mjs、tests/operation-recovery-api.test.mjs，98/98 PASS，0 fail/cancelled/skipped/todo（6.25 秒）。全量离线 Node 测试及 29 组自检也由并行施工者运行通过；自检沿用素材未同步时的既有跳过条件。
 
 W19 仍 PARTIAL：Loop/Tasks/Dailies 各入口的历史和拒绝记忆覆盖、可信冷却/日界策略、主线未决写的权威解除仍待施工。E20/E21/E23 增加逐场持久化、磁盘故障、取消和重启隔离。真实游戏仍 REAL_UNVERIFIED；原范围、R7/R8 状态与授权门禁不变。
+
+### D.27 W12 可信配额、单目标扫荡及日常入口（2026-11-12）
+
+父提交 60d08ba；D.22 与 D.25 的只读层之上新增 C151/P2-8 默认关闭的 pirate-sweep Function，复用同一 Operation/Workflow 授权、资源台账和执行历史。既有 48 项采集不加请求；CLI 和控制台概览展示已用、基础/VIP/有效月卡总额及可确认的剩余。日常 1010 指向同一页面，旧按任务差额批量截取的构造与派发均关闭，伪造旧计划零发送。D.22 中“C152 召唤”为笔误；C152 是 W13 钓鱼，未纳入此提交。
+
+固定 v76 微信包及配置的哈希和源偏移见 PIRATE_QUOTA_EVIDENCE、LIVE_MONTH_CARD_EVIDENCE、PIRATE_SWEEP_OPERATION_EVIDENCE。MonthCardResponse 是当前连接有归属的完整替换列表；空列表保留为空，交付推送使旧列表失效，同一次调查中发生交付也不接受旧响应。使用 PirateParamCfg、当前 VIP 精确配置行、当前有效卡效果和匹配 Ping 的可信时间。跨到期、缺配置或 VIP 行（固定配置无 VIP0 行）、非当前连接、时钟变动等均不补默认。游戏日只在 v76 已知 +480/+540 两个策略对整个时间区间一致、且排除本地 reset 的 10.002 秒延迟区间时确认；该规则未证明服务器实际重置时刻，真实边界仍待 E15。
+
+静态证据支持 PiratePop 的首杀等级门、低等级明示确认、精确 {uid,cityId} 与普通日额度。只生成并授权一个目标，消耗一个带游戏日标识的配额，预占该目标 UID，普通资源成本为空。独立复查身份、配置、剩余与目标到实际 socket 边界；D6 拒绝扩展字段与付费。无专用 typed 扫荡响应；仅当独立同日复读计数恰好加一、目标池和首杀记录保持一致、期间无相冲突的领域推送时确认这一计次效果。结果证据不足则 UNKNOWN、保留预占、停止且不重放。
+
+验证在 NAS 直接运行 npm test 的两条 Node 命令：node src/selftest.mjs 29 组通过（原素材未同步检查按既有条件跳过）；node --test --test-reporter=spec 为 2505/2505 PASS、0 fail/cancelled/skipped/todo（25.74 秒）。包含本地真实 Codec 与合成 socket 的交付/超时/拒绝/重启、正式 OperationService 派发前磁盘预占及零重放、完整页面明确授权和账号切换。未连接真实游戏。
+
+W12 仍 PARTIAL：E15 原定的“扣次且目标变化”双证据、目标删除归属、具体奖励归属和服务器日界仍未闭合；目标池变动或无效果保留 UNKNOWN，不能以计数替代这些证据。E15/E20/E21/E23 增加边界、预算与身份失效分支；R7/R8、E01–E24 及原工作包范围保持。此轮未 push/merge，R8 仍需 R7 后由 Owner 单独授权。

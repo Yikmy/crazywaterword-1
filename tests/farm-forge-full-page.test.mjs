@@ -56,7 +56,13 @@ async function boot() {
   assert.deepEqual(h.requests.map((request) => new URL(request.url, 'http://localhost').pathname), ['/api/accounts', '/api/overview']);
   return h;
 }
+const pirateDay='2026-11-12';
+const pirateTarget={uid:17,cityId:9,type:1,level:2,gridIdx:0,maxKilledLevel:3,levelRelation:'LOWER'};
+const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',actionType:'SWEEP',parameters:{uid:17,cityId:9,allowLowerLevel:true},costs:[],blockedReason:'PIRATE_FIRST_KILL_REQUIRED',facts:{
+ quota:{dayKey:pirateDay,used:2,total:13,remaining:11,reason:null},quotaBreakdown:{base:10,vip:1,monthCards:2},targets:[pirateTarget,{...pirateTarget,uid:18,level:4,levelRelation:'FIRST_KILL_REQUIRED'}],
+}};
 const cases = [
+  pirateCase,
   ...[
    {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:0,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:0,effectiveNum:0,advEffectValue:0}]}},
    {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[{id:'GOLD',num:50},{id:'蓝藏品经验',num:370}],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:1,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:10,effectiveNum:3,advEffectValue:0}]}},
@@ -79,13 +85,13 @@ const cases = [
   { module: 'equipment-forge', actionId: 'equipment-forge:MAKE:synthetic-exact', actionType: 'MAKE', parameters: { buildingId: '1装备厂', action: 'make', makeId: 1001, allowUniversal: false }, costs: [{ id: '材料', num: 4 }], facts: { forges: [{ buildingId: '1装备厂', level: 1, queue: { state: 'IDLE' } }], recipes: [{ makeId: 1001, type: '武器', season: 1, costs: [{ id: '材料', num: 4 }], equipIds: ['蓝武器1'] }], bag: [{ uid: '9007199254740993', equipId: '蓝武器1', level: 0, star: 2, refineLv: 0 }] }, blockedReason: 'QUEUE_IDLE_BLOCKED_EVIDENCE' },
 ];
 function candidate(spec) {
-  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, target: spec.module==='antique-growth'?(spec.actionType==='SUIT'?{suitId:spec.parameters.suitId}:spec.actionType==='MASTER'?{kind:'ANTIQUE_MASTERY'}:{antiqueId:spec.parameters.antiqueId}):spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
+  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, target: spec.module==='pirate-sweep'?pirateTarget:spec.module==='antique-growth'?(spec.actionType==='SUIT'?{suitId:spec.parameters.suitId}:spec.actionType==='MASTER'?{kind:'ANTIQUE_MASTERY'}:{antiqueId:spec.parameters.antiqueId}):spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
 }
 function data(spec, { disabled = false } = {}) {
   return { accountId: 'A', module: spec.module, csrfToken: 'synthetic-csrf-A', config: { enabled: !disabled }, status: { running: false, blocked: false }, functions: ['survey', 'plan'], view: { ...spec.facts, candidates: disabled ? [] : [candidate(spec), { ...candidate(spec), actionId: spec.actionId + ':blocked', executable: false, blockedReason: spec.blockedReason }] } };
 }
 function plan(spec) {
-  return { accountId: 'A', module: spec.module, batchId: 'batch-' + spec.module, planHash: 'hash-' + spec.module, mode: 'Manual', actions: [candidate(spec)], resourceBudget: spec.costs, expiresAt: Date.now() + 60000 };
+  return { accountId: 'A', module: spec.module, batchId: 'batch-' + spec.module, planHash: 'hash-' + spec.module, mode: 'Manual', actions: [candidate(spec)], resourceBudget: spec.costs, ...(spec.module==='pirate-sweep'?{budgetClaims:{resources:[],quotas:[{id:'pirate-sweep:'+pirateDay,num:1}],uids:[{type:'pirate',id:'17'}]}}:{}), expiresAt: Date.now() + 60000 };
 }
 function descendants(element) { return element.children.flatMap((child) => [child, ...descendants(child)]); }
 function domainButtons(h, spec) { return descendants(h.node('gp-' + spec.module + '-facts')).filter((child) => child.dataset.domainAction); }
@@ -124,12 +130,14 @@ for (const spec of cases) {
     const h = await loaded(spec); await preview(h, spec);
     assert.equal(Object.hasOwn(data(spec).view.candidates[0], 'action'), false, 'fixture matches cropped public candidates');
     const ids = [...PAGE.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-    for (const id of ['gp-' + spec.module + '-section', 'gp-' + spec.module + '-plan']) assert.equal(ids.filter((value) => value === id).length, 1);
+    for (const id of [spec.module==='pirate-sweep'?'tab-pirate-sweep':'gp-' + spec.module + '-section', 'gp-' + spec.module + '-plan']) assert.equal(ids.filter((value) => value === id).length, 1);
+    if(spec.module==='pirate-sweep')assert.match(h.node('gp-pirate-sweep-plan-view').textContent,/额度占用：海面扫荡 2026-11-12 ×1/);
     h.setConfirm(false); await h.node('gp-' + spec.module + '-authorize').onclick();
     assert.equal(writes(h, '/api/operations/authorize').length, 0); assert.equal(writes(h, '/api/operations/execute').length, 0);
     h.setConfirm(true); const running = h.node('gp-' + spec.module + '-authorize').onclick(), expected = plan(spec);
     assertMutation(h.pending('/api/operations/authorize'), '/api/operations/authorize', { batchId: expected.batchId, planHash: expected.planHash, approvedActionIds: [spec.actionId], resourceBudget: spec.costs, confirm: true });
     assert.ok(h.confirmations.at(-1).includes('账号 A')); assert.ok(h.confirmations.at(-1).includes(expected.batchId)); assert.ok(h.confirmations.at(-1).includes(expected.planHash)); assert.ok(h.confirmations.at(-1).includes(spec.costs[0]?.id??'无资源消耗'));
+    if(spec.module==='pirate-sweep')assert.match(h.confirmations.at(-1),/额度占用：海面扫荡 2026-11-12 ×1/);
     h.respond('/api/operations/authorize', { accountId: 'A', batchId: expected.batchId, permitId: 'synthetic-permit' }); await tick();
     assertMutation(h.pending('/api/operations/execute'), '/api/operations/execute', { batchId: expected.batchId, permitId: 'synthetic-permit' });
     h.respond('/api/operations/execute', { runId: 'synthetic-run-' + spec.module, status: 'EXECUTING' }); await running;
@@ -386,4 +394,35 @@ test('Antique advanced selectors keep exact mode fields, require a fresh survey 
  // A detached input and button from a previous account cannot replace a new draft.
  e.run("selectAccount('B');");num.value='8';apply.click();
  assert.notDeepEqual(JSON.parse(e.node('gp-antique-growth-parameters').value||'{}'),{action:'exchange',antiqueId:'测试藏品',num:8});
+});
+
+test('sweep target draft requires explicit lower-level confirmation and fresh survey',async()=>{
+ const h=await loaded(pirateCase),facts=h.node('gp-pirate-sweep-facts');
+ assert.match(facts.textContent,/海面扫荡额度.*2026-11-12.*基础 10 · VIP 1 · 月卡 2/);
+ assert.match(facts.textContent,/需要首杀/);
+ const rows=descendants(facts),lower=rows.find(node=>node.tagName==='input'&&node.type==='checkbox'),pick=rows.find(node=>node.textContent==='选择 UID 17（城市 9）');
+ assert.ok(lower&&pick);assert.ok(!rows.some(node=>node.textContent==='选择 UID 18（城市 9）'));
+ const before=h.requests.length,initial=h.node('gp-pirate-sweep-parameters').value;
+ pick.click();assert.match(h.node('gp-pirate-sweep-hint').textContent,/明确扫荡此低等级/);
+ assert.equal(h.node('gp-pirate-sweep-parameters').value,initial);
+ lower.checked=true;pick.click();assert.equal(lower.checked,false);
+ assert.deepEqual(JSON.parse(h.node('gp-pirate-sweep-parameters').value),pirateCase.parameters);
+ assert.equal(h.requests.length,before);
+ assert.equal(h.node('gp-pirate-sweep-plan').disabled,true);assert.equal(h.node('gp-pirate-sweep-authorize').disabled,true);
+ const scan=h.node('gp-pirate-sweep-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'pirate-sweep',parameters:pirateCase.parameters});
+ h.respond('/api/gameplay/survey',data(pirateCase));await scan;
+ h.run("selectAccount('B');");lower.checked=true;pick.click();
+ assert.notDeepEqual(JSON.parse(h.node('gp-pirate-sweep-parameters').value||'{}'),pirateCase.parameters);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('daily pirate objective links to the same controlled sweep tab without planning or writing',async()=>{
+ const h=await boot(),before=h.requests.length;
+ h.run("renderDailies({tasks:[{task:{id:1010,title:'累计击败野怪',progress:0,targetProgress:1},status:'blocked',functionId:'pirate-sweep'}],text:'只读',ruby:0})");
+ const link=descendants(h.node('dailies-table')).find(node=>node.textContent==='打开海面扫荡');
+ assert.ok(link);
+ h.run("document.querySelector=selector=>({click:()=>{if(selector!=='#tabs button[data-tab=\"pirate-sweep\"]')throw Error('wrong tab');globalThis.openedSweep=true;}});");
+ link.click();assert.equal(h.run('globalThis.openedSweep'),true);assert.equal(h.requests.length,before);
+ h.run("globalThis.openedSweep=false;selectAccount('B');");link.click();assert.equal(h.run('globalThis.openedSweep'),false);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
 });

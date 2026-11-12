@@ -118,6 +118,127 @@ export const LIVE_VIP_LEVEL_EVIDENCE = Object.freeze({
   scope: 'CONTINUOUS_CONNECTION_VIP_LEVEL_ONLY', realGame: 'REAL_UNVERIFIED',
 });
 
+// Full replacement MonthCardResponse snapshots are separate from VIP-level facts.
+const liveMonthCards = new WeakMap(), monthCardQueries = new WeakMap();
+function resetMonthCards(client, reason) {
+  const previous = liveMonthCards.get(client);
+  liveMonthCards.set(client, { owner: previous?.owner ?? null, context: vipContext(client), socket: null, identity: null,
+    anchored: false, invalid: false, epoch: 0, cards: null, sourceAt: null, reason });
+}
+function invalidateMonthCards(client, reason, permanent = false, dirty = false) {
+  const state = liveMonthCards.get(client);
+  if (!state) return;
+  state.cards = null; state.sourceAt = null; state.reason = reason;
+  if (permanent) state.invalid = true;
+  if (dirty) state.epoch++;
+}
+function seedMonthCards(client, body, socket) {
+  const state = liveMonthCards.get(client);
+  if (!state || state.invalid) return;
+  if (state.socket !== socket || !vipCurrentContext(client, state) || vipValue(body, 'result') !== 0) {
+    invalidateMonthCards(client, 'MONTH_CARD_LOGIN_OR_CONTEXT_UNKNOWN', true); return;
+  }
+  const player = vipValue(body, 'playerInfo'), playerId = vipIdentity(vipValue(player, 'playerId')), worldId = vipIdentity(vipValue(player, 'worldId'));
+  if (!playerId || !worldId || vipOwn(player, 'id') && vipIdentity(vipValue(player, 'id')) !== playerId) {
+    invalidateMonthCards(client, 'MONTH_CARD_PLAYER_IDENTITY_UNKNOWN', true); return;
+  }
+  state.identity = { playerId, worldId }; state.anchored = true; state.reason = 'MONTH_CARD_QUERY_REQUIRED';
+}
+function monthCardsCurrentConnection(client, state) {
+  return Boolean(state && state.anchored && !state.invalid && client.connected && state.socket === client.socket && vipCurrentContext(client, state));
+}
+function parseMonthCards(body) {
+  const list = vipValue(body, 'cardItem');
+  if (!Array.isArray(list) || Object.getPrototypeOf(list) !== Array.prototype || list.length > 2
+      || Reflect.ownKeys(list).length !== list.length + 1) return null;
+  const cards = [], seen = new Set();
+  for (let index = 0; index < list.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(list, index);
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) return null;
+    const row = descriptor.value, type = vipValue(row, 'type'), endTime = vipValue(row, 'endTime');
+    if (![1, 2].includes(type) || seen.has(type) || endTime !== -1 && !vipLevel(endTime)) return null;
+    seen.add(type); cards.push({ type, endTime });
+  }
+  return cards.sort((a, b) => a.type - b.type);
+}
+function monthCardRefreshDispatched(client, entry) {
+  const state = liveMonthCards.get(client);
+  if (!state || state.invalid) return;
+  if (!monthCardQueries.has(entry)) { invalidateMonthCards(client, 'MONTH_CARD_QUERY_UNCORRELATED', true); return; }
+  invalidateMonthCards(client, monthCardsCurrentConnection(client, state) ? 'MONTH_CARD_QUERY_PENDING' : 'MONTH_CARD_LOGIN_OR_CONTEXT_UNKNOWN');
+}
+function failMonthCardQuery(client, entry, reason) {
+  const token = monthCardQueries.get(entry);
+  if (token?.dispatched && liveMonthCards.get(client) === token.state && !token.state.invalid)
+    invalidateMonthCards(client, reason);
+}
+function prepareMonthCardQuery(client, entry, signal) {
+  if (entry.name !== 'MonthCardRequest' || entry.responseName !== 'MonthCardResponse' || entry.mutate) return;
+  const token = { dispatched: false, settled: false, signal, state: null, epoch: null, socket: null };
+  monthCardQueries.set(entry, token);
+  const cleanup = () => { token.settled = true; signal?.removeEventListener('abort', cancel); };
+  const cancel = () => {
+    if (token.settled) return;
+    failMonthCardQuery(client, entry, 'MONTH_CARD_QUERY_CANCELLED');
+    client.pending = client.pending.filter(item => item !== entry);
+    clearTimeout(entry.timer);
+    if (token.dispatched) client.lateResponses.add(entry.responseName);
+    cleanup();
+    entry.reject(Object.assign(new Error('month card query cancelled'), { code: 'CANCELLED' }));
+  };
+  entry.cleanup = cleanup;
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) cancel();
+}
+function captureMonthCardQuery(client, entry) {
+  const token = monthCardQueries.get(entry);
+  if (!token) return;
+  if (token.settled || token.signal?.aborted || !client.connected || !client.pending.includes(entry))
+    throw Object.assign(new Error('month card query cancelled before dispatch'), { code: 'CANCELLED' });
+  const state = liveMonthCards.get(client);
+  token.dispatched = true; token.state = state; token.epoch = state?.epoch; token.socket = client.socket;
+}
+function observeMonthCardResponse(client, body, seq, receivedAt) {
+  const state = liveMonthCards.get(client);
+  if (!Number.isInteger(seq) || seq <= 0 || seq > MAX_SEQ) {
+    invalidateMonthCards(client, 'MONTH_CARD_RESPONSE_SEQUENCE_UNKNOWN', true); return;
+  }
+  if (state?.invalid) return;
+  const entry = client.pending.find(item => item.responseName === 'MonthCardResponse');
+  const token = entry && monthCardQueries.get(entry);
+  if (client.lateResponses.has('MonthCardResponse') || !token || !token.dispatched || token.settled) {
+    if (state?.cards) invalidateMonthCards(client, 'MONTH_CARD_RESPONSE_UNCORRELATED');
+    return;
+  }
+  if (token.signal?.aborted) { failMonthCardQuery(client, entry, 'MONTH_CARD_QUERY_CANCELLED'); return; }
+  if (!monthCardsCurrentConnection(client, state) || state !== token.state || token.socket !== client.socket) {
+    invalidateMonthCards(client, 'MONTH_CARD_LOGIN_OR_CONTEXT_UNKNOWN', true); return;
+  }
+  if (state.epoch !== token.epoch) { invalidateMonthCards(client, 'MONTH_CARD_CHANGED_DURING_QUERY'); return; }
+  const cards = parseMonthCards(body);
+  if (cards === null) { invalidateMonthCards(client, 'MONTH_CARD_LIST_NOT_EXPLICIT_OR_INVALID'); return; }
+  state.cards = cards; state.sourceAt = receivedAt; state.reason = null;
+}
+function observeMonthCardDelivery(client, body, seq) {
+  if (!vipOwn(body, 'monthCard')) return;
+  if (!Number.isInteger(seq) || seq <= 0 || seq > MAX_SEQ) {
+    invalidateMonthCards(client, 'MONTH_CARD_DELIVERY_SEQUENCE_UNKNOWN', true, true); return;
+  }
+  invalidateMonthCards(client, 'MONTH_CARD_DELIVERY_REQUIRES_QUERY', false, true);
+}
+export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
+  packageSha256: LIVE_VIP_LEVEL_EVIDENCE.packageSha256, entrySha256: LIVE_VIP_LEVEL_EVIDENCE.entrySha256,
+  protocolSha256: LIVE_VIP_LEVEL_EVIDENCE.protocolSha256,
+  monthCardModel: Object.freeze({ byteOffset: 4682260, initDataByteOffset: 4683045, sha256: '5fcf22ef42392b52ac22f4fb249a9dbe03d662415ff8a603973eb74b333e4b63' }),
+  monthCardItem: Object.freeze({ byteOffset: 4676757, paymentClosureByteOffset: 4681792, sha256: 'f297b8d45ad33363a6667243fed6d1065b8ca4e9ddf28808cd5f5a4bb37cdd06' }),
+  monthCardView: Object.freeze({ byteOffset: 4683423, sha256: '8b4613dd82cd77fe524aa6373cb75a84b4bf5726bf39da1c95f69e5ca2d04f2a' }),
+  modelManager: Object.freeze({ byteOffset: 4644292, deliveryByteOffset: 4663947, sha256: LIVE_VIP_LEVEL_EVIDENCE.modelManager.sha256 }),
+  gameConstants: Object.freeze({ byteOffset: 2968528, foreverByteOffset: 2969709, sha256: 'fe400eb67cc8e0c7b7f3ee49cb404eca20f1a84eaa5a76809c43a6446f938ae2' }),
+  digestScope: LIVE_VIP_LEVEL_EVIDENCE.digestScope,
+  listPolicy: 'Full replacement response, zero to two unique known types; preserve only returned rows, never synthesize absent cards or default endTime',
+  scope: 'CONTINUOUS_CONNECTION_MONTH_CARD_ROWS_ONLY_NO_ACTIVE_OR_DAY', realGame: 'REAL_UNVERIFIED',
+});
+
 export class GameClient extends EventEmitter {
   constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket, assertTransport = () => {}, accountId = null, generation = 0, gameClock = null } = {}) {
     super();
@@ -125,6 +246,8 @@ export class GameClient extends EventEmitter {
     this.factContext = { accountId, generation };
     liveVipLevels.set(this, { owner: { accountId, generation } });
     resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
+    liveMonthCards.set(this, { owner: { accountId, generation } });
+    resetMonthCards(this, 'MONTH_CARD_NOT_LOGGED_IN');
     this.gameClock = gameClock ?? (typeof accountId === 'string' && accountId ? trustedGameClock({ accountId, generation }) : { reset() {}, markPing() {}, observePong() {}, read: () => ({ status: 'UNKNOWN', reliable: false, reason: 'CONTEXT_UNKNOWN' }) });
     this.url = url;
     this.login = login;
@@ -173,6 +296,20 @@ export class GameClient extends EventEmitter {
       worldId: state && sameVipContext(state.context, context) ? state.identity?.worldId ?? null : null };
   }
 
+  readMonthCards() {
+    const state = liveMonthCards.get(this), context = vipContext(this);
+    if (state && !vipCurrentContext(this, state)) invalidateMonthCards(this, 'MONTH_CARD_CONTEXT_UNKNOWN_OR_CHANGED', true);
+    else if (state?.anchored && (!this.connected || state.socket !== this.socket)) invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_NOT_CURRENT', true);
+    const current = monthCardsCurrentConnection(this, state) && state.cards !== null;
+    return { status: current ? 'CURRENT' : 'UNKNOWN', reliable: current,
+      cards: current ? state.cards.map(row => ({ ...row })) : null, source: current ? 'MonthCardResponse' : null,
+      sourceAt: current ? state.sourceAt : null, reason: current ? null : state?.reason ?? 'MONTH_CARD_LOGIN_BASELINE_UNKNOWN',
+      accountId: vipText(context.accountId) ? context.accountId : null, generation: vipGeneration(context.generation) ? context.generation : null,
+      connectionId: vipText(context.connectionId) ? context.connectionId : null,
+      playerId: state && sameVipContext(state.context, context) ? state.identity?.playerId ?? null : null,
+      worldId: state && sameVipContext(state.context, context) ? state.identity?.worldId ?? null : null };
+  }
+
   setState(state, detail) {
     this.state = state;
     this.emit('state', { state, detail });
@@ -185,6 +322,7 @@ export class GameClient extends EventEmitter {
     this.stopping = false;
     this.gameClock.reset();
     resetVipLevel(this, 'VIP_LOGIN_PENDING');
+    resetMonthCards(this, 'MONTH_CARD_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
     this.loginPromise = promise;
@@ -197,6 +335,7 @@ export class GameClient extends EventEmitter {
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
       liveVipLevels.get(this).socket = socket;
+      liveMonthCards.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
       const current = () => this.loginAttempt === attempt && this.socket === socket;
       attempt.timer = setTimeout(() => {
@@ -237,6 +376,7 @@ export class GameClient extends EventEmitter {
           this.lastResponseAt = Date.now();
           this.loginResponse = body;
           seedVipLevel(this, body, socket);
+          seedMonthCards(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
           socket.onclose = (closed) => { if (this.socket === socket) this.onClose(closed); };
           socket.onerror = () => {
@@ -269,6 +409,7 @@ export class GameClient extends EventEmitter {
   // Every terminal path releases resources before publishing its final state.
   finishConnection(state, error, reason = state.toLowerCase()) {
     resetVipLevel(this, 'VIP_CONNECTION_ENDED');
+    resetMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
     this.gameClock.reset();
     const attempt = this.loginAttempt;
@@ -317,8 +458,9 @@ export class GameClient extends EventEmitter {
       // Encoding, frame listeners and the writer fence can block synchronously.
       // The caller rechecks current business eligibility after all of them.
       beforeDispatch?.();
-      onDispatch?.(seq);
+      const entry = onDispatch?.(seq);
       transportEntered = true;
+      if (name === 'MonthCardRequest') monthCardRefreshDispatched(this, entry);
       this.socket.send(frame);
       return seq;
     } catch(error) {
@@ -340,6 +482,7 @@ export class GameClient extends EventEmitter {
     const frame = this.codec.encode(name, 0, body || {});
     this.emit('frame', { dir: 'out', name, seq: 0, bytes: frame, body });
     this.assertTransport();
+    if (name === 'MonthCardRequest') monthCardRefreshDispatched(this);
     this.socket.send(frame);
     return true;
   }
@@ -381,14 +524,19 @@ export class GameClient extends EventEmitter {
       this.lateResponses.add(responseName);
       if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(key);
       this.promptUncertain = true;
+      failMonthCardQuery(this, entry, 'MONTH_CARD_QUERY_TIMEOUT');
+      entry.cleanup?.();
       const error = new Error('timeout waiting for ' + responseName + ' (sent ' + name + ')');
       error.code = 'RESPONSE_TIMEOUT';
       entry.reject(error);
     }, timeout);
     this.pending.push(entry);
+    prepareMonthCardQuery(this, entry, signal);
     try {
-      this.send(name, body, { signal, beforeDispatch, onDispatch: (seq) => { entry.sent = seq; } });
+      this.send(name, body, { signal, beforeDispatch, onDispatch: (seq) => { captureMonthCardQuery(this, entry); entry.sent = seq; return entry; } });
     } catch (error) {
+      failMonthCardQuery(this, entry, 'MONTH_CARD_QUERY_FAILED');
+      entry.cleanup?.();
       if (entry.mutate && entry.sent !== undefined) this.uncertainWrites.add(key);
       clearTimeout(entry.timer);
       this.pending = this.pending.filter((item) => item !== entry);
@@ -538,16 +686,24 @@ export class GameClient extends EventEmitter {
       decoded = this.codec.decode(data);
     } catch (error) {
       invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
+      invalidateMonthCards(this, 'MONTH_CARD_STREAM_DECODE_FAILED', true);
       this.emit('error', new Error(`decode failed: ${error.message}`));
       return;
     }
-    this.lastResponseAt = Date.now();
+    const receivedAt = Date.now();
+    this.lastResponseAt = receivedAt;
     const { seq, name, body } = decoded;
     if (name === 'PingResponse' && this.tryHandlePong(body)) return;
 
     if (!this.handleSeqNo(seq, name)) return;
-    if (name === 'ResendFailed' || name === 'SCChannelExpired') invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
+    if (name === 'ResendFailed' || name === 'SCChannelExpired') {
+      invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
+      invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
+    }
+    if (name === 'SCServerTimeChanged') this.gameClock.reset();
     if (name === 'SCVipUpdate') updateVipLevel(this, body, seq);
+    if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
+    if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });
 
     if (name === 'ResendFailed') {
@@ -575,6 +731,7 @@ export class GameClient extends EventEmitter {
     if (index >= 0) {
       const [entry] = this.pending.splice(index, 1);
       clearTimeout(entry.timer);
+      entry.cleanup?.();
       entry.resolve(body);
     }
   }
@@ -589,6 +746,7 @@ export class GameClient extends EventEmitter {
           this.emit('drop', { reason: 'duplicate', name, seq, recvSeqNo: this.recvSeqNo });
         } else {
           invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
+          invalidateMonthCards(this, 'MONTH_CARD_STREAM_SEQUENCE_GAP', true);
           this.sendNack(this.recvSeqNo);
           this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });
         }

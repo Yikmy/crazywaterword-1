@@ -1,3 +1,4 @@
+import { pirateSweepModule } from '../src/pirate-operations.mjs';
 import { antiqueGrowthModule } from '../src/antique-growth.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,9 +23,9 @@ import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 // Every protocol type, response and account below is synthetic. No GameClient
 // connection, asset loader, default account path or persistent store is used.
 const clone = value => structuredClone(value);
-const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','stage'];
-const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule, 'equipment-growth':equipmentGrowthModule, 'badge-growth':badgeGrowthModule, 'antique-growth':antiqueGrowthModule };
-const tablesByModule = { 'antique-growth':['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg','AntiqueSuitLvCfg','AntiqueMasterLvCfg','ItemCfg'], 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
+const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','pirate-sweep','stage'];
+const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule, 'equipment-growth':equipmentGrowthModule, 'badge-growth':badgeGrowthModule, 'antique-growth':antiqueGrowthModule, 'pirate-sweep':pirateSweepModule };
+const tablesByModule = { 'pirate-sweep':['PirateParamCfg','VipLevelCfg','MonthCardCfg'], 'antique-growth':['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg','AntiqueSuitLvCfg','AntiqueMasterLvCfg','ItemCfg'], 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
   heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg','WorldFortCfg','FortDonateMaterialCfg','FortParamCfg','FortSeasonUnlockCfg','ItemCfg'],
@@ -97,7 +98,7 @@ async function makePlan(f, id, { mode = 'Manual', parameters = id === 'formation
 const approve = (f, plan) => f.service.authorize(f.session,{ batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map(row => row.actionId), resourceBudget: plan.resourceBudget, confirm: true });
 function noExecution(f) { assert.equal(f.writes.length,0); assert.equal(f.state.runnerPreparations,0); assert.equal(f.state.historyWrites,0); assert.equal(f.session.busy,null); }
 
-test('sixteen static adapters and dynamic Stage register as seventeen contract-backed Functions', () => {
+test('seventeen static adapters and dynamic Stage register as eighteen contract-backed Functions', () => {
   const f = fixture(); assert.deepEqual(Object.keys(f.modules),allIds);
   for (const [id,module] of Object.entries(f.modules)) {
     assert.equal(module.contractVersion,1); assert.ok(Object.isFrozen(module));
@@ -118,7 +119,7 @@ test('registry rejects missing real hooks and unknown module identities', () => 
   assert.throws(() => registerBusinessFunction({ ...formationModule, id: 'untrusted' }),{ code: 'INVALID_FUNCTION_CONTRACT' });
 });
 test('registry and Service expose exact detached C/P/S, schema, permission and evidence metadata', () => {
-  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,17);
+  const f = fixture(), listed = listBusinessFunctions(f.modules); assert.equal(listed.length,18);
   for (const entry of listed) {
     assert.deepEqual(entry.metadata,describeFunctionContract(entry.id)); assert.deepEqual(entry.capabilities,FUNCTION_CONTRACTS[entry.id].inventoryRequirementIds??FUNCTION_CONTRACTS[entry.id].requirementIds.C);
     const throughService = f.service.moduleView(f.session.id,entry.id).functions.find(row => row.id === entry.id);

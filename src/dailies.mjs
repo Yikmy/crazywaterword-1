@@ -377,20 +377,11 @@ export const DAILY_DRIVERS = {
   1010: {
     id: 1010,
     title: '累计击败野怪',
-    probes: [['AllPirateRequest', {}]],
-    evaluate({ task, probe }) {
-      if (task.progress >= task.targetProgress) return { status: 'done' };
-      const pirates = probe('AllPirateRequest')?.pirates ?? [];
-      if (!pirates.length) return { status: 'blocked', reason: '世界地图上没有海盗部队可扫荡' };
-      const remaining = task.targetProgress - task.progress;
-      const actions = pirates.slice(0, remaining).map((pirate) => ({
-        request: 'PirateSweepRequest',
-        body: { uid: pirate.uid, cityId: pirate.cityId },
-        response: null,
-        cost: '讨伐次数',
-        note: `扫荡海盗 ${pirate.uid}`,
-      }));
-      return { status: 'ready', actions };
+    probes: [],
+    evaluate({ task }) {
+      return task.progress >= task.targetProgress
+        ? { status: 'done' }
+        : { status: 'blocked', functionId: 'pirate-sweep', reason: '请在海面扫荡中核验今日额度并单项授权' };
     },
   },
 
@@ -549,6 +540,11 @@ export async function runDailies(client, protocol, survey, options = {}) {
       let outcome;
       try {
         assertExecutionActive(client, settings);
+        if (action.request === 'PirateSweepRequest') {
+          report({ id: entry.task.id, title: entry.task.title, request: action.request,
+            ...operationResult('NOT_EXECUTED', { skipped: true, reason: '海面扫荡需要受控单项授权' }) });
+          break;
+        }
         // Enforce D6 before doing even a refresh for a forbidden planned action.
         assertPaymentAllowed({ ...action, paid: action.paid || entry.status === 'paid' }, settings);
         // Reuse the same survey/driver to check current server state and config before each write.

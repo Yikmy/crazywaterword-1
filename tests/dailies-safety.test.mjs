@@ -81,16 +81,34 @@ test('execution rechecks free allowance against config and fresh server state', 
   }
 });
 
-test('silent daily action is UNKNOWN and stops later drivers and reward collection', async () => {
+test('daily pirate progress never builds or dispatches a legacy sweep', async () => {
   const task = daily(1010, 2);
-  const pirates = [{ uid: 'p1', cityId: 1 }, { uid: 'p2', cityId: 1 }];
-  const actions = DAILY_DRIVERS[1010].evaluate({ task, probe: () => ({ pirates }) }).actions;
-  const f = fixture({ tasks: [task], replies: { AllPirateRequest: { pirates } } });
-  const result = await runDailies(f.client, protocol, surveyOf(task, actions), { allowMutate: true, sleep: noSleep });
+  assert.deepEqual(DAILY_DRIVERS[1010].probes, []);
+  const plan = DAILY_DRIVERS[1010].evaluate({ task });
+  assert.equal(plan.status, 'blocked');
+  assert.equal(plan.actions, undefined);
+  assert.equal(plan.functionId, 'pirate-sweep');
+  assert.equal(DAILY_DRIVERS[1010].evaluate({ task: { ...task, progress: 2 } }).status, 'done');
+  const f = fixture({ tasks: [task] });
+  const survey = await surveyDailies(f.client, protocol);
+  assert.equal(survey.tasks[0].functionId, 'pirate-sweep');
+  assert.equal(f.calls.includes('AllPirateRequest'), false);
+  f.calls.length = 0;
+  const stale = { request: 'PirateSweepRequest', body: { uid: 17, cityId: 9 }, costs: [] };
+  const result = await runDailies(f.client, protocol, surveyOf(task, [stale]), { allowMutate: true, claimRewards: false, sleep: noSleep });
+  assert.equal(result[0].status, 'NOT_EXECUTED');
+  assert.deepEqual(f.calls, []);
+});
+
+test('silent daily action is UNKNOWN and stops later drivers and reward collection', async () => {
+  const task = daily(1006, 2);
+  const action = { request: 'ClickGoldRequest', body: { times: 1, free: true }, response: 'ClickGoldResponse', cost: '免费次数' };
+  const f = fixture({ tasks: [task], replies: { ClickGoldInfoRequest: { info: { freeTimes: 0 } } }, write: () => null });
+  const result = await runDailies(f.client, protocol, surveyOf(task, [action, action]), { allowMutate: true, config: clickConfig, sleep: noSleep });
   assert.equal(result.length, 1);
   assert.equal(result[0].status, 'UNKNOWN');
   assert.equal(result[0].ok, null);
-  assert.deepEqual(f.mutations, ['PirateSweepRequest']);
+  assert.deepEqual(f.mutations, ['ClickGoldRequest']);
 });
 
 test('daily cancellation during survey or delay cannot dispatch the next request', async () => {

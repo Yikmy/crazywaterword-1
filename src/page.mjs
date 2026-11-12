@@ -152,7 +152,7 @@ export const PAGE = `<!doctype html>
     <button data-tab="production">生产管理</button>
     <button data-tab="operations-history">执行历史</button>
     <button data-tab="stages">自动闯关</button>
-    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="workflow">工作流</button>
+    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="pirate-sweep">海面扫荡</button><button data-tab="workflow">工作流</button>
     <button data-tab="idle">任务与海面</button>
     <button data-tab="heroes">英雄</button>
     <button data-tab="dailies">日常</button>
@@ -1734,6 +1734,13 @@ function renderDailies(data) {
       ? (entry.actions || []).map((a) => a.cost || a.request).join('；') || '直接完成'
       : (entry.reason || ''),
   ])));
+  if (data.tasks.some(entry => entry.task.id === 1010 && entry.status === 'blocked' && entry.functionId === 'pirate-sweep')) {
+    const scope = viewGuard.capture();
+    const link = el('button', '', '打开海面扫荡');
+    link.type = 'button';
+    link.onclick = () => { if (viewGuard.current(scope)) document.querySelector('#tabs button[data-tab="pirate-sweep"]')?.click(); };
+    box.appendChild(link);
+  }
   if (data.chestsUnavailable) {
     box.appendChild(el('div', 'warn', '无法判断奖励档位：' + data.chestsUnavailable));
   } else if (data.chests) {

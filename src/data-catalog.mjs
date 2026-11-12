@@ -137,6 +137,7 @@ const freezeQueryMetadata = value => {
 };
 const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
 const uses = {
+  'pirate-sweep': consumer('pirate-sweep','surveyPirateSweep','src/pirate-operations.mjs:surveyPirateSweep',['pirates','records','quota','stock']),
   'antique-growth': consumer('antique-growth','surveyAntiqueGrowth','src/antique-growth.mjs:surveyAntiqueGrowth',['antiques','suits','masterLv','stock']),
   antiqueSummary: consumer('antiqueSummary','surveyAntiqueSummary','src/antique-summary.mjs:surveyAntiqueSummary',['global','camps','professions','effects']),
   formation: consumer('formation', 'surveyFormation', 'src/formation.mjs:surveyFormation', ['formation', 'presets', 'heroes']),
@@ -159,12 +160,15 @@ const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], require
   policy: 'Exact explicitly selected positive int32 treasure uid, shared by rank and defence reads; never a dispatch request' };
 // [request, consumers, result authority, allowed parameter shape, domain, notes]
 const businessReads = [
+  ['MonthCardRequest',['pirate-sweep'],accountScope,emptyParameters,'activities','Complete typed replacement list bound to the current login; a delivery push invalidates the list'],
+  ['PirateKillRecordRequest',['pirate-sweep'],accountScope,emptyParameters,'fleets','Complete current kill thresholds for the selected pirate type; absence never grants first-kill eligibility'],
+  ['AllPirateRequest',['pirate-sweep'],accountScope,emptyParameters,'map','Current target pool and explicit used count; remaining quota requires a proven same-day observation and live entitlements'],
   ['AntiqueAttrSummaryRequest',['antiqueSummary'],accountScope,emptyParameters,'collections','Explicit typed current-account attribute summary only; no cultivation, exchange or activation'],
   ['GetFormationRequest', ['formation'], { ...accountScope, key: 'MAINLINE_MODULE_1' }, mainlineParameters, 'heroes', 'Complete formation with exact hero positions and optional pet UID; does not prove save success by itself'],
   ['MyFormationPresetRequest', ['formation', 'fleet'], accountScope, emptyParameters, 'heroes', 'Unlocked formation layouts; not saved complete teams'],
   ['AllHeroRequest', ['formation', 'museum', 'fleet'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],
-  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
-  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
+  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
+  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
   ['GuildInfoRequest', ['alliance', 'fleet'], guildScope, emptyParameters, 'guild', 'Current guild identity and welfare watermark; fleet derives guild index'],
   ['GuildMemberRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current titleList members; absent online flag remains unknown'],
   ['GuildAidListRequest', ['alliance'], guildScope, aidParameters, 'guild', 'Exact request, asker, item and expiry identity; type is fixed zero'],

@@ -265,3 +265,15 @@ test('D6 cannot be bypassed by overridden array iterators or accessor-backed cos
  const accessor=[{id:'GOLD',num:50}];Object.defineProperty(accessor,1,{enumerable:true,get:()=>({id:'蓝藏品经验',num:370})});
  assert.throws(()=>assertPaymentAllowed({...paid,costs:accessor}),{code:'COST_UNKNOWN'});
 });
+test('D6 admits only exact free pirate sweep wire fields', () => {
+  const action = { request: 'PirateSweepRequest', body: { uid: 17, cityId: 9 }, costs: [] };
+  assert.equal(assertPaymentAllowed(action), action);
+  for (const bad of [
+    { ...action, costs: undefined }, { ...action, costs: null }, { ...action, costs: [{ id: 'GOLD', num: 1 }] },
+    { ...action, body: { uid: '17', cityId: 9 } }, { ...action, body: { uid: 17, cityId: 2147483648 } },
+    { ...action, body: { ...action.body, buyExtra: false } }, { ...action, body: { uid: 17, cityId: 0 } },
+  ]) assert.throws(() => assertPaymentAllowed(bad), { code: 'COST_UNKNOWN' });
+  for (const bad of [{ ...action, paid: true }, { ...action, costs: [{ id: 'RUBY', num: 1 }] }]) {
+    assert.throws(() => assertPaymentAllowed(bad, { allowPaid: true }), { code: 'D6_FORBIDDEN' });
+  }
+});

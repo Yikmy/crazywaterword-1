@@ -44,6 +44,11 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'pirate-sweep': contract('pirate-sweep',['C151'],['P2-8'],['src/pirate-operations.mjs#pirateSweepModule','src/pirate-operations.mjs#planPirateSweep'],{uid:integer,cityId:integer,allowLowerLevel:boolean},{
+    implementation:{mode:'CONTROLLED_WRITE',actions:['SWEEP'],blockedCapabilities:[blocked('FIRST_KILL_OR_COMBAT','A higher level requires an independently verified combat contract'),blocked('PAID_OR_BULK_SWEEP','Only one ordinary daily sweep of the exact observed target is admitted')]},
+    verification:verification('verifyPirateSweep','src/pirate-operations.mjs#verifyPirateSweep','Fresh same-day quota, one exact increment of used, unchanged target pool and kill records; no assumed reward or target transition'),
+    dependencyVersions:dependencies(['moduleConfig','config.PirateParamCfg','config.VipLevelCfg','config.MonthCardCfg']),
+  }),
   'antique-growth': contract('antique-growth',[],['P2-7'],['src/antique-growth.mjs#antiqueGrowthModule','src/antique-growth.mjs#planAntiqueGrowth'],{antiqueId:string,action:{type:'string',enum:['activate','star','suit','master','exchange']},suitId:integer,num:integer},{
     inventoryRequirementIds:['PRO-007'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['ACTIVATE','STAR','SUIT','MASTER','EXCHANGE'],blockedCapabilities:[blocked('DIRECT_UNIVERSAL_STAR','Direct universal-fragment star growth requires an independent contract; exchange and star remain separate authorized actions')]},

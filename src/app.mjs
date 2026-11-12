@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { assetReadinessReport, assetRecoveryInstructions } from './asset-readiness.mjs';
 import { createWriterOwnership, rejectStandaloneGameWrite } from './writer-ownership.mjs';
@@ -174,7 +175,9 @@ export async function state({ raw = false, out = null } = {}, { credentialSource
   cli.remember(credential);
   const { url, login } = credential;
   const protocol = protocolSource();
-  const client = bindCliClient(createClient({ url, protocol }));
+  const accountId = credential.account?.id ?? credential.id ?? null;
+  const client = bindCliClient(createClient({ url, protocol, accountId, generation: 0 }));
+  if (typeof accountId === 'string' && accountId) client.factContext = { accountId, generation: 0, connectionId: randomUUID() };
   try {
     client.on('warn', (message) => cli.log(`warn: ${message}`));
     client.on('fatal', (info) => cli.log(`fatal: ${cli.json(info)}`));
@@ -184,12 +187,13 @@ export async function state({ raw = false, out = null } = {}, { credentialSource
     cli.log(`login ok: ${describeRole(response.playerInfo)?.nickname} world=${describeRole(response.playerInfo)?.worldId}`);
 
     const started = Date.now();
-    const { ok, failed } = await collect(client, protocol, {
+    const snapshot = await collect(client, protocol, {
       onResult: (name, body, error) => {
         const size = error ? `failed: ${error.message}` : `${cli.json(body).length}B`;
         cli.log(`  ${error ? 'x' : '.'} ${name} ${size}`);
       },
     });
+    const { ok, failed } = snapshot;
     cli.log(`collected ${Object.keys(ok).length} responses, ${Object.keys(failed).length} failed in ${Date.now() - started}ms`);
     for (const [name, message] of Object.entries(failed)) cli.log(`  failed ${name}: ${message}`);
 
@@ -204,7 +208,7 @@ export async function state({ raw = false, out = null } = {}, { credentialSource
         cli.log(text.length > 2000 ? `${text.slice(0, 2000)}...` : text);
       }
     } else {
-      cli.log(`\n${formatState(summarize({ ok }, { config: loadConfigSafe() }))}`);
+      cli.log(`\n${formatState(summarize(snapshot, { config: loadConfigSafe() }))}`);
     }
   } finally {
     client.stop();

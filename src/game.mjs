@@ -2,6 +2,7 @@ import { normalize } from './worlds.mjs';
 import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
 import { pirateSweepView, observePirateVipLevel } from './pirate-sweep.mjs';
+import { capturePirateQuotaContext, observePirateMonthCards, observePirateQuotaClock } from './pirate-quota.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -103,7 +104,8 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
   const job = { listeners: new Set(onResult ? [onResult] : []), promise: null };
   job.promise = Promise.resolve().then(async () => {
     const ok = {}, failed = {}, outcomes = {}, raw = {}, facts = {};
-    const vipContext = Object.fromEntries(['accountId', 'generation', 'connectionId'].map(key => [key, client.factContext?.[key]]));
+    const quotaContext = capturePirateQuotaContext(client);
+    let pirateReadStartClock = null, pirateReadEndClock = null;
     const notify = (name, body, error) => { for (const listener of job.listeners) { try { listener(name, body, error); } catch {} } };
     // ENTRY_SIGNALS remain protocol evidence; data refresh never sends them.
     await Promise.all(ENTRY_QUERIES.map(async (query) => {
@@ -115,7 +117,9 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
         failed[query.name] = reason; finish('NOT_EXECUTED', reason); notify(query.name, null, new Error(reason)); return;
       }
       try {
+        if (query.name === 'AllPirateRequest') pirateReadStartClock = observePirateQuotaClock(client, quotaContext);
         const body = await client.request(query.name, query.body || {}, response, timeout);
+        if (query.name === 'AllPirateRequest') pirateReadEndClock = observePirateQuotaClock(client, quotaContext);
         raw[query.name] = toSnapshotJson(body);
         ok[query.name] = normalize(body); finish('SUCCESS');
         const serverTime = client.gameClock?.read(client.factContext);
@@ -127,7 +131,13 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
         failed[query.name] = reason; finish('FAILED', reason); notify(query.name, null, new Error(reason));
       }
     }));
-    return { ok, failed, outcomes, raw, facts, sessionFacts: { vipLevel: observePirateVipLevel(client, vipContext) } };
+    const sessionFacts = {
+      vipLevel: observePirateVipLevel(client, quotaContext),
+      monthCards: observePirateMonthCards(client, quotaContext),
+      pirateClock: observePirateQuotaClock(client, quotaContext),
+      pirateReadStartClock, pirateReadEndClock,
+    };
+    return { ok, failed, outcomes, raw, facts, sessionFacts };
   }).finally(() => { if (collections.get(client) === job) collections.delete(client); });
   collections.set(client, job); return job.promise;
 }
@@ -228,7 +238,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     antiques: q.AllAntiqueRequest ? { count: asArray(q.AllAntiqueRequest.antiques).length, masterLv: q.AllAntiqueRequest.masterLv, suits: asArray(q.AllAntiqueRequest.suits).length } : null,
     pets: asArray(q.AllPetRequest?.pets).length,
     equips: asArray(q.EquipsRequest?.equip).length,
-    pirateSweep: pirateSweepView(state),
+    pirateSweep: pirateSweepView(state, { config }),
     pirates: q.AllPirateRequest ? { count: asArray(q.AllPirateRequest.pirates).length, sweepTimes: q.AllPirateRequest.sweepTimes } : null,
     worldBoss: q.WorldBossInfoRequest?.info ?? null,
     season: q.SeasonRankInfoRequest ?? null,
@@ -285,6 +295,10 @@ export function formatState(view) {
   }
   lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}`);
   const sweep = view.pirateSweep;
+  if (sweep?.quotaBreakdown) {
+    const { base, vip, monthCards } = sweep.quotaBreakdown;
+    lines.push('  扫荡额度来源：基础 '+base+'，VIP '+vip+'，有效月卡 '+monthCards+'；'+(sweep.quotaDay?'采集游戏日 '+sweep.quotaDay:'使用次数的游戏日未确认')+'。');
+  }
   lines.push('  VIP 等级：'+(sweep?.vipLevel ?? '未知')+'；'+(sweep?.vipLevelStatus==='OBSERVED'?'本次采集的连接观察值':'连接权威未知')+'，仅作为额度组件查看。');
   lines.push(`  野怪扫荡：已用 ${sweep?.usedSweeps ?? '未知'}，总额 ${sweep?.totalSweeps ?? '未知'}，剩余 ${sweep?.remainingSweeps ?? '未知'}；等级关系仅供查看。`);
   lines.push(`  自动生产至 ${clock(view.water.autoProduceEndTime)} 永久=${view.water.autoProduceForever} 自动种植=${view.water.autoFarming}`);

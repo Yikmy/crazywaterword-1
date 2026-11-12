@@ -1,3 +1,5 @@
+import { observedPirateQuota } from './pirate-quota.mjs';
+
 // W12 observations only; level relations do not authorize PirateSweep writes.
 export const PIRATE_SWEEP_READ_EVIDENCE = Object.freeze({
   packageSha256: '4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',
@@ -78,16 +80,14 @@ function killLevels(response) {
   return levels;
 }
 
-export function pirateSweepView(state) {
+export function pirateSweepView(state, { config = null } = {}) {
   const pirates = observed(state, 'AllPirateRequest');
   const kill = killLevels(observed(state, 'PirateKillRecordRequest'));
   const used = ownValue(pirates, 'sweepTimes');
   const result = {
     ...vipLevelView(state),
     usedSweeps: uint(used) ? used : null,
-    totalSweeps: null,
-    remainingSweeps: null,
-    quotaReason: 'TOTAL_QUOTA_AUTHORITY_UNAVAILABLE',
+    ...observedPirateQuota(ownValue(state, 'sessionFacts'), config, used),
     targetsStatus: 'UNKNOWN',
     targetsReason: pirates ? 'INVALID_TARGET_LIST' : 'TARGETS_NOT_OBSERVED',
     killRecordsStatus: kill ? 'AVAILABLE' : 'UNKNOWN',
