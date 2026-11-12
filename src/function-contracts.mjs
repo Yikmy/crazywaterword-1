@@ -132,12 +132,13 @@ export const FUNCTION_CONTRACTS = freeze({
     verification: verification('verify', 'src/core-operation-adapters.mjs#verifyCoreOperation', 'Original executeCityAction queue and inventory reread; original wrapper receipt required', { executionMethod: 'execute', genericExecutorSubstitution: false }),
     dependencyVersions: dependencies(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.GameParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg'], [{ when: 'mode=Automatic', keys: ['productionPolicy'] }]),
   }),
-  heroes: contract('heroes', ['C221','C222','C223','C224'], ['P3-6','P3-7'], ['src/hero-operations.mjs#heroModule','src/heroes.mjs#planHeroes','src/heroes.mjs#buildHeroAction'], {
-    heroId: string, action: { type: 'string', enum: ['level','star','skill'] }, skillIdx: integer, allowUniversal: boolean,
+  heroes: contract('heroes', ['C221','C222','C223','C224','C225'], ['P3-6','P3-7'], ['src/hero-operations.mjs#heroModule','src/heroes.mjs#planHeroes','src/heroes.mjs#buildHeroAction'], {
+    heroId: string, action: { type: 'string', enum: ['level','star','skill','exclusive-level'] }, skillIdx: integer, allowUniversal: boolean,
   }, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['LEVEL','STAR','SKILL'], blockedCapabilities: [blocked('UNIVERSAL_FRAGMENTS', 'Independent universal-fragment cost and consumption semantics are not proven')] },
-    verification: verification('verifyHeroOperation','src/hero-operations.mjs#verifyHeroOperation','Fresh AllHero plus exact single target growth and full inventory delta; LEVEL/SKILL have no invented response and remain UNKNOWN without authoritative effect'),
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['LEVEL','STAR','SKILL','EXCLUSIVE-LEVEL'], blockedCapabilities: [blocked('EXCLUSIVE_ACTIVATE_STAR', 'Activation and exclusive star-up require separate proven contracts'), blocked('UNIVERSAL_FRAGMENTS', 'Independent universal-fragment cost and consumption semantics are not proven')] },
+    verification: verification('verifyHeroOperation','src/hero-operations.mjs#verifyHeroOperation','Fresh AllHero plus exact single target growth and full inventory delta; LEVEL/SKILL and explicit already-active EXCLUSIVE-LEVEL use no invented response; exclusive confirmation requires own level+1/same star, exact material debit and unchanged other heroes'),
     dependencyVersions: dependencies(['moduleConfig','config.HeroCfg'], [
+      { when: 'parameters.action=exclusive-level', keys: ['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg'] },
       { when: 'parameters.action=level', keys: ['config.HeroUpgradeCfg'] },
       { when: 'parameters.action=star', keys: ['config.HeroStarCfg'] },
       { when: 'parameters.action=skill', keys: ['config.HeroStarCfg','config.HeroSkillUpCfg'] },

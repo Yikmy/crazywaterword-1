@@ -171,3 +171,7 @@ test('sparse, extended, subclassed and oversized JSON arrays fail closed', () =>
   invalid(() => validateFunctionParameters('formation', adapter('formation'), deep));
   invalid(() => validateFunctionParameters('formation', adapter('formation'), Object.fromEntries(Array.from({ length: 51 }, (_, index) => ['k' + index, 1]))));
 });
+
+test('exclusive LEVEL extends existing hero contract without activation or guessed typed response',()=>{
+ const c=FUNCTION_CONTRACTS.heroes;assert.deepEqual(c.requirementIds.C,['C221','C222','C223','C224','C225']);assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-level'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-LEVEL'));assert.equal(c.verification.typedResponseAlone,false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='EXCLUSIVE_ACTIVATE_STAR'&&!r.executable));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-level').keys,['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
+});

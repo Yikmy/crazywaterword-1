@@ -159,3 +159,14 @@ test('equipment refinement D6 accepts exact UID and two positive owned materials
  for(const mutate of [a=>a.body.uid='0',a=>a.body.uid='01',a=>a.body.uid=9007199254740992,a=>a.body.uid='9223372036854775808',a=>a.body.action='refine',a=>a.body.num=2,a=>a.body.universal=false,a=>a.body.buyMissing=true,a=>a.body.heroId='A',a=>a.costs.pop(),a=>a.costs[1].id='精铁',a=>a.costs[1].id='材料',a=>a.costs[0].num=0,a=>a.costs[1].num=0,a=>a.costs[1].num=1.5,a=>delete a.costs,a=>a.costs.push({id:'GOLD',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
  for(const id of ['RUBY','钻石','4']){const a=action();a.costs[1].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}const paid=action();paid.needsPaid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
 });
+
+test('exclusive LEVEL D6 admits only exact hero and one positive owned dedicated material',()=>{
+ const action=()=>({request:'HeroExclusiveLevelUpRequest',body:{heroId:'A'},costs:[{id:'初级专武材料',num:20}]});for(const id of ['初级专武材料','中级专武材料','高级专武材料','特级专武材料']){const a=action();a.costs[0].id=id;assert.doesNotThrow(()=>assertPaymentAllowed(a));}
+ for(const mutate of [a=>a.body.heroId='',a=>a.body.heroId=' A',a=>a.body.universal=false,a=>a.body.level=2,a=>a.body.star=1,a=>a.body.count=2,a=>a.body.buyMissing=true,a=>a.costs=[],a=>delete a.costs,a=>a.costs[0].id='GOLD',a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.costs[0].num=Number.MAX_SAFE_INTEGER+1,a=>a.costs.push({id:'中级专武材料',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}const a=action();a.paid=true;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+});
+
+import {runHeroPlan,buildHeroAction} from '../src/heroes.mjs';
+test('new exclusive request builder cannot extend the legacy CLI hero transport loop',async()=>{
+ let writes=0,reads=0;const client={connected:true,async request(name){reads++;if(name==='AllItemRequest')return {items:[{itemId:'初级专武材料',num:100}]};if(name==='AllResourceRequest')return {list:[]};throw Error('unexpected request');},async sendWatch(){writes++;return {status:'UNKNOWN'};}};const step={kind:'exclusive-level',heroId:'A',from:1,to:2,costs:[{id:'初级专武材料',num:20}]};assert.deepEqual(buildHeroAction(step),{request:'HeroExclusiveLevelUpRequest',response:null,body:{heroId:'A'}});const result=await runHeroPlan(client,protocol,{steps:[step]},{allowMutate:true});assert.equal(writes,0,'exclusive writes require the registered domain contract');assert.equal(reads,0);assert.equal(result[0].status,'NOT_EXECUTED');
+});

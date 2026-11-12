@@ -73,8 +73,9 @@ function gpRenderDomain(id,view){
   table('普通阵型模板',['模板','名称','对应已有图纸','解锁状态'],(view?.templates||[]).map(row=>[row.presetId,row.name,operationCosts(row.costs),view?.unlockedPresetIds?.includes(row.presetId)?'已解锁':'未解锁']));
   box.appendChild(gpEl('p','仅消耗已持有的对应图纸一张；解锁后必须重新读取阵容列表，再单独预览并授权应用。'));
  }else if(id==='heroes'){
-  table('英雄成长',['英雄','等级','星级','技能槽等级','战力'],(view?.heroes||[]).map(hero=>[hero.heroId,hero.level,hero.star,Array.isArray(hero.skillLevels)?hero.skillLevels.join(' / '):null,hero.power]));
-  box.appendChild(gpEl('p','每个候选只成长一级或一个技能槽。通用碎片：'+(view?.universalExchange||'BLOCKED_EVIDENCE')));
+  table('英雄成长',['英雄','等级','星级','技能槽等级','战力','专武等级','专武星级'],(view?.heroes||[]).map(hero=>[hero.heroId,hero.level,hero.star,Array.isArray(hero.skillLevels)?hero.skillLevels.join(' / '):null,hero.power,hero.exclusive?.level,hero.exclusive?.star]));
+  box.appendChild(gpEl('p','每个候选只成长一级或一个技能槽。已激活专武只允许单次升级，自有材料成本须重新探测确认。通用碎片：'+(view?.universalExchange||'BLOCKED_EVIDENCE')));
+  const scope=viewGuard.capture(),revision=gpRevision;for(const mode of [{label:'查看基础成长',action:null},{label:'查看已激活专武单次等级',action:'exclusive-level'}]){const button=gpEl('button',mode.label);button.dataset.heroGrowthMode=mode.action||'basic';button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;const old=gpParse('gp-'+id+'-parameters'),parameters={};if(old.heroId!==undefined)parameters.heroId=old.heroId;if(mode.action)parameters.action=mode.action;$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择成长种类；请重新探测明确英雄、成本并单次授权。';};s.actionControls.push(button);box.appendChild(button);}
  }else if(id==='equipment-forge'){
   table('装备厂队列',['建筑','等级','队列'],(view?.forges||[]).map(row=>[row.buildingId,row.level,gpJson(row.queue)]));
   table('制造配方',['配方','部位','所需赛季','材料','可能产物'],(view?.recipes||[]).map(row=>[row.makeId,row.type,row.season,operationCosts(row.costs),(row.equipIds||[]).join('、')]));

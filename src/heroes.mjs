@@ -243,6 +243,7 @@ export async function runHeroPlan(client, protocol, plan, {
       let entry;
       try {
         assertExecutionActive(client, options);
+        if (!['level', 'star', 'skill'].includes(step.kind)) throw Object.assign(new Error('此动作必须通过已注册领域合同和统一执行器'), { code: 'NOT_EXECUTED' });
         const { request, body } = buildHeroAction(step);
         if (!request || !protocol[request]) throw Object.assign(new Error('英雄动作协议或类型缺失'), { code: 'NOT_EXECUTED' });
         try { assertPaymentAllowed({ request, body, costs: step.costs }); }
@@ -270,7 +271,7 @@ export async function runHeroPlan(client, protocol, plan, {
 }
 
 export function buildHeroBody(step) {
-  if (step.kind === 'level') return { heroId: step.heroId };
+  if (step.kind === 'level' || step.kind === 'exclusive-level') return { heroId: step.heroId };
   if (step.kind === 'star') return { heroId: step.heroId, universal: step.universal !== false };
   if (step.kind === 'skill') return { heroId: step.heroId, skillIdx: step.slot + 1 };
   throw new Error(`unknown hero step: ${step.kind}`);
@@ -279,7 +280,7 @@ export function buildHeroBody(step) {
 // Shared request construction only: operation adapters must use their existing
 // generic executor rather than nesting this module's legacy transport loop.
 export function buildHeroAction(step) {
-  const requests = { level: 'HeroLevelUpRequest', star: 'HeroStarUpRequest', skill: 'HeroSkillLevelUpRequest' };
+  const requests = { level: 'HeroLevelUpRequest', star: 'HeroStarUpRequest', skill: 'HeroSkillLevelUpRequest', 'exclusive-level': 'HeroExclusiveLevelUpRequest' };
   if (!Object.hasOwn(requests, step.kind)) throw Object.assign(new Error(`unknown hero step: ${step.kind}`), { code: 'NOT_EXECUTED' });
   const request = requests[step.kind];
   return { request, response: step.kind === 'star' ? 'HeroStarUpResponse' : null, body: buildHeroBody(step) };

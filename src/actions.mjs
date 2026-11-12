@@ -300,6 +300,8 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const fortMaterials=['压电陶瓷','炮弹','耐火砖','高温合金','液态金属','碳纤维'];
   const positiveInt32=v=>Number.isInteger(v)&&v>0&&v<=2147483647;
   if(donateFort&&(!fields(body,['cityId','item','selectPackNum'])||!positiveInt32(body.cityId)||body.selectPackNum!==0||!fields(body.item,['itemId','num'])||!fortMaterials.includes(body.item.itemId)||!positiveInt32(body.item.num)||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.item.itemId||costs[0].num!==body.item.num))fail('COST_UNKNOWN','堡垒仅允许单城市、自有普通材料精确成本及selectPackNum=0');
+  const exclusiveLevel=request==='HeroExclusiveLevelUpRequest';
+  if(exclusiveLevel&&(!fields(body,['heroId'])||!identifier(body.heroId)||!exactCosts(costs)||costs.length!==1||!['初级专武材料','中级专武材料','高级专武材料','特级专武材料'].includes(costs[0].id)))fail('COST_UNKNOWN','专武升级仅允许明确已激活英雄及单种自有专武材料正成本');
   const refineEquip=request==='EquipRefineRequest';
   const enhanceEquip=request==='EnhanceEquipRequest';
   const exactUid=value=>typeof value==='string'&&/^[1-9][0-9]*$/.test(value)&&value.length<=19&&BigInt(value)<(1n<<63n);
@@ -311,7 +313,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(farmPlant&&(!fields(body,['args'])||!Array.isArray(body.args)||body.args.length!==1||Reflect.ownKeys(body.args).length!==2||!fields(body.args[0],['buildingId','productId'])||!identifier(body.args[0].buildingId)||!identifier(body.args[0].productId)||!exactCosts(costs)||costs.length!==1))fail('COST_UNKNOWN','仅允许有精确种子成本的单田播种');
   if(forgeMake&&(!fields(body,['buildingId','makeId','universal'])||!identifier(body.buildingId)||!Number.isInteger(body.makeId)||body.makeId<=0||body.makeId>2147483647||body.universal!==false||!exactCosts(costs)||costs.length===0))fail('COST_UNKNOWN','装备制造仅允许精确配方、自有材料及universal=false');
   if(forgePick&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!Object.hasOwn(action,'costs')||!exactCosts(costs)||costs.length!==0))fail('COST_UNKNOWN','装备收取仅允许明确单建筑及零成本');
-  const known = donateFort || refineEquip || enhanceEquip || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
+  const known = exclusiveLevel || donateFort || refineEquip || enhanceEquip || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
     || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {

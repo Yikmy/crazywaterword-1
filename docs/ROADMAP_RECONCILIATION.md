@@ -2365,3 +2365,30 @@ node --test tests/equipment-growth.test.mjs tests/equipment-growth-service.test.
 E09组内增加明确RED同UID REFINE、双材料精确净扣、cap/缺材料零派发、镜像/非目标保持、无效果UNKNOWN；E20/E21/E23覆盖同UID跨种类父预算、重启、停止及账号隔离。全部真实分支REAL_UNVERIFIED；原E03真实升级0派发待验保留，R7尚未完成，R8必须其后单独批准账号/请求/次数/预算/风险/清理。
 
 下一独立原子分支W07/C225：已有激活专武单次LEVEL，优先扩原hero-operations/buildHeroAction及同共享执行合同。静态审计正在还原HeroDetailExclusiveLevel:1579、ExclusiveUpgradeCfg下一档、RED cost[1]/其他cost[0]、ExclusiveStarCfg当前星unlockLv及英雄星级前置、实际Response配对和完整DisplayHero权威字段；证据齐全后才实现，不使用任意非空cost fallback。root串行共享合同/D6/UI/docs，领域与Service测试分文件独占。Goal保持ACTIVE，继续施工无需Owner逐项确认。
+
+### D.15 C225 已激活专武单次升级（2026-11-12）
+
+父提交 `7d71bf9d2e8754c8a4b33ea9d7ce12965c36b98b`，分支 `codex/phase-4-alliance-integration`，恢复时相对 main 为 0/31，暂存区为空。保留交接中的 C225 改动与原五份未跟踪输入。实际工作目录为 `//zhangnas/app/crazywaterword`，未发现适用 AGENTS.md/TREE.md。
+
+| 工作包 / 原需求 | 实际链路 | 状态 |
+|---|---|---|
+| W07 / C225、P3-6/P3-7、BIZ-H05/BIZ-R09 专武 LEVEL | `hero-operations#surveyHeroOperations/viewHeroOperations/planHeroOperations/verifyHeroOperation` → 现有 heroes Adapter/合同 → 通用执行器、OperationService、ResourceLedger、ExecutionHistory → 原英雄页 / Operations API / Workflow ACTION | 已激活专武单次等级+1：EXISTING_FUNCTION、EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。W07 仍 PARTIAL；不开放激活、专武升星或材料兑换。 |
+
+必须显式选择 `action:'exclusive-level'` 及英雄 ID。默认仍只列基础成长，旧 CLI 循环不接受专武步骤。读取的专武 level、star 必须真实存在，不能使用 protobuf 原型默认值。对固定 v76 的 `HeroDetailExclusiveLevel.ts:1579`（SHA256 `b0432b543ca2e5ec359a352eb76dc122a118ba5f266b72bd54d21909ce4a9913`，byte 3490281）核实：上限取当前 `ExclusiveStarCfg.unlockLv`，门槛和费用取下一等级 `ExclusiveUpgradeCfg`，ORANGE 取 cost[0]、RED 取 cost[1]。唯一允许正整数自有专武材料成本；D6 拒绝其他材料、附加请求字段和旧循环绕行。包、协议、配置及具体配置表哈希见 `HERO_EXCLUSIVE_LEVEL_EVIDENCE`。
+
+`HeroExclusiveLevelUpRequest {heroId}` 无专用 Response，`HeroExclusiveNextUpResponse.nextHero` 仅为预览。独立复读 AllHero/AllItem/AllResource 必须属于同一账号、玩家、世界和连接代次；逐条检查新鲜度和写前/写后时序。仅当目标专武等级+1、星级不变、其他英雄不变且库存仅精确扣除对应材料时确认；目标英雄仅允许合法权威派生 power/attributes 变化。没有明确效果或写后复读不可靠则 UNKNOWN，持久保留材料和 hero-exclusive UID 预算，禁止重放。专业页切换模式后仍需重新探测、预览、单次授权。预览不返回内部验证配置，配置快照仅保留在内部计划。
+
+#### D.15.1 离线验证及失败证据
+
+```powershell
+node --test tests/hero-exclusive-service.test.mjs tests/hero-service.test.mjs tests/hero-operations.test.mjs tests/equipment-growth.test.mjs tests/equipment-growth-service.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/actions-safety.test.mjs tests/cli-safety.test.mjs tests/business-transport-freshness.test.mjs tests/farm-forge-full-page.test.mjs tests/equipment-forge.test.mjs tests/equipment-forge-service.test.mjs tests/execution-memory-service.test.mjs tests/operation-recovery-service.test.mjs tests/run-budget-service.test.mjs tests/run-budget-safety.test.mjs tests/workflow.test.mjs tests/gameplay-settings.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/gameplay-execution.test.mjs tests/operations-api.test.mjs
+```
+
+最终 **714/714 PASS，0 fail/cancelled/skipped/todo，13.37 秒**。对应父提交及本节同批代码/测试。包含真实本地 Codec、内存 socket、合成账号、临时 History、进程内 Console、完整页面脚本与 Workflow；不计 R7 或真实游戏。先前 712 项与本次重叠。失败与修复：
+
+| 原始失败 / 审查 | 修复 |
+|---|---|
+| 四项 Codec 领域测试中，不完整装备不能编码；小数 int32 夹具在编码时被截断 | 以含 64 位 UID 的完整装备走 Codec；另证缺字段拒绝、小数来源拒绝及 Codec 截断行为，保留生产拒绝逻辑。 |
+| 候选逐行携带配置，88 英雄离线样本的视图约 96 MB；写后来源早于写前时仍可能确认 | 公共预览移除内部配置和 identity，复用同一权威性检查；视图样本降至约 164 KB。新增 HTTP 断言与三来源时序反例。回归的大小断言只衡量候选视图，完整响应另断言不含私有夹具配置。 |
+
+E09 纳入 ORANGE/RED 单次专武等级、缺材料/星级/达上限零派发、精确扣除及完整复读；E20/E21/E23 核对累计预算、取消、UNKNOWN 和隔离。原需求和 E01–E24 不增删。C226 在现有证据基础上继续独立实施，C225 仍须最终真实验收；R7 未执行，R8 须单独批准。未连接真实游戏或推送。
