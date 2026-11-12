@@ -129,7 +129,7 @@ test('fresh complete response row order cannot change the exact authorized actio
 test('parameter/config validation accepts explicit semantic selectors only and omitted action cannot plan', async () => {
   assert.deepEqual(validateAntiqueGrowthConfig({}), { enabled: false });
   for (const bad of [null, [], new Date(), { enabled: 1 }, { enabled: true, auto: true }, Object.create({ enabled: true })]) assert.throws(() => validateAntiqueGrowthConfig(bad));
-  for (const bad of [null, [], new Date(), { action: 'exchange' }, { antiqueId: 1 }, { antiqueId: ' x' }, { action: 'star', universal: true }, { request: 'ActivateAntiqueRequest' }, Object.create({ antiqueId: target })]) assert.throws(() => validateAntiqueGrowthParameters(bad), { code: 'INVALID_PARAMETERS' });
+  for (const bad of [null, [], new Date(), { action: 'unknown-mode' }, { antiqueId: 1 }, { antiqueId: ' x' }, { action: 'star', universal: true }, { request: 'ActivateAntiqueRequest' }, Object.create({ antiqueId: target })]) assert.throws(() => validateAntiqueGrowthParameters(bad), { code: 'INVALID_PARAMETERS' });
   const f = await prepare();
   const draft = await survey(f.client, f.cfg, {});
   assert.equal(plan(draft, f.cfg, {}).actions.length, 0);

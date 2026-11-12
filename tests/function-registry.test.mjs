@@ -24,7 +24,7 @@ import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 const clone = value => structuredClone(value);
 const allIds = ['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','stage'];
 const rawModules = { formation: formationModule, alliance: allianceModule, museum: museumModule, treasure: treasureModule, fleet: fleetModule, naval: navalModule, ...CORE_OPERATION_MODULES, heroes: heroModule, farm: farmModule, 'equipment-forge':equipmentForgeModule, 'formation-unlock':formationUnlockModule, 'equipment-growth':equipmentGrowthModule, 'badge-growth':badgeGrowthModule, 'antique-growth':antiqueGrowthModule };
-const tablesByModule = { 'antique-growth':['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg'], 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
+const tablesByModule = { 'antique-growth':['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg','AntiqueSuitLvCfg','AntiqueMasterLvCfg','ItemCfg'], 'badge-growth':['HeroCfg','HeroBadgeCfg','HeroBadgeAttrCfg','HeroBadgeLevelCfg','HeroBadgeUnlockCfg'], 'equipment-growth':['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'], 'formation-unlock':['FormationTypeUnlockCfg','ItemCfg','FormationTypePositionCfg'], 'equipment-forge':['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'], farm: ['BuildingCfg','FarmlandPlantCfg'],
   heroes: ['HeroCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'],
   formation: ['FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg','WorldFortCfg','FortDonateMaterialCfg','FortParamCfg','FortSeasonUnlockCfg','ItemCfg'],
@@ -282,15 +282,16 @@ test('badge empty-slot wear binds the feature gate but does not bind upgrade pri
  noExecution(f);
 });
 
-test('antique activation binds derived-suit rules while STAR binds only its price table',()=>{
+test('antique modes bind exact price, gate and item tables without invalidating unrelated modes',()=>{
  const f=fixture(),raw={...antiqueGrowthModule};delete raw.dependencyVersions;
  const declared=registerBusinessFunction(raw);
- for(const action of ['activate','star',null]){
-  const options=clone(f.options('antique-growth'));options.parameters=action?{action,antiqueId:'测试藏品'}:{};
+ for(const action of ['activate','star','suit','master','exchange',null]){
+  const options=clone(f.options('antique-growth'));options.parameters=action==='master'?{action}:action==='suit'?{action,suitId:1001}:action?{action,antiqueId:'测试藏品',...(action==='exchange'?{num:2}:{})}:{};
   const adapter=f.modules['antique-growth'],versions=adapter.dependencyVersions(options);
   assert.deepEqual(declared.dependencyVersions(options),versions);
-  assert.deepEqual(Object.keys(versions),['moduleConfig','config.ModuleOpenCfg','config.AntiqueBaseCfg',...(action!=='star'?['config.AntiqueSuitCfg']:[]),...(action!=='activate'?['config.AntiqueStarCfg']:[])]);
-  for(const name of ['ModuleOpenCfg','AntiqueBaseCfg','AntiqueSuitCfg','AntiqueStarCfg']){
+  const extra={activate:['AntiqueSuitCfg'],star:['AntiqueStarCfg'],suit:['AntiqueSuitCfg','AntiqueSuitLvCfg','AntiqueMasterLvCfg'],master:['AntiqueMasterLvCfg'],exchange:['AntiqueStarCfg','ItemCfg'],null:['AntiqueSuitCfg','AntiqueStarCfg','AntiqueSuitLvCfg','AntiqueMasterLvCfg','ItemCfg']}[action];
+  assert.deepEqual(Object.keys(versions),['moduleConfig','config.ModuleOpenCfg','config.AntiqueBaseCfg',...extra.map(name=>'config.'+name)]);
+  for(const name of tablesByModule['antique-growth']){
    const changed=clone(options);changed.config.tables[name].revision=2;
    const bound=Object.hasOwn(versions,'config.'+name);
    if(bound)assert.notDeepEqual(adapter.dependencyVersions(changed),versions,name);

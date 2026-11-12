@@ -57,6 +57,13 @@ async function boot() {
   return h;
 }
 const cases = [
+  ...[
+   {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:0,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:0,effectiveNum:0,advEffectValue:0}]}},
+   {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[{id:'GOLD',num:50},{id:'蓝藏品经验',num:370}],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:1,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:10,effectiveNum:3,advEffectValue:0}]}},
+   {actionType:'MASTER',parameters:{action:'master'},costs:[],facts:{antiques:[],master:{level:0,totalStars:0,maxLevel:100,unlockedSuitLevel:0,next:{level:1,totalStarNum:0,maxSuitLv:10,costs:[],attributes:[]}}}},
+   {actionType:'MASTER',parameters:{action:'master'},costs:[{id:'藏品大师经验',num:5}],facts:{antiques:[],master:{level:1,totalStars:5,maxLevel:100,unlockedSuitLevel:10,next:{level:2,totalStarNum:5,maxSuitLv:10,costs:[{id:'藏品大师经验',num:5}]}}}},
+   {actionType:'EXCHANGE',parameters:{action:'exchange',antiqueId:'测试藏品',num:7},costs:[{id:'蓝藏万能碎片',num:7}],facts:{antiques:[{antiqueId:'测试藏品',name:'测试藏品',color:'BLUE',owned:true,star:1,fragmentId:'测试藏品碎片',fragments:20,universalItemId:'蓝藏万能碎片',universalFragments:30}]}},
+  ].map((row,index)=>({module:'antique-growth',actionId:'antique-growth:'+row.actionType+':advanced-'+index,blockedReason:'ANTIQUE_ADVANCED_GUARD',...row})),
   {module:'antique-growth',actionId:'antique-growth:ACTIVATE:synthetic-exact',actionType:'ACTIVATE',parameters:{antiqueId:'测试藏品',action:'activate'},costs:[{id:'测试藏品碎片',num:10}],beforeState:{antique:null},facts:{antiques:[{antiqueId:'测试藏品',name:'测试藏品',color:'BLUE',owned:false,star:null,fragmentId:'测试藏品碎片',fragments:20}]},blockedReason:'ANTIQUE_ALREADY_ACTIVE'},
   {module:'antique-growth',actionId:'antique-growth:STAR:synthetic-exact',actionType:'STAR',parameters:{antiqueId:'测试藏品',action:'star'},costs:[{id:'测试藏品碎片',num:2}],beforeState:{antique:{id:'测试藏品',star:0}},facts:{antiques:[{antiqueId:'测试藏品',name:'测试藏品',color:'BLUE',owned:true,star:0,fragmentId:'测试藏品碎片',fragments:20}]},blockedReason:'ANTIQUE_MAX_STAR'},
   { module:'heroes',actionId:'heroes:EXCLUSIVE-LEVEL:synthetic-exact',actionType:'EXCLUSIVE-LEVEL',parameters:{heroId:'A',action:'exclusive-level'},costs:[{id:'初级专武材料',num:20}],facts:{heroes:[{heroId:'A',level:1,star:15,power:'9007199254740993',skillLevels:[1,1],exclusive:{level:1,star:0}}]},blockedReason:'EXCLUSIVE_ACTIVE_OWN_STATE_REQUIRED' },
@@ -72,7 +79,7 @@ const cases = [
   { module: 'equipment-forge', actionId: 'equipment-forge:MAKE:synthetic-exact', actionType: 'MAKE', parameters: { buildingId: '1装备厂', action: 'make', makeId: 1001, allowUniversal: false }, costs: [{ id: '材料', num: 4 }], facts: { forges: [{ buildingId: '1装备厂', level: 1, queue: { state: 'IDLE' } }], recipes: [{ makeId: 1001, type: '武器', season: 1, costs: [{ id: '材料', num: 4 }], equipIds: ['蓝武器1'] }], bag: [{ uid: '9007199254740993', equipId: '蓝武器1', level: 0, star: 2, refineLv: 0 }] }, blockedReason: 'QUEUE_IDLE_BLOCKED_EVIDENCE' },
 ];
 function candidate(spec) {
-  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, target: spec.module==='antique-growth'?{antiqueId:spec.parameters.antiqueId}:spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
+  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, target: spec.module==='antique-growth'?(spec.actionType==='SUIT'?{suitId:spec.parameters.suitId}:spec.actionType==='MASTER'?{kind:'ANTIQUE_MASTERY'}:{antiqueId:spec.parameters.antiqueId}):spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
 }
 function data(spec, { disabled = false } = {}) {
   return { accountId: 'A', module: spec.module, csrfToken: 'synthetic-csrf-A', config: { enabled: !disabled }, status: { running: false, blocked: false }, functions: ['survey', 'plan'], view: { ...spec.facts, candidates: disabled ? [] : [candidate(spec), { ...candidate(spec), actionId: spec.actionId + ':blocked', executable: false, blockedReason: spec.blockedReason }] } };
@@ -355,4 +362,28 @@ test('antique modes and collection selector edit only the draft and demand fresh
  assert.deepEqual(JSON.parse(h.node('gp-antique-growth-parameters').value),{antiqueId:'测试藏品',action:'star'});
  assert.equal(writes(h,'/api/operations/execute').length,0);
  assert.equal(h.node('gp-antique-growth-plan').disabled,true);
+});
+
+test('Antique advanced selectors keep exact mode fields, require a fresh survey and never dispatch from a draft',async()=>{
+ for(const mode of ['suit','master','exchange']){
+  const spec=cases.find(row=>row.module==='antique-growth'&&row.actionType==='EXCHANGE'),h=await loaded(spec),box=h.node('gp-antique-growth-facts');
+  const before=h.requests.length;
+  h.node('gp-antique-growth-parameters').value=JSON.stringify({action:'exchange',antiqueId:'测试藏品',num:9,suitId:1001});
+  descendants(box).find(row=>row.dataset.antiqueMode===mode).click();
+  assert.deepEqual(JSON.parse(h.node('gp-antique-growth-parameters').value),mode==='suit'?{action:'suit',suitId:1001}:mode==='master'?{action:'master'}:{action:'exchange',antiqueId:'测试藏品'});
+  assert.equal(h.requests.length,before);assert.equal(h.node('gp-antique-growth-plan').disabled,true);assert.equal(h.node('gp-antique-growth-authorize').disabled,true);
+ }
+ const suit=cases.find(row=>row.module==='antique-growth'&&row.actionType==='SUIT'),h=await loaded(suit),box=h.node('gp-antique-growth-facts');
+ const select=descendants(box).find(row=>row.dataset.antiqueSuitChoice);select.value='1001';select.onchange();
+ assert.deepEqual(JSON.parse(h.node('gp-antique-growth-parameters').value),{action:'suit',suitId:1001});
+ assert.equal(writes(h,'/api/operations/execute').length,0);
+ const exchange=cases.find(row=>row.module==='antique-growth'&&row.actionType==='EXCHANGE'),e=await loaded(exchange),eBox=e.node('gp-antique-growth-facts');
+ e.node('gp-antique-growth-parameters').value=JSON.stringify({action:'exchange',antiqueId:'测试藏品'});
+ const num=descendants(eBox).find(row=>row.dataset.antiqueExchangeQuantity),apply=descendants(eBox).find(row=>row.dataset.antiqueExchangePrepare);
+ num.value='0';apply.click();assert.match(e.node('gp-antique-growth-hint').textContent,/正整数/);
+ num.value='7';apply.click();assert.deepEqual(JSON.parse(e.node('gp-antique-growth-parameters').value),exchange.parameters);
+ assert.equal(writes(e,'/api/operations/execute').length,0);assert.equal(e.node('gp-antique-growth-plan').disabled,true);
+ // A detached input and button from a previous account cannot replace a new draft.
+ e.run("selectAccount('B');");num.value='8';apply.click();
+ assert.notDeepEqual(JSON.parse(e.node('gp-antique-growth-parameters').value||'{}'),{action:'exchange',antiqueId:'测试藏品',num:8});
 });

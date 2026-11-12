@@ -101,7 +101,7 @@ test('true dependencies separate unrelated order rules and production policy', (
   assert.equal(FUNCTION_CONTRACTS.stage.dependencyVersions.required.includes('config.StageCfg'), false); // Existing Runner consumes no StageCfg.
 });
 test('input fields match seventeen existing domain parameter interfaces without transport controls', () => {
-  const expected = { 'antique-growth':['antiqueId','action'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
+  const expected = { 'antique-growth':['antiqueId','action','suitId','num'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal'],
@@ -199,7 +199,7 @@ test('equipment empty-slot wear has a dedicated no-replacement action and depend
 test('PRO-007 uses an independent antique contract rather than remapping Museum exploration capabilities',()=>{
  const c=FUNCTION_CONTRACTS['antique-growth'];
  assert.deepEqual(c.requirementIds.C,[]);assert.deepEqual(c.inventoryRequirementIds,['PRO-007']);
- assert.deepEqual(c.implementation.actions,['ACTIVATE','STAR']);assert.equal(c.verification.authoritativeRead,true);
- assert.deepEqual(c.inputSchema.properties.action.enum,['activate','star']);
- assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='UNIVERSAL_SUIT_EXCHANGE_MASTER'&&!row.executable));
+ assert.deepEqual(c.implementation.actions,['ACTIVATE','STAR','SUIT','MASTER','EXCHANGE']);assert.equal(c.verification.authoritativeRead,true);
+ assert.deepEqual(c.inputSchema.properties.action.enum,['activate','star','suit','master','exchange']);
+ assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='DIRECT_UNIVERSAL_STAR'&&!row.executable));
 });

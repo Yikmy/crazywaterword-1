@@ -1,7 +1,7 @@
 const workflowCoreHtml = Object.entries({ orders: '居民订单', city: '城市建设', production: '工厂生产' }).map(([id, name]) => '<details><summary>本账号' + name + '节点开关（默认关闭）</summary><button id="wf-' + id + '-load">读取' + name + '节点配置</button><label><input id="wf-' + id + '-enabled" type="checkbox" disabled>允许工作流生成' + name + '节点计划</label><button id="wf-' + id + '-save" disabled>保存' + name + '节点配置</button><p id="wf-' + id + '-hint" role="status"></p></details>').join('');
 const gameplayNames = { formation: '阵容与战报', alliance: '联盟与互助', museum: '博物馆', treasure: '世界寻宝', fleet: '舰队与货船', naval: '海战规则' };
 const gameplaySection = ([id, name]) => '<section id="tab-' + id + '" class="hidden"><h2>' + name + '</h2><p class="dim">本账号独立配置。读取缓存后可显式探测；仅选中的具体动作进入现有批次授权。</p><div class="toolbar"><button id="gp-' + id + '-load">读取缓存</button><button id="gp-' + id + '-survey" disabled>只读探测</button><button id="gp-' + id + '-history">执行历史</button><button id="gp-' + id + '-stop" disabled>停止后续操作</button></div><p id="gp-' + id + '-hint" role="status"></p><pre id="gp-' + id + '-status">尚未读取本账号状态</pre><details><summary>本账号玩法配置（默认禁用）</summary><div id="gp-' + id + '-config-fields"></div><label>完整配置 JSON<textarea id="gp-' + id + '-config" rows="6">{}</textarea></label><button id="gp-' + id + '-config-save" disabled>保存本账号配置</button></details>' + (id === 'formation' ? '<div class="card"><h3>主线阵容编辑</h3><p class="dim">模板表示布局；宠物 UID 始终由当前阵容保留。恢复也是新的具体计划。</p><label>布局模板 <select id="gp-formation-template"></select></label><div id="gp-formation-layout" aria-live="polite">尚未读取模板布局</div><div id="gp-formation-roster"></div><button id="gp-formation-career">生成职业排序参数</button><button id="gp-formation-manual">使用手动站位参数</button><button id="gp-formation-restore" disabled>加载旧阵容恢复参数</button><details><summary>复制主线极限通关站位</summary><p>读取当前关卡的服务器极限记录，选择具体战报并核对英雄和布局。保留本账号当前宠物；准备后仍需探测、预览和授权。</p><button id="ex-survey" disabled>读取当前关卡极限记录</button><select id="ex-selected" disabled></select><button id="ex-prepare" disabled>核对来源并加载站位参数</button><p id="ex-hint" role="status"></p><pre id="ex-detail"></pre></details><details><summary>本账号具名完整队伍</summary><p>存档包含主线布局、英雄站位和明确宠物 UID。应用后需重新探测、预览和授权。</p><button id="nf-load">读取本地队伍</button><select id="nf-selected"></select><label>队伍名称<input id="nf-name" maxlength="80"></label><button id="nf-save" disabled>从当前权威阵容新建</button><button id="nf-rename" disabled>重命名所选版本</button><button id="nf-overwrite" disabled>用当前阵容覆盖所选版本</button><button id="nf-delete" disabled>删除所选版本</button><button id="nf-prepare" disabled>验证并加载应用参数</button><p id="nf-hint" role="status"></p><pre id="nf-detail"></pre></details></div>' : '') + (id==='museum'?'<div class="card"><h3>古董属性总览</h3><p>单独读取全局、阵营、职业属性和特殊效果。查询无需启用养成操作。</p><button id="antique-summary-read" disabled>只读查询古董属性</button><p id="antique-summary-hint" role="status"></p><div id="antique-summary-view"></div></div>':'') + (id==='fleet'?'<div id="gp-fleet-cargo"></div>':'') + '<label>业务参数 JSON<textarea id="gp-' + id + '-parameters" rows="5">{}</textarea></label><p class="dim">修改参数后请重新探测。参数只表示业务选择，不接受任意协议请求。</p><div id="gp-' + id + '-facts"></div><h3>候选动作</h3><div id="gp-' + id + '-candidates">尚未探测</div><button id="gp-' + id + '-plan" disabled>预览选中的具体动作</button><div id="gp-' + id + '-plan-view"></div><button id="gp-' + id + '-authorize" disabled>确认并授权执行此预览</button></section>';
-export const CORE_GAMEPLAY_HTML = Object.fromEntries([['heroes','英雄成长'],['production','生产规划与执行'],['farm','农田种植'],['equipment-forge','装备制造与收取'],['formation-unlock','普通阵型图纸解锁'],['equipment-growth','装备成长与穿戴'],['badge-growth','徽章成长与穿戴'],['antique-growth','藏品激活与升星']].map(entry=>[entry[0],gameplaySection(entry).replace('id="tab-'+entry[0]+'" class="hidden"','id="gp-'+entry[0]+'-section"')]));
+export const CORE_GAMEPLAY_HTML = Object.fromEntries([['heroes','英雄成长'],['production','生产规划与执行'],['farm','农田种植'],['equipment-forge','装备制造与收取'],['formation-unlock','普通阵型图纸解锁'],['equipment-growth','装备成长与穿戴'],['badge-growth','徽章成长与穿戴'],['antique-growth','藏品养成与碎片兑换']].map(entry=>[entry[0],gameplaySection(entry).replace('id="tab-'+entry[0]+'" class="hidden"','id="gp-'+entry[0]+'-section"')]));
 export const GAMEPLAY_HTML = Object.entries(gameplayNames).map(entry=>entry[0]==='formation'?gameplaySection(entry).replace('</section>',CORE_GAMEPLAY_HTML['formation-unlock']+'</section>'):entry[0]==='museum'?gameplaySection(entry).replace('</section>',CORE_GAMEPLAY_HTML['antique-growth']+'</section>'):gameplaySection(entry)).join('') + String.raw`<section id="tab-workflow" class="hidden"><h2>工作流</h2>${workflowCoreHtml}<details><summary>本账号主线节点开关（默认关闭）</summary><button id="wf-stage-load">读取主线节点配置</button><label><input id="wf-stage-enabled" type="checkbox" disabled>允许工作流生成有限主线节点计划</label><button id="wf-stage-save" disabled>保存主线节点配置</button><p id="wf-stage-hint"></p></details><p class="dim">有限节点图逐步运行。ACTION 生成具体计划并暂停待授权；验证成功后才可继续。可在完整图 JSON 的 budget 声明 resources/quotas/uids 累计上限；未声明的旧图固定使用首个计划的可靠库存，后续收入不会补回额度。</p><div class="toolbar"><button id="wf-load">读取本账号图与状态</button><select id="wf-saved"></select><button id="wf-open">加载选中的图</button><button id="wf-save" disabled>保存图</button><button id="wf-simulate" disabled>模拟</button><button id="wf-start" disabled>开始流程</button><button id="wf-resume" disabled>验证已成功后继续</button><button id="wf-stop" disabled>停止流程</button></div><p id="wf-hint" role="status"></p><pre id="wf-status">尚未读取</pre><label>图 ID<input id="wf-id" value="workflow-1"></label><label>名称<input id="wf-name" value="新工作流"></label><button id="wf-add">添加节点</button><div id="wf-nodes"></div><h3>连线与条件分支</h3><button id="wf-add-edge">添加连线</button><div id="wf-edges"></div><svg id="wf-canvas" viewBox="0 0 800 120" role="img" aria-label="工作流节点与连线" style="width:100%;min-height:180px;overflow:auto"></svg><details><summary>完整图 JSON</summary><textarea id="wf-json" rows="14"></textarea><button id="wf-json-apply">应用 JSON 到图编辑器</button></details><div id="wf-result"></div><div id="wf-plan"></div><button id="wf-authorize" disabled>确认并授权当前 ACTION 计划</button></section>`;
 
 function gameplayClient() {
@@ -115,30 +115,47 @@ function gpRenderDomain(id,view){
   else if(!materials.reason)box.appendChild(gpEl('p','没有可显示的远征。'));
  }else if(id==='antique-growth'){
   const scope=viewGuard.capture(),revision=gpRevision;
-  table('藏品与自有碎片',['藏品','品质','状态','星级','对应碎片','持有'],(view?.antiques||[]).map(row=>[row.name||row.antiqueId,row.color,row.owned?'已激活':'未激活',row.star,row.fragmentId,row.fragments]));
-  box.appendChild(gpEl('p','选择一件藏品和成长种类，再探测具体成本。每次只激活一件或升一星，使用对应自有碎片。'));
+  const valid=control=>!control.disabled&&gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id).data?.view===view;
+  const draft=parameters=>{
+   $('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);
+   $('gp-'+id+'-hint').textContent='已更新单次业务参数；请重新探测，再预览成本和授权。';
+  };
+  table('藏品与自有碎片',['藏品','品质','状态','星级','对应碎片','持有','万能碎片','万能持有'],(view?.antiques||[]).map(row=>[row.name||row.antiqueId,row.color,row.owned?'已激活':'未激活',row.star,row.fragmentId,row.fragments,row.universalItemId,row.universalFragments]));
+  box.appendChild(gpEl('p','单次选择：激活一件、升一星、套装激活或升一级、精通升一级，或用已持有的万能碎片按 1:1 兑换专属碎片。兑换后须另行选择养成动作。'));
   const label=gpEl('label','选择藏品'),select=gpEl('select'),empty=gpEl('option','请选择藏品');empty.value='';select.appendChild(empty);
   for(const row of view?.antiques||[]){const option=gpEl('option',(row.name||row.antiqueId)+' · '+(row.owned?'已激活':'未激活'));option.value=row.antiqueId;select.appendChild(option);}
   select.dataset.antiqueChoice='true';select.disabled=!gpDomainSelectable(id);
   select.onchange=()=>{
-   if(select.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;
+   if(!valid(select))return;
    const row=view.antiques.find(row=>row.antiqueId===select.value);if(!row)return;
    const old=gpParse('gp-'+id+'-parameters'),parameters={antiqueId:row.antiqueId};
-   if(['activate','star'].includes(old.action))parameters.action=old.action;
-   $('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);
-   $('gp-'+id+'-hint').textContent='已选择藏品；请重新探测成本与当前状态。';
+   if(['activate','star','exchange'].includes(old.action))parameters.action=old.action;
+   // A new target requires a new explicit exchange quantity.
+   draft(parameters);
   };
   label.appendChild(select);box.appendChild(label);s.actionControls.push(select);
-  for(const mode of [{label:'激活一件',action:'activate'},{label:'升一星',action:'star'}]){
+  table('藏品套装',['套装','品质','等级','已拥有成员','激活所需','等级上限','精通开放等级','生效数量','特殊效果服务器值'],(view?.suits||[]).map(row=>[row.name||row.suitId,row.color,row.level,row.ownedMembers,row.requiredMembers,row.maximumLevel,row.unlockedLevel,row.effectiveNum,row.advEffectValue]));
+  const suitLabel=gpEl('label','选择套装'),suitSelect=gpEl('select'),suitEmpty=gpEl('option','请选择套装');suitEmpty.value='';suitSelect.appendChild(suitEmpty);
+  for(const row of view?.suits||[]){const option=gpEl('option',String(row.suitId)+' · '+(row.name||row.suitId));option.value=String(row.suitId);suitSelect.appendChild(option);}
+  suitSelect.dataset.antiqueSuitChoice='true';suitSelect.disabled=!gpDomainSelectable(id);
+  suitSelect.onchange=()=>{if(!valid(suitSelect))return;const row=view?.suits?.find(row=>String(row.suitId)===suitSelect.value);if(row)draft({action:'suit',suitId:row.suitId});};
+  suitLabel.appendChild(suitSelect);box.appendChild(suitLabel);s.actionControls.push(suitSelect);
+  if(view?.master){const row=view.master;table('藏品精通',['当前等级','总星数','等级上限','套装开放等级','下级需求与成本'],[[row.level,row.totalStars,row.maxLevel,row.unlockedSuitLevel,gpJson(row.next)]]);}
+  for(const mode of [{label:'激活一件',action:'activate'},{label:'升一星',action:'star'},{label:'套装激活或升一级',action:'suit'},{label:'精通升一级',action:'master'},{label:'兑换专属碎片',action:'exchange'}]){
    const button=gpEl('button',mode.label);button.dataset.antiqueMode=mode.action;button.disabled=!gpDomainSelectable(id);
    button.onclick=()=>{
-    if(button.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;
-    const old=gpParse('gp-'+id+'-parameters'),parameters={action:mode.action};if(old.antiqueId!==undefined)parameters.antiqueId=old.antiqueId;
-    $('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);
-    $('gp-'+id+'-hint').textContent='已选择成长种类；请重新探测，再预览和授权。';
+    if(!valid(button))return;
+    const old=gpParse('gp-'+id+'-parameters'),parameters={action:mode.action};
+    if(['activate','star','exchange'].includes(mode.action)&&old.antiqueId!==undefined)parameters.antiqueId=old.antiqueId;
+    if(mode.action==='suit'&&old.suitId!==undefined)parameters.suitId=old.suitId;
+    draft(parameters);
    };
    s.actionControls.push(button);box.appendChild(button);
   }
+  const numLabel=gpEl('label','本次兑换数量'),num=gpEl('input');num.type='number';num.min='1';num.max='2147483647';num.step='1';num.value='';num.dataset.antiqueExchangeQuantity='true';num.disabled=!gpDomainSelectable(id);
+  const apply=gpEl('button','准备指定数量兑换');apply.dataset.antiqueExchangePrepare='true';apply.disabled=!gpDomainSelectable(id);
+  apply.onclick=()=>{if(!valid(apply))return;const old=gpParse('gp-'+id+'-parameters'),quantity=Number(num.value);if(!old.antiqueId||!Number.isInteger(quantity)||quantity<1||quantity>2147483647){$('gp-'+id+'-hint').textContent='先选择藏品，并输入本次兑换的正整数数量。';return;}draft({action:'exchange',antiqueId:old.antiqueId,num:quantity});};
+  numLabel.appendChild(num);box.appendChild(numLabel);box.appendChild(apply);s.actionControls.push(num,apply);
  }else if(id==='badge-growth'){
   const scope=viewGuard.capture(),revision=gpRevision,rows=view?.candidates||[];
   const putOn=view?.mode==='put-on'||rows.some(row=>row.actionType==='PUT-ON');

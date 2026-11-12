@@ -2488,3 +2488,23 @@ E14 增加汇总作用域、原值/单位、明确空/UNKNOWN、只读和账号�
 最终 **838/838 PASS，0 fail/cancelled/skipped/todo，12.88 秒**。15 项领域、6 项真实本地 Service/Codec/磁盘历史与 218 项合同/页面/HTTP 隔离证据均与此重叠，不累计。覆盖当前固定配置、紫色派生范围、完整库存/藏品归一化、门槛/上限/余额、成本与唯一实体预算、修改/过期/账号变化、无专用响应和 UNKNOWN 恢复，保留原装备/徽章/英雄/Museum/Workflow/预算回归。首轮共享测试尚固定 16 个合同，已按新增第 17 个校准；复核发现库存返回顺序影响身份，已仅将计划库存按 ID 排序并新增实际重排行测试；最终复核将公开 identity 改摘要后重新跑完整命令。D.20 命令中 resource-ledger.test.mjs、business-functions.test.mjs 当前并不存在，不能将它们算作已运行文件；421 的原始结果保留。本次使用实际 resource-budget/run-budget/run-budget-safety/run-budget-service，并先验路径，纠正覆盖范围。
 
 E14 增加激活/单星、对应碎片、明确零星/缺失、既有套装派生观察和意外身份/精通变化；E20/E21/E23 增加实体预算持久化、无效果 UNKNOWN、重启与隔离。后续仍需逐项完成 PRO-007 套装升级、碎片兑换、精通和万能材料独立合同，以及 C144 结算恢复身份、W12 可靠额度等原工作包。未运行 R7、真实游戏或 R8，未 push/merge；总目标继续 ACTIVE，R8 必须在 R7 后由 Owner 单独授权。
+
+### D.24 W11/PRO-007 单次套装、精通及自有万能碎片兑换（2026-11-12）
+
+父提交 `960fa2be74fbc9c17ae5ce95e12383f124fd9ce1`。在原 antique-growth Adapter 增加显式 `suit/master/exchange`，保持 17 个合同、PRO-007 独立身份及原 ACTIVATE/STAR 的完整 operation JSON、配置依赖和计划 identity 不变。五类具名写请求与 D.21 的独立属性汇总现在均有受控离线业务链；PRO-007 全范围仍 PARTIAL，直接万能/混合升星仍受限；此三分支 EXISTING_FUNCTION/EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。W11/C144 结算恢复及其他原工作包继续保留，不将此增量计作 R7 或全产品完成。
+
+重新只读核验固定 v76 包 SHA256 `4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444` 与 main/game.js 入口 SHA256 `a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54`。新增 AntiqueMasterPop byte 257076、请求 byte 261306、模块 SHA256 `64b192c66b3ad15a7f11cc6704b14cc965553a63fddef55ab5ccd41540ce9dd9`；FragExchangePop byte 2772381、请求 byte 2778539、模块 SHA256 `cb98aefaca24d75fd3a5c0f9ea34909eedd3f81b3299eb257f627027b8324911`；套装请求 byte 300009。模块摘要覆盖 System.register 起点至下一模块起点，含尾空白，记录在 ANTIQUE_GROWTH_EVIDENCE。仅在内存解包和分析代码，没有执行游戏代码、连接或凭证读取。
+
+- SUIT：`AntiqueSuitLevelUpRequest {id}` 无专用响应。缺行或明确 level=0 只激活到 1，真实零成本；BLUE/PURPLE/ORANGE 需拥有本套全部成员，RED 需至少两件。已有正等级逐次 +1，按下一档 AntiqueSuitLvCfg 双成本扣 GOLD 与同品质藏品经验，同时受该品质上限及当前精通 maxSuitLv 限制。精通 0 不阻塞首次套装激活，但不能据此升级已有套装。完整复读只允许目标套装等级 +1，其 effectiveNum/advEffectValue 是合法服务器观察值，不推断奖励或属性公式。
+- MASTER：`AntiqueMasterLevelUpRequest {}` 必须同时取得自有正确 next masterLv 的专用 Response 与独立完整复读；仅响应或仅状态改变都不足以确认。累计自有藏品星数达到下一 AntiqueMasterLvCfg.totalStarNum，未达上限；首级真实零成本，后续只消耗明确的“藏品大师经验”。预览显示配置属性原值，不宣称已验证英雄最终属性。
+- EXCHANGE：`AntiqueFragExchangeRequest {antiqueId,fragItemId,num}` 无专用响应。仅明确已激活、未满星藏品，来源必须是 AntiqueBaseCfg.universalItemId 与 ItemCfg 对应品质的自有万能碎片，数量为正 int32 且不超过持有；允许超过下一星缺口。独立复读须确认来源精确净扣 num、`antiqueId+'碎片'` 等量净增、完整藏品/套装/精通及其他库存不变；目标加法溢出事先阻断。兑换不自动激活或升星，所得材料不提高父运行原始预算额度。
+
+追加静态复核纠正 D.23 的客户端描述：byte 251108 的唯一 StarUp 调用实际传 `universal:this._isAutoExchange`，不是固定 false；byte 248643 合并专属与万能数量检查足够，byte 251788 的按钮写私有开关，AntiqueUtil byte 303836 读取该开关。D.23 的 `universal:false` 是当前受控合同，不应外推为客户端全部行为。当前明确保留 DIRECT_UNIVERSAL_STAR 限制，独立 EXCHANGE 不冒充直接/混合扣款合同完成；待核实精确扣除分配后再施工。
+
+保留原三来源、账号/角色/世界/代际/连接与各来源时效的私有事实绑定。SUIT / MASTER 分别预留唯一 `antique-suit:suitId` / `antique-master:GLOBAL`，EXCHANGE 使用原 `antique:antiqueId`；成本及实体派发前必须写入磁盘。无效果、错等级、缺/错响应、错扣/错到账、其他状态变化均保持 UNKNOWN 与预留，重启不重放。零成本仍需具体单批许可。公开计划只含摘要 identity，内部请求与配置证据不出 API；原 Operations API/Workflow 共用执行器不复制。页面提供五种明确模式、套装选择和兑换数量；修改只更新草稿并撤销旧预览/授权，必须重新探测。默认关闭、账号切换与迟到结果隔离保留。
+
+联合回归启动前逐一 Test-Path 检查实际 36 文件：D.23 的 34 文件集合，加 `tests/antique-advanced.test.mjs`、`tests/antique-advanced-service.test.mjs`，随后 `node --test` 一次运行全部。最终 **921/921 PASS，0 fail/cancelled/skipped/todo，19.63 秒**。其中新增领域 14 项、真实本地 Service/Codec/磁盘历史 36 项（含五种免费/消耗组合的持久化失败零传输）、完整页面五组合与旧能力重叠，不重复累计。确认完整当前配置支持全部三分支；真实共享父预算用例确认库存 100→102 后原材料额度仍为 100，且同一实体不能重复预留。独立复核还与父提交逐字节比较原 ACTIVATE/STAR 完整 operation，均相同。
+
+首轮审查复现共享 D6 的成本数组子类可覆写迭代方法，导致实际 RUBY 被伪装。现 Ruby 检查调用原生 some，exactCosts 要求标准数组及逐索引 own data descriptor；新增 RUBY 子类、普通伪成本子类和 getter 成本回归，原复现已拒绝。付费硬边界、精确资源形状及原测试均保留。Service 初跑 31/31 成功，因复制全部无关配置耗时 89.31 秒，随后仅投影七张完整相关配置表，不删行或伪造配置，并追加五项持久化失败后纳入最终联合回归。只将已合法的 exchange 模式改为 unknown-mode 的非法参数断言，没有删除失败用例或放宽确认。
+
+E14 增加套装首次免费激活、品质成员门槛、精通等级/星数门槛、双成本、明确精通响应、兑换精确扣入与非目标状态；E20/E21/E23 增加零成本实体预留、磁盘失败零传输、收入不扩预算、UNKNOWN 重启与页面账号隔离。原五份未跟踪输入的 SHA256 与历史基线一致。未运行 R7、真实游戏或 R8，未 push/merge；Goal 保持 ACTIVE，R8 仍须在 R7 后由 Owner 单独授权。

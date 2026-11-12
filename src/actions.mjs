@@ -278,7 +278,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const request = action.request;
   const body = action.body ?? {};
   const costs = action.costs ?? [];
-  const hasRuby = Array.isArray(costs) && costs.some((item) => ['RUBY', '钻石', '4'].includes(String(item?.id ?? item?.[0])));
+  const hasRuby = Array.isArray(costs) && Array.prototype.some.call(costs, (item) => ['RUBY', '钻石', '4'].includes(String(item?.id ?? item?.[0])));
   const fail = (code, message) => { const error = new Error(message); error.code = code; throw error; };
   if (hasRuby || request === 'DiscountShopBuyRequest' || (request === 'ClickGoldRequest' && body.free !== true)
     || (request === 'GotFreeDailyPackRequest' && body.packId !== FREE_DAILY_PACK_ID)
@@ -293,7 +293,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if (request === 'DrawAfkRewardRequest' && body.useAdvCard) fail('COST_UNKNOWN', '广告卡成本未经确认');
   const fields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable===true&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value'));
   const identifier=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
-  const exactCosts=list=>Array.isArray(list)&&Reflect.ownKeys(list).length===list.length+1&&list.every(v=>fields(v,['id','num'])&&identifier(v.id)&&Number.isSafeInteger(v.num)&&v.num>0)&&new Set(list.map(v=>v.id)).size===list.length;
+  const exactCosts=list=>Array.isArray(list)&&Object.getPrototypeOf(list)===Array.prototype&&Reflect.ownKeys(list).length===list.length+1&&Array.from({length:list.length},(_,index)=>Object.getOwnPropertyDescriptor(list,index)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))&&list.every(v=>fields(v,['id','num'])&&identifier(v.id)&&Number.isSafeInteger(v.num)&&v.num>0)&&new Set(list.map(v=>v.id)).size===list.length;
   // Exact seed-only or owned-material branches. No fallback purchase, exchange,
   // harvest or automatic-farming branch is admitted by a request-family label.
   const donateFort=request==='DonateFortRequest';
@@ -310,6 +310,12 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const activateAntique=request==='ActivateAntiqueRequest',starAntique=request==='AntiqueStarUpRequest';
   if((activateAntique||starAntique)&&(!fields(body,starAntique?['id','universal']:['id'])||!identifier(body.id)||starAntique&&body.universal!==false||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.id+'碎片'))fail('COST_UNKNOWN','藏品成长仅允许明确藏品及其自有专用碎片，禁止万能碎片或购买补齐');
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
+  const suitAntique=request==='AntiqueSuitLevelUpRequest',masterAntique=request==='AntiqueMasterLevelUpRequest',exchangeAntique=request==='AntiqueFragExchangeRequest';
+  const suitXp=['蓝藏品经验','紫藏品经验','橙藏品经验','红藏品经验'],universalFragments=['蓝藏万能碎片','紫藏万能碎片','橙藏万能碎片','红藏万能碎片'];
+  const explicitFree=emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value);
+  if(suitAntique&&(!fields(body,['id'])||!positiveInt32(body.id)||!(explicitFree||exactCosts(costs)&&costs.length===2&&costs.every(row=>positiveInt32(row.num))&&costs.some(row=>row.id==='GOLD')&&costs.some(row=>suitXp.includes(row.id)))))fail('COST_UNKNOWN','藏品套装仅允许明确套装ID，零成本激活或自有金币及同品质藏品经验');
+  if(masterAntique&&(!fields(Object.getOwnPropertyDescriptor(action,'body')?.value,[])||!(explicitFree||exactCosts(costs)&&costs.length===1&&costs[0].id==='藏品大师经验'&&positiveInt32(costs[0].num))))fail('COST_UNKNOWN','藏品精通仅允许明确空请求、零成本首级或自有藏品大师经验');
+  if(exchangeAntique&&(!fields(body,['antiqueId','fragItemId','num'])||!identifier(body.antiqueId)||!universalFragments.includes(body.fragItemId)||!positiveInt32(body.num)||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.fragItemId||costs[0].num!==body.num))fail('COST_UNKNOWN','藏品碎片兑换仅允许明确藏品、已持有万能碎片与精确正数量');
   const putOnEquip=request==='PutOnEquipRequest';
   if(putOnEquip&&(!fields(body,['uid','heroId'])||!exactUid(body.uid)||!identifier(body.heroId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','装备穿戴仅允许明确自有UID和英雄，且不消耗资源');
   const putOnBadge=request==='PutOnBadgeRequest';
@@ -324,7 +330,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(farmPlant&&(!fields(body,['args'])||!Array.isArray(body.args)||body.args.length!==1||Reflect.ownKeys(body.args).length!==2||!fields(body.args[0],['buildingId','productId'])||!identifier(body.args[0].buildingId)||!identifier(body.args[0].productId)||!exactCosts(costs)||costs.length!==1))fail('COST_UNKNOWN','仅允许有精确种子成本的单田播种');
   if(forgeMake&&(!fields(body,['buildingId','makeId','universal'])||!identifier(body.buildingId)||!Number.isInteger(body.makeId)||body.makeId<=0||body.makeId>2147483647||body.universal!==false||!exactCosts(costs)||costs.length===0))fail('COST_UNKNOWN','装备制造仅允许精确配方、自有材料及universal=false');
   if(forgePick&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!Object.hasOwn(action,'costs')||!exactCosts(costs)||costs.length!==0))fail('COST_UNKNOWN','装备收取仅允许明确单建筑及零成本');
-  const known = activateAntique || starAntique || exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || putOnEquip || enhanceBadge || putOnBadge || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
+  const known = activateAntique || starAntique || suitAntique || masterAntique || exchangeAntique || exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || putOnEquip || enhanceBadge || putOnBadge || unlockPreset || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
     || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ArenaChallengeRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'PirateSweepRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {

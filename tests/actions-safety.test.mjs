@@ -229,3 +229,39 @@ test('Antique D6 admits only exact owned dedicated fragments and never universal
  }
  for(const request of ['AntiqueSuitLevelUpRequest','AntiqueFragExchangeRequest','AntiqueMasterLevelUpRequest'])assert.throws(()=>assertPaymentAllowed({request,body:{id:'藏品蓝1'},costs:[{id:'藏品蓝1碎片',num:1}]}),{code:'COST_UNKNOWN'});
 });
+
+test('Antique advanced D6 requires explicit free costs, exact XP currencies and 1:1 exchange debits',()=>{
+ const freeSuit=()=>({request:'AntiqueSuitLevelUpRequest',body:{id:1001},costs:[]});
+ const paidSuit=()=>({...freeSuit(),costs:[{id:'GOLD',num:50},{id:'蓝藏品经验',num:370}]});
+ const freeMaster=()=>({request:'AntiqueMasterLevelUpRequest',body:{},costs:[]});
+ const paidMaster=()=>({...freeMaster(),costs:[{id:'藏品大师经验',num:5}]});
+ const exchange=()=>({request:'AntiqueFragExchangeRequest',body:{antiqueId:'藏品蓝1',fragItemId:'蓝藏万能碎片',num:7},costs:[{id:'蓝藏万能碎片',num:7}]});
+ for(const make of [freeSuit,paidSuit,freeMaster,paidMaster,exchange]){
+  assert.doesNotThrow(()=>assertPaymentAllowed(make()));
+  for(const mutate of [a=>delete a.costs,a=>a.costs=null,a=>a.costs.extra=1,a=>a.body.buyMissing=false,a=>a.body.universal=true]){
+   const a=make();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});
+  }
+  const a=make();a.costs=[{id:'RUBY',num:1}];assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+ }
+ for(const make of [paidSuit,paidMaster,exchange])for(const num of [0,-1,1.5,2147483648]){
+  const a=make();a.costs[0].num=num;assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
+ }
+ for(const mutate of [a=>a.body.id=0,a=>a.body.id='1001',a=>a.body.id=2147483648,a=>a.costs[1].id='藏品大师经验',a=>a.costs[0].id='其他金币',a=>a.costs.pop()]){
+  const a=paidSuit();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
+ }
+ for(const mutate of [a=>delete a.body,a=>a.body=null,a=>a.body={level:1},a=>a.body=Object.create({}),a=>a.costs[0].id='蓝藏品经验']){
+  const a=paidMaster();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
+ }
+ for(const mutate of [a=>a.body.num=6,a=>a.body.num=0,a=>a.body.num=2147483648,a=>a.body.antiqueId='',a=>a.body.fragItemId='万能碎片',a=>a.costs[0].id='藏品蓝1碎片',a=>a.costs.push({id:'GOLD',num:1})]){
+  const a=exchange();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
+ }
+});
+test('D6 cannot be bypassed by overridden array iterators or accessor-backed costs',()=>{
+ class ForgedCosts extends Array {some(){return false;}every(){return true;}map(){return ['a','b'];}}
+ const paid={request:'AntiqueSuitLevelUpRequest',body:{id:1001},costs:new ForgedCosts({id:'RUBY',num:1},{id:'付费材料',num:1})};
+ assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+ const spoof={...paid,costs:new ForgedCosts({id:'普通材料',num:1},{id:'其他',num:1})};
+ assert.throws(()=>assertPaymentAllowed(spoof),{code:'COST_UNKNOWN'});
+ const accessor=[{id:'GOLD',num:50}];Object.defineProperty(accessor,1,{enumerable:true,get:()=>({id:'蓝藏品经验',num:370})});
+ assert.throws(()=>assertPaymentAllowed({...paid,costs:accessor}),{code:'COST_UNKNOWN'});
+});
