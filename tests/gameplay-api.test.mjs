@@ -271,3 +271,16 @@ test('heroes HTTP blocks universal exchange and rejects stale exact state despit
   const next=await app.plan();assert.equal(next.data.actions[0].actionId,first.data.actions[0].actionId);assert.notEqual(next.data.planHash,first.data.planHash);assert.equal(next.data.actions[0].beforeState.level,2);assert.deepEqual(next.data.resourceBudget,[{id:'英雄经验',num:8}]);assert.equal((await app.approve(first.data)).data.code,'STALE_PLAN');
  }finally{await app.close();}
 });
+
+test('unified preparation is offline and scoped while old raw write routes stay closed',async()=>{
+ const app=await harness();try{
+  await app.call();
+  const payload={entry:'loop',world:[{module:'formation',parameters:{presetId:2},selection:'exact-synthetic'}],rounds:2,budget:{resources:[],quotas:[],uids:[]}};
+  const prepared=await app.call('/api/workflows/prepare',{body:payload});assert.equal(prepared.status,200);assert.equal(prepared.data.accountId,'A');
+  assert.deepEqual(prepared.data.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['formation','formation']);
+  assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.requests.length,0);
+  const invalid=await app.call('/api/workflows/prepare',{body:{...payload,rounds:0}});assert.equal(invalid.status,400);
+  for(const route of ['/api/tasks/run','/api/dailies/run','/api/loop/start']){const denied=await app.call(route,{body:{confirm:true}});assert.equal(denied.status,403);assert.equal(denied.data.code,'READ_ONLY_ROUTE');}
+  const csrf=await app.call('/api/workflows/prepare',{body:payload,headers:{'x-cw-csrf':'wrong'}});assert.equal(csrf.status,403);
+ }finally{await app.close();}
+});

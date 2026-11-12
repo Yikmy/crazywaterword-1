@@ -330,6 +330,7 @@ export const PAGE = `<!doctype html>
       <label class="dim mvp-disabled">间隔秒 <input id="loop-every" value="60" style="width:64px" disabled hidden></label>
       <label class="dim mvp-disabled"><input type="checkbox" id="world-speedup" checked disabled hidden> 允许花加速器</label>
       <label class="dim mvp-disabled"><input type="checkbox" id="world-reroll" disabled hidden> 拒绝重刷订单</label>
+      <button id="loop-unified" type="button">准备有限循环</button>
       <button id="loop-start" class="primary" disabled hidden>开始挂机</button>
       <button id="loop-stop" class="danger" disabled hidden>停止</button>
       <span id="loop-hint" class="warn"></span>
@@ -338,6 +339,7 @@ export const PAGE = `<!doctype html>
 
     <h2>任务奖励</h2>
     <div class="bar">
+      <button id="tasks-unified" type="button">准备任务统一执行</button>
       <button id="tasks-plan">检查可领</button>
       <button id="tasks-run" class="primary" disabled hidden>领取任务奖励</button>
       <span id="tasks-hint" class="warn"></span>
@@ -378,6 +380,7 @@ export const PAGE = `<!doctype html>
 
   <section id="tab-dailies" class="hidden">
     <div class="bar">
+      <button id="dailies-unified" type="button">准备日常统一执行</button>
       <button id="dailies-plan">查看日常数据</button>
       <button id="dailies-run" class="primary" disabled hidden>一键完成</button>
       <label class="dim mvp-disabled"><input type="checkbox" id="dailies-paid" disabled hidden> 允许花钻石（默认关闭）</label>
@@ -1045,7 +1048,7 @@ async function operationMutation(path, payload, scope) {
   viewGuard.assert(scope);
   const csrfToken = (operationsData?.accountId === scope.account ? operationsData.csrfToken : null) || gameplayCsrfToken();
   if (!scope.account || !csrfToken) throw new Error('请先读取本账号运行状态。');
-  if (!['/api/operations/recovery/preview', '/api/operations/recovery/confirm', '/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/antiques/summary','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/start','/api/workflows/resume','/api/workflows/stop','/api/formations/named/save','/api/formations/named/rename','/api/formations/named/overwrite','/api/formations/named/delete','/api/formations/named/prepare','/api/formations/extreme/survey','/api/formations/extreme/prepare'].includes(path)) throw new Error('未开放此批次操作');
+  if (!['/api/operations/recovery/preview', '/api/operations/recovery/confirm', '/api/operations/survey', '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute', '/api/operations/stop', '/api/operations/production-policy','/api/antiques/summary','/api/gameplay/survey','/api/gameplay/config','/api/workflows/save','/api/workflows/simulate','/api/workflows/prepare','/api/workflows/start','/api/workflows/resume','/api/workflows/stop','/api/formations/named/save','/api/formations/named/rename','/api/formations/named/overwrite','/api/formations/named/delete','/api/formations/named/prepare','/api/formations/extreme/survey','/api/formations/extreme/prepare'].includes(path)) throw new Error('未开放此批次操作');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
   const response = await fetch(url.pathname + url.search, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cw-csrf': csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json().catch(() => ({})); viewGuard.assert(scope);

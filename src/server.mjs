@@ -28,7 +28,7 @@ import { surveyDailies, runDailies, formatSurvey, DAILY_DRIVERS, CHEST_TABLE } f
 import { dailyChecklist, formatDailyChecklist } from './daily-checklist.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
-import { runLoop, formatLoopRound } from './loop.mjs';
+import { runLoop, formatLoopRound, compileUnifiedExecution } from './loop.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
@@ -699,7 +699,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/memory', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
       const namedFormationRoute=new Set(['GET /api/formations/named','POST /api/formations/named/save','POST /api/formations/named/rename','POST /api/formations/named/overwrite','POST /api/formations/named/delete','POST /api/formations/named/prepare']).has(route);
       const extremeFormationRoute=new Set(['POST /api/formations/extreme/survey','POST /api/formations/extreme/prepare']).has(route);
-      const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','GET /api/workflows/history','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
+      const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','GET /api/workflows/history','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/prepare','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
       if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
@@ -745,6 +745,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if(route==='POST /api/formations/named/delete'){json(operations.deleteNamedFormation(id,payload));return;}
         if (route==='POST /api/gameplay/config') {fields(['module','config']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
         if (route==='POST /api/workflows/save') {fields(['graph']);workflowStore.save(id,payload.graph);json(workflowView(id));return;}
+        if (route==='POST /api/workflows/prepare') { json({accountId:id,...compileUnifiedExecution(payload,{modules:operations.modules})});return; }
         if (route==='POST /api/workflows/simulate') {fields(['graph']);json({accountId:id,...simulateWorkflow(payload.graph,{modules:operations.modules})});return;}
         if (route==='POST /api/workflows/stop') {fields([]);workflowRunners.get(id)?.stop();operations.stop(id);await workflowRunners.get(id)?.settle();json(workflowView(id));return;}
         if (route==='POST /api/workflows/resume') {fields([]);const runner=workflowRunner(id);if(runner.getStatus().status!=='AWAITING_AUTHORIZATION')throw Object.assign(new Error('工作流没有待核对批次'),{statusCode:409});runner.resume().catch(cause=>emit(sessions.get(id),'error',cause.message));await Promise.resolve();json(workflowView(id));return;}

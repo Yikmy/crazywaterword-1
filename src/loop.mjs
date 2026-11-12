@@ -1,5 +1,6 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
+import { validateWorkflow } from './workflow.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorld } from './world.mjs';
@@ -115,4 +116,53 @@ export function formatLoopRound(summary) {
     line('任务', summary.tasks), line('日常', summary.dailies),
     `${line('海面', summary.world)}  人口 ${summary.world?.population ?? '?'}`,
   ].join('\n');
+}
+
+// Compile legacy entry intents into the existing runner. This function is pure:
+// it never surveys, connects, authorizes, schedules or dispatches a game request.
+export function compileUnifiedExecution(input, { modules } = {}) {
+  const invalid = message => { throw Object.assign(new Error(message), { code:'WORKFLOW_INVALID',statusCode:400 }); };
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const exact = (value,keys) => { if(!object(value)||Object.keys(value).some(key=>!keys.includes(key))) invalid('统一执行声明包含未知字段'); };
+  exact(input,['entry','id','name','tasks','dailies','world','rounds','everyMs','budget']);
+  if(!['tasks','dailies','loop'].includes(input.entry))invalid('需要 Tasks、Dailies 或 Loop 入口');
+  const rounds=input.rounds===undefined?1:input.rounds,everyMs=input.everyMs===undefined?0:input.everyMs;
+  if(!Number.isSafeInteger(rounds)||rounds<1||rounds>48||!Number.isSafeInteger(everyMs)||everyMs<0||everyMs>60000)invalid('统一循环必须有限且间隔不超过60000毫秒');
+  if(input.entry!=='loop'&&(rounds!==1||everyMs!==0))invalid('只有 Loop 接受多轮与间隔');
+  if(!object(input.budget))invalid('统一执行必须声明父级资源、配额及UID预算');
+  const phases={tasks:input.tasks===undefined?[]:input.tasks,dailies:input.dailies===undefined?[]:input.dailies,world:input.world===undefined?[]:input.world},steps=[],blocked=[];
+  for(const [phase,rows] of Object.entries(phases)){
+    if(!Array.isArray(rows)||rows.length>48)invalid('入口步骤列表无效');
+    if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
+    for(const [index,row] of rows.entries()){
+      let module,parameters,selection={unique:true};
+      if(phase==='tasks'){
+        exact(row,['kind','taskId']);
+        if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
+        if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'});continue;}
+        if(!['main','branch','achievement'].includes(row.kind))invalid('任务种类无效');
+        module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
+      } else if(phase==='dailies'){
+        exact(row,['taskId','parameters']);
+        if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Dailies 需要精确任务ID');
+        module=({1002:'free-recruit',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep'})[row.taskId];
+        if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
+        parameters=row.parameters??{};
+        if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
+      } else {
+        exact(row,['module','parameters','selection']);module=row.module;parameters=row.parameters??{};selection=row.selection??selection;
+      }
+      steps.push({phase,index,module,parameters,selection});
+    }
+  }
+  const nodes=[{id:'start',type:'START'}],edges=[];
+  const add=node=>{edges.push({from:nodes.at(-1).id,to:node.id});nodes.push(node);};
+  for(let round=1;round<=rounds;round++){
+    if(round>1&&everyMs)add({id:'wait-'+round,type:'WAIT',durationMs:everyMs});
+    for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,selection:step.selection});
+  }
+  add({id:'stop',type:'STOP'});
+  const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget};
+  const validated=validateWorkflow(graph,{modules}).workflow;
+  return {entry:input.entry,graph:steps.length?validated:null,blocked};
 }

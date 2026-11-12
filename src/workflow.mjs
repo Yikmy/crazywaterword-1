@@ -54,6 +54,7 @@ export function validateWorkflow(input, options = {}) {
     if (['SURVEY','ACTION'].includes(node.type)) { const adapter=registry.get(node.module); if(adapter?.contractVersion===1) validateFunctionParameters(node.module,adapter,node.parameters??{}); }
     if (node.type === 'ACTION') {
       if (typeof node.selection === 'string') { if (!text(node.selection) || node.selection.length > 1000) throw fail('操作选择无效'); }
+      else if (plain(node.selection) && node.selection.unique === true) { exact(node.selection, ['unique'], '唯一候选选择'); }
       else { exact(node.selection, ['actionId'], '操作选择'); if (!text(node.selection.actionId) || node.selection.actionId.length > 1000) throw fail('缺少明确操作 ID'); }
     }
     if (['CONDITION','RULE'].includes(node.type) || node.condition !== undefined) condition(node.condition);
@@ -146,14 +147,30 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       while (true) {
         current(ctx); if (++ctx.steps > WORKFLOW_LIMITS.steps) throw fail('工作流步骤上限已达到', 'WORKFLOW_UNKNOWN');
         const node = ctx.graph.nodes.find(entry => entry.id === ctx.nodeId);
-        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); await finish(ctx, 'COMPLETED', '工作流到达 STOP'); break; }
+        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) ? '工作流到达 STOP；含未执行的阻塞节点，详情见 trace' : '工作流到达 STOP'); break; }
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'SURVEY') { ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx); ctx.surveyModule = node.module; await trace(ctx, node, 'SURVEYED'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'ACTION') {
+          ctx.lastPlan = null; ctx.lastRun = null; ctx.lastActionModule = null;
           operations.bindWorkflowNode?.(ctx.session,ctx.runId,{workflowId:ctx.graph.id,nodeId:node.id});
-          const plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [typeof node.selection === 'string' ? node.selection : node.selection.actionId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx);
+          let selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;
+          if (node.selection?.unique === true) {
+            const surveyed = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx);
+            if (surveyed?.accountId !== ctx.accountId || surveyed.module !== node.module || !Array.isArray(surveyed.view?.candidates)) throw fail('唯一候选缺少同账号同模块调查', 'WORKFLOW_UNKNOWN');
+            ctx.survey = surveyed; ctx.surveyModule = node.module;
+            const candidates = surveyed.view.candidates.filter(row => row.executable === true);
+            if (!candidates.length) { await trace(ctx, node, 'BLOCKED_NO_EXECUTABLE_CANDIDATE'); ctx.nodeId = next(ctx); continue; }
+            if (candidates.length !== 1 || !text(candidates[0].actionId)) throw fail('存在多个候选或候选身份不明；须选择明确操作', 'WORKFLOW_UNKNOWN');
+            selectedId = candidates[0].actionId;
+          }
+          let plan;
+          try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx); }
+          catch (error) {
+            current(ctx);
+            if (node.selection?.unique === true && error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY'); ctx.nodeId = next(ctx); continue; }
+            throw error;
+          }
           if (!plain(plan) || !text(plan.batchId) || plan.accountId !== ctx.accountId || !Array.isArray(plan.actions) || plan.actions.length !== 1 || !text(plan.actions[0].actionId)) throw fail('操作服务未返回可单次确认的账号计划', 'WORKFLOW_UNKNOWN');
-          const selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;
           if (plan.actions[0].actionId !== selectedId || plan.module && plan.module !== node.module) throw fail('计划与工作流精确操作选择不一致', 'WORKFLOW_UNKNOWN');
           ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION'); break;
         }
@@ -203,6 +220,17 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       if (!matches.length || matches.length === 1 && !matches[0].finishedAt && ['EXECUTING','VERIFY','RESOURCE_PREFLIGHT'].includes(matches[0].finalStatus)) {
         ctx.reason = '当前批次尚无已完成执行历史；继续等待用户授权与执行';
         await onUpdate(getStatus());
+        return getStatus();
+      }
+      const refused = matches.length === 1 ? matches[0] : null;
+      if (refused?.finalStatus === 'REJECTED' && text(refused.finishedAt) &&
+          refused.planSummary?.batchId === ctx.waitingPlan.batchId && refused.planSummary?.planHash === ctx.waitingPlan.planHash &&
+          Array.isArray(refused.actions) && refused.actions.length === 1 &&
+          refused.actions[0].actionId === ctx.waitingPlan.actions[0].actionId && refused.actions[0].result === 'REJECTED' &&
+          refused.actions[0].requestStatus === 'REJECTED' && refused.actions[0].unresolvedWrite === false) {
+        ctx.lastRun = copy(refused);
+        await trace(ctx, ctx.graph.nodes.find(node => node.id === ctx.nodeId), 'REJECTED');
+        await finish(ctx, 'FAILED', '当前批次确定拒绝；共享拒绝记忆保留，停止后续执行');
         return getStatus();
       }
       if (matches.length !== 1 || !confirmedRun(matches[0], ctx.waitingPlan, ctx.accountId)) {

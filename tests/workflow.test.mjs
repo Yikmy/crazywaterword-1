@@ -1,3 +1,4 @@
+import { compileUnifiedExecution } from '../src/loop.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -77,4 +78,67 @@ test('registered fleet and alliance templates contain ACTION plus VERIFY without
  const registry={fleet:moduleEntry('fleet'),alliance:moduleEntry('alliance')},examples=exampleWorkflows(registry);
  for(const id of ['fleet-repair-dispatch-template','alliance-help-template']){const example=examples.find(row=>row.id===id);assert.ok(example);assert.ok(example.workflow.nodes.some(node=>node.type==='ACTION'));assert.ok(example.workflow.nodes.some(node=>node.type==='VERIFY'));assert.equal(validateWorkflow(example.workflow,{modules:registry}).valid,true)}
  assert.equal(examples.some(row=>row.id==='formation-stage-template'),false);
+});
+
+const unifiedRegistry=Object.fromEntries(['task-rewards','free-recruit','free-gold','trial-challenge','pirate-sweep','fixture'].map(id=>[id,moduleEntry(id)]));
+const unifiedBudget={resources:[],quotas:[],uids:[]};
+test('legacy intent compilation is offline, finite, registered and preserves phase order and exact task identity',()=>{
+ const result=compileUnifiedExecution({entry:'loop',tasks:[{kind:'branch',taskId:19}],dailies:[{taskId:1006}],world:[{module:'fixture',parameters:{targetId:'one'},selection:'one'}],rounds:2,everyMs:10,budget:unifiedBudget},{modules:unifiedRegistry});
+ assert.equal(result.blocked.length,0);assert.equal(result.graph.nodes.filter(n=>n.type==='WAIT').length,1);
+ assert.deepEqual(result.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['task-rewards','free-gold','fixture','task-rewards','free-gold','fixture']);
+ assert.deepEqual(result.graph.nodes[1].parameters,{kind:'branch',taskId:19});assert.deepEqual(result.graph.nodes[1].selection,{unique:true});
+ assert.deepEqual(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+ for(const change of [{rounds:0},{rounds:-1},{rounds:49},{everyMs:60001},{budget:undefined},{request:'InjectedRequest'},{world:[{module:'unknown'}]},{rounds:48,everyMs:1}])
+  assert.throws(()=>compileUnifiedExecution({...{entry:'loop',dailies:[{taskId:1006}],budget:unifiedBudget},...change},{modules:unifiedRegistry}));
+});
+test('missing daily contracts and pirate identity block only the named intents',()=>{
+ const result=compileUnifiedExecution({entry:'loop',tasks:[{kind:'orderDaily',taskId:1}],dailies:[{taskId:1001},{taskId:1010},{taskId:1002}],budget:unifiedBudget},{modules:unifiedRegistry});
+ assert.equal(result.blocked.length,3);assert.deepEqual(result.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['free-recruit']);
+ assert.equal(compileUnifiedExecution({entry:'tasks',tasks:[{kind:'orderDaily',taskId:1}],budget:unifiedBudget},{modules:unifiedRegistry}).graph,null);
+ assert.throws(()=>compileUnifiedExecution({entry:'tasks',dailies:[{taskId:1006}],budget:unifiedBudget},{modules:unifiedRegistry}));
+ for(const selection of [{unique:false},{unique:true,actionId:'one'},{unique:1}]){const g=graph();g.nodes[2].selection=selection;assert.throws(()=>validateWorkflow(g,{modules}));}
+});
+function uniqueGraph(rounds=1){return compileUnifiedExecution({entry:'loop',world:[{module:'fixture'}],rounds,budget:unifiedBudget},{modules}).graph;}
+test('unique selection freshly resolves every round and pauses for a new exact batch',async()=>{
+ let serial=0;const runs=[],session={id:'A',generation:1,client:{},abort:new AbortController()},selected=[];
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async()=>({accountId:'A',module:'fixture',view:{candidates:[{actionId:'fresh-'+(++serial),executable:true}]}}),plan:async(_session,payload)=>{selected.push(payload.selections[0]);return {accountId:'A',module:'fixture',batchId:'b'+serial,planHash:'h'+serial,actions:[{actionId:payload.selections[0]}]};},history:()=>({runs})}});
+ let state=await runner.start('A',uniqueGraph(2));assert.equal(state.plan.actions[0].actionId,'fresh-1');assert.equal(selected.length,1);
+ assert.equal((await runner.resume()).status,'AWAITING_AUTHORIZATION');
+ runs.push({accountId:'A',finalStatus:'SUCCESS',finishedAt:'done',planSummary:{batchId:'b1',planHash:'h1'},actions:[{actionId:'fresh-1',result:'SUCCESS',verification:'CONFIRMED'}]});
+ state=await runner.resume();assert.equal(state.plan.actions[0].actionId,'fresh-2');assert.equal(state.plan.batchId,'b2');assert.deepEqual(selected,['fresh-1','fresh-2']);runner.stop();await runner.settle();
+});
+test('unique unavailable or remembered refusal nodes are traced without hiding subsequent independent work',async()=>{
+ for(const remembered of [false,true]){
+  let surveyed=0,planned=0;const session={id:'A',generation:1,client:{},abort:new AbortController()};
+  const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async()=>({accountId:'A',module:'fixture',view:{candidates:++surveyed===1&&!remembered?[]:[{actionId:'operation-1',executable:true}]}}),plan:async()=>{if(++planned===1&&remembered)throw Object.assign(Error('refused'),{code:'REJECTION_MEMORY_ACTIVE'});return {accountId:'A',module:'fixture',batchId:'next',actions:[{actionId:'operation-1'}]};},history:()=>({runs:[]})}});
+  const state=await runner.start('A',uniqueGraph(2));assert.equal(state.status,'AWAITING_AUTHORIZATION');assert.ok(state.trace.some(row=>row.result=== (remembered?'BLOCKED_REJECTION_MEMORY':'BLOCKED_NO_EXECUTABLE_CANDIDATE')));assert.equal(surveyed,2);runner.stop();await runner.settle();
+ }
+});
+test('unique selection fails closed on ambiguous, foreign or malformed fresh observations and unresolved memory',async()=>{
+ for(const observation of [{accountId:'B',module:'fixture',view:{candidates:[]}},{accountId:'A',module:'fixture',view:{candidates:[{actionId:'one',executable:true},{actionId:'two',executable:true}]}},{accountId:'A',module:'fixture',view:{}}]){
+  let planned=0;const f=fixture({surveyModule:async()=>observation,plan:async()=>{planned++;}});
+  assert.equal((await f.runner.start(f.session.id,uniqueGraph())).status,'UNKNOWN');assert.equal(planned,0);
+ }
+ for(const code of ['RECOVERY_UNCERTAIN','MEMORY_ORIGIN_UNRESOLVED','MEMORY_UNAVAILABLE']){
+  let planned=0;const f=fixture({surveyModule:async()=>({accountId:'account-1',module:'fixture',view:{candidates:[{actionId:'one',executable:true}]}}),plan:async()=>{planned++;throw Object.assign(Error(code),{code});}});
+  assert.equal((await f.runner.start(f.session.id,uniqueGraph(2))).status,'FAILED');assert.equal(planned,1);
+ }
+});
+test('late unique survey after cancellation cannot create a plan',async()=>{
+ let release,planned=0;const pending=new Promise(resolve=>release=resolve);
+ const f=fixture({surveyModule:()=>pending,plan:async()=>{planned++;}}),starting=f.runner.start(f.session.id,uniqueGraph());
+ await new Promise(resolve=>setImmediate(resolve));f.runner.stop();assert.equal((await starting).status,'CANCELLED');
+ release({accountId:f.session.id,module:'fixture',view:{candidates:[{actionId:'one',executable:true}]}});await new Promise(resolve=>setImmediate(resolve));assert.equal(planned,0);
+});
+
+test('a skipped ACTION cannot reuse the prior batch confirmation in VERIFY',async()=>{
+ let surveyed=0;const f=fixture({surveyModule:async()=>({accountId:'account-1',module:'fixture',view:{candidates:++surveyed===1?[{actionId:'operation-1',executable:true}]:[]}})});
+ const g=uniqueGraph(2);g.nodes.splice(-1,0,{id:'verify',type:'VERIFY',module:'fixture'});const last=g.edges.at(-1);last.to='verify';g.edges.push({from:'verify',to:'stop'});
+ const first=await f.runner.start(f.session.id,g);assert.equal(first.status,'AWAITING_AUTHORIZATION');f.runs.push(f.success());
+ const result=await f.runner.resume();assert.equal(result.status,'UNKNOWN');assert.ok(result.trace.some(row=>row.result==='BLOCKED_NO_EXECUTABLE_CANDIDATE'));assert.equal(f.calls.filter(row=>row[0]==='plan').length,1);
+});
+test('empty or fully blocked intents still validate the entire budget and explicit limits',()=>{
+ for(const change of [{rounds:null},{everyMs:null},{tasks:null},{budget:{request:'InjectedRequest'}}]){
+  assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[],budget:unifiedBudget,...change},{modules:unifiedRegistry}));
+ }
 });

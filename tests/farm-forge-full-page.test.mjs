@@ -476,3 +476,25 @@ test('cached daily recruit/trial navigation reuses controlled sections without r
  for(const row of links){row.link.click();assert.equal(row.scrolled(),1);}
  assert.equal(h.run('globalThis.openedTab'),null);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+test('all legacy entry buttons prepare the shared Workflow without game reads or execution',async()=>{
+ const h=await boot();
+ for(const entry of ['tasks','dailies','loop']){
+  const opening=h.node(entry+'-unified').click();await tick();
+  h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
+  const intent=JSON.parse(h.node('wf-unified-intent').value);assert.equal(intent.entry,entry);assert.equal(intent.rounds,1);assert.deepEqual(intent.budget,{resources:[],quotas:[],uids:[]});
+  assert.equal(h.requests.some(row=>/connect|authorize|execute|survey/.test(row.url)),false);
+ }
+ const pending=h.node('wf-unified-prepare').click();await tick();
+ const request=h.pending('/api/workflows/prepare');assert.ok(request);assert.equal(JSON.parse(request.options.body).entry,'loop');
+ h.respond('/api/workflows/prepare',{accountId:'A',blocked:[{reason:'EXACT_PIRATE_TARGET_REQUIRED'}],graph:{version:1,id:'unified-loop',name:'Unified loop',nodes:[{id:'start',type:'START'},{id:'daily',type:'ACTION',module:'free-gold',selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'daily'},{from:'daily',to:'stop'}]}});await pending;
+ assert.equal(h.node('wf-id').value,'unified-loop');assert.match(h.node('wf-unified-blocked').textContent,/EXACT_PIRATE_TARGET_REQUIRED/);assert.equal(h.confirmations.length,0);assert.equal(h.node('wf-authorize').disabled,true);
+});
+test('late unified preparation cannot import another account graph',async()=>{
+ const h=await boot();const reading=h.node('wf-load').click();await tick();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[]});await reading;
+ h.node('wf-unified-intent').value=JSON.stringify({entry:'tasks',tasks:[],budget:{resources:[],quotas:[],uids:[]}});
+ const pending=h.node('wf-unified-prepare').click();await tick();assert.ok(h.pending('/api/workflows/prepare'));
+ h.run("current='B';resetGameplay()");
+ h.respond('/api/workflows/prepare',{accountId:'A',graph:{version:1,id:'foreign',name:'foreign',nodes:[],edges:[]},blocked:[]});await pending;
+ assert.equal(h.node('wf-id').value,'workflow-1');assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.node('wf-unified-blocked').textContent,'');
+});
