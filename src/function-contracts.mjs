@@ -44,6 +44,11 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer},{
+    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('READ_OR_CLAIM','Mail mutation and complete attachment settlement semantics are not yet proven')]},
+    verification:verification('mailModule.verify','src/mail.mjs#mailModule','No mail operation can confirm; a single page is never a complete mailbox snapshot'),
+    dependencyVersions:dependencies(['moduleConfig']),
+  }),
   'task-rewards': contract('task-rewards',['C502','C503'],['P6-2'],['src/task-rewards.mjs#taskRewardsModule','src/tasks.mjs#taskTarget'],{kind:{type:'string',enum:['main','branch']},taskId:integer},{
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('ACHIEVEMENT_AND_DAILY_ORDER','Separate achievement evidence and empty daily-order reward request require their own exact authorization contract')]},
     verification:verification('verifyTaskReward','src/task-rewards.mjs#verifyTaskReward','Independent task and complete inventory reads confirm same main task explicitly claimed or exact branch removal, unchanged other tasks and exact configured reward net income; main task advancement remains UNKNOWN'),

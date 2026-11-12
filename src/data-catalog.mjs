@@ -140,6 +140,7 @@ const freezeQueryMetadata = value => {
 };
 const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
 const uses = {
+  mail: consumer('mail','surveyMail','src/mail.mjs:surveyMail',['page']),
   'task-rewards': consumer('task-rewards','surveyTaskRewards','src/task-rewards.mjs:surveyTaskRewards',['tasks','stock']),
   'pirate-sweep': consumer('pirate-sweep','surveyPirateSweep','src/pirate-operations.mjs:surveyPirateSweep',['pirates','records','quota','stock']),
   'antique-growth': consumer('antique-growth','surveyAntiqueGrowth','src/antique-growth.mjs:surveyAntiqueGrowth',['antiques','suits','masterLv','stock']),
@@ -164,6 +165,7 @@ const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], require
   policy: 'Exact explicitly selected positive int32 treasure uid, shared by rank and defence reads; never a dispatch request' };
 // [request, consumers, result authority, allowed parameter shape, domain, notes]
 const businessReads = [
+  ['EmailBoxRequest',['mail'],{...accountScope,key:'EXACT_PAGE_NO',completeness:'CURRENT_PAGE_ONLY'},{mode:'PAGE_NO',allowedKeys:['pageNo'],requiredKeys:['pageNo'],integerRange:[0,2147483647],arbitraryFields:false},'tasks','Explicit exact page only; total never proves page count, complete enumeration or snapshot consistency'],
   ['MainTaskInfoRequest',['task-rewards'],accountScope,emptyParameters,'tasks','Exact main task claim flag and complete branch membership; missing fields remain unknown'],
   ['MonthCardRequest',['pirate-sweep'],accountScope,emptyParameters,'activities','Complete typed replacement list bound to the current login; a delivery push invalidates the list'],
   ['PirateKillRecordRequest',['pirate-sweep'],accountScope,emptyParameters,'fleets','Complete current kill thresholds for the selected pirate type; absence never grants first-kill eligibility'],
@@ -221,6 +223,7 @@ export function validateBusinessQueryParameters(request, body = {}) {
   const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
   if (!entry || !plain(body) || Object.keys(body).some(key => !entry.parameters.allowedKeys.includes(key)) || entry.parameters.requiredKeys.some(key => !Object.hasOwn(body, key))) fail();
   const schema = entry.parameters;
+  if (schema.mode === 'PAGE_NO') { const descriptor=Object.getOwnPropertyDescriptor(body,'pageNo'); if(Reflect.ownKeys(body).length!==1||!descriptor?.enumerable||!Object.hasOwn(descriptor,'value')||!Number.isInteger(descriptor.value)||descriptor.value<0||descriptor.value>2147483647)fail(); }
   if (schema.mode === 'FIXED' && Object.entries(schema.fixed).some(([key, value]) => body[key] !== value)) fail();
   if (schema.mode === 'FLEET_BUILDING_ID' && (typeof body.buildingId !== 'string' || !body.buildingId.trim())) fail();
   if (schema.mode === 'TREASURE_UID' && (!Number.isInteger(body.uid) || body.uid < 1 || body.uid > 2147483647)) fail();

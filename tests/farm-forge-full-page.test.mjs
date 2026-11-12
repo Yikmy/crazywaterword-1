@@ -427,3 +427,20 @@ test('daily pirate objective links to the same controlled sweep tab without plan
  h.run("globalThis.openedSweep=false;selectAccount('B');");link.click();assert.equal(h.run('globalThis.openedSweep'),false);
  assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+
+test('registered mail page controls survey exact pages, never authorize and ignore late account responses',async()=>{
+  const h=await boot();
+  const data=(pageNo,subject='合成邮件')=>({accountId:'A',module:'mail',csrfToken:'synthetic-mail-csrf',config:{enabled:false},status:{running:false,blocked:false},functions:[],view:{page:{pageNo,pageCount:1,totalReported:37,emails:[{emailId:'9007199254740995',subject,read:false,got:null,eligibility:null}],scope:'CURRENT_PAGE_ONLY',allPagesComplete:false},candidates:[]}});
+  const load=h.node('gp-mail-load').onclick();h.respond('/api/gameplay',data(0),{module:'mail'});await load;
+  assert.match(h.node('gp-mail-facts').textContent,/9007199254740995.*合成邮件.*未读.*未知/);assert.match(h.node('gp-mail-facts').textContent,/只代表本页观察/);
+  const pageButton=offset=>descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailPage===offset);
+  assert.equal(pageButton('-1').disabled,true);assert.equal(h.node('gp-mail-plan').disabled,true);assert.equal(h.node('gp-mail-authorize').disabled,true);
+  const next=pageButton('1').click();const request=h.pending('/api/gameplay/survey');assert.deepEqual(JSON.parse(request.options.body),{module:'mail',parameters:{pageNo:1}});
+  h.respond('/api/gameplay/survey',data(1));await next;assert.equal(pageButton('-1').disabled,false);
+  const prev=pageButton('-1').click();assert.deepEqual(JSON.parse(h.pending('/api/gameplay/survey').options.body).parameters,{pageNo:0});h.respond('/api/gameplay/survey',data(0));await prev;
+  const input=descendants(h.node('gp-mail-facts')).find(n=>n.id==='gp-mail-pageNo');input.value='7';const selected=pageButton('selected').click();assert.deepEqual(JSON.parse(h.pending('/api/gameplay/survey').options.body).parameters,{pageNo:7});h.respond('/api/gameplay/survey',data(7));await selected;
+  const oldButton=pageButton('1'),late=oldButton.click();h.run("selectAccount('B')");h.respond('/api/gameplay/survey',data(8,'late-A'));await late;assert.doesNotMatch(h.node('gp-mail-facts').textContent,/late-A/);
+  const count=h.requests.length;await oldButton.click();assert.equal(h.requests.length,count);
+  assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
