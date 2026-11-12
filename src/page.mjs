@@ -1764,7 +1764,35 @@ function renderHeroes(data) {
 
 const DAILY_LABEL = { ready: '可做', paid: '需付费', partial: '部分可做', waiting: '等待中', done: '已完成', blocked: '不可用', error: '出错', unknown: '未知' };
 
+function renderDailyChecklist(data) {
+  const view=data.checklist,box=clear($('dailies-table')),known=value=>value??'未知';
+  const labels={CLAIMED:'已领',ELIGIBLE:'达到门槛',INCOMPLETE:'未达标',UNKNOWN:'未知'};
+  box.appendChild(table(['每日任务','进度','奖励状态','完成途径','配置奖励 / 当前限制'],view.tasks.rows.map(row=>{
+    const driver=(data.tasks||[]).find(entry=>entry.task.id===row.taskId);
+    return [row.title,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知',
+      driver?(DAILY_LABEL[driver.status]||'未知')+(driver.reason?' · '+driver.reason:''):'前置状态未知',
+      (row.configuredReward?'活跃 '+row.configuredReward.activity+' / 经验 '+row.configuredReward.experience:'奖励配置未知')+'；领取合同待核实'];
+  })));
+  if(!view.tasks.rows.length)box.appendChild(el('div','dim',view.tasks.counts.total===0?'本次缓存的每日任务列表为空':'每日任务列表未知'));
+  if(view.tasks.rows.some(row=>row.functionId==='pirate-sweep')){
+    const scope=viewGuard.capture(),link=el('button','','打开海面扫荡');link.type='button';
+    link.onclick=()=>{if(viewGuard.current(scope))document.querySelector?.('#tabs button[data-tab="pirate-sweep"]')?.click();};box.appendChild(link);
+  }
+  for(const kind of ['daily','weekly']){
+    const activity=view.activity[kind],label=kind==='daily'?'每日宝箱':'每周宝箱';
+    box.appendChild(el('h3','',label+' · 活跃 '+known(activity.activity)));
+    box.appendChild(table(['档位','门槛','状态','配置奖励'],activity.tiers.map(row=>[
+      row.id,known(row.requiredActivity),labels[row.status]||'未知',
+      row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):row.rewardReason==='SEASON_REWARD_AMBIGUOUS'?'季节奖励未确定':'奖励配置未知'
+    ])));
+    if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
+  }
+  box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','仅显示免费赠礼状态；领取合同待核实']]));
+  const source=view.sources;
+  $('dailies-view').textContent=(data.stale?'缓存已过期；':'')+'每日任务来源 '+source.daily.status+' / '+(source.daily.observedAt||'采集时间未知')+'；赠礼来源 '+source.gift.status+' / '+(source.gift.observedAt||'采集时间未知')+String.fromCharCode(10)+view.note;
+}
 function renderDailies(data) {
+  if(data.checklist){renderDailyChecklist(data);return;}
   const box = clear($('dailies-table'));
   box.appendChild(table(['任务', '进度', '状态', '动作 / 原因'], data.tasks.map((entry) => [
     entry.task.title,

@@ -178,3 +178,17 @@ test('missing queue remains unknown, successful empty orders are explicit, unava
   assert.doesNotMatch(h.node('dailies-table').textContent, /档位都领完|不欠/);
   assert.match(h.node('dailies-view').textContent, /钻石 -/);
 });
+
+
+test('daily checklist renders unknowns and threshold eligibility without claiming execution or all rewards claimed',async()=>{
+  const h=await boot(),initial=h.requests.length;
+  const data={stale:true,checklist:{tasks:{rows:[{taskId:1001,title:'合成日常',progress:1,targetProgress:1,status:'ELIGIBLE',configuredReward:{activity:5,experience:100}}],counts:{total:1}},
+    activity:{daily:{activity:40,tiers:[{id:2,requiredActivity:40,status:'ELIGIBLE',configuredRewards:[{id:'建筑蓝图',num:15}]}]},weekly:{activity:null,tiers:[{id:5,requiredActivity:600,status:'UNKNOWN',configuredRewards:null,rewardReason:'SEASON_REWARD_AMBIGUOUS'}]}},
+    gift:{status:'UNKNOWN'},sources:{daily:{status:'AVAILABLE',observedAt:'2026-11-12T01:00:00Z'},gift:{status:'UNKNOWN',observedAt:null}},note:'读取缓存；领取合同待核实'}};
+  h.run('renderDailies('+JSON.stringify(data)+')');
+  const text=h.node('dailies-table').textContent;
+  assert.match(text,/合成日常.*1\/1.*达到门槛/);assert.match(text,/每周宝箱 · 活跃 未知/);assert.match(text,/季节奖励未确定/);assert.match(text,/每日精选赠礼.*未知/);
+  assert.doesNotMatch(text,/这一季的档位都领完|不欠|直接完成|可领取/);assert.match(h.node('dailies-view').textContent,/缓存已过期/);assert.equal(h.requests.length,initial);
+  const task=h.node('dailies-plan').onclick();h.respond('/api/dailies','A',data);await task;assert.match(h.node('dailies-table').textContent,/合成日常/);
+  assert.ok(h.requests.every(r=>(r.options.method||'GET')==='GET'));
+});

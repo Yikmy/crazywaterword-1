@@ -135,3 +135,33 @@ test('overview and Explorer expose only the selected cached fishing sources with
     assert.deepEqual(app.counts(), { creates: 0, collects: 0 });
   } finally { await app.close(); }
 });
+
+
+test('daily checklist preserves independent partial cached sources across accounts with zero game requests', async () => {
+  const app=await harness();
+  try {
+    for(const id of ['account-A','account-B']) {
+      const raw={DailyTaskInfoRequest:{dailyTask:[{id:1001,progress:id==='account-A'?1:0,targetProgress:1,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[],weeklyRewardClaimed:[],dailyResetTime:1780000000},
+        DailyGiftPackRequest:{drawnPack:id==='account-A'?[]:['赠礼'],heroId:id,resetTime:1780000000}};
+      const snapshot={raw,ok:structuredClone(raw),outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS',updatedAt:'2026-11-12T01:00:00Z'}])),failed:{}};
+      app.sessions.set(id,cached(snapshot,id+'-time'));
+    }
+    const before=JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot]));
+    const [a,b]=await Promise.all(['account-A','account-B'].map(id=>app.call('?account='+id,'GET','/api/dailies')));
+    assert.equal(a.status,200);assert.equal(b.status,200);assert.equal(a.data.accountId,'account-A');assert.equal(b.data.accountId,'account-B');
+    assert.equal(a.data.checklist.tasks.counts.eligible,1);assert.equal(b.data.checklist.tasks.counts.eligible,0);
+    assert.equal(a.data.checklist.gift.eligible,true);assert.equal(b.data.checklist.gift.eligible,false);
+    assert.equal(a.data.checklist.activity.weekly.tiers[0].eligible,false);assert.equal(a.data.stale,true);
+    assert.equal(b.text.includes('account-A'),false);assert.equal(a.text.includes('account-B'),false);
+    assert.equal(JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot])),before);
+    app.sessions.get('account-A').snapshot.failed.DailyTaskInfoRequest='token=hidden';
+    const partial=await app.call('?account=account-A','GET','/api/dailies');
+    assert.equal(partial.status,200);assert.equal(partial.data.checklist.tasks.counts.total,null);assert.equal(partial.data.checklist.gift.eligible,true);assert.doesNotMatch(partial.text,/hidden/);
+    const other=await app.call('?account=account-B','GET','/api/dailies');assert.equal(other.data.checklist.tasks.counts.total,1);
+    const malformed=app.sessions.get('account-A').snapshot;
+    delete malformed.failed.DailyTaskInfoRequest;malformed.ok.DailyTaskInfoRequest={dailyTask:{invalid:true}};
+    for(const name of ['AllItemRequest','AllResourceRequest','AfkInfoRequest','RecruitInfoRequest'])malformed.ok[name]={};
+    const independent=await app.call('?account=account-A','GET','/api/dailies');assert.equal(independent.status,200);assert.equal(independent.data.checklist.gift.eligible,true);assert.equal(independent.data.checklist.tasks.counts.eligible,1);
+    assert.deepEqual(app.counts(),{creates:0,collects:0});
+  } finally {await app.close();}
+});

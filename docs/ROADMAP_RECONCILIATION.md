@@ -9,7 +9,7 @@
 | 工作包 | 已完成能力 | 当前下一项 | 真正阻塞 | 最后提交 | 对应测试 |
 |---|---|---|---|---|---|
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
-| W16 PARTIAL | 主线/支线精确 taskId 奖励注册为默认关闭的 task-rewards Function；Tasks 页与 Workflow 共用单批授权、任务 UID 预算、D6、写前落盘、权威复读、共享历史及拒绝记忆 | 继续接通每日任务/活跃领奖与基础日常统一投影 | 主线自动前移无法证明原奖励归属时保留 UNKNOWN；成就及每日订单空请求尚无完整精确授权/奖励合同，仅冻结对应写 | 本行所在 W16 提交（父 84d71aa） | Tasks/Contract/Registry/Settings/Catalog/页面/API/Workflow/旧 Tasks/Actions：410 项范围回归；修正末个工作流预算夹具后 Tasks 35/35 PASS，其余 375 项已 PASS；0 skip；实际本地 Codec 与合成传输，未连接游戏 |
+| W16 PARTIAL | 主线/支线 task-rewards 共用授权、任务 UID 预算、D6、写前落盘、复读、历史与拒绝记忆（843f75a）；日常页/API 复用48项缓存统一投影任务领取标记、日周宝箱门槛、跨季节一致奖励与免费赠礼，独立未知且无新写入口 | 继续邮件分页/未读与领取资格、VIP及免费礼包受控适配 | 每日任务重置周期/经验结算、活跃及免费赠礼精确奖励归属尚未核实，冻结这些写；主线前移保留 UNKNOWN；成就/每日订单空请求仍缺合同 | 本行所在 W16 提交（父 843f75a） | daily-checklist/explorer-api/account-view/server-runtime/原日常安全/完整页面：225/225 PASS，0 fail/skip；实际本地 Codec、配置、HTTP及合成页面，未连接游戏；旧 Tasks 410项范围回归保留 |
 | W19 PARTIAL | 保留实时/恢复历史区分；只读串联精确账号下的工作流运行→节点→批次→动作；UI 展示原始结果及独立权威复核，歧义关联不补造 | 继续接通 Loop/Tasks/Dailies 对注册 Function、共享历史和拒绝记忆的复用及可信调度 | 具体业务缺证只冻结对应节点；旧直写入口继续禁用，历史本身不恢复授权或执行 | 84d71aa | workflow-execution-history/workflow/gameplay-view/gameplay-api/execution-memory-api/operation-recovery-api/farm-forge-full-page：249/249 PASS，0 fail/skip；含真实 HTTP handler、Store 字节不变、账号/迟到隔离，未连接游戏 |
 
 R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的独立真实操作授权。

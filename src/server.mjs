@@ -25,6 +25,7 @@ import { createStageRunner, defaultStageConfig, validateStageConfig, MAINLINE_CH
 import { qrSvg } from './vendor/qrcode.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, DAILY_DRIVERS, CHEST_TABLE } from './dailies.mjs';
+import { dailyChecklist, formatDailyChecklist } from './daily-checklist.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { runLoop, formatLoopRound } from './loop.mjs';
@@ -580,18 +581,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   async function dailies(session, account) {
-    const instance = cachedClient(session, ["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"]);
     const config = loadConfigSafe();
-    const survey = await surveyDailies(instance, protocol, { config, player: session.player });
-    survey.tasks = survey.tasks.map((entry) => {
-      if (entry.status === 'done') return entry;
-      const missing = (DAILY_DRIVERS[entry.task.id]?.probes ?? []).map(([name]) => instance.errors.get(name)).filter(Boolean);
-      return missing.length ? { task: entry.task, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
-    });
-    const chestsUnavailable = Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
-    if (chestsUnavailable) survey.chests = null;
-    const text = formatSurvey(survey) + (chestsUnavailable ? '\n' + chestsUnavailable : '');
-    return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
+    const checklist = dailyChecklist(session.snapshot, { config });
+    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true };
+    // Partial caches still expose each independently observed checklist section.
+    if (!["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"].every(name => Object.hasOwn(session.snapshot?.ok ?? {}, name))) {
+      return { ...base, tasks: [], chests: null, chestsUnavailable: '旧日常预览依赖不完整', gift: null, ruby: null, text: formatDailyChecklist(checklist) };
+    }
+    try {
+      const instance = cachedClient(session, ["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"]);
+      const survey = await surveyDailies(instance, protocol, { config, player: session.player });
+      survey.tasks = survey.tasks.map((entry) => {
+        if (entry.status === 'done') return entry;
+        const missing = (DAILY_DRIVERS[entry.task.id]?.probes ?? []).map(([name]) => instance.errors.get(name)).filter(Boolean);
+        return missing.length ? { task: entry.task, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
+      });
+      const chestsUnavailable = Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
+      if (chestsUnavailable) survey.chests = null;
+      const text = formatSurvey(survey) + (chestsUnavailable ? '\n' + chestsUnavailable : '');
+      return { ...base, tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
+    } catch {
+      return { ...base, tasks: [], chests: null, chestsUnavailable: '旧日常预览无法解析缓存', gift: null, ruby: null, text: formatDailyChecklist(checklist) };
+    }
   }
 
   // ---- 抓包与扫码 -----------------------------------------------------------
