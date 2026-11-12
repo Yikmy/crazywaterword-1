@@ -258,3 +258,14 @@ test('exclusive STAR declared and custom dependency versions omit level-only con
  for(const name of unrelated){const changed=clone(options);changed.config.tables[name].revision++;assert.deepEqual(f.modules.heroes.dependencyVersions(changed),expected);}
  noExecution(f);
 });
+
+test('equipment empty-slot wear binds ModuleOpenCfg and excludes growth-only tables',()=>{
+ const f=fixture(),options=clone(f.options('equipment-growth'));options.parameters={heroId:'A',uid:'9007199254740993',action:'put-on'};
+ options.config.tables.ModuleOpenCfg={revision:1,data:[{moduleId:'英雄装备',playerLevel:16}]};
+ const raw={...equipmentGrowthModule};delete raw.dependencyVersions;const versions=f.modules['equipment-growth'].dependencyVersions(options);
+ assert.deepEqual(registerBusinessFunction(raw).dependencyVersions(options),versions);
+ assert.deepEqual(Object.keys(versions),['moduleConfig','config.EquipCfg','config.ModuleOpenCfg']);
+ const changed=clone(options);changed.config.tables.ModuleOpenCfg.revision++;assert.notDeepEqual(f.modules['equipment-growth'].dependencyVersions(changed),versions);
+ const priceChanged=clone(options);priceChanged.config.tables.EquipUpDecomposeCfg.revision++;assert.deepEqual(f.modules['equipment-growth'].dependencyVersions(priceChanged),versions);
+ noExecution(f);
+});

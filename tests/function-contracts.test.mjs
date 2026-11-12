@@ -189,3 +189,9 @@ test('badge growth C228 contract declares typed evidence plus reread and leaves 
  assert.equal(c.verification.authoritativeRead,true);assert.equal(c.verification.typedResponseAlone,false);
  assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='SACRIFICE_OR_REPLACE'&&!row.executable));
 });
+
+test('equipment empty-slot wear has a dedicated no-replacement action and dependency gate',()=>{
+ const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.implementation.actions.includes('PUT-ON'));assert.ok(c.inputSchema.properties.action.enum.includes('put-on'));
+ assert.deepEqual(c.requirementIds.C,['C229']);assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='STAR_REPLACE'&&!row.executable));
+ assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=put-on').keys,['config.ModuleOpenCfg']);
+});

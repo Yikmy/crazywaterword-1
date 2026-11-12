@@ -195,3 +195,13 @@ test('worn badge D6 admits only exact UID, empty sacrifice list and matching pos
  for(const id of ['RUBY','钻石','4']){const a=make();a.costs[1].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
  for(const request of ['ReplaceBadgeRequest','BadgeStarUpRequest','PutOnBadgeRequest'])assert.throws(()=>assertPaymentAllowed({...make(),request}),{code:'COST_UNKNOWN'});
 });
+
+test('empty-slot equipment D6 accepts exact UID and hero with explicit zero costs only',()=>{
+ const make=()=>({request:'PutOnEquipRequest',body:{uid:'9007199254740993',heroId:'A'},costs:[]});
+ assert.doesNotThrow(()=>assertPaymentAllowed(make()));
+ for(const mutate of [a=>a.body.uid='01',a=>a.body.uid=9007199254740992,a=>a.body.uid='9223372036854775808',a=>a.body.heroId='',a=>a.body.heroId=' A',a=>a.body.upUid='7',a=>a.body.replace=false,a=>a.body.universal=false,a=>delete a.costs,a=>a.costs=null,a=>a.costs.extra=true,a=>a.costs.push({id:'GOLD',num:1})]){
+  const a=make();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});
+ }
+ const paid=make();paid.costs.push({id:'RUBY',num:1});assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+ assert.throws(()=>assertPaymentAllowed({...make(),request:'EquipReplaceRequest'}),{code:'COST_UNKNOWN'});
+});

@@ -33,22 +33,41 @@ const hero = heroId => ({ heroId, level: 10, star: 2, power: '9007199254740997',
 const parameters = (heroId = 'A') => ({ heroId, uid: ids[heroId] });
 const claims = (num = 4, uids = [ids.A]) => ({ resources: [{ id: '精铁', num }], quotas: [], uids: uids.map(id => ({ type: 'equipment', id })) });
 const iron = rows => rows.find(row => row.id === '精铁')?.num ?? 0;
-function fixture({ enabled = true, apply = true, historyFile, watchStatus = 'UNKNOWN', derived = true, refine = false, useConsole = false } = {}) {
+function fixture({ enabled = true, apply = true, historyFile, watchStatus = 'UNKNOWN', derived = true, refine = false, putOn = false, useConsole = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-equipment-growth-service-'));
   const file = historyFile ?? path.join(dir, 'history.json'), journal = [], sessions = new Map(), runners = [];
   const durable = createExecutionHistory({ file });
   const moduleSettings = createModuleSettings({ file: path.join(dir, 'modules.json'), modules: GAMEPLAY_MODULES });
   let gameConfig = config();if(refine){gameConfig.tables.EquipCfg.data[0]={id:'红武器1',type:'武器',quality:'RED'};gameConfig.tables.EquipAttrCfg.data[0]={id:'红武器1',star:'0',maxLv:10,maxRefineLv:10};gameConfig.tables.EquipRefineCfg={data:[{level:1,costItem1:4,costItem2:2,growNum:1},{level:2,costItem1:6,costItem2:3,growNum:2}]};}let failPersist = () => false, serviceTime = Date.now();
   const history = { ...durable, put(record) { if (failPersist(record)) throw Error('synthetic equipment-growth persistence unavailable'); journal.push(structuredClone(record)); return durable.put(record); } };
+  if (putOn) {
+    gameConfig.tables.EquipCfg.data.push({ id: '蓝饰品1', type: '饰品' });
+    gameConfig.tables.ModuleOpenCfg = { data: [{ moduleId: '英雄装备', playerLevel: 16 }] };
+  }
   const operationOptions={history,moduleSettings,clock:()=>serviceTime,getConfig:()=>structuredClone(gameConfig),loadRules:()=>({config:{version:1,enabled:true,rules:[]}}),loadProduction:()=>({config:{version:1,enabled:false}})};let app=null,csrf,clients=0,collections=0;if(useConsole){saveStore({version:1,activeId:'account-A',accounts:['account-A','account-B'].map(id=>({id,label:id,url:'wss://synthetic.invalid',login:{eworldParams:{openId:id,token:'synthetic-refine-only',sign:'synthetic-refine-sign',timestamp:1}}}))});app=createConsole({protocol,tracePath:path.join(dir,'never-trace.log'),clientFactory(){clients++;throw Error('Offline REFINE forbids Runtime/client');},collect(){collections++;throw Error('Offline REFINE forbids collectors');},writerOwnership:{assertOwned(){return true;},claim(){return true;},release(){}},operationOptions});app.server.address=()=>({port:17321});}const service=app?.operations??createOperationService({protocol,modules:GAMEPLAY_MODULES,...operationOptions});
   function session(accountId = 'account-A') {
     // Complete pool and hero mirrors are independent objects, not shared aliases.
     const state = { pool: [equip(ids.A), equip(ids.B), equip(ids.idle)], heroes: [hero('A'), hero('B')], stock: new Map([['精铁', 30], ['其他材料', 7], ['GOLD', 100]]), writes: [], reads: [], apply, derived, onRead: null, onWrite: null, nowMs: 1000000, clock: true };
-    if(refine){state.stock.set('精炼石',20);for(const row of state.pool)row.equipId='红武器1';for(const h of state.heroes)for(const row of h.equips)row.equipId='红武器1';}const client = { connected: true,stop(){this.connected=false;}, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites: new Map(), factContext: { accountId, generation: 1 },
+    if (putOn) state.pool.find(row => row.uid === ids.idle).equipId = '蓝饰品1';
+    if(refine){state.stock.set('精炼石',20);for(const row of state.pool)row.equipId='红武器1';for(const h of state.heroes)for(const row of h.equips)row.equipId='红武器1';}const client = { connected: true,stop(){this.connected=false;}, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites: new Map(), factContext: { accountId, generation: 1, connectionId: 'offline-equipment-growth-' + accountId },
       gameClock: { read() { return state.clock ? { status: 'TRUSTED', reliable: true, nowMs: state.nowMs, earliestMs: state.nowMs, latestMs: state.nowMs, accountId: client.factContext.accountId, generation: client.factContext.generation } : null; } },
       markUnverifiedWrite(name, body) { this.uncertainWrites.set(JSON.stringify({ name, body }), true); },
       confirmWatchedWrite(name, body) { this.uncertainWrites.delete(JSON.stringify({ name, body })); },
       mutate(name, body) {
+        if (name === 'PutOnEquipRequest') {
+          assert.equal(putOn, true);
+          const decoded = toSnapshotJson(wire(name, body));
+          assert.deepEqual(decoded, { uid: ids.idle, heroId: 'A' });
+          const durableBeforeWrite = JSON.parse(fs.readFileSync(file, 'utf8')).accounts[accountId][0];
+          state.writes.push({ name, body: decoded, durableBeforeWrite });
+          if (state.apply) {
+            const owner = state.heroes.find(row => row.heroId === decoded.heroId);
+            owner.equips.push(structuredClone(state.pool.find(row => row.uid === decoded.uid)));
+            if (state.derived) { owner.power = (BigInt(owner.power) + 8n).toString(); owner.attributes[0].value += 1.5; }
+          }
+          state.onWrite?.(name, body);
+          return;
+        }
         assert.ok(['EnhanceEquipRequest','EquipRefineRequest'].includes(name));
         state.writes.push({ name, body: structuredClone(body), durableBeforeWrite: structuredClone(journal.at(-1)) });
         const uid = toSnapshotJson(wire(name, body)).uid.toString();
@@ -69,7 +88,7 @@ function fixture({ enabled = true, apply = true, historyFile, watchStatus = 'UNK
         if (name === 'AllResourceRequest') return wire(response, { list: [{ res: 3, amount: state.stock.get('GOLD') }] });
         throw Error('Unexpected synthetic equipment-growth read ' + name);
       },
-      async sendWatch(name, body) { wire(name, body); this.mutate(name, body);await state.onWatch?.(name,body); return { status: watchStatus }; },
+      async sendWatch(name, body, options) { wire(name, body); if (name === 'PutOnEquipRequest') options?.beforeDispatch?.(); this.mutate(name, body);await state.onWatch?.(name,body); return { status: watchStatus }; },
     };
     const result = { id: accountId, client, state: 'READY', player: { playerId: accountId === 'account-A' ? '1001' : '1002', worldId: 1000001, level: 20 }, generation: 1, connectionId: 'offline-equipment-growth-' + accountId, abort: new AbortController(), busy: null, loop: { running: false,stop:{aborted:false} },log:[],snapshot:{ok:{},failed:{}},synthetic: state };
     if (enabled) moduleSettings.save(accountId, moduleId, { enabled: true });
@@ -254,3 +273,84 @@ for(const firstMode of['LEVEL','REFINE'])test('shared equipment UID parent claim
 for(const boundary of['resource-await','dispatch-intent'])test('REFINE expired facts at '+boundary+' prevent dispatch and preserve appropriate UID/resource reservation',async t=>{let wall=1800000000000;t.mock.method(Date,'now',()=>wall);const f=fixture({refine:true}),target=f.session();try{const p=await f.displayed(target,refineParameters()),permit=f.authorize(target,p);let phase=false,changed=false;f.failPersist(record=>{const stage=record.actions?.[0]?.stages?.at(-1)?.stage;if(stage==='RESOURCE_PREFLIGHT')phase=true;if(boundary==='dispatch-intent'&&!changed&&stage==='DISPATCH_INTENT'){changed=true;wall+=30001;}return false;});target.synthetic.onRead=name=>{if(boundary==='resource-await'&&phase&&!changed&&name==='AllResourceRequest'){changed=true;wall+=30001;}};f.service.execute(target,permit);await f.service.settle(target.id);assert.equal(changed,true);assert.equal(target.synthetic.writes.length,0);assert.notEqual(f.service.status(target.id).finalStatus,'SUCCESS');const record=f.durable.list(target.id)[0];assert.equal(record.actions[0].dispatched,false);if(boundary==='dispatch-intent'){assert.equal(iron(record.runBudget.reserved.resources),4);assert.equal(stones(record.runBudget.reserved.resources),2);assert.deepEqual(record.runBudget.reserved.uids,refineClaims().uids);}else{assert.equal(iron(record.runBudget.reserved.resources),0);assert.equal(stones(record.runBudget.reserved.resources),0);assert.deepEqual(record.runBudget.reserved.uids,[]);}}finally{await f.cleanup();}});
 
 test('REFINE dual-material and equipment UID intent must be durable before watched transport',async()=>{const f=fixture({refine:true}),t=f.session();try{const p=await f.displayed(t,refineParameters());let hit=false;f.failPersist(record=>{if(stones(record.runBudget?.reserved.resources??[])>0&&(record.runBudget?.reserved.uids??[]).length){hit=true;return true;}return false;});f.service.execute(t,f.authorize(t,p));await f.service.settle(t.id);assert.equal(hit,true);assert.equal(t.synthetic.writes.length,0);assert.notEqual(f.service.status(t.id).finalStatus,'SUCCESS');}finally{f.failPersist(()=>false);await f.cleanup();}});
+
+const putOnParameters = () => ({ action: 'put-on', heroId: 'A', uid: ids.idle });
+const putOnClaims = () => ({ resources: [], quotas: [], uids: [{ type: 'equipment', id: ids.idle }] });
+
+test('PUT-ON confirms exact idle UID in empty typed slot with zero stock delta and durable UID-only intent', async () => {
+  const f = fixture({ putOn: true, watchStatus: 'UNKNOWN' }), session = f.session();
+  try {
+    const params = putOnParameters(), state = session.synthetic;
+    const surveyed = await f.service.surveyModule(session, moduleId, params);
+    const candidate = surveyed.view.candidates.find(row => row.executable);
+    assert.ok(candidate, JSON.stringify(surveyed.view.candidates));
+    assert.deepEqual(candidate.target, { heroId: 'A', uid: ids.idle, type: '饰品' });
+    assert.equal(candidate.action, undefined);
+    assert.equal(candidate.configEvidence, undefined);
+    assert.equal(protocol.PutOnEquipResponse, undefined);
+
+    const p = await f.displayed(session, params);
+    assert.equal(p.actions[0].actionType, 'PUT-ON');
+    assert.deepEqual(p.resourceBudget, []);
+    assert.deepEqual(p.budgetClaims, putOnClaims());
+    assert.equal(p.actions[0].action, undefined);
+    assert.throws(() => f.service.execute(session, { batchId: p.batchId }));
+    assert.equal(state.writes.length, 0);
+    const pool = structuredClone(state.pool), heroes = structuredClone(state.heroes), stock = new Map(state.stock);
+    const result = await f.execute(session, p), row = result.record.actions[0];
+    assert.equal(result.status.finalStatus, 'SUCCESS');
+    assert.equal(row.verification.status, 'CONFIRMED');
+    assert.equal(row.requestStatus, 'UNKNOWN', 'watch alone did not confirm the effect');
+    assert.equal(state.writes.length, 1);
+    const [sent] = state.writes;
+    assert.equal(sent.name, 'PutOnEquipRequest');
+    assert.deepEqual(sent.body, { uid: ids.idle, heroId: 'A' });
+    assert.equal(sent.durableBeforeWrite.actions[0].dispatchEvidence.state, 'MAY_HAVE_DISPATCHED');
+    assert.equal(sent.durableBeforeWrite.actions[0].stages.at(-1).stage, 'DISPATCH_INTENT');
+    assert.deepEqual(sent.durableBeforeWrite.runBudget.reserved, putOnClaims());
+    assert.deepEqual(state.pool, pool);
+    assert.deepEqual(state.stock, stock);
+    assert.deepEqual(state.heroes[1], heroes[1]);
+    assert.deepEqual(state.heroes[0].equips, [...heroes[0].equips, pool.find(row => row.uid === ids.idle)]);
+    assert.deepEqual(row.beforeInventory, row.afterInventory);
+    assert.equal(createExecutionHistory({ file: f.file }).unresolved(session.id), false);
+    assert.throws(() => f.service.execute(session, result.permit));
+  } finally { await f.cleanup(); }
+});
+
+test('PUT-ON no-effect watch SUCCESS remains UNKNOWN with the zero-cost UID held across restart', async () => {
+  const f = fixture({ putOn: true, apply: false, watchStatus: 'SUCCESS' }), session = f.session();
+  let restarted;
+  try {
+    const r = await f.execute(session, await f.displayed(session, putOnParameters()));
+    assert.equal(r.status.finalStatus, 'UNKNOWN');
+    assert.equal(r.record.actions[0].requestStatus, 'SUCCESS');
+    assert.equal(r.record.actions[0].verification.status, 'UNCONFIRMED');
+    assert.equal(r.record.actions[0].unresolvedWrite, true);
+    assert.deepEqual(r.record.runBudget.reserved, putOnClaims());
+    assert.equal(session.synthetic.writes.length, 1);
+    assert.throws(() => f.service.execute(session, r.permit));
+    restarted = fixture({ putOn: true, historyFile: f.file });
+    const next = restarted.session();
+    await assert.rejects(restarted.displayed(next, putOnParameters()), { code: 'RECOVERY_UNCERTAIN' });
+    assert.equal(next.synthetic.writes.length, 0);
+    assert.equal(restarted.durable.unresolved(next.id), true);
+  } finally { await restarted?.cleanup(); await f.cleanup(); }
+});
+
+test('PUT-ON zero-cost batch cannot proceed without the exact UID in its parent authorization', async () => {
+  const f = fixture({ putOn: true }), session = f.session();
+  let release;
+  try {
+    const parent = 'put-on-parent';
+    release = f.service.claimWorkflow(session, parent, { limits: { resources: [], quotas: [], uids: [{ type: 'equipment', id: ids.B }] } });
+    const p = await f.displayed(session, putOnParameters(), parent);
+    assert.deepEqual(p.resourceBudget, []);
+    assert.deepEqual(p.budgetClaims, putOnClaims());
+    const permit = f.authorize(session, p);
+    assert.throws(() => f.service.execute(session, permit), { code: 'RUN_BUDGET_INVALID' });
+    assert.equal(session.synthetic.writes.length, 0);
+    assert.deepEqual(f.service.workflowBudget(session.id).reserved, { resources: [], quotas: [], uids: [] });
+    assert.equal(f.durable.list(session.id)[0].actions[0].dispatchEvidence.state, 'NOT_DISPATCHED');
+  } finally { release?.(); await f.cleanup(); }
+});

@@ -2414,3 +2414,13 @@ E09 纳入 ORANGE/RED 单次专武等级、缺材料/星级/达上限零派发�
 离线验证：D.16 的 24 文件定向命令追加 `tests/badge-growth.test.mjs`、`tests/badge-growth-service.test.mjs`、`tests/farm-forge-api.test.mjs`，共 **790/790 PASS，0 fail/cancelled/skipped/todo，23.87 秒**。包括真实本地 Codec、合成状态、共享执行器、磁盘历史、原 HTTP 隔离与完整页面；16 领域、4 Service 和 165 项专项与本次重叠。保留失败证据：未接 D6 时计划按未知成本阻断；修复测试的缺 required int32 夹具使其真正省略编码字段；Service 回归发现预览剥离内部 action 后误标不可执行，现保留给 Service 内部并由其在输出前删除；联合回归发现旧模块清单固定 14 个静态 Adapter，已纳入第 15 个及默认禁用/账号/CSRF 断言。未放宽成本或确认规则。不是 R7；未执行真实游戏。
 
 E09 增加当前受控徽章等级、槽位镜像、精确双扣、零派发与意外材料；E20/E21/E23 增加 UID 预算、重启和隔离复核。C227/C230 的旧/新 UID 归属、继承及返还仍需权威证据；W10 科技重置按钮在固定客户端无实现，当前协议字段不足以推断成本或退款。继续核实独立可施工的装备空槽穿戴及其他工作包，不因上述缺证停止推进。R8 仍在 R7 后单独授权。
+
+### D.18 BIZ-R09 自有闲置装备穿入同类空槽（2026-11-12）
+
+父提交 `1edef7343d009f78aefb31138bd6ab7bc57059fa`。在现有 equipment-growth Adapter 增加显式 `action:'put-on'`；沿用共享执行器、授权、预算、历史、原 Operations API、英雄页和 Workflow。默认 LEVEL、显式 REFINE 及其依赖和计划身份不变。此分支 EXISTING_FUNCTION、EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。属于 BIZ-R09；C230 替换未完成。
+
+固定 v76 `HeroDetail/HeroDetailEquip` 进入装备页前要求 `ModuleOpenUtil.isOpen('英雄装备')`，以唯一 `ModuleOpenCfg.playerLevel` 和当前玩家等级判定（固定配置 16）。空槽按 EquipCfg 的武器、防具、饰品类型区分；`EquipSelectPop` 空槽模式只列该类型闲置装备。包、模块、配置和字节位置见 `EQUIPMENT_PUT_ON_EVIDENCE`。必须明确英雄和 UID，完整装备池与英雄装备镜像一致，目标 UID 为自有闲置、类型可证且目标槽位为空。无资源成本仍须授权和持久预留原 `equipment` UID；D6 只接受 `PutOnEquipRequest {uid,heroId}` 与显式空成本数组。无专用 Response。
+
+写后独立复读须确认完整池、库存与其他英雄和槽位不变，同一 UID 原属性完整地进入目标空槽，仅目标英雄可有合法派生变化；原读数必须新鲜且时序不倒退。无效果、状态不全或非预期变化保留 UNKNOWN 和 UID，重启不重放。页面选择模式只改变草稿，需指定英雄、重新探测并单次授权。不开放替换、卸下、分解、装备消耗或付费行为。
+
+离线验证：D.17 的 27 文件定向命令追加 `tests/equipment-put-on.test.mjs`，共 **816/816 PASS，0 fail/cancelled/skipped/todo，23.78 秒**。原 LEVEL/REFINE 领域 48 项保留；新增真实本地 Codec、会话开启门槛、空槽、库存与 UID 预留、未知恢复、完整页面及父预算。首轮专项发现 D6 的通用成本默认值会接纳显式 null，以及页面测试假设每次有材料，已改为只接受真实空数组并断言明确显示无资源消耗。未执行 R7 或真实游戏。E09 增加同 UID 空槽穿戴、占用/不明零派发、库存不变与无效果 UNKNOWN；E20/E21/E23 增加零资源 UID 预算和重启防重发。C227/C230、W10 重置缺证保持；并行继续 W11/C142 只读远征材料缺口。
