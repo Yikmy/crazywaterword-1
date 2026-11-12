@@ -215,7 +215,11 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       return getStatus();
     } finally { resuming = false; }
   }
-  return { start, getStatus, stop, resume, settle: async () => { if (task) await task; return getStatus(); } };
+  function getLiveRunId() {
+    if (!context?.claimed) return null;
+    try { current(context); return context.runId; } catch { return null; }
+  }
+  return { start, getStatus, getLiveRunId, stop, resume, settle: async () => { if (task) await task; return getStatus(); } };
 }
 
 export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) {
@@ -247,7 +251,15 @@ export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) 
     if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]]))); }
     const raw = read(), account = entry(raw, accountId); account.history = [safe, ...account.history.filter(existing => existing.runId !== safe.runId)]; write(raw); return copy(safe);
   }
-  function history(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].history : []).map(run => ACTIVE.has(run.status) ? { ...run, status: 'RECOVERED_STOPPED', recovered: true, resumable: false, reason: '恢复历史仅供查看；必须重新显式启动与逐批授权' } : { ...run, resumable: false }); }
+  function history(accountId, { liveRunId = null } = {}) {
+    const raw = read();
+    // An active snapshot is only live if the current server-owned runner still
+    // holds that exact run. Neither the saved snapshot nor the caller can resume it.
+    return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].history : []).map(run =>
+      ACTIVE.has(run.status) && run.runId !== liveRunId
+        ? { ...run, status: 'RECOVERED_STOPPED', recovered: true, resumable: false, reason: '恢复历史仅供查看；必须重新显式启动与逐批授权' }
+        : { ...run, resumable: false });
+  }
   function remove(accountId, workflowId) { const raw = read(), account = entry(raw, accountId); account.workflows = account.workflows.filter(graph => graph.id !== workflowId); write(raw); return list(accountId); }
   return { list, load: list, save, remove, record, history };
 }

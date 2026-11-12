@@ -2545,3 +2545,9 @@ W19 仍 PARTIAL：Loop/Tasks/Dailies 各入口的历史和拒绝记忆覆盖、�
 验证在 NAS 直接运行 npm test 的两条 Node 命令：node src/selftest.mjs 29 组通过（原素材未同步检查按既有条件跳过）；node --test --test-reporter=spec 为 2505/2505 PASS、0 fail/cancelled/skipped/todo（25.74 秒）。包含本地真实 Codec 与合成 socket 的交付/超时/拒绝/重启、正式 OperationService 派发前磁盘预占及零重放、完整页面明确授权和账号切换。未连接真实游戏。
 
 W12 仍 PARTIAL：E15 原定的“扣次且目标变化”双证据、目标删除归属、具体奖励归属和服务器日界仍未闭合；目标池变动或无效果保留 UNKNOWN，不能以计数替代这些证据。E15/E20/E21/E23 增加边界、预算与身份失效分支；R7/R8、E01–E24 及原工作包范围保持。此轮未 push/merge，R8 仍需 R7 后由 Owner 单独授权。
+
+### D.28 W19 区分当前工作流与只读恢复记录（2026-11-12）
+
+父提交 058445b。原 GET /api/workflows 会将当前 Runner 刚落盘的活动行显示为 RECOVERED_STOPPED。现在仅在服务器当前账号、世代、连接及持有运行的 Runner 全部匹配时保留该运行的活动历史状态；失去会话归属或新进程读取时才显示已恢复停止。读取不修改文件、不恢复运行或授权。联合 workflow、gameplay-api、execution-memory-api、operation-recovery-api 四套离线测试 56/56 PASS，0 fail/cancelled/skipped/todo（6.47 秒），覆盖真实 HTTP handler 的活动和失效对照、跨账号及新 Store 字节不变。旧 Loop/Tasks/Dailies 写入口仍禁用；新增业务须复用注册 Function、逐批授权和共享历史，W19 其余原 DoD 未完成。
+
+并行静态复核确定 W13 下一安全切片为钓鱼图鉴的只读奖励资格。FishList byte 2642395/2642882、FishModel byte 2645932/2646114：FishEncyclopediaResponse 自有 fishList 与显式 rewardId，按 FishBaseCfg 已发现唯一鱼积分减去已领奖的 FishStageCfg 门槛，判断下一档。DrawFishRewardRequest 为空，typed DrawFishRewardResponse 提供 rewardId 与 DisplayAssetPackage；请求没有 stage 条件，外部客户端可能抢领并使下一档变化，写分支需单独解决这一授权边界。FishView byte 2663638/2664672：StartFishingResponse 的 fishId 只在临时 UI 状态；GainBigFishRequest 无鱼/任务 ID，对应异名 GainBigResponse（isNew/extReward），无恢复身份或过期权威读源。满仓门按 GameEffect ID 16 与 AllItem 的鱼库存校验。此段仅静态证据，未实现 W13，也不视为 E16 或 R7/R8 通过。

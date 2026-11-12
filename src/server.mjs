@@ -157,7 +157,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
     return session.stageRunner;
   }
-  function workflowView(id) { return {accountId:id,csrfToken:operationCsrf,functions:operations.modules?Object.keys(operations.modules):[],graphs:workflowStore.list(id),examples:exampleWorkflows(operations.modules),status:workflowRunners.get(id)?.getStatus()??{status:'IDLE',running:false},history:workflowStore.history(id)}; }
+  function workflowView(id) {
+    const runner = workflowRunners.get(id), session = sessions.get(id);
+    const status = runner?.getStatus() ?? { status: 'IDLE', running: false };
+    const liveRunId = status.running && status.accountId === id && session?.workflowOwner === status.runId &&
+      session.client?.connected === true ? runner.getLiveRunId() : null;
+    return { accountId: id, csrfToken: operationCsrf, functions: operations.modules ? Object.keys(operations.modules) : [],
+      graphs: workflowStore.list(id), examples: exampleWorkflows(operations.modules), status,
+      history: workflowStore.history(id, { liveRunId }) };
+  }
   function workflowRunner(id) {
     if(!workflowRunners.has(id))workflowRunners.set(id,createWorkflowRunner({operations,getSession:accountId=>sessions.get(accountId),modules:operations.modules,
       isCurrent:(session,generation,client)=>!closed&&sessions.get(id)===session&&session.generation===generation&&session.client===client&&session.state==='READY',
