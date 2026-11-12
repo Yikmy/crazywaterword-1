@@ -1,6 +1,7 @@
 import { normalize } from './worlds.mjs';
 import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
+import { pirateSweepView } from './pirate-sweep.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -226,6 +227,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     antiques: q.AllAntiqueRequest ? { count: asArray(q.AllAntiqueRequest.antiques).length, masterLv: q.AllAntiqueRequest.masterLv, suits: asArray(q.AllAntiqueRequest.suits).length } : null,
     pets: asArray(q.AllPetRequest?.pets).length,
     equips: asArray(q.EquipsRequest?.equip).length,
+    pirateSweep: pirateSweepView(state),
     pirates: q.AllPirateRequest ? { count: asArray(q.AllPirateRequest.pirates).length, sweepTimes: q.AllPirateRequest.sweepTimes } : null,
     worldBoss: q.WorldBossInfoRequest?.info ?? null,
     season: q.SeasonRankInfoRequest ?? null,
@@ -280,7 +282,9 @@ export function formatState(view) {
     ].filter(Boolean);
     lines.push(`  ${building.buildingId} ${bits.join(' ')}`);
   }
-  lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}(扫荡${view.pirates?.sweepTimes ?? 0})`);
+  lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}`);
+  const sweep = view.pirateSweep;
+  lines.push(`  野怪扫荡：已用 ${sweep?.usedSweeps ?? '未知'}，总额 ${sweep?.totalSweeps ?? '未知'}，剩余 ${sweep?.remainingSweeps ?? '未知'}；等级关系仅供查看。`);
   lines.push(`  自动生产至 ${clock(view.water.autoProduceEndTime)} 永久=${view.water.autoProduceForever} 自动种植=${view.water.autoFarming}`);
   lines.push(`  钓鱼lv${view.water.fishingLevel ?? '-'} 打捞lv${view.water.salvageLevel ?? '-'} 潜水lv${view.water.divingLevel ?? '-'}`);
   if (view.worldBoss) lines.push(`  世界Boss bossId=${view.worldBoss.bossId} 最高伤害=${view.worldBoss.bestDamage} 已领档位=${view.worldBoss.gotRewardLevel}`);

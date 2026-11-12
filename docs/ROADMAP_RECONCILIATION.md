@@ -2460,3 +2460,13 @@ W11/C144 静态复核仍缺可恢复的“待领/已领”权威身份：Complet
 离线证据：领域/目录/完整页面 95/95，独立合成 HTTP handler API 14/14。联合命令 `node --test tests/antique-summary.test.mjs tests/antique-summary-api.test.mjs tests/data-catalog.test.mjs tests/explorer-view.test.mjs tests/farm-forge-full-page.test.mjs tests/gameplay-api.test.mjs tests/gameplay-view.test.mjs tests/museum.test.mjs tests/museum-shortage.test.mjs tests/operation-service.test.mjs tests/function-registry.test.mjs tests/function-contracts.test.mjs tests/phase2-api.test.mjs tests/stage-api.test.mjs tests/pirate-sweep.test.mjs` 为 **325/325 PASS，0 fail/cancelled/skipped/todo，7.41 秒**（含 8 项并行 W12 测试，由 D.22 另提交）。最后仅将表头明确为“原值/类型”。真实本地 Codec/固定配置、独立作用域、显式零与缺字段、失败/取消、六种互斥和四类延迟身份变化均覆盖。首跑新增页面测试误用不存在的 harness 接口，按原 run/viewGuard 方式切换后通过，未改变隔离规则。
 
 E14 增加汇总作用域、原值/单位、明确空/UNKNOWN、只读和账号切换验收。未执行 R7 或真实游戏；培养/兑换/精通及 C144 结算身份缺证继续保留，R8 不提前。
+
+### D.22 W12 野怪扫荡只读次数与目标等级关系（2026-11-12）
+
+父提交 `f0408bb6afffcbca2689780595b6da455f7d2c11`。在现有 `collectState → summarize → formatState` 加独立 `view.pirateSweep`，保留原 pirates 投影，原 48 项采集不增请求或信号。此“次数和目标事实查看”分支 EXISTING_FUNCTION、OFFLINE_VERIFIED、REAL_UNVERIFIED。它不新增扫荡写入口，也不替代 W12/C151 执行、C152 召唤、计次/UNKNOWN 和 E15 验收；W12 继续 PARTIAL。
+
+`AllPirateResponse.sweepTimes` 只表示当前读到的已用次数，只有真实自有非负 int32 字段才采纳，缺字段、原型默认零、失败/NOT_EXECUTED/UNKNOWN 或损坏结果元数据均不能冒充零。总额与剩余固定 UNKNOWN，原因是当前缺新鲜完整额度权威。完整有效 pirates 列表保留准确正 int32 uid/type/level/cityId，重复 UID 或任一损坏目标不输出部分列表；完整成功 PirateKillRecord 按 type/maxKilledLevel 解析，重复/损坏/缺字段使关系 UNKNOWN。明确空首杀记录中的未列类型可判需先首杀；目标等于/低于/高于已杀最高等级分别仅显示等级关系、低档需确认、先首杀，不生成 executable 候选或执行许可。
+
+静态 v76 PiratePop/PirateUtil 的已核包/模块哈希和 UTF8 偏移保留在 `PIRATE_SWEEP_READ_EVIDENCE`。总额计算线索为 PirateParamCfg 基数 + VipLevelCfg 当前等级效果 + 有效月卡效果；月卡是否有效依赖服务器时间。LoginResponse.vip 与 SCVipUpdate 有初始/推送来源，但现有 GameClient 没有持续跟踪当前 VIP，且无新鲜 VipInfoRequest；不能拿登录旧值、基数 10 或两条固定月卡配置当前零加成猜实时额度。DailyReset 时区也不能统一假定 UTC+8。下一步应核实并实现完整当前账号 VIP/卡/可信游戏日生命周期，再接共享预算与复读，不把本只读分支当执行完成。
+
+`node --test tests/pirate-sweep.test.mjs tests/data-catalog.test.mjs tests/explorer-view.test.mjs`：**28/28 PASS，0 fail/cancelled/skipped/todo，1.64 秒**（8 项新增专项）；另随 D.21 的 15 文件联合 **325/325 PASS，7.41 秒**，是重叠证据，不累计。真实本地 Codec、原 collector 和合成快照检查显式零/缺失、原始字段保留、坏/重复记录、失败来源与原 48 请求集合；CLI 显式区分已用、未知总额、未知剩余，不暗示可执行。未运行 R7 或真实游戏。E15 增加次数方向、UNKNOWN 与等级关系只读验收，原执行和真实验收条件保留。
