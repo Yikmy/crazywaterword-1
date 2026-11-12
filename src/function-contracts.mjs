@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
+    inventoryRequirementIds:['BIZ-D02'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('TICKET_ADVANCED_AND_ANTIQUE','Only one free hero recruit way=1; ticket, bulk, advanced and antique recruit require separate contracts')]},
+    verification:verification('verifyFreeRecruit','src/free-recruit.mjs#verifyFreeRecruit','Single typed reward and future cooldown must match independent RecruitInfo, exact new hero ID or fragment net income, complete stock, unchanged other heroes and antique state'),
+    dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.HeroCfg','config.ItemCfg']),
+  }),
   'free-gold': contract('free-gold',[],['P6-2'],['src/free-gold.mjs#freeGoldModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D06'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PAID_OR_BULK','Only one ordinary free click is allowed; never spend RUBY or infer a server day')]},

@@ -346,6 +346,7 @@ export const PAGE = `<!doctype html>
     ${CORE_GAMEPLAY_HTML['task-rewards']}
     ${CORE_GAMEPLAY_HTML['afk-level-rewards']}
     ${CORE_GAMEPLAY_HTML['free-gold']}
+    ${CORE_GAMEPLAY_HTML['free-recruit']}
 
     <h2>海面</h2>
     <div class="bar">

@@ -192,7 +192,7 @@ export const DAILY_DRIVERS = {
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
       if (freeEnd <= now) {
-        actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', cost: '免费次数', note: '免费招募' });
+        actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', costs: [], cost: '免费次数', note: '免费招募' });
       }
       const tickets = items instanceof Map ? safeResourceQuantity(items.has(RECRUIT_ITEM) ? items.get(RECRUIT_ITEM) : 0) : null;
       const singles = tickets === null ? 0 : Math.min(remaining - actions.length, tickets);
@@ -546,7 +546,8 @@ export async function runDailies(client, protocol, survey, options = {}) {
           break;
         }
         // Enforce D6 before doing even a refresh for a forbidden planned action.
-        const planned = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
+        const freeAction = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 || entry.task.id === 1002 && action.request === 'RecruitStartRequest' && action.body?.way === 1;
+        const planned = freeAction && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
         assertPaymentAllowed({ ...planned, paid: action.paid || entry.status === 'paid' }, settings);
         // Reuse the same survey/driver to check current server state and config before each write.
         const fresh = await surveyDailies(client, protocol, settings);
