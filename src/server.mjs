@@ -2,7 +2,7 @@ import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
-import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, simulateWorkflow, validateWorkflow } from './workflow.mjs';
+import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, projectWorkflowExecutionHistory, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
 import { createExecutionMemory } from './execution-memory.mjs';
 import { createNamedFormationStore } from './named-formations.mjs';
@@ -157,14 +157,29 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
     return session.stageRunner;
   }
-  function workflowView(id) {
+  function workflowState(id) {
     const runner = workflowRunners.get(id), session = sessions.get(id);
     const status = runner?.getStatus() ?? { status: 'IDLE', running: false };
     const liveRunId = status.running && status.accountId === id && session?.workflowOwner === status.runId &&
-      session.client?.connected === true ? runner.getLiveRunId() : null;
+      session?.client?.connected === true ? runner.getLiveRunId() : null;
+    return { status, liveRunId };
+  }
+  function workflowView(id) {
+    const { status, liveRunId } = workflowState(id);
     return { accountId: id, csrfToken: operationCsrf, functions: operations.modules ? Object.keys(operations.modules) : [],
       graphs: workflowStore.list(id), examples: exampleWorkflows(operations.modules), status,
       history: workflowStore.history(id, { liveRunId }) };
+  }
+  function workflowHistory(id, query) {
+    const ids = query.getAll('workflowRunId'), [runId] = ids;
+    if (ids.length !== 1 || !runId || runId.trim() !== runId || runId.length > 512 ||
+        [...query.keys()].some(key => key !== 'account' && key !== 'workflowRunId')) {
+      throw Object.assign(new Error('历史查询需要唯一精确工作流运行 ID'), { code: 'INVALID_INPUT', statusCode: 400 });
+    }
+    const { liveRunId } = workflowState(id);
+    const [run] = workflowStore.history(id, { runId, liveRunId });
+    if (!run) throw Object.assign(new Error('账号下没有这个工作流运行'), { code: 'WORKFLOW_RUN_NOT_FOUND', statusCode: 404 });
+    return projectWorkflowExecutionHistory(id, run, history.list(id));
   }
   function workflowRunner(id) {
     if(!workflowRunners.has(id))workflowRunners.set(id,createWorkflowRunner({operations,getSession:accountId=>sessions.get(accountId),modules:operations.modules,
@@ -673,7 +688,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/memory', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
       const namedFormationRoute=new Set(['GET /api/formations/named','POST /api/formations/named/save','POST /api/formations/named/rename','POST /api/formations/named/overwrite','POST /api/formations/named/delete','POST /api/formations/named/prepare']).has(route);
       const extremeFormationRoute=new Set(['POST /api/formations/extreme/survey','POST /api/formations/extreme/prepare']).has(route);
-      const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
+      const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','GET /api/workflows/history','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
       if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
@@ -698,6 +713,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (stageRoute && req.method === 'GET') { json(stageView(id, sessions.get(id))); return; }
         if (route === 'GET /api/gameplay') { json({...operations.moduleView(id,parsed.searchParams.get('module')),csrfToken:operationCsrf});return; }
         if (route === 'GET /api/workflows') { json(workflowView(id));return; }
+        if (route === 'GET /api/workflows/history') { json(workflowHistory(id, parsed.searchParams)); return; }
         if (route === 'GET /api/operations') { json({ ...operations.view(id), csrfToken: operationCsrf }); return; }
         if (route === 'GET /api/operations/production-policy') { json(operations.productionPolicy(id)); return; }
         if (route === 'GET /api/operations/memory') { if(parsed.searchParams.getAll('account').length!==1)throw Object.assign(Error('记忆查询需唯一账号'),{code:'INVALID_INPUT',statusCode:400});const filters=Object.create(null);for(const [key,value] of parsed.searchParams){if(key==='account')continue;if(Object.hasOwn(filters,key))throw Object.assign(Error('重复记忆筛选字段'),{code:'INVALID_INPUT',statusCode:400});filters[key]=value;}json(operations.executionMemory(id,filters));return; }

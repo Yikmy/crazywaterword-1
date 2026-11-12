@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { redact } from './security.mjs';
 import { normalizeBudgetClaims } from './resource-ledger.mjs';
 import { validateFunctionParameters } from './function-contracts.mjs';
+import { actionNeedsReconciliation } from './execution-history.mjs';
 
 export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072 });
 const TYPES = new Set(['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP']);
@@ -222,6 +223,63 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   return { start, getStatus, getLiveRunId, stop, resume, settle: async () => { if (task) await task; return getStatus(); } };
 }
 
+const historyId = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && value.trim() === value;
+const ids = (rows, pick) => {
+  if (!Array.isArray(rows) || !rows.length || rows.length > 100) return null;
+  const values = rows.map(pick);
+  return values.every(historyId) && new Set(values).size === values.length ? values : null;
+};
+const sameIds = (left, right) => left && right && left.length === right.length && left.every((id, index) => id === right[index]);
+
+// Audit the records already present in the two stores. The current graph can
+// have been edited since the run, so only its persisted ACTION trace is used.
+export function projectWorkflowExecutionHistory(accountId, workflowRun, operationRuns) {
+  if (workflowRun?.accountId !== accountId || !historyId(workflowRun?.runId) || !text(workflowRun?.workflowId) ||
+      !Array.isArray(operationRuns)) throw fail('缺少精确的账号与工作流历史');
+  const workflowRunId = workflowRun.runId, workflowDefinitionId = workflowRun.workflowId;
+  const nodes = new Map(), duplicateNodes = new Set();
+  const trace = Array.isArray(workflowRun.trace) && workflowRun.trace.length <= WORKFLOW_LIMITS.steps ? workflowRun.trace : [];
+  for (const row of trace) {
+    if (row?.type !== 'ACTION' || !text(row.nodeId)) continue;
+    if (nodes.has(row.nodeId)) duplicateNodes.add(row.nodeId);
+    else nodes.set(row.nodeId, { nodeId: row.nodeId, traceResult: row.result, timestamp: row.timestamp ?? null, batches: [] });
+  }
+  for (const nodeId of duplicateNodes) nodes.delete(nodeId);
+
+  const accountRuns = operationRuns.filter(run => run?.accountId === accountId);
+  const runCounts = new Map(), batchCounts = new Map();
+  const count = (counts, id) => { if (historyId(id)) counts.set(id, (counts.get(id) ?? 0) + 1); };
+  for (const run of accountRuns) {
+    count(runCounts, run.runId);
+    for (const batchId of new Set([run.planSummary?.batchId, run.authorizationSummary?.batchId])) count(batchCounts, batchId);
+  }
+  let unlinkedOperationCount = 0;
+  for (const run of accountRuns) {
+    const plan = run.planSummary, authorization = run.authorizationSummary;
+    if (![run.workflowId, run.parentRunId, plan?.parentRunId].includes(workflowRunId)) continue;
+    const node = nodes.get(run.workflowNodeId), batchId = plan?.batchId;
+    const actionIds = ids(run.actions, row => row?.actionId);
+    if (!node || run.workflowId !== workflowRunId || run.parentRunId !== workflowRunId || plan?.parentRunId !== workflowRunId ||
+        run.workflowDefinitionId !== workflowDefinitionId || plan?.workflowDefinitionId !== workflowDefinitionId ||
+        plan?.workflowNodeId !== node.nodeId || plan?.accountId !== accountId ||
+        runCounts.get(run.runId) !== 1 || batchCounts.get(batchId) !== 1 || authorization?.batchId !== batchId ||
+        !sameIds(actionIds, ids(plan?.actions, row => row?.actionId)) || !sameIds(actionIds, ids(authorization?.actionIds, id => id))) {
+      unlinkedOperationCount++;
+      continue;
+    }
+    node.batches.push({ batchId, operationRunId: run.runId, module: run.module ?? null, finalStatus: run.finalStatus,
+      startedAt: run.startedAt ?? null, finishedAt: run.finishedAt ?? null, recovered: run.recovered === true,
+      actions: run.actions.map(row => ({ actionId: row.actionId, capabilityId: row.capabilityId ?? null,
+        actionType: row.actionType ?? null, result: row.result, requestStatus: row.requestStatus,
+        verificationStatus: row.verification?.status ?? null, needsReconciliation: actionNeedsReconciliation(run, row),
+        reconciliationStatus: Array.isArray(row.reconciliations) ? row.reconciliations.at(-1)?.status ?? null : null })) });
+  }
+  return { accountId, workflowRunId, workflowDefinitionId, status: workflowRun.status,
+    startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
+    readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
+    nodes: [...nodes.values()] };
+}
+
 export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) {
   if (!text(file) || !path.isAbsolute(file)) throw fail('工作流存储必须使用显式绝对路径');
   const unavailable = () => fail('工作流存储损坏或不可读；原证据已保留', 'WORKFLOW_STORE_UNAVAILABLE');
@@ -251,11 +309,12 @@ export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) 
     if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]]))); }
     const raw = read(), account = entry(raw, accountId); account.history = [safe, ...account.history.filter(existing => existing.runId !== safe.runId)]; write(raw); return copy(safe);
   }
-  function history(accountId, { liveRunId = null } = {}) {
+  function history(accountId, { liveRunId = null, runId = null } = {}) {
     const raw = read();
     // An active snapshot is only live if the current server-owned runner still
     // holds that exact run. Neither the saved snapshot nor the caller can resume it.
-    return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].history : []).map(run =>
+    const entries = Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].history : [];
+    return copy(runId === null ? entries : entries.filter(run => run.runId === runId)).map(run =>
       ACTIVE.has(run.status) && run.runId !== liveRunId
         ? { ...run, status: 'RECOVERED_STOPPED', recovered: true, resumable: false, reason: '恢复历史仅供查看；必须重新显式启动与逐批授权' }
         : { ...run, resumable: false });

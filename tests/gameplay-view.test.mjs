@@ -320,3 +320,62 @@ test('forge detached recipe cannot survive pending survey account switch or edit
 test('named prepare invalidates authorization immediately and cannot overwrite an edited formation draft',async()=>{
  const h=await namedUiBoot();await preview(h);const pending=h.node('nf-prepare').onclick();assert.equal(h.node('gp-formation-authorize').disabled,true);assert.equal(h.node('gp-formation-plan').disabled,true);const draft=JSON.stringify({presetId:2});h.node('gp-formation-parameters').value=draft;h.node('gp-formation-parameters').oninput();h.respond('/api/formations/named/prepare',{accountId:'A',id:'named-one',revision:1,mode:'MAINLINE',parameters:{presetId:1},requiresFreshSurvey:true,requiresFreshPlan:true,requiresAuthorization:true,resumable:false});await pending;assert.equal(h.node('gp-formation-parameters').value,draft);assert.equal(h.node('gp-formation-authorize').disabled,true);assert.match(h.node('nf-hint').textContent,/草稿已变化/);assert.equal(h.pending('/api/operations/authorize'),undefined);
 });
+
+
+const workflowHistoryPath = id => '/api/workflows/history?workflowRunId=' + encodeURIComponent(id);
+async function historyBoot() {
+  const h = harness(), task = h.run('refreshWorkflows()');
+  h.ctx.snapshot.connected = false;
+  h.respond('/api/workflows', { accountId: 'A', status: { status: 'IDLE' }, history: ['run/one', 'run-two'].map(runId => ({ accountId: 'A', runId, status: 'RECOVERED_STOPPED' })) });
+  await task; return h;
+}
+function workflowHistoryDetail(runId = 'run/one') {
+  return { accountId: 'A', workflowRunId: runId, workflowDefinitionId: 'old-graph', status: 'RECOVERED_STOPPED', recovered: true,
+    readOnly: true, resumable: false, unlinkedOperationCount: 1, nodes: [{ nodeId: '<img src=x>', traceResult: 'AWAITING_AUTHORIZATION', batches: [
+      { batchId: 'batch-old', operationRunId: 'operation-old', finalStatus: 'UNKNOWN', actions: [
+        { actionId: 'action-old', result: 'UNKNOWN', requestStatus: 'UNKNOWN', verificationStatus: null, reconciliationStatus: 'APPLIED', needsReconciliation: false },
+        { actionId: 'still-pending', result: 'UNKNOWN', requestStatus: 'DISPATCHING', verificationStatus: null, reconciliationStatus: 'STILL_UNKNOWN', needsReconciliation: true },
+      ] },
+    ] }] };
+}
+
+test('workflow history reads exact persisted node, batch and action evidence while disconnected without authorization', async () => {
+  const h = await historyBoot();
+  assert.equal(h.node('wf-history-read').disabled, false);
+  assert.equal(h.node('wf-authorize').disabled, true);
+  const task = h.node('wf-history-read').onclick();
+  assert.equal(h.node('wf-history-read').disabled, true);
+  h.respond(workflowHistoryPath('run/one'), workflowHistoryDetail()); await task;
+  const text = h.node('wf-history-detail').textContent;
+  for (const value of ['run/one', 'old-graph', 'RECOVERED_STOPPED', '<img src=x>', 'batch-old', 'operation-old', 'UNKNOWN', 'APPLIED', 'STILL_UNKNOWN', '待复核', '未关联的操作记录：1']) assert.ok(text.includes(value), value);
+  assert.match(h.node('wf-history-hint').textContent, /原始 UNKNOWN 保留/);
+  assert.ok(h.requests.every(row => row.body === null));
+  assert.equal(h.confirmations.length, 0);
+  assert.equal(h.pending('/api/operations/authorize'), undefined);
+  assert.equal(h.pending('/api/workflows/resume'), undefined);
+});
+
+test('workflow history selection, account changes, wrong identities and failed reads cannot restore stale evidence', async () => {
+  const h = await historyBoot(), old = h.node('wf-history-read').onclick();
+  h.node('wf-history-selected').value = 'run-two'; h.node('wf-history-selected').onchange();
+  const current = h.node('wf-history-read').onclick();
+  h.respond(workflowHistoryPath('run-two'), workflowHistoryDetail('run-two')); await current;
+  h.respond(workflowHistoryPath('run/one'), workflowHistoryDetail()); await old;
+  assert.match(h.node('wf-history-detail').textContent, /运行 run-two/);
+  assert.doesNotMatch(h.node('wf-history-detail').textContent, /run\/one/);
+  const late = h.node('wf-history-read').onclick(); h.select('B'); h.select('A');
+  h.respond(workflowHistoryPath('run-two'), workflowHistoryDetail('run-two')); await late;
+  assert.equal(h.node('wf-history-detail').textContent, '');
+  assert.equal(h.node('wf-history-read').disabled, true);
+  for (const mutate of [data => data.accountId = 'B', data => data.workflowRunId = 'foreign-run', data => data.resumable = true]) {
+    const f = await historyBoot(), task = f.node('wf-history-read').onclick(), data = workflowHistoryDetail(); mutate(data);
+    f.respond(workflowHistoryPath('run/one'), data); await task;
+    assert.equal(f.node('wf-history-detail').textContent, '');
+    assert.match(f.node('wf-history-hint').textContent, /归属不匹配/);
+  }
+  const f = await historyBoot(), task = f.node('wf-history-read').onclick(), request = f.pending(workflowHistoryPath('run/one'));
+  request.settled = true; request.reject(Error('history unavailable')); await task;
+  assert.equal(f.node('wf-history-detail').textContent, '');
+  assert.match(f.node('wf-history-hint').textContent, /history unavailable/);
+  assert.equal(f.node('wf-history-read').disabled, false);
+});
