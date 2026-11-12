@@ -182,3 +182,11 @@ test('unchanged 48-query collector feeds exact achievement and free gold observa
  const client={connected:true,async request(name,body,response){calls.push(name);return protocol[response].decode(protocol[response].encode(bodies[name]??{}).finish());},send(){throw Error('No signal');},sendWatch(){throw Error('No write');}};
  const state=await collectState(client,protocol),v=dailyChecklist(state,{config});assert.equal(calls.length,48);assert.deepEqual(calls.slice().sort(),ENTRY_QUERIES.map(row=>row.name).sort());assert.equal(v.achievements.rows[0].progress,'9223372036854775807');assert.equal(v.achievements.rows[0].eligible,true);assert.equal(v.freeGold.remaining,3);assert.equal(v.freeGold.executable,false);
 });
+
+test('cached recruit/trial objectives point to existing controlled Functions without becoming writable',()=>{
+ for(const snapshot of[false,true]){
+  const s=fixture({snapshot});s.raw.DailyTaskInfoRequest= snapshot?toSnapshotJson(typed('DailyTaskInfoRequest',{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]})):typed('DailyTaskInfoRequest',{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]});
+  const view=dailyChecklist(s,{config});assert.deepEqual(view.tasks.rows.map(r=>r.functionId),['free-recruit','trial-challenge']);
+  assert.ok(view.tasks.rows.every(r=>!r.executable&&!Object.hasOwn(r,'action')&&r.blockedReason==='DAILY_TASK_CLAIM_CONTRACT_UNVERIFIED'));
+ }
+});

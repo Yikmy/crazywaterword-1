@@ -140,6 +140,7 @@ const freezeQueryMetadata = value => {
 };
 const consumer = (module, functionName, source, fields) => ({ module, function: functionName, source, fields });
 const uses = {
+  'trial-challenge': consumer('trial-challenge','surveyTrialChallenge','src/trial-challenge.mjs:surveyTrialChallenge',['raid','heroes','stock']),
   'free-recruit': consumer('free-recruit','surveyFreeRecruit','src/free-recruit.mjs:surveyFreeRecruit',['recruit','heroes','city','stock']),
   'free-gold': consumer('free-gold','surveyFreeGold','src/free-gold.mjs:surveyFreeGold',['gold','stock']),
   'afk-level-rewards': consumer('afk-level-rewards','surveyAfkLevelRewards','src/afk-level-rewards.mjs:surveyAfkLevelRewards',['afk','stock']),
@@ -168,6 +169,7 @@ const treasureParameters = { mode: 'TREASURE_UID', allowedKeys: ['uid'], require
   policy: 'Exact explicitly selected positive int32 treasure uid, shared by rank and defence reads; never a dispatch request' };
 // [request, consumers, result authority, allowed parameter shape, domain, notes]
 const businessReads = [
+  ['TrialRaidInfoRequest',['trial-challenge'],{...accountScope,key:'HERO_EXPERIENCE_RAID_1'},{mode:'FIXED',allowedKeys:['raidId'],requiredKeys:['raidId'],fixed:{raidId:1},arbitraryFields:false},'tasks','Only hero experience raid1 current explicit first-clear and sweep counters; no sweep request'],
   ['EmailBoxRequest',['mail'],{...accountScope,key:'EXACT_PAGE_NO',completeness:'CURRENT_PAGE_ONLY'},{mode:'PAGE_NO',allowedKeys:['pageNo'],requiredKeys:['pageNo'],integerRange:[0,2147483647],arbitraryFields:false},'tasks','Explicit exact page only; total never proves page count, complete enumeration or snapshot consistency'],
   ['RecruitInfoRequest',['free-recruit'],accountScope,emptyParameters,'recruitment','Explicit current hero cooldown and recruit data; independent receipt matching, no inferred clock or ticket fallback'],
   ['ClickGoldInfoRequest',['free-gold'],accountScope,emptyParameters,'tasks','Explicit ordinary free used count, minGold and server resetTime marker; no inferred game day or paid fallback'],
@@ -180,9 +182,9 @@ const businessReads = [
   ['AntiqueAttrSummaryRequest',['antiqueSummary'],accountScope,emptyParameters,'collections','Explicit typed current-account attribute summary only; no cultivation, exchange or activation'],
   ['GetFormationRequest', ['formation'], { ...accountScope, key: 'MAINLINE_MODULE_1' }, mainlineParameters, 'heroes', 'Complete formation with exact hero positions and optional pet UID; does not prove save success by itself'],
   ['MyFormationPresetRequest', ['formation', 'fleet'], accountScope, emptyParameters, 'heroes', 'Unlocked formation layouts; not saved complete teams'],
-  ['AllHeroRequest', ['formation', 'museum', 'fleet', 'free-recruit'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],
-  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep', 'task-rewards', 'afk-level-rewards', 'free-gold', 'free-recruit'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
-  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep', 'task-rewards', 'afk-level-rewards', 'free-gold', 'free-recruit'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
+  ['AllHeroRequest', ['formation', 'museum', 'fleet', 'free-recruit', 'trial-challenge'], accountScope, emptyParameters, 'heroes', 'Owned hero identities; no growth or recruitment request'],
+  ['AllItemRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep', 'task-rewards', 'afk-level-rewards', 'free-gold', 'free-recruit', 'trial-challenge'], accountScope, emptyParameters, 'resources', 'Exact inventory fields are parsed conservatively by each existing survey'],
+  ['AllResourceRequest', ['alliance', 'museum', 'fleet', 'treasure', 'naval', 'antique-growth', 'pirate-sweep', 'task-rewards', 'afk-level-rewards', 'free-gold', 'free-recruit', 'trial-challenge'], accountScope, emptyParameters, 'resources', 'Missing resource fields remain unknown'],
   ['GuildInfoRequest', ['alliance', 'fleet'], guildScope, emptyParameters, 'guild', 'Current guild identity and welfare watermark; fleet derives guild index'],
   ['GuildMemberRequest', ['alliance'], guildScope, emptyParameters, 'guild', 'Current titleList members; absent online flag remains unknown'],
   ['GuildAidListRequest', ['alliance'], guildScope, aidParameters, 'guild', 'Exact request, asker, item and expiry identity; type is fixed zero'],

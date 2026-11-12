@@ -369,7 +369,7 @@ export const DAILY_DRIVERS = {
       }
       return {
         status: 'ready',
-        actions: [{ request: 'TrialRaidChallengeRequest', body: { raidId: raid.raidId, stageId: next.stageId }, response: 'TrialRaidChallengeResponse', cost: '挑战次数', note: `英雄经验副本第 ${next.stageLevel} 关` }],
+        actions: [{ request: 'TrialRaidChallengeRequest', body: { raidId: raid.raidId, stageId: next.stageId }, response: 'TrialRaidChallengeResponse', costs: [], cost: '挑战次数', note: `英雄经验副本第 ${next.stageLevel} 关` }],
       };
     },
   },
@@ -546,8 +546,8 @@ export async function runDailies(client, protocol, survey, options = {}) {
           break;
         }
         // Enforce D6 before doing even a refresh for a forbidden planned action.
-        const freeAction = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 || entry.task.id === 1002 && action.request === 'RecruitStartRequest' && action.body?.way === 1;
-        const planned = freeAction && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
+        const zeroCostAction = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 || entry.task.id === 1002 && action.request === 'RecruitStartRequest' && action.body?.way === 1 || entry.task.id === 1009 && action.request === 'TrialRaidChallengeRequest' && action.body?.raidId === 1 && Number.isInteger(action.body?.stageId) && action.body.stageId > 0;
+        const planned = zeroCostAction && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
         assertPaymentAllowed({ ...planned, paid: action.paid || entry.status === 'paid' }, settings);
         // Reuse the same survey/driver to check current server state and config before each write.
         const fresh = await surveyDailies(client, protocol, settings);

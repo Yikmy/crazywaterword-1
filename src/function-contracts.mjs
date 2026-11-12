@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'trial-challenge': contract('trial-challenge',[],['P6-2'],['src/trial-challenge.mjs#trialChallengeModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
+    inventoryRequirementIds:['BIZ-D09'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CHALLENGE'],blockedCapabilities:[blocked('SWEEP_OTHER_RAIDS','Only raid1 next first-clear stage; sweep, buy, ads and other raids need distinct contracts')]},
+    verification:verification('verifyTrialChallenge','src/trial-challenge.mjs#verifyTrialChallenge','Exact typed raid/stage/config rewards and independent exact passedStage, unchanged sweep counters/heroes and complete net inventory'),
+    dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.TrialRaidCfg','config.TrialRaidStageCfg','config.ItemCfg']),
+  }),
   'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D02'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('TICKET_ADVANCED_AND_ANTIQUE','Only one free hero recruit way=1; ticket, bulk, advanced and antique recruit require separate contracts')]},

@@ -1,3 +1,4 @@
+import { dailyChecklist } from '../src/daily-checklist.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -62,6 +63,7 @@ const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',
  quota:{dayKey:pirateDay,used:2,total:13,remaining:11,reason:null},quotaBreakdown:{base:10,vip:1,monthCards:2},targets:[pirateTarget,{...pirateTarget,uid:18,level:4,levelRelation:'FIRST_KILL_REQUIRED'}],
 }};
 const cases = [
+  {module:'trial-challenge',actionId:'trial-challenge:1:1001:synthetic',actionType:'CHALLENGE',parameters:{},costs:[],facts:{raid:{raidId:1,passedStage:0,sweepTimes:0,buySweepTimes:0}},blockedReason:'TRIAL_CHALLENGE_LEVEL_LOCKED'},
   {module:'free-recruit',actionId:'free-recruit:0:synthetic',actionType:'CLAIM',parameters:{},costs:[],facts:{recruit:{hero:{freeEndTimeSeconds:0,recruitTimes:1}},broadcast:{level:1}},blockedReason:'FREE_RECRUIT_COOLDOWN'},
   {module:'free-gold',actionId:'free-gold:2000:1:synthetic',actionType:'CLAIM',parameters:{},costs:[],facts:{gold:{freeTimes:0,paidTimes:0,resetTime:2000,minGold:7500,maxPaidTimes:10}},blockedReason:'FREE_GOLD_EXHAUSTED'},
   {module:'afk-level-rewards',actionId:'afk-level-rewards:2:synthetic-exact',actionType:'CLAIM',parameters:{level:2},costs:[],facts:{afk:{level:5,rewardedLevel:0}},blockedReason:'AFK_LEVEL_TOO_LOW'},
@@ -89,13 +91,13 @@ const cases = [
   { module: 'equipment-forge', actionId: 'equipment-forge:MAKE:synthetic-exact', actionType: 'MAKE', parameters: { buildingId: '1装备厂', action: 'make', makeId: 1001, allowUniversal: false }, costs: [{ id: '材料', num: 4 }], facts: { forges: [{ buildingId: '1装备厂', level: 1, queue: { state: 'IDLE' } }], recipes: [{ makeId: 1001, type: '武器', season: 1, costs: [{ id: '材料', num: 4 }], equipIds: ['蓝武器1'] }], bag: [{ uid: '9007199254740993', equipId: '蓝武器1', level: 0, star: 2, refineLv: 0 }] }, blockedReason: 'QUEUE_IDLE_BLOCKED_EVIDENCE' },
 ];
 function candidate(spec) {
-  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, rewards:spec.module==='task-rewards'?[{id:'EXP',num:5}]:spec.module==='afk-level-rewards'?[{id:'抽卡券',num:2}]:undefined,progress:15,requiredProgress:15,target: spec.module==='free-recruit'?{freeEndTimeSeconds:0,way:1}:spec.module==='free-gold'?{resetTime:2000,usedBefore:0}:['task-rewards','afk-level-rewards'].includes(spec.module)?spec.parameters:spec.module==='pirate-sweep'?pirateTarget:spec.module==='antique-growth'?(spec.actionType==='SUIT'?{suitId:spec.parameters.suitId}:spec.actionType==='MASTER'?{kind:'ANTIQUE_MASTERY'}:{antiqueId:spec.parameters.antiqueId}):spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
+  return { module: spec.module, actionId: spec.actionId, actionType: spec.actionType, label: 'Synthetic ' + spec.actionType, executable: true, parameters: spec.parameters, rewards:spec.module==='task-rewards'?[{id:'EXP',num:5}]:spec.module==='afk-level-rewards'?[{id:'抽卡券',num:2}]:undefined,progress:15,requiredProgress:15,target: spec.module==='trial-challenge'?{raidId:1,stageId:1001,passedStage:0}:spec.module==='free-recruit'?{freeEndTimeSeconds:0,way:1}:spec.module==='free-gold'?{resetTime:2000,usedBefore:0}:['task-rewards','afk-level-rewards'].includes(spec.module)?spec.parameters:spec.module==='pirate-sweep'?pirateTarget:spec.module==='antique-growth'?(spec.actionType==='SUIT'?{suitId:spec.parameters.suitId}:spec.actionType==='MASTER'?{kind:'ANTIQUE_MASTERY'}:{antiqueId:spec.parameters.antiqueId}):spec.module==='heroes'?{heroId:spec.parameters.heroId}:['equipment-growth','badge-growth'].includes(spec.module)?{heroId:spec.parameters.heroId,uid:spec.parameters.uid,...(spec.module==='badge-growth'?{pos:spec.parameters.pos??1}:spec.actionType==='PUT-ON'?{type:'武器'}:{})}:spec.module==='formation-unlock'?{presetId:spec.parameters.presetId}:{buildingId:spec.parameters.buildingId}, costs: spec.costs, costSource: 'synthetic offline proof', beforeState: spec.beforeState??{ state: 'IDLE' }, expectedState: { state: 'CHANGED' } };
 }
 function data(spec, { disabled = false } = {}) {
   return { accountId: 'A', module: spec.module, csrfToken: 'synthetic-csrf-A', config: { enabled: !disabled }, status: { running: false, blocked: false }, functions: ['survey', 'plan'], view: { ...spec.facts, candidates: disabled ? [] : [candidate(spec), { ...candidate(spec), actionId: spec.actionId + ':blocked', executable: false, blockedReason: spec.blockedReason }] } };
 }
 function plan(spec) {
-  return { accountId: 'A', module: spec.module, batchId: 'batch-' + spec.module, planHash: 'hash-' + spec.module, mode: 'Manual', actions: [candidate(spec)], resourceBudget: spec.costs, ...(spec.module==='free-recruit'?{budgetClaims:{resources:[],quotas:[{id:'free-recruit:cooldown:0',num:1}],uids:[{type:'free-recruit',id:'0'}]}}:{}), ...(spec.module==='free-gold'?{budgetClaims:{resources:[],quotas:[{id:'free-gold:reset:2000',num:1}],uids:[{type:'free-gold',id:'2000:1'}]}}:{}), ...(spec.module==='pirate-sweep'?{budgetClaims:{resources:[],quotas:[{id:'pirate-sweep:'+pirateDay,num:1}],uids:[{type:'pirate',id:'17'}]}}:{}), expiresAt: Date.now() + 60000 };
+  return { accountId: 'A', module: spec.module, batchId: 'batch-' + spec.module, planHash: 'hash-' + spec.module, mode: 'Manual', actions: [candidate(spec)], resourceBudget: spec.costs, ...(spec.module==='trial-challenge'?{budgetClaims:{resources:[],quotas:[{id:'trial-challenge:first-clear:1:1001',num:1}],uids:[{type:'trial-challenge',id:'1:1001'}]}}:{}), ...(spec.module==='free-recruit'?{budgetClaims:{resources:[],quotas:[{id:'free-recruit:cooldown:0',num:1}],uids:[{type:'free-recruit',id:'0'}]}}:{}), ...(spec.module==='free-gold'?{budgetClaims:{resources:[],quotas:[{id:'free-gold:reset:2000',num:1}],uids:[{type:'free-gold',id:'2000:1'}]}}:{}), ...(spec.module==='pirate-sweep'?{budgetClaims:{resources:[],quotas:[{id:'pirate-sweep:'+pirateDay,num:1}],uids:[{type:'pirate',id:'17'}]}}:{}), expiresAt: Date.now() + 60000 };
 }
 function descendants(element) { return element.children.flatMap((child) => [child, ...descendants(child)]); }
 function domainButtons(h, spec) { return descendants(h.node('gp-' + spec.module + '-facts')).filter((child) => child.dataset.domainAction); }
@@ -141,6 +143,7 @@ for (const spec of cases) {
     h.setConfirm(true); const running = h.node('gp-' + spec.module + '-authorize').onclick(), expected = plan(spec);
     assertMutation(h.pending('/api/operations/authorize'), '/api/operations/authorize', { batchId: expected.batchId, planHash: expected.planHash, approvedActionIds: [spec.actionId], resourceBudget: spec.costs, confirm: true });
     assert.ok(h.confirmations.at(-1).includes('账号 A')); assert.ok(h.confirmations.at(-1).includes(expected.batchId)); assert.ok(h.confirmations.at(-1).includes(expected.planHash)); assert.ok(h.confirmations.at(-1).includes(spec.costs[0]?.id??'无资源消耗'));
+    if(spec.module==='trial-challenge'){assert.match(h.confirmations.at(-1),/trial-challenge:first-clear:1:1001/);assert.match(h.confirmations.at(-1),/"stageId": 1001/);}
     if(spec.module==='free-recruit'){assert.match(h.confirmations.at(-1),/free-recruit:cooldown:0/);assert.match(h.confirmations.at(-1),/"way": 1/);}
     if(spec.module==='free-gold'){assert.match(h.confirmations.at(-1),/free-gold:reset:2000/);assert.match(h.confirmations.at(-1),/"usedBefore": 0/);}
     if(spec.module==='pirate-sweep')assert.match(h.confirmations.at(-1),/额度占用：海面扫荡 2026-11-12 ×1/);
@@ -456,4 +459,20 @@ test('AFK reward page shows exact sparse target and requires a fresh explicit su
  assert.match(h.node('gp-afk-level-rewards-facts').textContent,/挂机等级与奖励.*5.*0.*2.*抽卡券 × 2/);
  const input=h.node('gp-afk-level-rewards-parameters');input.value=JSON.stringify({level:5});input.oninput();assert.equal(h.node('gp-afk-level-rewards-plan').disabled,true);assert.equal(h.node('gp-afk-level-rewards-authorize').disabled,true);
  const before=h.requests.length,task=h.node('gp-afk-level-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'afk-level-rewards',parameters:{level:5}});h.run("selectAccount('B');");h.respond('/api/gameplay/survey',data({...spec,facts:{afk:{level:999,rewardedLevel:0}}}));await task;assert.doesNotMatch(h.node('gp-afk-level-rewards-facts').textContent,/999/);assert.equal(h.requests.length,before+1);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('cached daily recruit/trial navigation reuses controlled sections without reads or writes and rejects stale account callbacks',async()=>{
+ const h=await boot(),before=h.requests.length;
+ const checklist=dailyChecklist({ok:{DailyTaskInfoRequest:{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]}},failed:{}},{config:{tables:{}}});
+ h.run('renderDailies('+JSON.stringify({checklist,tasks:[]})+')');
+ h.run('document.querySelector=selector=>({click:()=>{globalThis.openedTab=selector;}})');
+ const links=[];
+ for(const [id,title] of[['free-recruit','免费英雄招募'],['trial-challenge','英雄经验试炼首通']]){
+  const link=descendants(h.node('dailies-table')).find(node=>node.textContent==='打开'+title);assert.ok(link);
+  let scrolled=0;h.node('gp-'+id+'-section').scrollIntoView=()=>scrolled++;
+  link.click();assert.equal(h.run('globalThis.openedTab'),'#tabs button[data-tab="idle"]');assert.equal(scrolled,1);links.push({link,scrolled:()=>scrolled});
+ }
+ assert.equal(h.requests.length,before);h.run("selectAccount('B');globalThis.openedTab=null");
+ for(const row of links){row.link.click();assert.equal(row.scrolled(),1);}
+ assert.equal(h.run('globalThis.openedTab'),null);assert.equal(writes(h,'/api/operations/execute').length,0);
 });

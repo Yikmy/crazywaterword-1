@@ -347,6 +347,7 @@ export const PAGE = `<!doctype html>
     ${CORE_GAMEPLAY_HTML['afk-level-rewards']}
     ${CORE_GAMEPLAY_HTML['free-gold']}
     ${CORE_GAMEPLAY_HTML['free-recruit']}
+    ${CORE_GAMEPLAY_HTML['trial-challenge']}
 
     <h2>海面</h2>
     <div class="bar">
@@ -1781,6 +1782,11 @@ function renderDailyChecklist(data) {
     const scope=viewGuard.capture(),link=el('button','','打开海面扫荡');link.type='button';
     link.onclick=()=>{if(viewGuard.current(scope))document.querySelector?.('#tabs button[data-tab="pirate-sweep"]')?.click();};box.appendChild(link);
   }
+  for(const [id,title] of [['free-recruit','免费英雄招募'],['trial-challenge','英雄经验试炼首通']]){
+    if(!view.tasks.rows.some(row=>row.functionId===id))continue;
+    const scope=viewGuard.capture(),link=el('button','','打开'+title);link.type='button';
+    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-'+id+'-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
+  }
   for(const kind of ['daily','weekly']){
     const activity=view.activity[kind],label=kind==='daily'?'每日宝箱':'每周宝箱';
     box.appendChild(el('h3','',label+' · 活跃 '+known(activity.activity)));
@@ -1794,7 +1800,7 @@ function renderDailyChecklist(data) {
   if(view.achievements){
     box.appendChild(el('h3','','成就 · 缓存已领观察与进度'));
     box.appendChild(table(['成就 ID','精确进度','已领 / 门槛状态','当前限制'],view.achievements.rows.map(row=>[
-      row.id,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知','奖励映射与领取结算待核实'
+      row.id,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知','已接入任务奖励；选择成就并重新探测、预览与授权'
     ])));
     if(!view.achievements.rows.length)box.appendChild(el('p','dim',view.achievements.counts.total===0?'本次缓存的成就列表为空':'成就列表未知'));
   }
