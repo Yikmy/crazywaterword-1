@@ -101,7 +101,7 @@ test('true dependencies separate unrelated order rules and production policy', (
   assert.equal(FUNCTION_CONTRACTS.stage.dependencyVersions.required.includes('config.StageCfg'), false); // Existing Runner consumes no StageCfg.
 });
 test('input fields match sixteen existing domain parameter interfaces without transport controls', () => {
-  const expected = { 'badge-growth':['heroId','uid'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
+  const expected = { 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal'],
@@ -185,7 +185,7 @@ test('exclusive STAR extends the same contract without level-only configuration 
 });
 
 test('badge growth C228 contract declares typed evidence plus reread and leaves other branches blocked',()=>{
- const c=FUNCTION_CONTRACTS['badge-growth'];assert.deepEqual(c.requirementIds.C,['C228']);assert.deepEqual(c.implementation.actions,['LEVEL']);
+ const c=FUNCTION_CONTRACTS['badge-growth'];assert.deepEqual(c.requirementIds.C,['C228']);assert.deepEqual(c.implementation.actions,['LEVEL','PUT-ON']);assert.deepEqual(c.inputSchema.properties.action.enum,['put-on']);
  assert.equal(c.verification.authoritativeRead,true);assert.equal(c.verification.typedResponseAlone,false);
  assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='SACRIFICE_OR_REPLACE'&&!row.executable));
 });

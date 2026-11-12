@@ -269,3 +269,14 @@ test('equipment empty-slot wear binds ModuleOpenCfg and excludes growth-only tab
  const priceChanged=clone(options);priceChanged.config.tables.EquipUpDecomposeCfg.revision++;assert.deepEqual(f.modules['equipment-growth'].dependencyVersions(priceChanged),versions);
  noExecution(f);
 });
+
+test('badge empty-slot wear binds the feature gate but does not bind upgrade prices',()=>{
+ const f=fixture(),options=clone(f.options('badge-growth'));options.parameters={heroId:'A',uid:'9007199254740993',action:'put-on',pos:1};
+ options.config.tables.ModuleOpenCfg={revision:1,data:[{moduleId:'英雄徽章',playerLevel:12}]};
+ const raw={...badgeGrowthModule};delete raw.dependencyVersions;const custom=f.modules['badge-growth'].dependencyVersions(options),declared=registerBusinessFunction(raw);
+ assert.deepEqual(declared.dependencyVersions(options),custom);assert.deepEqual(Object.keys(custom),['moduleConfig','config.HeroCfg','config.HeroBadgeCfg','config.HeroBadgeUnlockCfg','config.ModuleOpenCfg']);
+ const changed=clone(options);changed.config.tables.ModuleOpenCfg.revision++;assert.notDeepEqual(f.modules['badge-growth'].dependencyVersions(changed),custom);
+ const priceChanged=clone(options);priceChanged.config.tables.HeroBadgeLevelCfg.revision++;assert.deepEqual(f.modules['badge-growth'].dependencyVersions(priceChanged),custom);
+ const level={...options,parameters:{heroId:'A',uid:'9007199254740993'}};assert.deepEqual(declared.dependencyVersions(level),f.modules['badge-growth'].dependencyVersions(level));
+ noExecution(f);
+});

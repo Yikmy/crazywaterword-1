@@ -1,4 +1,4 @@
-// C228: add one level to an already worn badge using owned EXP items and GOLD.
+// C228: add one level to a worn badge, or put one owned idle badge in an empty slot.
 import { createHash } from 'node:crypto';
 import { assertPaymentAllowed } from './actions.mjs';
 import { stableBusinessValue } from './business-functions.mjs';
@@ -10,8 +10,13 @@ import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 
 const moduleId = 'badge-growth';
 const request = 'EnhanceBadgeRequest', response = 'EnhanceBadgeResponse';
+const putOnRequest = 'PutOnBadgeRequest';
+const isPutOn = params => params != null && Object.hasOwn(params, 'action') && params.action === 'put-on';
 const xpItem = '徽章经验', gold = 'GOLD';
 const tables = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeAttrCfg', 'HeroBadgeLevelCfg', 'HeroBadgeUnlockCfg'];
+const putOnTables = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeUnlockCfg', 'ModuleOpenCfg'];
+const tablesFor = params => isPutOn(params) ? putOnTables : tables;
+const putOnSource = 'v76 /subpackages/main/game.js: BadgeSelectItem._onBtnOn; BadgeSelectPop; BadgeModel.idleBadgesByType/fixupBadge; HeroDetailBadge; ModuleOpenUtil.isOpen';
 const maxAgeMs = 30000, scope = Object.freeze({ kind: 'ACCOUNT' });
 const source = 'v76 /subpackages/main/game.js: BadgeLvUpPop._onBtnUse; BadgeUtil.calBadgeEnhanceNextLevelExp/calBadgeEnhanceGold/getBadgeMaxLevel; AllItemsModel.WellKnownItems.BADGE_EXP_ITEM';
 export const BADGE_GROWTH_DEFAULT_CONFIG = Object.freeze({ enabled: false });
@@ -24,6 +29,21 @@ export const BADGE_GROWTH_EVIDENCE = Object.freeze({
   levelPop: Object.freeze({ byteOffset: 444143, requestByteOffset: 462596, sha256: '1549644e41b1f5f4eacc9b4ec885a69812fdd9c909f16c5da40a4e38bdc7fa78' }),
   badgeUtil: Object.freeze({ byteOffset: 491453, calculationsByteOffset: 492507, sha256: '32514180e48237a817e08a2b47b7dd192583e7899fa1cde0379a8005eb9f2b7e' }),
   badgeSlots: Object.freeze({ byteOffset: 3475775, sha256: '9ba10c29b278ea8606c4142f7de61f6f5da2f148e79e004a3733baf70ecf1e6a' }),
+  realGame: 'REAL_UNVERIFIED',
+});
+
+export const BADGE_PUT_ON_EVIDENCE = Object.freeze({
+  source: putOnSource, request: putOnRequest, response: null, scope: 'EXPLICIT_IDLE_OWNED_BADGE_TO_EMPTY_HERO_SLOT',
+  packageSha256: BADGE_GROWTH_EVIDENCE.packageSha256,
+  entrySha256: BADGE_GROWTH_EVIDENCE.entrySha256,
+  protocolSha256: BADGE_GROWTH_EVIDENCE.protocolSha256,
+  configSha256: BADGE_GROWTH_EVIDENCE.configSha256,
+  badgeSelectItem: Object.freeze({ byteOffset: 478991, requestByteOffset: 485010, sha256: 'df296fe90259b984c20f48425da075c3ff0fb855147b553f21f0a5c2dd09c45e' }),
+  badgeSelectPop: Object.freeze({ byteOffset: 487685, idleLookupByteOffset: 490332, sha256: '9e54d948de15bdb100844305232be7fedec3ce862f99cb34a169b97247a37c89' }),
+  badgeModel: Object.freeze({ byteOffset: 470372, idleByteOffset: 472717, fixupByteOffset: 473228, sha256: 'f6db4e5cfc90e5da13e0147aa982f4b1b38b0a5c24605b4b4d942702e78f0177' }),
+  badgeSlots: BADGE_GROWTH_EVIDENCE.badgeSlots,
+  heroDetail: Object.freeze({ byteOffset: 3448294, sha256: 'c69e39b5f6086fcd82a50b8f4293aaba7f1b7787fb818dd55c1ba5871cfe3c59' }),
+  moduleOpenUtil: Object.freeze({ byteOffset: 4674760, sha256: '98544b76338dde2e7da17c1d636507a056a9b078e1a3bc394b1cb1f89d46428b' }),
   realGame: 'REAL_UNVERIFIED',
 });
 
@@ -65,8 +85,14 @@ export function validateBadgeGrowthConfig(config = {}) {
 }
 
 export function validateBadgeGrowthParameters(parameters = {}) {
-  if (!plainFields(parameters, ['heroId', 'uid'])) throw invalid('纹章升级参数仅允许 heroId 和 uid');
+  if (!plainFields(parameters, ['heroId', 'uid', 'action', 'pos'])
+      || own(parameters, 'action') && !isPutOn(parameters)
+      || own(parameters, 'pos') && (!isPutOn(parameters) || !slot(parameters.pos))) {
+    throw invalid('纹章参数仅允许 heroId、uid；穿戴另需 action=put-on 和 1 至 4 的整数槽位 pos');
+  }
   const out = {};
+  if (isPutOn(parameters)) out.action = parameters.action;
+  if (own(parameters, 'pos')) out.pos = parameters.pos;
   if (own(parameters, 'heroId')) {
     if (!id(parameters.heroId)) throw invalid('heroId 必须为明确英雄 ID');
     out.heroId = parameters.heroId;
@@ -78,26 +104,40 @@ export function validateBadgeGrowthParameters(parameters = {}) {
   return out;
 }
 
-function readCatalog(config) {
-  const [heroes, badges, attrs, levels, unlocks] = tables.map(name => config?.tables?.[name]?.data);
-  if (![heroes, badges, attrs, levels, unlocks].every(rows => dense(rows) && rows.length > 0)) return null;
-  if (!heroes.every(r => !missing(r, ['id', 'type', 'career']) && id(r.id) && id(r.type) && id(r.career))
+function readCatalog(config, params) {
+  const table = name => config?.tables?.[name]?.data;
+  const [heroes, badges, unlocks] = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeUnlockCfg'].map(table);
+  if (![heroes, badges, unlocks].every(rows => dense(rows) && rows.length > 0)
+      || !heroes.every(r => !missing(r, ['id', 'type', 'career']) && id(r.id) && id(r.type) && id(r.career))
       || !unique(heroes, r => r.id)
       || !badges.every(r => !missing(r, ['id', 'career']) && id(r.id) && id(r.career))
       || !unique(badges, r => r.id)
+      || unlocks.length !== 4 || !unlocks.every(r => !missing(r, ['pos', 'level']) && slot(r.pos) && positive(r.level))
+      || !unique(unlocks, r => r.pos)) return null;
+  const common = {
+    heroes: heroes.map(({ id, type, career }) => ({ id, type, career })),
+    badges: badges.map(({ id, career }) => ({ id, career })),
+    unlocks: unlocks.map(({ pos, level }) => ({ pos, level })),
+  };
+  if (isPutOn(params)) {
+    const modules = table('ModuleOpenCfg');
+    if (!dense(modules)) return null;
+    const badgeModule = modules.filter(row => own(row, 'moduleId') && row.moduleId === '英雄徽章');
+    return badgeModule.length === 1 && own(badgeModule[0], 'playerLevel') && positive(badgeModule[0].playerLevel)
+      ? { ...common, playerLevel: badgeModule[0].playerLevel } : null;
+  }
+  const [attrs, levels] = ['HeroBadgeAttrCfg', 'HeroBadgeLevelCfg'].map(table);
+  if (![attrs, levels].every(rows => dense(rows) && rows.length > 0)
       || !attrs.every(r => !missing(r, ['id', 'star', 'maxLevel']) && badges.some(b => b.id === r.id) && uint(r.star) && positive(r.maxLevel))
       || !unique(attrs, r => JSON.stringify([r.id, r.star]))
       || !levels.every(r => !missing(r, ['level', 'exp', 'goldExpRadio']) && positive(r.level)
         && (r.level === 1 ? r.exp === 0 && r.goldExpRadio === 0 : positive(r.exp) && positive(r.goldExpRadio)))
-      || !unique(levels, r => r.level)
-      || unlocks.length !== 4 || !unlocks.every(r => !missing(r, ['pos', 'level']) && slot(r.pos) && positive(r.level))
-      || !unique(unlocks, r => r.pos)) return null;
+      || !unique(levels, r => r.level)) return null;
   return {
-    heroes: heroes.map(({ id, type, career }) => ({ id, type, career })),
-    badges: badges.map(({ id, career }) => ({ id, career })),
+    heroes: common.heroes, badges: common.badges,
     attrs: attrs.map(({ id, star, maxLevel }) => ({ id, star, maxLevel })),
     levels: levels.map(({ level, exp, goldExpRadio }) => ({ level, exp, goldExpRadio })),
-    unlocks: unlocks.map(({ pos, level }) => ({ pos, level })),
+    unlocks: common.unlocks,
   };
 }
 
@@ -139,7 +179,7 @@ export function parseBadgeOwnership(badges, heroes) {
   return { heroes: roster.sort((a, b) => a.heroId.localeCompare(b.heroId)), pool: pool.sort((a, b) => a.uid.localeCompare(b.uid)) };
 }
 
-function contextOf(client, player) {
+function contextOf(client, player, params) {
   const ids = ['id', 'playerId'].filter(key => own(player, key)).map(key => exactPositive(player[key]));
   const { accountId, generation, connectionId } = client.factContext ?? {};
   return {
@@ -148,6 +188,7 @@ function contextOf(client, player) {
     connectionId: id(connectionId) ? connectionId : null,
     playerId: ids.length && ids.every(value => value !== null && value === ids[0]) ? ids[0] : null,
     worldId: own(player, 'worldId') ? exactPositive(player.worldId) : null,
+    ...(isPutOn(params) ? { playerLevel: own(player, 'level') && positive(player.level) ? player.level : null } : {}),
   };
 }
 
@@ -167,7 +208,7 @@ const queries = Object.freeze([
 export async function surveyBadgeGrowth(client, protocol, { config, player, parameters = {}, signal, stop, timeout = 15000 } = {}) {
   parameters = validateBadgeGrowthParameters(parameters);
   const active = () => assertExecutionActive(client, { signal, stop });
-  const identityContext = contextOf(client, player), notes = [];
+  const identityContext = contextOf(client, player, parameters), notes = [];
   active();
   const observations = await Promise.all(queries.map(async ([key, query, type]) => {
     active();
@@ -183,7 +224,7 @@ export async function surveyBadgeGrowth(client, protocol, { config, player, para
     return { key, type, value: null, sourceAt: Date.now() };
   }));
   active();
-  if (!same(identityContext, contextOf(client, player))) throw Object.assign(new Error('纹章调查期间账号或连接已改变'), { code: 'CANCELLED' });
+  if (!same(identityContext, contextOf(client, player, parameters))) throw Object.assign(new Error('纹章调查期间账号或连接已改变'), { code: 'CANCELLED' });
   const raw = Object.fromEntries(observations.map(({ key, value }) => [key, value]));
   const inputs = toSnapshotJson(raw);
   const ownership = parseBadgeOwnership(raw.badges, raw.heroes) && parseBadgeOwnership(inputs.badges, inputs.heroes);
@@ -194,7 +235,7 @@ export async function surveyBadgeGrowth(client, protocol, { config, player, para
     reliable: index < 2 ? ownership !== null : inventory.stockReliable,
   })]));
   return {
-    module: moduleId, parameters, identityContext, catalog: readCatalog(config), ownership, ...inventory, inputs, sourceFacts,
+    module: moduleId, parameters, identityContext, catalog: readCatalog(config, parameters), ownership, ...inventory, inputs, sourceFacts,
     available: Object.keys(protocol ?? {}), notes, state: { identityContext, ownership },
   };
 }
@@ -209,24 +250,25 @@ function freshFacts(facts) {
   });
 }
 
-function authority(facts, config) {
+function authority(facts, config, params) {
   const ctx = facts?.identityContext, inputs = facts?.inputs;
   if (!id(ctx?.accountId) || !id(ctx.connectionId) || !Number.isSafeInteger(ctx.generation) || ctx.generation < 0
       || !ctx.playerId || exactPositive(ctx.playerId) !== ctx.playerId || !ctx.worldId || exactPositive(ctx.worldId) !== ctx.worldId
-      || !facts.catalog || !same(facts.catalog, readCatalog(config))) return false;
+      || isPutOn(params) && !positive(ctx.playerLevel)
+      || !facts.catalog || !same(facts.catalog, readCatalog(config, params))) return false;
   if (!freshFacts(facts) || !queries.every(([key]) => same(facts.sourceFacts[key].value, inputs?.[key]))) return false;
   const ownership = parseBadgeOwnership(inputs?.badges, inputs?.heroes), inventory = parseOperationInventory(inputs?.items, inputs?.resources);
   return ownership !== null && same(ownership, facts.ownership) && inventory.stockReliable && facts.stockReliable === true
     && facts.stock instanceof Map && same([...inventory.stock], [...facts.stock]) && freshFacts(facts);
 }
 
-function configEvidence(config) {
-  return Object.fromEntries(tables.map(name => [name, copy(config?.tables?.[name] ?? null)]));
+function configEvidence(config, params) {
+  return Object.fromEntries(tablesFor(params).map(name => [name, copy(config?.tables?.[name] ?? null)]));
 }
 
-export function badgeGrowthDependencyVersions({ config, moduleConfig = BADGE_GROWTH_DEFAULT_CONFIG } = {}) {
+export function badgeGrowthDependencyVersions({ config, moduleConfig = BADGE_GROWTH_DEFAULT_CONFIG, parameters } = {}) {
   return { moduleConfig: validateBadgeGrowthConfig(moduleConfig), ...Object.fromEntries(
-    Object.entries(configEvidence(config)).map(([name, value]) => ['config.' + name, value]),
+    Object.entries(configEvidence(config, parameters)).map(([name, value]) => ['config.' + name, value]),
   ) };
 }
 
@@ -279,24 +321,99 @@ function candidate(facts, params, { config, moduleConfig, authoritative, include
   };
 }
 
+function putOnState(facts, authoritative) {
+  if (!authoritative) return null;
+  return {
+    heroes: new Map(facts.ownership.heroes.map(hero => [hero.heroId, hero])),
+    pool: new Map(facts.ownership.pool.map(badge => [badge.uid, badge])),
+    heroTypes: new Map(facts.catalog.heroes.map(hero => [hero.id, hero])),
+    badgeCareers: new Map(facts.catalog.badges.map(badge => [badge.id, badge.career])),
+    slotLevels: new Map(facts.catalog.unlocks.map(({ pos, level }) => [pos, level])),
+    worn: new Set(facts.ownership.heroes.flatMap(hero => hero.badges.map(badge => badge.uid))),
+    moduleOpen: facts.identityContext.playerLevel >= facts.catalog.playerLevel,
+  };
+}
+
+function emptyBadgeSlots(hero, state) {
+  if (!state.moduleOpen || state.heroTypes.get(hero.heroId)?.type !== '英雄' || !derivedReliable(hero)) return [];
+  return [...state.slotLevels].filter(([pos, level]) => hero.level >= level && !hero.badges.some(badge => badge.pos === pos))
+    .map(([pos]) => pos).sort((a, b) => a - b);
+}
+
+function putOnCandidate(facts, params, { config, moduleConfig, state, includePlanEvidence = true }) {
+  const hero = state?.heroes.get(params.heroId), badge = state?.pool.get(params.uid);
+  const heroCfg = state?.heroTypes.get(params.heroId), badgeCareer = badge && state.badgeCareers.get(badge.badgeId);
+  const target = { heroId: params.heroId ?? null, uid: params.uid ?? null, pos: params.pos ?? null };
+  const action = { request: putOnRequest, response: null, body: { uid: params.uid, heroId: params.heroId, pos: params.pos } };
+  const costs = [];
+  let blockedReason = null;
+  if (!params.heroId || !params.uid || !params.pos) blockedReason = 'EXPLICIT_HERO_BADGE_UID_AND_SLOT_REQUIRED';
+  else if (!moduleConfig.enabled) blockedReason = 'BADGE_GROWTH_MODULE_DISABLED';
+  else if (!state) blockedReason = 'BADGE_AUTHORITY_OR_CONTEXT_UNKNOWN';
+  else if (!state.moduleOpen) blockedReason = 'BADGE_MODULE_LEVEL_LOCKED';
+  else if (!hero || !badge || state.worn.has(params.uid)) blockedReason = 'EXACT_IDLE_OWNED_BADGE_REQUIRED';
+  else if (!derivedReliable(hero)) blockedReason = 'TARGET_HERO_DERIVED_STATE_UNKNOWN';
+  else if (heroCfg?.type !== '英雄' || !badgeCareer || heroCfg.career !== badgeCareer
+      || !state.slotLevels.has(params.pos) || hero.level < state.slotLevels.get(params.pos)) blockedReason = 'BADGE_SLOT_OR_CAREER_NOT_ELIGIBLE';
+  else if (hero.badges.some(row => row.pos === params.pos)) blockedReason = 'BADGE_SLOT_NOT_EMPTY';
+  else if (!facts.available?.includes(putOnRequest) || facts.available.includes('PutOnBadgeResponse')) blockedReason = 'PROTOCOL_UNAVAILABLE';
+  else {
+    try { assertPaymentAllowed({ ...action, costs }); } catch (error) { blockedReason = error.code ?? 'COST_NOT_ALLOWED'; }
+  }
+  const executable = blockedReason === null;
+  return {
+    module: moduleId, actionId: moduleId + ':PUT-ON:' + hash(target), actionType: 'PUT-ON', parameters: params, target,
+    ...(includePlanEvidence ? {
+      identity: executable ? hash({ context: facts.identityContext, ownership: facts.ownership, dependencies: badgeGrowthDependencyVersions({ config, moduleConfig, parameters: params }) }) : null,
+      configEvidence: executable ? configEvidence(config, params) : null,
+    } : {}),
+    beforeState: hero && badge ? { ...(includePlanEvidence ? { hero: copy(hero) } : {}), badge: copy(badge) } : null,
+    expectedState: badge ? { ...target, badgeId: badge.badgeId, level: badge.level, star: badge.star, exp: badge.exp } : null,
+    costs, costSource: putOnSource, budgetClaims: { resources: [], quotas: [], uids: params.uid ? [{ type: 'badge', id: params.uid }] : [] },
+    executable, blockedReason, label: '纹章穿戴 ' + (params.heroId ?? '') + ' ' + (params.pos ?? '') + ' ' + (params.uid ?? ''), ...(executable ? { action } : {}),
+  };
+}
+
+function heroChoices(roster, state) {
+  return roster.map(hero => ({
+    heroId: hero.heroId, level: hero.level,
+    badges: hero.badges.map(({ uid, pos, badgeId, level }) => ({ uid, pos, badgeId, level })),
+    ...(state ? { emptySlots: emptyBadgeSlots(hero, state) } : {}),
+  }));
+}
+
 export function viewBadgeGrowth(facts, { config, moduleConfig, parameters = facts?.parameters ?? {} } = {}) {
   const params = validateBadgeGrowthParameters(parameters);
-  const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config), includePlanEvidence: false };
+  const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config, params), includePlanEvidence: false };
+  const roster = options.authoritative ? facts.ownership.heroes : [];
+  const notes = [...(facts?.notes ?? [])];
+  if (isPutOn(params)) {
+    const state = putOnState(facts, options.authoritative), hero = state?.heroes.get(params.heroId);
+    // An explicit hero and empty slot narrow the choices without pairing the entire roster and pool.
+    const choices = !params.uid && hero && emptyBadgeSlots(hero, state).includes(params.pos)
+      ? [...state.pool.values()].filter(badge => !state.worn.has(badge.uid)
+        && state.badgeCareers.get(badge.badgeId) === state.heroTypes.get(params.heroId).career).map(({ uid }) => ({ ...params, uid }))
+      : [];
+    const candidates = (choices.length ? choices : [params]).map(choice => putOnCandidate(facts, choice, { ...options, state }));
+    return { module: moduleId, mode: 'put-on', heroes: heroChoices(roster, state), candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: BADGE_PUT_ON_EVIDENCE };
+  }
   const choices = [];
-  for (const hero of options.authoritative ? facts.ownership.heroes : []) {
+  for (const hero of roster) {
     if (params.heroId && hero.heroId !== params.heroId) continue;
     for (const badge of hero.badges) {
       if (!params.uid || badge.uid === params.uid) choices.push({ heroId: hero.heroId, uid: badge.uid });
     }
   }
   const candidates = (choices.length ? choices : [params]).map(choice => candidate(facts, choice, options));
-  return { module: moduleId, candidates, blocked: candidates.filter(row => !row.executable), notes: [...(facts?.notes ?? [])], evidence: BADGE_GROWTH_EVIDENCE };
+  return { module: moduleId, mode: 'level', heroes: heroChoices(roster), candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: BADGE_GROWTH_EVIDENCE };
 }
 
 export function planBadgeGrowth(facts, { config, moduleConfig, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable ? facts.stock : null) } = {}) {
-  const selected = candidate(facts, validateBadgeGrowthParameters(parameters), {
-    config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config),
-  });
+  const params = validateBadgeGrowthParameters(parameters);
+  const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config, params) };
+  const selected = isPutOn(params)
+    ? putOnCandidate(facts, params, { ...options, state: putOnState(facts, options.authoritative) })
+    : candidate(facts, params, options);
   return selected.executable && (selections === undefined || selections.includes(selected.actionId)) && freshFacts(facts) && ledger.reserve(selected.costs)
     ? { module: moduleId, actions: [selected], notes: [] }
     : { module: moduleId, actions: [], notes: [selected.blockedReason ?? 'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_INSUFFICIENT'] };
@@ -315,17 +432,43 @@ function noMaterial(responseBody) {
   return fields(material, ['asset']) && own(material, 'asset') && dense(material.asset) && material.asset.length === 0;
 }
 
+function verifyPutOn(params, contract, before, after) {
+  const fail = reason => ({ confirmed: false, reason });
+  const { hero: beforeHero, badge } = contract.beforeState;
+  const afterHero = after.ownership.heroes.find(hero => hero.heroId === params.heroId);
+  if (!afterHero || !derivedReliable(afterHero)) return fail('TARGET_HERO_DERIVED_STATE_UNKNOWN');
+  const expectedSlots = [...beforeHero.badges, { ...without(badge, ['exp']), pos: params.pos }].sort((a, b) => a.pos - b.pos);
+  if (!same(expectedSlots, afterHero.badges)) return fail('BADGE_EXACT_EMPTY_SLOT_ADDITION_NOT_CONFIRMED');
+  if (!same(before.ownership.pool, after.ownership.pool)) return fail('BADGE_POOL_UNCHANGED_NOT_CONFIRMED');
+  if (!same(without(beforeHero, ['power', 'attributes', 'badges']), without(afterHero, ['power', 'attributes', 'badges']))
+      || !same(before.ownership.heroes.filter(hero => hero.heroId !== params.heroId), after.ownership.heroes.filter(hero => hero.heroId !== params.heroId))) {
+    return fail('BADGE_NON_TARGET_HERO_STATE_CHANGED');
+  }
+  if (before.stock.size !== after.stock.size || [...before.stock].some(([key, value]) => after.stock.get(key) !== value)) {
+    return fail('BADGE_ZERO_COST_INVENTORY_UNCHANGED_NOT_CONFIRMED');
+  }
+  if (!freshFacts(before) || !freshFacts(after)) return fail('BADGE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
+  return {
+    confirmed: true, reason: '完整 Badges 和 AllHero 复读确认闲置纹章穿戴至指定空槽，纹章池和库存不变',
+    afterState: { hero: copy(afterHero), badge: copy(badge) }, responseEvidence: null,
+  };
+}
+
 export function verifyBadgeGrowth(operation, before, after, responseBody) {
   const fail = reason => ({ confirmed: false, reason });
-  if (!noMaterial(responseBody)) return fail('BADGE_TYPED_RESPONSE_OR_MATERIAL_UNKNOWN');
   let params;
   try { params = validateBadgeGrowthParameters(operation?.parameters); } catch { return fail('BADGE_OPERATION_CONTRACT_INVALID'); }
-  const config = { tables: Object.fromEntries(tables.map(name => [name, operation?.configEvidence?.[name] ?? null])) };
-  if (!authority(before, config) || !authority(after, config) || !same(before.identityContext, after.identityContext)) return fail('BADGE_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  if (!isPutOn(params) && !noMaterial(responseBody)) return fail('BADGE_TYPED_RESPONSE_OR_MATERIAL_UNKNOWN');
+  const config = { tables: Object.fromEntries(tablesFor(params).map(name => [name, operation?.configEvidence?.[name] ?? null])) };
+  if (!authority(before, config, params) || !authority(after, config, params) || !same(before.identityContext, after.identityContext)) return fail('BADGE_AUTHORITY_OR_CONTEXT_UNKNOWN');
   if (queries.some(([key]) => after.sourceFacts[key].provenance.sourceAt < before.sourceFacts[key].provenance.sourceAt)) return fail('BADGE_POST_READ_PREDATES_DISPATCH_BASELINE');
-  const contract = candidate(before, params, { config, moduleConfig: { enabled: true }, authoritative: true });
+  const options = { config, moduleConfig: { enabled: true }, authoritative: true };
+  const contract = isPutOn(params)
+    ? putOnCandidate(before, params, { ...options, state: putOnState(before, true) })
+    : candidate(before, params, options);
   if (!contract.executable || ['module', 'actionId', 'actionType', 'target', 'identity', 'beforeState', 'expectedState', 'costSource', 'costs', 'budgetClaims', 'action', 'configEvidence']
     .some(key => !same(operation[key], contract[key]))) return fail('BADGE_OPERATION_CONTRACT_MISMATCH');
+  if (isPutOn(params)) return verifyPutOn(params, contract, before, after);
 
   const { hero: beforeHero, badge: beforeBadge } = contract.beforeState;
   const nextBadge = { ...beforeBadge, level: beforeBadge.level + 1 };
@@ -351,5 +494,5 @@ export const badgeGrowthModule = Object.freeze({
   validateConfig: validateBadgeGrowthConfig, validateParameters: validateBadgeGrowthParameters,
   survey: surveyBadgeGrowth, view: viewBadgeGrowth, plan: planBadgeGrowth, verify: verifyBadgeGrowth,
   dependencyVersions: badgeGrowthDependencyVersions,
-  dependencyKeys: Object.freeze(['moduleConfig', ...tables.map(name => 'config.' + name)]),
+  dependencyKeys: Object.freeze(['moduleConfig', ...new Set([...tables, ...putOnTables].map(name => 'config.' + name))]),
 });

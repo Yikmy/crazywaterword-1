@@ -146,7 +146,7 @@ test('survey reads each independent authority only and plan binds one slot, exac
   noActions({ parameters: { heroId: 'A', uid: idleUid } });
   noActions({ moduleConfig: BADGE_GROWTH_DEFAULT_CONFIG });
   noActions({ selections: ['other-action'] });
-  assert.deepEqual(Object.keys(badgeGrowthDependencyVersions(options(config))).sort(), [...badgeGrowthModule.dependencyKeys].sort());
+  assert.deepEqual(Object.keys(badgeGrowthDependencyVersions(options(config))).sort(), badgeGrowthModule.dependencyKeys.filter(key => key !== 'config.ModuleOpenCfg').sort());
   const view = viewBadgeGrowth(before, options(config));
   assert.equal(view.candidates.length, 1);
   assert.equal(view.candidates[0].executable, true);

@@ -16,13 +16,14 @@ const moduleId = 'badge-growth';
 const account = 'badge-account';
 const uid = '9007199254740993';
 const parameters = { heroId: 'A', uid };
+const wearParameters = { action: 'put-on', heroId: 'A', uid, pos: 1 };
 const badgeId = '蓝法师徽章';
 const xp = '徽章经验';
 const costs = { [xp]: 5, GOLD: 100 };
 const uidClaim = [{ type: 'badge', id: uid }];
 const costMap = rows => Object.fromEntries(rows.map(({ id, num }) => [id, num]));
 
-function fixture(t, { effect = 'apply', material = { asset: [] } } = {}) {
+function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-badge-service-'));
   const file = path.join(dir, 'execution-history.json');
   const newHistory = () => createExecutionHistory({ file });
@@ -38,6 +39,7 @@ function fixture(t, { effect = 'apply', material = { asset: [] } } = {}) {
       { level: 3, exp: 7, goldExpRadio: 25 },
       { level: 4, exp: 10, goldExpRadio: 30 },
     ] },
+    ModuleOpenCfg: { data: [{ moduleId: '英雄徽章', playerLevel: 12 }] },
     HeroBadgeUnlockCfg: { data: [1, 70, 90, 110].map((level, index) => ({ pos: index + 1, level })) },
   } };
   const services = [], sessions = [];
@@ -62,13 +64,28 @@ function fixture(t, { effect = 'apply', material = { asset: [] } } = {}) {
     const core = { uid, badgeId, level: 1, star: 0, attr: { attr: 1, value: 1.5, rating: 2 } };
     const worn = { ...structuredClone(core), pos: 1 };
     const badge = { ...structuredClone(core), exp: 0 };
-    const hero = { heroId: 'A', level: 20, star: 3, power: '9007199254741001', attributes: [{ attr: 1, value: 4 }], skillLevels: [1, 2], badges: [worn] };
+    const hero = { heroId: 'A', level: 20, star: 3, power: '9007199254741001', attributes: [{ attr: 1, value: 4 }], skillLevels: [1, 2], badges: putOn ? [] : [worn] };
     const stock = new Map([[xp, 25], ['GOLD', 500], ['其他', 1]]);
     const writes = [], reads = [], uncertainWrites = new Map();
     const client = {
       connected: true, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites,
       factContext: { accountId: account, generation, connectionId },
       markUnverifiedWrite(name, body) { uncertainWrites.set(JSON.stringify([name, body]), true); },
+      async sendWatch(name, body, options) {
+        options.beforeDispatch?.();
+        assert.equal(putOn, true);
+        assert.equal(name, 'PutOnBadgeRequest');
+        const decoded = toSnapshotJson(wire(name, body));
+        assert.deepEqual(decoded, { uid, heroId: 'A', pos: 1 });
+        const durable = JSON.parse(fs.readFileSync(file, 'utf8')).accounts[account][0];
+        writes.push({ body: decoded, durable });
+        if (effect === 'apply') {
+          hero.badges.push(worn);
+          hero.power = '9007199254741007';
+          hero.attributes[0].value++;
+        }
+        return { status: 'UNKNOWN' };
+      },
       async request(name, body, reply, _timeout, options = {}) {
         const decoded = toSnapshotJson(wire(name, body));
         if (options.mutate) {
@@ -111,12 +128,13 @@ function fixture(t, { effect = 'apply', material = { asset: [] } } = {}) {
     return session;
   }
   async function displayed(service, session) {
-    const survey = await service.surveyModule(session, moduleId, parameters);
+    const selectedParameters = putOn ? wearParameters : parameters;
+    const survey = await service.surveyModule(session, moduleId, selectedParameters);
     const candidate = survey.view.candidates.find(row => row.executable);
     assert.ok(candidate, JSON.stringify(survey.view.blocked));
     assert.equal(candidate.action, undefined);
     assert.equal(candidate.configEvidence, undefined);
-    return service.plan(session, { module: moduleId, mode: 'Manual', parameters, selections: [candidate.actionId] });
+    return service.plan(session, { module: moduleId, mode: 'Manual', parameters: selectedParameters, selections: [candidate.actionId] });
   }
   const permitPayload = plan => ({
     batchId: plan.batchId, planHash: plan.planHash, approvedActionIds: plan.actions.map(row => row.actionId), resourceBudget: plan.resourceBudget, confirm: true,
@@ -190,5 +208,53 @@ for (const [label, options] of [
     await assert.rejects(f.displayed(restarted, fresh), { code: 'RECOVERY_UNCERTAIN' });
     assert.equal(fresh.writes.length, 0);
     assert.equal(f.newHistory().unresolved(account), true);
+  });
+}
+
+for (const effect of ['apply', 'none']) {
+  test('badge empty-slot watch requires fresh authoritative effect (' + effect + ')', async t => {
+    const f = fixture(t, { effect, putOn: true }), service = f.newService(f.history), session = f.newSession();
+    const plan = await f.displayed(service, session);
+    assert.deepEqual(plan.resourceBudget, []);
+    assert.deepEqual(plan.budgetClaims.uids, uidClaim);
+    assert.equal(plan.actions[0].action, undefined);
+    assert.deepEqual(plan.actions[0].target, { heroId: 'A', uid, pos: 1 });
+    assert.throws(() => service.execute(session, { batchId: plan.batchId }), { code: 'AUTHORIZATION_REQUIRED' });
+    assert.equal(session.writes.length, 0);
+
+    const permit = service.authorize(session, f.permitPayload(plan));
+    service.execute(session, permit);
+    await service.settle(session.id);
+    assert.equal(session.writes.length, 1);
+    const [{ body, durable }] = session.writes;
+    assert.deepEqual(body, { uid, heroId: 'A', pos: 1 });
+    assert.equal(durable.actions[0].dispatchEvidence.state, 'MAY_HAVE_DISPATCHED');
+    assert.equal(durable.actions[0].stages.at(-1).stage, 'DISPATCH_INTENT');
+    assert.deepEqual(durable.runBudget.reserved.resources, []);
+    assert.deepEqual(durable.runBudget.reserved.uids, uidClaim);
+    assert.deepEqual(session.reads.filter(row => row.afterDispatch).map(row => row.name).sort(), ['AllHeroRequest', 'AllItemRequest', 'AllResourceRequest', 'BadgesRequest']);
+
+    const reopened = f.newHistory(), [run] = reopened.list(account), [action] = run.actions;
+    assert.equal(action.requestStatus, 'UNKNOWN');
+    assert.ok(action.stages.some(row => row.stage === 'OBSERVATION_ENDED'));
+    assert.equal(session.stock.get(xp), 25);
+    assert.equal(session.stock.get('GOLD'), 500);
+    assert.throws(() => service.execute(session, permit));
+    if (effect === 'apply') {
+      assert.equal(run.finalStatus, 'SUCCESS');
+      assert.equal(action.verification.status, 'CONFIRMED');
+      assert.equal(action.afterState.hero.badges[0].uid, uid);
+      assert.equal(action.afterState.hero.badges[0].pos, 1);
+      assert.equal(action.afterState.badge.level, 1);
+      assert.equal(reopened.unresolved(account), false);
+    } else {
+      assert.equal(run.finalStatus, 'UNKNOWN');
+      assert.equal(action.verification.status, 'UNCONFIRMED');
+      assert.deepEqual(run.runBudget.reserved.uids, uidClaim);
+      assert.equal(reopened.unresolved(account), true);
+      const restarted = f.newService(reopened), fresh = f.newSession(2);
+      await assert.rejects(f.displayed(restarted, fresh), { code: 'RECOVERY_UNCERTAIN' });
+      assert.equal(fresh.writes.length, 0);
+    }
   });
 }

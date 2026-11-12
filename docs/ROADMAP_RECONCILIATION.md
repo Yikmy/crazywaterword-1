@@ -2434,3 +2434,17 @@ E09 增加当前受控徽章等级、槽位镜像、精确双扣、零派发与�
 输出需求、持有、实际缺口、配置保留量、含保留量缺口。物理状态与配置保留政策分开；即使材料足够，原计划仍可能因库存线或累计预算被拒。只提取原 planner 的倍率和费用计算供只读视图复用，保持原出发条件、保留规则、授权和派发不变。
 
 `node --test tests/museum-shortage.test.mjs tests/museum.test.mjs tests/farm-forge-full-page.test.mjs tests/gameplay-view.test.mjs tests/gameplay-api.test.mjs tests/function-registry.test.mjs`：**235/235 PASS，0 fail/cancelled/skipped/todo，7.57 秒**。首跑完整页面测试把模拟 DOM 的标签假定为大写；按标签大小写无关选择后通过，数字、未知和禁用状态仍逐项核对。覆盖固定配置、合成只读响应、原出发报价/保留量一致性和完整页面；未运行 R7 或真实游戏。E14 增加倍率、可信/不可信库存、保留量和已开始远征的只读验收。后续可继续核证同类独立装备/徽章分支及 W11 结算证据；保留 C227/C230 替换和 W10 重置的缺证闸门。
+
+### D.20 BIZ-R09 自有闲置徽章穿入已解锁空槽（2026-11-12）
+
+父提交 `8f1297af9725f741258044a0bad7edd3154113a7`。沿用 W07 的 badge-growth Adapter，增加显式 `action:'put-on'` 与精确 `heroId/uid/pos`；默认 LEVEL 的配置依赖、报价与计划身份不变。Function/UI EXISTING、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED；BIZ-R09 本分支已接入共享执行器、预算、磁盘历史、原 API/Workflow 与英雄页。C227 替换、C228 其他升级分支和 W07 全包仍未完成。
+
+固定 v76 `BadgeSelectItem._onBtnOn`（byte 485010）发 `PutOnBadgeRequest {uid,heroId,pos}`，没有专用 Response；包、模块哈希和偏移见 `BADGE_PUT_ON_EVIDENCE`。要求玩家达到唯一 ModuleOpenCfg 的“英雄徽章”门槛（固定配置 12），目标英雄职业匹配，HeroBadgeUnlockCfg 对应位置已解锁（1/2/3/4 槽分别英雄等级 1/70/90/110），且槽位为空。完整 Badges 池与 AllHero 镜像一致，目标必须是自有闲置 UID，64 位 UID 不经浮点数。D6 只接纳准确字段和真实空成本数组，资源无消耗仍需单次授权和持久 badge UID 预留。
+
+复读确认完整池和库存不变，同 UID 原属性进入指定槽位，其他英雄和槽位不变；仅目标英雄合法派生战力/属性可变。事实必须新鲜、属于当前账号/角色/世界/连接，写后来源时间不得早于基线。静默观察窗口自身不算效果；无效果或异常状态保持 UNKNOWN 和 UID 预留，重启不得重放。页面显式选择模式、英雄空槽后重新探测，可见精确闲置候选和无资源消耗，任何模式或槽位变化均撤销旧选择及授权。
+
+离线验证命令：`node --test tests/actions-safety.test.mjs tests/badge-growth.test.mjs tests/badge-growth-service.test.mjs tests/badge-put-on.test.mjs tests/function-contracts.test.mjs tests/function-registry.test.mjs tests/farm-forge-full-page.test.mjs tests/farm-forge-api.test.mjs tests/gameplay-api.test.mjs tests/gameplay-view.test.mjs tests/equipment-growth.test.mjs tests/equipment-put-on.test.mjs tests/execution-history.test.mjs tests/resource-ledger.test.mjs tests/operation-service.test.mjs tests/business-functions.test.mjs tests/workflow.test.mjs`。
+
+**421/421 PASS，0 fail/cancelled/skipped/todo，7.35 秒**。独立代码复核未发现待修问题；29 项领域/服务复核与本次重叠。包括真实本地 Codec、共享执行器与磁盘派发前历史、空成本 UID 预算、无效果 UNKNOWN/重启、完整页面/账号隔离和原装备/LEVEL 分支。首轮页面测试选到新增 PUT-ON 样例而误查已佩戴表，已按模块和动作种类选择原 LEVEL 夹具，未改业务规则。不是 R7，未连接真实游戏。
+
+W11/C144 静态复核仍缺可恢复的“待领/已领”权威身份：Complete 在计时结束后打开临时结果页，Reward 由该页发送；可选 exploreStage 不足以区分重启前后领取状态。保持缺证，不以收益或空响应替代。并行推进 PRO-007 只读古董属性总览与 W12 扫荡只读事实；完整结算、培养及扫荡执行范围不因这些只读增量缩小。E09/E20/E21/E23 增加徽章精确空槽与未决恢复验收。R8 仍在 R7 后由 Owner 单独授权。
