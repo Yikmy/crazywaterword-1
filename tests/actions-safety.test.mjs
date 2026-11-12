@@ -170,3 +170,18 @@ import {runHeroPlan,buildHeroAction} from '../src/heroes.mjs';
 test('new exclusive request builder cannot extend the legacy CLI hero transport loop',async()=>{
  let writes=0,reads=0;const client={connected:true,async request(name){reads++;if(name==='AllItemRequest')return {items:[{itemId:'初级专武材料',num:100}]};if(name==='AllResourceRequest')return {list:[]};throw Error('unexpected request');},async sendWatch(){writes++;return {status:'UNKNOWN'};}};const step={kind:'exclusive-level',heroId:'A',from:1,to:2,costs:[{id:'初级专武材料',num:20}]};assert.deepEqual(buildHeroAction(step),{request:'HeroExclusiveLevelUpRequest',response:null,body:{heroId:'A'}});const result=await runHeroPlan(client,protocol,{steps:[step]},{allowMutate:true});assert.equal(writes,0,'exclusive writes require the registered domain contract');assert.equal(reads,0);assert.equal(result[0].status,'NOT_EXECUTED');
 });
+
+test('exclusive STAR D6 requires matching owned hero fragments, one quality stone, and explicit false',()=>{
+ const action=(stone='橙专武升星石')=>({request:'HeroExclusiveStarUpRequest',body:{heroId:'A',universal:false},costs:[{id:'A碎片',num:60},{id:stone,num:5}]});
+ assert.doesNotThrow(()=>assertPaymentAllowed(action()));const red=action('红专武升星石');red.costs.reverse();assert.doesNotThrow(()=>assertPaymentAllowed(red));
+ for(const mutate of [a=>delete a.body.universal,a=>a.body.universal=true,a=>a.body.universal=0,a=>a.body.star=1,a=>a.body.heroId='B',a=>a.body.buyMissing=false,a=>a.costs.pop(),a=>a.costs[0].id='英雄万能碎片',a=>a.costs[1].id='初级专武材料',a=>a.costs[0].num=0,a=>a.costs[1].num=1.5,a=>a.costs.push({id:'GOLD',num:1})]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs[1].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ const activation={...action(),request:'HeroExclusiveUnlockRequest'};assert.throws(()=>assertPaymentAllowed(activation),{code:'COST_UNKNOWN'});
+});
+
+test('exclusive STAR builder preserves required false and cannot use the legacy hero loop',async()=>{
+ let reads=0,writes=0;const client={connected:true,async request(){reads++;throw Error('unexpected read');},async sendWatch(){writes++;throw Error('unexpected write');}};
+ const step={kind:'exclusive-star',heroId:'A',universal:true,from:0,to:1,costs:[{id:'A碎片',num:60},{id:'橙专武升星石',num:5}]};
+ assert.deepEqual(buildHeroAction(step),{request:'HeroExclusiveStarUpRequest',response:null,body:{heroId:'A',universal:false}});
+ assert.equal((await runHeroPlan(client,protocol,{steps:[step]},{allowMutate:true}))[0].status,'NOT_EXECUTED');assert.equal(reads,0);assert.equal(writes,0);
+});

@@ -2392,3 +2392,13 @@ node --test tests/hero-exclusive-service.test.mjs tests/hero-service.test.mjs te
 | 候选逐行携带配置，88 英雄离线样本的视图约 96 MB；写后来源早于写前时仍可能确认 | 公共预览移除内部配置和 identity，复用同一权威性检查；视图样本降至约 164 KB。新增 HTTP 断言与三来源时序反例。回归的大小断言只衡量候选视图，完整响应另断言不含私有夹具配置。 |
 
 E09 纳入 ORANGE/RED 单次专武等级、缺材料/星级/达上限零派发、精确扣除及完整复读；E20/E21/E23 核对累计预算、取消、UNKNOWN 和隔离。原需求和 E01–E24 不增删。C226 在现有证据基础上继续独立实施，C225 仍须最终真实验收；R7 未执行，R8 须单独批准。未连接真实游戏或推送。
+
+### D.16 C226 已激活专武单次升星（2026-11-12）
+
+父提交 `1b6dd6c2200860312d61b45d6e2ec0e17e897e73`。W07 / C226、P3-6/P3-7、BIZ-H05/BIZ-R09 复用现有 heroes Adapter、OperationService、ResourceLedger、ExecutionHistory、英雄页与 Workflow ACTION：EXISTING_FUNCTION、EXISTING_UI、STATIC_VERIFIED、OFFLINE_VERIFIED、REAL_UNVERIFIED。C225、基础英雄成长与旧 CLI 合同保持；激活、万能碎片和兑换仍不开放。
+
+固定 v76 `ExclusiveStarPanel.ts:1111` SHA256 `8295bef34f6f46a85c882339e563baac99c54079e3c0a7e33134e49505638b68` 证明下一专武星级的英雄星数门槛、碎片数量、ORANGE/RED 石头分支；`HeroUtil.ts:1673` 定义同英雄碎片 ID。证据及各表哈希见 `HERO_EXCLUSIVE_STAR_EVIDENCE`。首档门槛为英雄 25 星，自有碎片 60、对应品质石 5；不要求专武先升到当前等级上限，只拒绝观察等级已超出该上限的异常状态。确认只绑定实际涉及的五张表，不绑定等级价格表。
+
+显式 `action:'exclusive-star'` 和英雄 ID 才能规划；D6 仅接受 `HeroExclusiveStarUpRequest {heroId,universal:false}` 及两种精确自有材料。无专用响应，`nextHero` 预览不作为确认。独立复读必须证明星级恰好 +1、等级不变、两种材料净扣精确且其他状态不变（目标英雄可有合法派生变化）。写前权威时效、账号与连接隔离、两项持久预算和 `hero-exclusive` UID 均复用 C225。同一父运行下，一次升星已占用 UID 后，即使下一等级成本可支付，也不能再派发该英雄的升级。无效果/歧义保留 UNKNOWN，不重放。
+
+离线验证：D.15 的 23 文件命令追加 `tests/hero-exclusive-star.test.mjs`；共 **737/737 PASS，0 fail/cancelled/skipped/todo，24.00 秒**。包含 ORANGE/RED 真实本地 Codec、固定配置、合成账号、HTTP 授权拒绝缺任一费用、临时 History 重启、跨动作父预算及完整页面。首跑发现 Service 合成石头缺 quality、合同测试误用不含领域校验的桩；补足夹具和真实 Adapter 后通过，保留生产规则。R7 全量及真实游戏未执行。E09 增补 C226 两品质正例及门槛/缺材料/上限零派发；E20/E21/E23 加跨动作预算、无效果和重启隔离。W07 仍 PARTIAL，下一独立分支 C228 核对已佩戴徽章、经验边界和金币，不将 C227/C230 替换标完成。

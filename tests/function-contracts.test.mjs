@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract, validateFunctionParameters } from '../src/function-contracts.mjs';
 import { formationModule, validateFormationParameters } from '../src/formation.mjs';
 import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
+import { heroModule } from '../src/hero-operations.mjs';
 const ids = ['equipment-growth','formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
 function adapter(id, validateParameters = value => value) {
   return { id, survey() {}, view() {}, plan() {}, verify() {}, execute() {}, validateParameters, dependencyVersions() { return { moduleConfig: {} }; } };
@@ -173,5 +174,12 @@ test('sparse, extended, subclassed and oversized JSON arrays fail closed', () =>
 });
 
 test('exclusive LEVEL extends existing hero contract without activation or guessed typed response',()=>{
- const c=FUNCTION_CONTRACTS.heroes;assert.deepEqual(c.requirementIds.C,['C221','C222','C223','C224','C225']);assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-level'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-LEVEL'));assert.equal(c.verification.typedResponseAlone,false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='EXCLUSIVE_ACTIVATE_STAR'&&!r.executable));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-level').keys,['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
+ const c=FUNCTION_CONTRACTS.heroes;assert.deepEqual(c.requirementIds.C,['C221','C222','C223','C224','C225','C226']);assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-level'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-LEVEL'));assert.equal(c.verification.typedResponseAlone,false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='EXCLUSIVE_ACTIVATION'&&!r.executable));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-level').keys,['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
+});
+
+test('exclusive STAR extends the same contract without level-only configuration or universal input',()=>{
+ const c=FUNCTION_CONTRACTS.heroes;assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-star'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-STAR'));assert.equal(c.verification.typedResponseAlone,false);
+ assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-star').keys,['config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
+ assert.deepEqual(validateFunctionParameters('heroes',heroModule,{action:'exclusive-star',heroId:'A'}),{action:'exclusive-star',heroId:'A'});
+ for(const extra of [{allowUniversal:false},{universal:false},{star:1},{action:'exclusive-activate'}])invalid(()=>validateFunctionParameters('heroes',heroModule,{action:'exclusive-star',heroId:'A',...extra}));
 });

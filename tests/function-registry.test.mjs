@@ -246,3 +246,14 @@ test('equipment declared fallback matches custom dependencies for omitted LEVEL 
 test('explicit exclusive LEVEL dependency contract matches adapter and declared fallback without changing basic growth tables',()=>{
  const f=fixture(),base=f.options('heroes'),options=clone(base);options.parameters={heroId:'h',action:'exclusive-level'};for(const name of ['ExclusiveUpgradeCfg','ExclusiveStarCfg','ExclusiveShowCfg','ExclusiveWeaponCfg','ItemCfg'])options.config.tables[name]={revision:1,data:[{fixture:true}]};const raw={...heroModule};delete raw.dependencyVersions;const fallback=registerBusinessFunction(raw),actual=f.modules.heroes.dependencyVersions(options);assert.deepEqual(fallback.dependencyVersions(options),actual);for(const name of ['HeroCfg','ExclusiveUpgradeCfg','ExclusiveStarCfg','ExclusiveShowCfg','ExclusiveWeaponCfg','ItemCfg']){const changed=clone(options);changed.config.tables[name].revision=42;assert.notDeepEqual(f.modules.heroes.dependencyVersions(changed),actual);}for(const name of ['HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg']){const changed=clone(options);changed.config.tables[name].revision=42;assert.deepEqual(f.modules.heroes.dependencyVersions(changed),actual);}const basic={...options,parameters:{action:'level'}},before=f.modules.heroes.dependencyVersions(basic),changed=clone(basic);changed.config.tables.ExclusiveUpgradeCfg.revision=99;assert.deepEqual(f.modules.heroes.dependencyVersions(changed),before);noExecution(f);
 });
+
+test('exclusive STAR declared and custom dependency versions omit level-only configuration',()=>{
+ const f=fixture(),options=clone(f.options('heroes'));options.parameters={heroId:'h',action:'exclusive-star'};
+ const bound=['HeroCfg','ExclusiveStarCfg','ExclusiveShowCfg','ExclusiveWeaponCfg','ItemCfg'],unrelated=['ExclusiveUpgradeCfg','HeroUpgradeCfg','HeroStarCfg','HeroSkillUpCfg'];
+ for(const name of [...bound,...unrelated])options.config.tables[name]={revision:1,data:[{fixture:true}]};
+ const raw={...heroModule};delete raw.dependencyVersions;const expected=f.modules.heroes.dependencyVersions(options);
+ assert.deepEqual(registerBusinessFunction(raw).dependencyVersions(options),expected);
+ for(const name of bound){const changed=clone(options);changed.config.tables[name].revision++;assert.notDeepEqual(f.modules.heroes.dependencyVersions(changed),expected);}
+ for(const name of unrelated){const changed=clone(options);changed.config.tables[name].revision++;assert.deepEqual(f.modules.heroes.dependencyVersions(changed),expected);}
+ noExecution(f);
+});
