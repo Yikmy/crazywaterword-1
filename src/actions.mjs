@@ -60,6 +60,7 @@ export const ACTIONS = {
     request: 'DrawAfkLevelRewardRequest',
     response: 'DrawAfkLevelRewardResponse',
     mutate: true,
+    costs: [],
     desc: '领取指定挂机等级的奖励',
     params: ['level'],
     body: ({ level }) => ({ level: Number(level) }),
@@ -313,6 +314,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if((activateAntique||starAntique)&&(!fields(body,starAntique?['id','universal']:['id'])||!identifier(body.id)||starAntique&&body.universal!==false||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.id+'碎片'))fail('COST_UNKNOWN','藏品成长仅允许明确藏品及其自有专用碎片，禁止万能碎片或购买补齐');
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
   const sweepPirate=request==='PirateSweepRequest';
+  if(request==='DrawAfkLevelRewardRequest'&&(!fields(body,['level'])||!positiveInt32(body.level)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','挂机等级奖励仅允许精确 level 与明确零支出');
   if(['DrawMainTaskRewardRequest','GotBranchTaskRewardRequest'].includes(request)&&(!fields(body,['taskId'])||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','任务奖励只允许精确 taskId 与明确零支出');
   if(sweepPirate&&(!fields(body,['uid','cityId'])||!positiveInt32(body.uid)||!positiveInt32(body.cityId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','海面扫荡仅允许明确UID和城市且不消耗普通资源');
   const suitAntique=request==='AntiqueSuitLevelUpRequest',masterAntique=request==='AntiqueMasterLevelUpRequest',exchangeAntique=request==='AntiqueFragExchangeRequest';

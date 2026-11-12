@@ -128,14 +128,14 @@ test('all 28 parsed query links preserve distinct synthetic business values', ()
 import { BUSINESS_QUERY_CATALOG, ADDITIONAL_READ_QUERIES, validateBusinessQueryParameters } from '../src/data-catalog.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 
-test('business metadata registers 13 additional read queries and reuses 21 existing entries without changing the 48 collector', () => {
+test('business metadata registers 13 additional read queries and reuses 22 existing entries without changing the 48 collector', () => {
  const extras=['AntiqueAttrSummaryRequest','GuildInfoRequest','GuildMemberRequest','GuildAidListRequest','MyGuildAidRequest','GuildCityInfoRequest','MuseumInfoRequest','WorldInfoRequest','FleetRepairParamRequest','TreasureLootStatsRequest','TreasureLootListRequest','TreasureLootRankRequest','TreasureLootDefenceRequest'];
- assert.equal(BUSINESS_QUERY_CATALOG.length,34);assert.equal(ADDITIONAL_READ_QUERIES.length,13);assert.equal(new Set(BUSINESS_QUERY_CATALOG.map(row=>row.request)).size,34);
+ assert.equal(BUSINESS_QUERY_CATALOG.length,35);assert.equal(ADDITIONAL_READ_QUERIES.length,13);assert.equal(new Set(BUSINESS_QUERY_CATALOG.map(row=>row.request)).size,35);
  assert.deepEqual(ADDITIONAL_READ_QUERIES.map(row=>row.request),extras);assert.ok(ADDITIONAL_READ_QUERIES.every(row=>!ENTRY_QUERIES.some(query=>query.name===row.request)));
  for(const row of BUSINESS_QUERY_CATALOG){assert.equal(row.readOnly,true);assert.equal(row.metadataOnly,true);assert.equal(row.response,row.request.replace(/Request$/,'Response'));assert.ok(row.consumers.length);assert.equal(row.source.length,row.consumers.length);assert.ok(row.scope.binding.includes('accountId'));assert.ok(row.scope.binding.includes('generation'));assert.equal(row.parameters.arbitraryFields,false);assert.ok(row.notes);assert.ok(DATA_DOMAINS.some(domain=>domain.id===row.domain));
   const base=DATA_CATALOG.find(entry=>entry.request===row.request);assert.equal(row.baseEntry,base??null);assert.equal(row.registration,base?'ENTRY_QUERY_REUSE':'DOMAIN_SURVEY_ONLY');
  }
- assert.equal(BUSINESS_QUERY_CATALOG.filter(row=>row.baseEntry).length,21);assert.equal(DATA_CATALOG.length,48);assert.equal(ENTRY_QUERIES.length,48);assert.equal(exploreSnapshot(null).entries.length,48);
+ assert.equal(BUSINESS_QUERY_CATALOG.filter(row=>row.baseEntry).length,22);assert.equal(DATA_CATALOG.length,48);assert.equal(ENTRY_QUERIES.length,48);assert.equal(exploreSnapshot(null).entries.length,48);
 });
 
 test('additional query codecs exist locally and metadata never registers a mutation or entry signal',()=>{
@@ -169,12 +169,13 @@ test('all existing domain read surveys consume exactly the registered read queri
  const {surveyPirateSweep}=await import('../src/pirate-operations.mjs');
  const {surveyTaskRewards}=await import('../src/task-rewards.mjs');
  const {surveyMail}=await import('../src/mail.mjs');
+ const {surveyAfkLevelRewards}=await import('../src/afk-level-rewards.mjs');
  const calls=[],protocol=Object.fromEntries(BUSINESS_QUERY_CATALOG.flatMap(row=>[[row.request,{}],[row.response,{}]]));
  const rawFleet={buildingId:'synthetic-fleet',state:1,durability:100,maxDura:200,cityId:1,targetCityId:0,treasureLootUid:0,autoFight:{isOn:false,todayTimes:0}};
  const responses={MyFleetsRequest:{fleets:[rawFleet]},AllItemRequest:{items:[]},AllResourceRequest:{list:[]},FleetRepairParamRequest:{unitRepairCost:1,unitRepairTime:1},WorldInfoRequest:{cities:[],fleets:[]}};
  let module=null;const client=Object.assign(new EventEmitter(),{connected:true,factContext:{accountId:'synthetic-A',generation:1,connectionId:'catalog-mail'},gameClock:{read:()=>({status:'TRUSTED',reliable:true,nowMs:100000,earliestMs:100000,latestMs:100000})},async request(request,body,response){calls.push({module,request,body:structuredClone(body),response});return structuredClone(responses[request]??{});},send(){throw Error('Forbidden write');},sendWatch(){throw Error('Forbidden watched write');}});
  const player={playerId:'1',worldId:1000001,mainlineStage:1,level:30};
- for(const [id,survey,options] of [['mail',surveyMail,{parameters:{pageNo:2}}],['task-rewards',surveyTaskRewards,{}],['pirate-sweep',surveyPirateSweep,{}],['antique-growth',surveyAntiqueGrowth,{}],['antiqueSummary',surveyAntiqueSummary,{}],['formation',surveyFormation,{}],['alliance',surveyAlliance,{}],['museum',surveyMuseum,{}],['fleet',surveyFleet,{moduleConfig:{repair:true,formation:true}}],['treasure',surveyTreasure,{parameters:{uid:7}}],['naval',surveyNaval,{parameters:{screenCenter:{x:10,y:-20}}}]]){module=id;await survey(client,protocol,{config:{tables:{}},player,...options});}
+ for(const [id,survey,options] of [['afk-level-rewards',surveyAfkLevelRewards,{}],['mail',surveyMail,{parameters:{pageNo:2}}],['task-rewards',surveyTaskRewards,{}],['pirate-sweep',surveyPirateSweep,{}],['antique-growth',surveyAntiqueGrowth,{}],['antiqueSummary',surveyAntiqueSummary,{}],['formation',surveyFormation,{}],['alliance',surveyAlliance,{}],['museum',surveyMuseum,{}],['fleet',surveyFleet,{moduleConfig:{repair:true,formation:true}}],['treasure',surveyTreasure,{parameters:{uid:7}}],['naval',surveyNaval,{parameters:{screenCenter:{x:10,y:-20}}}]]){module=id;await survey(client,protocol,{config:{tables:{}},player,...options});}
  assert.deepEqual([...new Set(calls.map(call=>call.request))].sort(),BUSINESS_QUERY_CATALOG.map(row=>row.request).sort());
  for(const call of calls){const row=BUSINESS_QUERY_CATALOG.find(entry=>entry.request===call.request);assert.ok(row.consumers.some(use=>use.module===call.module),call.module+':'+call.request);assert.equal(row.response,call.response);assert.deepEqual(validateBusinessQueryParameters(call.request,call.body),call.body);}
  assert.deepEqual(calls.find(call=>call.module==='fleet'&&call.request==='WorldInfoRequest').body,{screenCenter:{x:0,y:0}});assert.deepEqual(calls.find(call=>call.request==='FleetRepairParamRequest').body,{buildingId:'synthetic-fleet'});

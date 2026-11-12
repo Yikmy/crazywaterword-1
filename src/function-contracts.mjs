@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'afk-level-rewards': contract('afk-level-rewards',[],['P6-2'],['src/afk-level-rewards.mjs#afkLevelRewardsModule','src/actions.mjs#ACTIONS'],{level:integer},{
+    inventoryRequirementIds:['BIZ-R10'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PERIOD_INCOME_AND_UPGRADE','Time-dependent income and income-before-upgrade require separate authoritative contracts')]},
+    verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone receipt plus independent AFK and complete inventory reads; unchanged level, interval and unrelated stock'),
+    dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg']),
+  }),
   mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer},{
     implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('READ_OR_CLAIM','Mail mutation and complete attachment settlement semantics are not yet proven')]},
     verification:verification('mailModule.verify','src/mail.mjs#mailModule','No mail operation can confirm; a single page is never a complete mailbox snapshot'),
