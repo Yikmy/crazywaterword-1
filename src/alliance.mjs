@@ -187,6 +187,7 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
     else {const unclaimed=packs.filter(p=>p.createTime>got&&p.createTime+86400>time.latest);if(unclaimed.length)add('welfare','claimWelfare',{packIds:unclaimed.map(p=>allianceId(p.id))},{gotWelfareTime:got,packs:unclaimed.map(p=>({id:allianceId(p.id),createTime:p.createTime}))},[],'GuildChestPop.ts:1441 claim-all, no cost','GotGuildWelfarePackRequest',{},'GotGuildWelfarePackResponse',{gotWelfareTimeAtLeast:Math.max(...unclaimed.map(p=>p.createTime))});}
   }
   if(enabled('tech')){
+    block('resetTech','TECH_RESET_BUSINESS_CONTRACT_UNVERIFIED');
     if(parameters.techId===undefined)block('upgradeTech','TECH_EXACT_TARGET_REQUIRED');
     else if(!has('UpgradeGuildTechRequest')||!has('UpgradeGuildTechResponse'))block('upgradeTech','TECH_TYPED_PROTOCOL_UNAVAILABLE',{techId:parameters.techId,targetLevel:parameters.targetLevel});
     else if(tech.blockedReason)block('upgradeTech',tech.blockedReason,{techId:parameters.techId,targetLevel:parameters.targetLevel});

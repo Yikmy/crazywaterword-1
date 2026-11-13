@@ -63,3 +63,9 @@ test('shared world season parser preserves exact original integer semantics and 
  assert.equal(seasonFromWorldId(1),0);
  for(const value of [null,undefined,0,-1,1.5,Number.MAX_SAFE_INTEGER+1,{},'bad'])assert.equal(seasonFromWorldId(value),null);
 });
+
+test('reset protocol availability cannot grant an unevidenced tech reset or disable existing upgrades',async()=>{
+ const f=await read(),v=view(f);assert.equal(typeof protocol.ResetGuildTechRequest.encode,'function');assert.equal(typeof protocol.ResetGuildTechResponse.decode,'function');assert.ok(v.blocked.some(row=>row.actionType==='resetTech'&&row.blockedReason==='TECH_RESET_BUSINESS_CONTRACT_UNVERIFIED'));
+ assert.ok(v.candidates.some(row=>row.actionType==='upgradeTech'));assert.equal(v.candidates.some(row=>row.actionType==='resetTech'),false);assert.throws(()=>planAlliance(f,{config,moduleConfig,parameters,selections:['alliance:resetTech']}));assert.equal(verifyAlliance({actionType:'resetTech',target:{}},f,f,{}),false);
+ assert.throws(()=>assertPaymentAllowed({request:'ResetGuildTechRequest',body:{},costs:[]}));
+});
