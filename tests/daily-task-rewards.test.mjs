@@ -20,10 +20,12 @@ import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish());
 const parameters={kind:'daily',taskId:1001};
-function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null,gift=false,weekly=false,unique=false}={}){
+function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null,gift=false,weekly=false,unique=false,chip=false}={}){
  const state={wall:1000000,mono:100,daily:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false},{id:1002,progress:0,targetProgress:2,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[1],weeklyRewardClaimed:[],dailyResetTime:2000},stock:[{itemId:'unrelated',num:9}],resources:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
  state.week={activityTime:[{type:4,period:12,startTime:900,endTime:2000},{type:5,period:13,startTime:800,endTime:2100}]};
  if(unique)state.week.activityTime[0]={type:7,period:20001,startTime:900,endTime:2000};
+ if(chip)state.week.activityTime[0]={type:6,period:1001,startTime:900,endTime:2000};
+ state.chip={round:1,score:100,gotTaskId:[1],gifts:[{giftId:1000,paidTimes:0},{giftId:1001,paidTimes:1}]};
  state.unique={gift:[{giftId:1001,gotTimes:1,charge:30}],floor:2,prizePos:[{prizeId:2,pos:1},{prizeId:0,pos:2}],selectId:1001,gotFree:false,gotFloor:1,buyTimes:0};
  state.weekly={gift:[{giftId:1000,gotTimes:0,charge:0},{giftId:1001,gotTimes:1,charge:30}],gotInfo:{times:7,gotStage:1}};
  state.gift={heroId:'马斯克',resetTime:1,boughtPack:[],drawnPack:[]};
@@ -39,10 +41,11 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
    await state.onWrite?.();return codec?wire(r,receipt):clone(receipt);
   }
   state.reads.push(n);await state.onRead?.(n);
-  let value=n==='WeekUniqueLotteryRequest'?state.unique:n==='WeekInfoRequest'?state.week:n==='WeekLotteryInfoRequest'?state.weekly:n==='DailyGiftPackRequest'?state.gift:n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
+  let value=n==='WeekChipInfoRequest'?state.chip:n==='WeekUniqueLotteryRequest'?state.unique:n==='WeekInfoRequest'?state.week:n==='WeekLotteryInfoRequest'?state.weekly:n==='DailyGiftPackRequest'?state.gift:n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  },
  async sendWatch(n,b,opts){
+  if(chip){assert.equal(n,'WeekChipGotFreeRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.chip.gifts[0].paidTimes=1;const box=state.stock.find(r=>r.itemId==='白芯片宝箱');if(box)box.num+=10;else state.stock.push({itemId:'白芯片宝箱',num:10});}await state.onWrite?.();return {status:'UNKNOWN'};}
   if(unique){assert.equal(n,'GotUniqueLotteryFreeRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.unique.gotFree=true;state.resources.find(r=>r.res===4).amount+=10;const coin=state.stock.find(r=>r.itemId==='周翻牌币');if(coin)coin.num++;else state.stock.push({itemId:'周翻牌币',num:1});}await state.onWrite?.();return {status:'UNKNOWN'};}
   if(weekly){assert.equal(n,'WeekLotteryFreePackRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.weekly.gift[0].gotTimes=1;state.resources.find(r=>r.res===4).amount+=10;const coin=state.stock.find(r=>r.itemId==='周转盘币');if(coin)coin.num++;else state.stock.push({itemId:'周转盘币',num:1});}await state.onWrite?.();return {status:'UNKNOWN'};}
   if(gift){assert.equal(n,'GotFreeDailyPackRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.gift.drawnPack.push('赠礼');state.resources.find(r=>r.res===4).amount+=10;}await state.onWrite?.();return {status:'UNKNOWN'};}
@@ -50,7 +53,7 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
   if(apply){const season=Number(BigInt(options.player.worldId)/1000000n%1000n),rows=actual.tables.DailyActivityRewardCfg.data,selected=Math.max(...rows.filter(r=>r.season<=season).map(r=>r.season)),row=rows.find(r=>r.season===selected&&r.id===b.index[0]);state.daily.dailyRewardClaimed.push(row.id);const [id,num]=row.reward,old=state.stock.find(i=>i.itemId===id);if(old)old.num+=num;else state.stock.push({itemId:id,num});}
   await state.onWrite?.();return {status:'UNKNOWN'};
  }};
- const options={config:{tables:unique?{WeekUniquePackCfg:clone(actual.tables.WeekUniquePackCfg)}:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:unique?{kind:'weekly-unique-lottery-gift',packId:'1000'}:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
+ const options={config:{tables:chip?{WeekChipPackCfg:clone(actual.tables.WeekChipPackCfg)}:unique?{WeekUniquePackCfg:clone(actual.tables.WeekUniquePackCfg)}:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:chip?{kind:'weekly-chip-gift',packId:'1000'}:unique?{kind:'weekly-unique-lottery-gift',packId:'1000'}:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
  return {state,client,options};
 }
 async function ready(input={},mutate){const f=fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
@@ -762,4 +765,89 @@ test('weekly variants never reuse another variant facts or manufacture authority
 test('normal weekly refusal identity retains the committed 93bd81f contract across unique-pack extension',async()=>{
  const f=await ready({weekly:true}),prior=clone(f.operation);prior.costSource='Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
  assert.deepEqual(taskRewardsModule.rejectionIdentity(f.operation),taskRewardsModule.rejectionIdentity(prior));
+});
+
+test('chip weekly free pack grants exact held boxes with no resource debit or opening',async()=>{
+ const f=await ready({chip:true},f=>f.state.resources=f.state.resources.filter(r=>r.res!==4));assert.ok(f.operation,JSON.stringify(f.row));assert.deepEqual(f.operation.target,{kind:'weekly-chip-gift',packId:'1000',type:6,period:1001,startTime:900,endTime:2000});assert.deepEqual(f.operation.action,{request:'WeekChipGotFreeRequest',response:null,body:{}});assert.deepEqual(f.operation.costs,[]);assert.deepEqual(f.operation.rewards,[{id:'白芯片宝箱',num:10}]);
+ assert.deepEqual(f.state.reads,['WeekChipInfoRequest','WeekInfoRequest','AllItemRequest','AllResourceRequest']);assert.equal(f.operation.budgetClaims.uids[0].type,'free-weekly-chip-gift');
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'SUCCESS',result.error);assert.deepEqual(f.state.writes,[{name:'WeekChipGotFreeRequest',body:{}}]);assert.equal(f.state.chip.gifts[0].paidTimes,1);
+ const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(after.stock.get('白芯片宝箱'),10);assert.deepEqual(after.daily.gotTaskId,[1]);assert.equal(after.daily.round,1);assert.equal(after.daily.score,100);
+});
+test('chip weekly public parameters, dependency and empty D6 retain exact free-only semantics',async()=>{
+ const p={kind:'weekly-chip-gift',packId:'1000'},{validateFunctionParameters}=await import('../src/function-contracts.mjs');assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,p),p);
+ for(const bad of[{kind:p.kind},{...p,packId:'1001'},{...p,packId:1000},{...p,taskId:1},{...p,tierId:1}])assert.throws(()=>validateTaskRewardsParameters(bad),{code:'INVALID_PARAMETERS'});
+ const a={request:'WeekChipGotFreeRequest',body:{},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));for(const body of[null,undefined,[],{giftId:1000},{packId:1000}])assert.throws(()=>assertPaymentAllowed({...a,body}));for(const costs of[undefined,null,Array(1),[{id:'RUBY',num:1}],[{id:'GOLD',num:1}]])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+ const f=await ready({chip:true}),v=taskRewardsDependencyVersions(f.options);assert.deepEqual(Object.keys(v.tables),['WeekChipPackCfg']);const cfg=clone(f.options.config);cfg.tables.WeekLotteryPackCfg={revision:1};assert.deepEqual(taskRewardsDependencyVersions({...f.options,config:cfg}),v);cfg.tables.WeekChipPackCfg.revision=1;assert.notDeepEqual(taskRewardsDependencyVersions({...f.options,config:cfg}),v);
+});
+for(const [label,mutate]of[
+ ['absent explicit free record',f=>f.state.chip.gifts.shift()],
+ ['missing paidTimes',f=>delete f.state.chip.gifts[0].paidTimes],
+ ['already claimed',f=>f.state.chip.gifts[0].paidTimes=1],
+ ['negative claim count',f=>f.state.chip.gifts[0].paidTimes=-1],
+ ['duplicate gifts',f=>f.state.chip.gifts.push(clone(f.state.chip.gifts[0]))],
+ ['missing round',f=>delete f.state.chip.round],
+ ['missing score',f=>delete f.state.chip.score],
+ ['missing claimed task IDs',f=>delete f.state.chip.gotTaskId],
+ ['duplicate claimed task',f=>f.state.chip.gotTaskId=[1,1]],
+ ['wrong event',f=>f.state.week.activityTime[0].type=4],
+ ['missing period',f=>delete f.state.week.activityTime[0].period],
+ ['expired event',f=>f.state.week.activityTime[0].endTime=1000],
+ ['future event',f=>f.state.week.activityTime[0].startTime=1001],
+ ['unknown clock',f=>f.client.gameClock=null],
+ ['box overflow',f=>f.state.stock.push({itemId:'白芯片宝箱',num:Number.MAX_SAFE_INTEGER})],
+ ['missing config',f=>delete f.options.config.tables.WeekChipPackCfg],
+ ['paid config',f=>f.options.config.tables.WeekChipPackCfg.data[0].price=1],
+ ['missing buyLimit',f=>delete f.options.config.tables.WeekChipPackCfg.data[0].buyLimit],
+ ['wrong buyLimit',f=>f.options.config.tables.WeekChipPackCfg.data[0].buyLimit=2],
+ ['wrong reward',f=>f.options.config.tables.WeekChipPackCfg.data[0].reward=[['紫芯片宝箱',10]]],
+ ['guild rewards',f=>f.options.config.tables.WeekChipPackCfg.data[0].guildPack=['礼包',1]],
+ ['read failure',f=>f.state.overrides.WeekChipInfoRequest=Error('synthetic unavailable')],
+])test('chip weekly explicit qualification fails closed: '+label,async()=>{const f=await ready({chip:true,codec:false},mutate);assert.equal(f.operation,undefined);assert.equal(f.state.writes.length,0);});
+for(const [label,mutate]of[
+ ['not claimed',f=>f.state.chip.gifts[0].paidTimes=0],
+ ['double count',f=>f.state.chip.gifts[0].paidTimes=2],
+ ['other gift changed',f=>f.state.chip.gifts[1].paidTimes++],
+ ['new paid gift',f=>f.state.chip.gifts.push({giftId:1002,paidTimes:1})],
+ ['round changed',f=>f.state.chip.round++],
+ ['score changed',f=>f.state.chip.score++],
+ ['extra task claim',f=>f.state.chip.gotTaskId.push(2)],
+ ['period changed',f=>f.state.week.activityTime[0].period++],
+ ['wrong box amount',f=>f.state.stock.find(r=>r.itemId==='白芯片宝箱').num=9],
+ ['box opened or absent',f=>f.state.stock.pop()],
+ ['other inventory changed',f=>f.state.stock[0].num++],
+ ['other resource changed',f=>f.state.resources[0].amount++],
+ ['event expired',f=>f.state.mono+=1000000],
+])test('chip weekly incomplete settlement remains unconfirmed: '+label,async()=>{
+ const f=await ready({chip:true});await f.client.sendWatch('WeekChipGotFreeRequest',{});mutate(f);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,false);
+});
+for(const apply of[true,false])test('chip weekly unified original Service '+(apply?'persists exact boxes and blocks aliases':'stops UNKNOWN through new week and restart'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{chip:true,apply}),read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),compiled=compileUnifiedExecution({entry:'loop',tasks:[f.options.parameters],dailies:[{...f.options.parameters,action:'claim'}],rounds:2,budget:read.view.candidates[0].budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(()=>runner.stop());let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const {record}=await f.run(run.plan);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN',record.stopReason);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(record.runBudget.reserved.uids,read.view.candidates[0].budgetClaims.uids);
+ if(!apply){const next=serviceFixture(t,{chip:true,file:f.file});next.state.week.activityTime[0].period++;await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+test('chip weekly fresh seal, exact identity, protocol and before-dispatch expiry prevent any write',async()=>{
+ for(const mutate of[f=>f.facts.sourceFacts.week.provenance.sourceAt=Date.now()-30001,f=>f.client.factContext.accountId='B',f=>f.client.factContext.generation++,f=>f.client.factContext.connectionId='new',f=>f.options.player.playerId='2',f=>f.options.player.worldId='18',f=>f.options.config.tables.WeekChipPackCfg.revision=1]){
+  const f=await ready({chip:true});mutate(f);assert.equal(planTaskRewards(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);
+ }
+ const f=await ready({chip:true});f.state.onDispatch=()=>{f.state.mono+=1000000;};assert.equal((await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)})).dispatched,false);assert.equal(f.state.writes.length,0);
+ const x=fixture({chip:true}),p={...protocol};delete p.WeekChipGotFreeRequest;assert.equal(viewTaskRewards(await surveyTaskRewards(x.client,p,x.options),x.options).candidates[0].blockedReason,'PROTOCOL_UNAVAILABLE');
+});
+test('chip weekly Service refuses persist failure, exhausted parent UID, cancellation and late replay',async t=>{
+ for(const mode of['disk','parent','cancel','late']){
+  const f=serviceFixture(t,{chip:true});if(mode==='parent'){f.service.claimWorkflow(f.session,'chip-parent',{limits:{resources:[],quotas:[],uids:[]}});await assert.rejects(f.plan());assert.equal(f.state.writes.length,0);continue;}
+  const p=await f.plan(),permit=f.authorize(p);let release;
+  if(mode==='disk'){const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}else if(mode==='cancel')f.session.abort.abort();else f.state.onWrite=()=>new Promise(r=>release=r);
+  try{f.service.execute(f.session,permit);if(mode==='late'){for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();}await f.service.settle(f.session.id);}catch{}
+  assert.equal(f.state.writes.length,mode==='late'?1:0);if(mode==='late'){assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');const next=serviceFixture(t,{chip:true,file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+ }
+});
+test('chip weekly refusal persists across Tasks and Dailies reconnection aliases',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{chip:true,apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic refused'),{code:'REJECTED'});};const p=await f.plan();assert.equal((await f.run(p)).record.finalStatus,'REJECTED');
+ for(const phase of['tasks','dailies']){const x=serviceFixture(t,{chip:true,file:f.file});x.session.connectionId=x.client.factContext.connectionId='replacement-'+phase;const compiled=compileUnifiedExecution({entry:phase,[phase]:[{...x.options.parameters,...(phase==='dailies'?{action:'claim'}:{})}],budget:p.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:x.service,claim:(_id,runId,options)=>x.service.claimWorkflow(x.session,runId,options),getSession:()=>x.session});t.after(()=>runner.stop());const run=await runner.start(x.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(x.state.writes.length,0);}
+});
+test('three weekly free contracts preserve previous source identities and never mix authoritative facts',async()=>{
+ const variants=[{weekly:true},{unique:true},{chip:true}],rows=await Promise.all(variants.map(input=>ready(input)));
+ for(const f of rows)for(const other of rows)if(f!==other){assert.equal(planTaskRewards(f.facts,{...f.options,parameters:other.options.parameters,selections:[f.operation.actionId]}).actions.length,0);assert.equal(viewTaskRewards({},other.options).candidates[0].executable,false);}
+ const oldUnique=clone(rows[1].operation);oldUnique.costSource='Fixed v76 WeekLotteryPackItem GotUniqueLotteryFreeRequest and WeekUniquePackCfg1000: zero price, limitedTimes1, empty guildPack; trusted WeekInfo activity7 window and explicit gotFree=false with no conflicting gift1000 record';assert.deepEqual(taskRewardsModule.rejectionIdentity(oldUnique),taskRewardsModule.rejectionIdentity(rows[1].operation));
+ const f=rows[2];await f.client.sendWatch('WeekChipGotFreeRequest',{});const after=await surveyTaskRewards(f.client,protocol,f.options);for(const change of[o=>o.target.type=4,o=>o.action.body.giftId=1000,o=>o.expectedState.daily.score++,o=>o.budgetClaims.uids=[],o=>o.rewards[0].num=11]){const o=clone(f.operation);change(o);assert.equal(verifyTaskReward(o,f.facts,after,null).confirmed,false);}assert.equal(verifyTaskReward(f.operation,f.facts,after,{}).confirmed,false);
 });
