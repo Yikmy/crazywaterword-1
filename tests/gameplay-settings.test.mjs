@@ -60,3 +60,14 @@ test('shared numeric predicate preserves the existing server scalar configuratio
   for(const value of values){const valid=moduleConfigNumberValid(value,'config.'+key);if(valid)assert.equal(validateModuleConfig({[key]:value},{[key]:1})[key],value);else assert.throws(()=>validateModuleConfig({[key]:value},{[key]:1}));}
  }
 });
+
+
+test('professional list and reserve configurations persist exact identities and pair order across settings restart and account isolation',()=>{
+ const listFile=path.join(dir,'list-settings.json'),first=createModuleSettings({file:listFile,modules:GAMEPLAY_MODULES});
+ const alliance={...GAMEPLAY_MODULES.alliance.defaultConfig,memberIds:['9007199254740995','9223372036854775807'],priorityMemberIds:['9223372036854775807','9007199254740995'],itemIds:[' 木材 ','<img onerror=alert(1)>'],stockItemIds:['木材','粗铁'],stockReserveQuantities:[0,1000000000],dailyBudgetItemIds:['木材','粗铁'],dailyBudgetQuantities:[7,0]};
+ const museum={...GAMEPLAY_MODULES.museum.defaultConfig,stockItemIds:['博物馆加速','木材'],stockReserveQuantities:[0,7]},treasure={...GAMEPLAY_MODULES.treasure.defaultConfig,colors:[5,3,4]};
+ for(const [id,config]of Object.entries({alliance,museum,treasure}))assert.deepEqual(first.save('A',id,config).config,config);
+ const before=fs.readFileSync(listFile,'utf8'),restarted=createModuleSettings({file:listFile,modules:GAMEPLAY_MODULES});for(const [id,config]of Object.entries({alliance,museum,treasure})){assert.deepEqual(restarted.get('A',id).config,config);assert.deepEqual(restarted.get('B',id).config,GAMEPLAY_MODULES[id].defaultConfig);}
+ for(const config of [{...alliance,stockReserveQuantities:[1]},{...alliance,stockReserveQuantities:['0',1]},{...alliance,memberIds:['01']},{...alliance,stockItemIds:['木材','木材']}])assert.throws(()=>restarted.save('A','alliance',config));
+ assert.equal(fs.readFileSync(listFile,'utf8'),before);assert.deepEqual(restarted.save('A','museum',{...museum,stockItemIds:[],stockReserveQuantities:[]}).config.stockReserveQuantities,[]);assert.deepEqual(first.get('A','treasure').config.colors,[5,3,4]);
+});
