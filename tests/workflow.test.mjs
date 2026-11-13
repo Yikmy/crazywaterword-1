@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateWorkflow, simulateWorkflow, createWorkflowRunner, createWorkflowStore, exampleWorkflows, evaluateWorkflowCondition } from '../src/workflow.mjs';
+import { validateWorkflow, workflowScheduledAt, simulateWorkflow, createWorkflowRunner, createWorkflowStore, exampleWorkflows, evaluateWorkflowCondition } from '../src/workflow.mjs';
 const moduleEntry=id=>({id,survey(){throw Error('static validation must not invoke module')},view(){},plan(){},verify(){}});
 const modules={fixture:moduleEntry('fixture'),formation:moduleEntry('formation'),stage:moduleEntry('stage')};
 function graph(){return {version:1,id:'wf-1',name:'Fixture',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'fixture'},{id:'a',type:'ACTION',module:'fixture',selection:{actionId:'operation-1'},parameters:{targetId:'exact'}},{id:'v',type:'VERIFY',module:'fixture'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]}}
@@ -504,4 +504,44 @@ test('corrupt one-time trigger evidence is rejected without overwriting persiste
 
 for(const entry of ['tasks','dailies','loop'])test(entry+' carries one explicit trigger through its existing compiler without changing original business nodes',()=>{
  const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.schedule=onceSchedule(1050);const scheduled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(scheduled.graph.runPolicy,intent.runPolicy);assert.deepEqual(scheduled.graph.nodes,before.graph.nodes);assert.deepEqual(scheduled.graph.edges,before.graph.edges);assert.deepEqual(scheduled.graph.budget,before.graph.budget);assert.deepEqual(scheduled.graph.preparation,before.graph.preparation);
+});
+
+const calendarSchedule=(kind='DAILY',localTime='00:00:00.000',weekDay=7)=>({kind,localTime,timeZone:'Asia/Shanghai',missedPolicy:'SKIP',...(kind==='WEEKLY'?{weekDay}:{})});
+
+test('calendar schedule resolves Shanghai date, ISO weekdays, month/year and leap boundaries without using the host timezone',()=>{
+ for(const [schedule,start,expected]of [
+ [calendarSchedule(),'2026-11-14T15:59:59.950Z','2026-11-14T16:00:00.000Z'],
+ [calendarSchedule(),'2026-11-14T16:00:00.000Z','2026-11-15T16:00:00.000Z'],
+ [calendarSchedule(),'2026-12-31T15:59:59.999Z','2026-12-31T16:00:00.000Z'],
+ [calendarSchedule(),'2028-02-28T15:59:59.999Z','2028-02-28T16:00:00.000Z'],
+ [calendarSchedule(),'2028-02-29T15:59:59.999Z','2028-02-29T16:00:00.000Z'],
+ [calendarSchedule('WEEKLY'),'2026-11-14T15:59:59.950Z','2026-11-14T16:00:00.000Z'],
+ [calendarSchedule('WEEKLY'),'2026-11-14T16:00:00.000Z','2026-11-21T16:00:00.000Z'],
+ [calendarSchedule('WEEKLY','23:59:59.999',1),'2026-11-15T16:00:00.000Z','2026-11-16T15:59:59.999Z'],
+ [calendarSchedule('DAILY','08:30:01.002'),'2026-11-14T00:30:01.001Z','2026-11-14T00:30:01.002Z']])assert.equal(workflowScheduledAt(schedule,start),expected);
+ for(const kind of ['DAILY','WEEKLY']){const schedule=calendarSchedule(kind),g=boundedGraph(graph(),{schedule});assert.equal(validateWorkflow(g,{modules}).valid,true);assert.equal(simulateWorkflow(g,{modules}).requestsSent,0);for(const mutate of [s=>s.localTime='24:00:00.000',s=>s.localTime='08:00',s=>s.localTime='08:00:60.000',s=>s.localTime=' 08:00:00.000',s=>s.timeZone='UTC',s=>s.missedPolicy='CATCH_UP',s=>s.at='2026-11-14T00:00:00.000Z',s=>s.weekDay=0,s=>s.weekDay=8,s=>s.weekDay='7']){const bad=structuredClone(g);mutate(bad.runPolicy.schedule);assert.throws(()=>validateWorkflow(bad,{modules}));}}
+});
+
+for(const kind of ['DAILY','WEEKLY'])test('calendar '+kind+' waits for its persisted concrete occurrence and then follows the original manual execution pause',async()=>{
+ let time=Date.parse('2026-11-14T15:59:59.950Z');const f=fixture({}, {clock:()=>time});f.session.player={playerId:'9007199254740993',worldId:0};try{const g=boundedGraph(graph(),{schedule:calendarSchedule(kind)}),pending=await f.runner.start(f.session.id,g);assert.equal(pending.status,'WAITING');assert.equal(pending.trigger.scheduledAt,'2026-11-14T16:00:00.000Z');assert.equal(pending.trigger.worldId,'0');assert.equal(f.calls.some(row=>['survey','plan'].includes(row[0])),false);time+=50;const result=await f.runner.settle();assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(result.trigger.state,'FIRED');assert.equal(result.actionPlans,1);assert.equal(result.runPolicy.maxDurationMs,10000);}finally{f.runner.stop();await f.runner.settle();}
+});
+
+test('calendar occurrences beyond the existing run window stop without claims and missing role/world cannot arm one',async()=>{
+ let time=Date.parse('2026-11-14T15:59:59.950Z');const f=fixture({}, {clock:()=>time});f.session.player={playerId:'p',worldId:1};const result=await f.runner.start(f.session.id,boundedGraph(readOnly(),{modules:[],maxActions:0,schedule:calendarSchedule('WEEKLY','00:00:00.000',1)}));assert.equal(result.status,'STOPPED');assert.equal(result.trigger.scheduledAt,'2026-11-15T16:00:00.000Z');assert.equal(f.calls.length,0);delete f.session.player.worldId;await assert.rejects(f.runner.start(f.session.id,boundedGraph(readOnly(),{modules:[],maxActions:0,schedule:calendarSchedule()})));assert.equal(f.calls.length,0);
+});
+
+for(const phase of ['STARTING','WAITING'])test('calendar '+phase+' persistence crossing the resolved occurrence skips it without choosing a new date',async()=>{
+ let time=Date.parse('2026-11-14T15:59:59.950Z');const f=fixture({}, {clock:()=>time,onUpdate:state=>{if(state.status===phase&&!state.finishedAt)time+=50;}});f.session.player={playerId:'p',worldId:1};const result=await f.runner.start(f.session.id,boundedGraph(graph(),{schedule:calendarSchedule()}));assert.equal(result.status,'STOPPED');assert.equal(result.trigger.state,'MISSED');assert.equal(result.trigger.scheduledAt,'2026-11-14T16:00:00.000Z');assert.equal(f.calls.some(row=>['survey','plan'].includes(row[0])),false);
+});
+
+test('calendar history persists exact occurrence and prevents clock-rollback replay across restart for the same role, world and graph',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-calendar-replay-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));let time=Date.parse('2026-11-14T15:59:59.950Z');const store=createWorkflowStore({file,modules}),g=boundedGraph(readOnly(),{modules:[],maxActions:0,schedule:calendarSchedule()}),make=(id='account-1',worldId=1)=>{const f=fixture({}, {clock:()=>time,onUpdate:state=>store.record(id,state)});f.session.id=id;f.session.player={playerId:'9007199254740993',worldId};return f;};
+ const f=make();await f.runner.start(f.session.id,g);time+=50;const completed=await f.runner.settle();assert.equal(completed.status,'COMPLETED');const bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules});assert.equal(reopened.history(f.session.id)[0].trigger.state,'FIRED');assert.equal(reopened.history(f.session.id)[0].resumable,false);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ time-=50;const replay=make();await assert.rejects(replay.runner.start(replay.session.id,g),{code:'WORKFLOW_TRIGGER_CONSUMED'});assert.equal(replay.runner.getStatus().status,'FAILED');assert.equal(replay.calls.some(row=>['survey','plan'].includes(row[0])),false);assert.equal(store.history(f.session.id).find(row=>row.runId===completed.runId).trigger.state,'FIRED');
+ for(const [id,world]of [['account-1',2],['other-account',1]]){const independent=make(id,world);try{assert.equal((await independent.runner.start(id,g)).status,'WAITING');}finally{independent.runner.stop();await independent.runner.settle();}}
+ const old=store.history(f.session.id).find(row=>row.runId===completed.runId),before=fs.readFileSync(file,'utf8');for(const mutate of [r=>r.trigger.scheduledAt='2026-11-15T16:00:00.000Z',r=>delete r.trigger.worldId,r=>r.trigger.playerId='',r=>r.trigger.scheduledAt=Date.parse(r.trigger.scheduledAt)]){const bad=structuredClone(old);mutate(bad);assert.throws(()=>store.record(f.session.id,bad));assert.equal(fs.readFileSync(file,'utf8'),before);}
+});
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' preserves daily and weekly rules in the existing unified compiler without creating another execution graph',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});for(const kind of ['DAILY','WEEKLY']){intent.runPolicy.schedule=calendarSchedule(kind);const compiled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(compiled.graph.runPolicy,intent.runPolicy);assert.deepEqual(compiled.graph.nodes,before.graph.nodes);assert.deepEqual(compiled.graph.edges,before.graph.edges);assert.deepEqual(compiled.graph.budget,before.graph.budget);assert.deepEqual(compiled.graph.preparation,before.graph.preparation);}delete intent.runPolicy.schedule.weekDay;assert.throws(()=>compileUnifiedExecution(intent,{modules:unifiedRegistry}));
 });

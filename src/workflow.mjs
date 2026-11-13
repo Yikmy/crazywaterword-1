@@ -54,11 +54,33 @@ function validatePreparation(value) {
   }
   return copy(value);
 }
+function validateWorkflowSchedule(schedule){
+ const calendar=schedule?.kind==='DAILY'||schedule?.kind==='WEEKLY';exact(schedule,calendar?['kind','localTime','timeZone','missedPolicy',...(schedule.kind==='WEEKLY'?['weekDay']:[])]:['kind','at','timeZone','missedPolicy'],'时间触发');
+ if(schedule.timeZone!=='Asia/Shanghai'||schedule.missedPolicy!=='SKIP')throw fail('时间触发必须明确上海时区与错过跳过策略');
+ if(!calendar){if(schedule.kind!=='ONCE'||typeof schedule.at!=='string'||!Number.isFinite(Date.parse(schedule.at))||new Date(schedule.at).toISOString()!==schedule.at)throw fail('一次触发必须明确UTC时间');return;}
+ if(typeof schedule.localTime!=='string'||!/^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}$/.test(schedule.localTime)||schedule.kind==='DAILY'&&schedule.weekDay!==undefined||schedule.kind==='WEEKLY'&&(!Number.isSafeInteger(schedule.weekDay)||schedule.weekDay<1||schedule.weekDay>7))throw fail('日周触发须明确上海本地时刻，周触发使用周一1至周日7');
+}
+// Resolve a single calendar occurrence within the existing explicitly armed run.
+// Calendar recurrence never supplies a game reset policy or renews authorization.
+export function workflowScheduledAt(schedule,startedAt){
+ validateWorkflowSchedule(schedule);if(schedule.kind==='ONCE')return schedule.at;
+ const start=Date.parse(startedAt);if(typeof startedAt!=='string'||!Number.isFinite(start))throw fail('日历触发需要本次明确启动时刻');
+ const formatter=new Intl.DateTimeFormat('en-GB',{timeZone:schedule.timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3,hourCycle:'h23'});
+ const localStamp=value=>{const parts=Object.fromEntries(formatter.formatToParts(value).map(part=>[part.type,part.value]));return Date.UTC(Number(parts.year),Number(parts.month)-1,Number(parts.day),Number(parts.hour),Number(parts.minute),Number(parts.second),Number(parts.fractionalSecond));};
+ const localStart=localStamp(start),date=new Date(localStart),[hour,minute,second,millisecond]=schedule.localTime.split(/[:.]/).map(Number);
+ for(let day=0;day<=7;day++){
+  const wall=Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate()+day,hour,minute,second,millisecond),weekday=new Date(wall).getUTCDay()||7;if(schedule.kind==='WEEKLY'&&weekday!==schedule.weekDay)continue;
+  let candidate=wall;for(let pass=0;pass<4;pass++){const offset=localStamp(candidate)-candidate,next=wall-offset;if(next===candidate)break;candidate=next;}
+  if(localStamp(candidate)!==wall)continue; // A nonexistent local time is skipped, never normalized.
+  if(candidate>start)return new Date(candidate).toISOString();
+ }
+ throw fail('无法确定下一个明确上海日历时刻');
+}
 function validateRunPolicy(value) {
  exact(value,['maxDurationMs','maxActions','modules','maxRounds','roundIntervalMs','schedule'],'运行边界');
  if(value.maxRounds!==undefined&&(!Number.isSafeInteger(value.maxRounds)||value.maxRounds<1||value.maxRounds>WORKFLOW_LIMITS.rounds)||value.roundIntervalMs!==undefined&&(value.maxRounds===undefined||!Number.isSafeInteger(value.roundIntervalMs)||value.roundIntervalMs<0||value.roundIntervalMs>WORKFLOW_LIMITS.waitMs))throw fail('重复轮次或轮间隔必须有明确有限范围');
  if(!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>WORKFLOW_LIMITS.runDurationMs||!Number.isSafeInteger(value.maxActions)||value.maxActions<0||value.maxActions>WORKFLOW_LIMITS.actionPlans||!Array.isArray(value.modules)||value.modules.length>WORKFLOW_LIMITS.nodes||value.modules.some(id=>!text(id)||id.trim()!==id||id.length>100)||new Set(value.modules).size!==value.modules.length)throw fail('运行期限、动作计划上限或明确玩法范围无效');
- if(value.schedule!==undefined){exact(value.schedule,['kind','at','timeZone','missedPolicy'],'时间触发');const schedule=value.schedule,at=Date.parse(schedule.at);if(schedule.kind!=='ONCE'||schedule.timeZone!=='Asia/Shanghai'||schedule.missedPolicy!=='SKIP'||typeof schedule.at!=='string'||!Number.isFinite(at)||new Date(at).toISOString()!==schedule.at)throw fail('时间触发必须明确一次UTC时间、上海时区与错过跳过策略');}
+ if(value.schedule!==undefined)validateWorkflowSchedule(value.schedule);
  return copy(value);
 }
 function validateRoundHistory(run){
@@ -70,19 +92,21 @@ function validateRoundHistory(run){
 function validateTriggerHistory(run){
  const schedule=run.runPolicy?.schedule,trigger=run.trigger;
  if(schedule===undefined){if(trigger!==undefined)throw fail('触发历史缺少明确时间声明');return;}
- exact(trigger,['state','armedAt','firedAt','missedAt'],'时间触发历史');if(!['PENDING','WAITING','FIRED','MISSED'].includes(trigger.state))throw fail('时间触发历史状态无效');
+ const calendar=schedule.kind!=='ONCE';exact(trigger,calendar?['state','armedAt','firedAt','missedAt','scheduledAt','playerId','worldId']:['state','armedAt','firedAt','missedAt'],'时间触发历史');if(calendar&&(trigger.scheduledAt!==workflowScheduledAt(schedule,run.startedAt)||['playerId','worldId'].some(key=>typeof trigger[key]!=='string'||!trigger[key]||trigger[key].trim()!==trigger[key])))throw fail('日历触发的具体时刻或角色世界身份缺失');if(!['PENDING','WAITING','FIRED','MISSED'].includes(trigger.state))throw fail('时间触发历史状态无效');
  if(['armedAt','firedAt','missedAt'].some(key=>trigger[key]!==null&&(typeof trigger[key]!=='string'||!Number.isFinite(Date.parse(trigger[key]))||new Date(trigger[key]).toISOString()!==trigger[key])))throw fail('触发时刻必须保留原明确UTC时间或null');
- const at=Date.parse(schedule.at),started=Date.parse(run.startedAt),expires=Date.parse(run.expiresAt),armed=trigger.armedAt===null?null:Date.parse(trigger.armedAt),fired=trigger.firedAt===null?null:Date.parse(trigger.firedAt),missed=trigger.missedAt===null?null:Date.parse(trigger.missedAt);
+ const at=Date.parse(calendar?trigger.scheduledAt:schedule.at),started=Date.parse(run.startedAt),expires=Date.parse(run.expiresAt),armed=trigger.armedAt===null?null:Date.parse(trigger.armedAt),fired=trigger.firedAt===null?null:Date.parse(trigger.firedAt),missed=trigger.missedAt===null?null:Date.parse(trigger.missedAt);
  if(!Number.isFinite(started)||!Number.isFinite(expires)||armed!==null&&(!Number.isFinite(armed)||armed<started)||trigger.state==='PENDING'&&(armed!==null||fired!==null||missed!==null)||trigger.state==='WAITING'&&(!Number.isFinite(armed)||armed>=at||fired!==null||missed!==null)||trigger.state==='FIRED'&&(!Number.isFinite(armed)||armed>=at||!Number.isFinite(fired)||fired<at||fired<armed||fired>=expires||missed!==null)||trigger.state==='MISSED'&&(!Number.isFinite(missed)||missed<at||fired!==null)||trigger.state!=='FIRED'&&((run.actionPlans??0)!==0||(run.trace?.length??0)!==0))throw fail('时间触发历史与原时间窗口不一致');
 }
 function validateAuthorizationAudit(run,modules){
  if(run.runAuthorization===undefined)return;
- const audit=run.runAuthorization;exact(audit,['scope','approvedAt','resumable'],'有限运行授权审计');const scope=audit.scope;exact(scope,['accountId','runId','workflowId','graphHash','executionContext','graph','dependencies','expiresAt'],'有限运行授权范围');
+ const audit=run.runAuthorization;exact(audit,['scope','approvedAt','resumable'],'有限运行授权审计');const scope=audit.scope;exact(scope,['accountId','runId','workflowId','graphHash','executionContext','graph','dependencies','expiresAt','scheduledAt'],'有限运行授权范围');
  if(audit.resumable!==false||!text(audit.approvedAt)||!Number.isFinite(Date.parse(audit.approvedAt))||scope.accountId!==run.accountId||scope.runId!==run.runId||scope.workflowId!==run.workflowId||scope.expiresAt!==run.expiresAt||Date.parse(audit.approvedAt)>=Date.parse(scope.expiresAt))throw fail('运行授权审计身份或期限无效');
  const graph=validateWorkflow(scope.graph,{modules}).workflow,hash=workflowJsonDigest;
  if(!graph.runPolicy||graph.id!==scope.workflowId||hash(graph)!==scope.graphHash||hash(graph.runPolicy)!==hash(run.runPolicy))throw fail('授权图、边界或摘要不一致');
  const started=Date.parse(run.startedAt),expires=Date.parse(scope.expiresAt),approved=Date.parse(audit.approvedAt);if(!Number.isFinite(started)||!Number.isFinite(expires)||expires<=started||expires-started>graph.runPolicy.maxDurationMs||approved<started)throw fail('授权期限超出原运行边界');
+ const calendar=graph.runPolicy.schedule&&graph.runPolicy.schedule.kind!=='ONCE';if(calendar?(scope.scheduledAt!==workflowScheduledAt(graph.runPolicy.schedule,run.startedAt)||scope.scheduledAt!==run.trigger?.scheduledAt):scope.scheduledAt!==undefined)throw fail('授权的具体日历触发时刻不一致');
  const identity=scope.executionContext;exact(identity,['accountId','playerId','worldId','generation','connectionId'],'授权账号身份');if(identity.accountId!==run.accountId||!Number.isSafeInteger(identity.generation)||identity.generation<0||!text(identity.connectionId)||[identity.playerId,identity.worldId].some(value=>!(typeof value==='string'&&value.trim()===value&&value.length>0||Number.isSafeInteger(value)&&value>=0)))throw fail('授权角色、世界或连接身份缺失');
+ if(calendar&&(String(identity.playerId)!==run.trigger.playerId||String(identity.worldId)!==run.trigger.worldId))throw fail('日历触发与授权角色世界不一致');
  const dependencies=scope.dependencies;exact(dependencies,['configHash','rulesHash','productionHash','moduleConfigs'],'授权配置版本');if(['configHash','rulesHash','productionHash'].some(key=>typeof dependencies[key]!=='string'||!/^[a-f0-9]{64}$/.test(dependencies[key]))||!plain(dependencies.moduleConfigs)||graph.nodes.some(node=>node.type==='ACTION'&&!Object.hasOwn(dependencies.moduleConfigs,node.module)))throw fail('授权业务配置版本缺失');
 }
 export function validateWorkflow(input, options = {}) {
@@ -277,18 +301,18 @@ function repeatAfterStop(ctx,node){
       const session = await getSession(accountId); if (!session || session.id !== accountId) throw fail('工作流账号会话不存在');
       const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
       if(ctx.graph.runPolicy){ctx.expiresAt=new Date(Date.parse(ctx.startedAt)+ctx.graph.runPolicy.maxDurationMs).toISOString();ctx.actionPlans=0;if(ctx.graph.runPolicy.maxRounds!==undefined){ctx.round=1;ctx.completedRounds=0;}}
-      if(ctx.graph.runPolicy?.schedule)ctx.trigger={state:'PENDING',armedAt:null,firedAt:null,missedAt:null};
+      if(ctx.graph.runPolicy?.schedule){const schedule=ctx.graph.runPolicy.schedule;ctx.trigger={state:'PENDING',armedAt:null,firedAt:null,missedAt:null};if(schedule.kind!=='ONCE'){const identity=toSnapshotJson(session.player??{});if(['playerId','worldId'].some(key=>!(typeof identity[key]==='string'&&identity[key].trim()===identity[key]&&identity[key].length>0||Number.isSafeInteger(identity[key])&&identity[key]>=0)))throw fail('日周触发必须绑定明确角色与世界');Object.assign(ctx.trigger,{scheduledAt:workflowScheduledAt(schedule,ctx.startedAt),playerId:String(identity.playerId),worldId:String(identity.worldId)});}}
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.sessionSignal?.addEventListener('abort', ctx.externalAbort, { once: true });
       if(ctx.graph.runPolicy){ctx.deadlineTimer=setTimeout(()=>{if(context!==ctx||!ACTIVE.has(ctx.status))return;ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';ctx.cancel.abort();if(ctx.status==='AWAITING_AUTHORIZATION')task=finish(ctx,'STOPPED',ctx.limitReason).then(getStatus);},ctx.graph.runPolicy.maxDurationMs);}
-      if(ctx.trigger){const at=Date.parse(ctx.graph.runPolicy.schedule.at);if(at<=clock()){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','明确触发时间已错过，按SKIP跳过且不补跑');return getStatus();}if(at>=Date.parse(ctx.expiresAt)){await finish(ctx,'STOPPED','明确触发时间不在本次有限运行期限内');return getStatus();}}
+      if(ctx.trigger){const at=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at);if(at<=clock()){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','明确触发时间已错过，按SKIP跳过且不补跑');return getStatus();}if(at>=Date.parse(ctx.expiresAt)){await finish(ctx,'STOPPED','明确触发时间不在本次有限运行期限内');return getStatus();}}
       try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null,...(ctx.graph.runPolicy?{expiresAt:ctx.expiresAt,graph:ctx.graph}:{})}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx);ctx.authorizationOffer=operations.workflowAuthorizationOffer?.(session,ctx.runId)??null; await onUpdate(getStatus()); current(ctx); }
       catch (error) { await finish(ctx, ctx.limitReason || ['WORKFLOW_LIMIT','SCHEDULE_MISSED'].includes(error.code) ? 'STOPPED' : error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', ctx.limitReason ?? error.message); throw error; }
-      if(ctx.trigger){ctx.status='WAITING';ctx.trigger.state='WAITING';ctx.trigger.armedAt=now();if(clock()>=Date.parse(ctx.graph.runPolicy.schedule.at)){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','启动已错过触发时间，按SKIP跳过');return getStatus();}try{await onUpdate(getStatus());current(ctx);if(clock()>=Date.parse(ctx.graph.runPolicy.schedule.at)){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','等待状态落盘前已错过触发时间，按SKIP跳过');return getStatus();}}catch(error){await finish(ctx,'FAILED',error.message);return getStatus();}task=waitScheduledStart(ctx);return getStatus();}
+      if(ctx.trigger){ctx.status='WAITING';ctx.trigger.state='WAITING';ctx.trigger.armedAt=now();if(clock()>=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at)){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','启动已错过触发时间，按SKIP跳过');return getStatus();}try{await onUpdate(getStatus());current(ctx);if(clock()>=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at)){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','等待状态落盘前已错过触发时间，按SKIP跳过');return getStatus();}}catch(error){await finish(ctx,'FAILED',error.message);return getStatus();}task=waitScheduledStart(ctx);return getStatus();}
       task = advance(ctx); return await task;
     } finally { starting = false; }
   }
   async function waitScheduledStart(ctx){
-    try{const at=Date.parse(ctx.graph.runPolicy.schedule.at);while(clock()<at){current(ctx);let timer;try{await cancelled(ctx,new Promise(resolve=>{timer=setTimeout(resolve,Math.min(at-clock(),WORKFLOW_LIMITS.waitMs));}));}finally{clearTimeout(timer);}}current(ctx);if(ctx.authorizationTask)await cancelled(ctx,ctx.authorizationTask);current(ctx);ctx.trigger.state='FIRED';ctx.trigger.firedAt=now();ctx.status='RUNNING';await onUpdate(getStatus());current(ctx);return await advance(ctx);}
+    try{const at=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at);while(clock()<at){current(ctx);let timer;try{await cancelled(ctx,new Promise(resolve=>{timer=setTimeout(resolve,Math.min(at-clock(),WORKFLOW_LIMITS.waitMs));}));}finally{clearTimeout(timer);}}current(ctx);if(ctx.authorizationTask)await cancelled(ctx,ctx.authorizationTask);current(ctx);ctx.trigger.state='FIRED';ctx.trigger.firedAt=now();ctx.status='RUNNING';await onUpdate(getStatus());current(ctx);return await advance(ctx);}
     catch(error){if(ctx.authorizationTask){operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,ctx.limitReason?'STOPPED':'CANCELLED');await ctx.authorizationTask;}await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':'FAILED',ctx.limitReason??error.message);return getStatus();}
   }
   function stop() { if (!context || !ACTIVE.has(context.status)) return getStatus(); const ctx = context; ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '用户已停止工作流；不会消费或继承计划授权').then(getStatus); return getStatus(); }
@@ -328,7 +352,7 @@ function authorizeRun(payload){
  const ctx=context,scheduled=ctx?.status==='WAITING'&&ctx.trigger?.state==='WAITING';
  if(starting||resuming||authorizing||finishing||!ctx||!(scheduled||ctx.status==='AWAITING_AUTHORIZATION'&&ctx.waitingPlan)||ctx.runAuthorization||!ctx.authorizationOffer||typeof operations.authorizeWorkflow!=='function')throw fail('当前没有可明确授权的有限运行范围','AUTHORIZATION_REQUIRED');
  exact(payload,['offer','batchId','planHash','confirm'],'有限运行确认');current(ctx);
- const invalidScope=payload.confirm!==true||!plain(payload.offer)||workflowJsonDigest(payload.offer)!==workflowJsonDigest(ctx.authorizationOffer),invalidContext=scheduled?(payload.batchId!==null||payload.planHash!==null||clock()>=Date.parse(ctx.graph.runPolicy.schedule.at)):(payload.batchId!==ctx.waitingPlan.batchId||payload.planHash!==ctx.waitingPlan.planHash);if(invalidScope||invalidContext)throw fail('授权范围与当前暂停计划或时间触发不一致','AUTHORIZATION_REQUIRED');
+ const invalidScope=payload.confirm!==true||!plain(payload.offer)||workflowJsonDigest(payload.offer)!==workflowJsonDigest(ctx.authorizationOffer),invalidContext=scheduled?(payload.batchId!==null||payload.planHash!==null||clock()>=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at)):(payload.batchId!==ctx.waitingPlan.batchId||payload.planHash!==ctx.waitingPlan.planHash);if(invalidScope||invalidContext)throw fail('授权范围与当前暂停计划或时间触发不一致','AUTHORIZATION_REQUIRED');
  authorizing=true;if(!scheduled)ctx.status='RUNNING';
  const work=(async()=>{try{current(ctx);await operations.authorizeWorkflow(ctx.session,payload,async audit=>{current(ctx);ctx.runAuthorization=copy(audit);await onUpdate(getStatus());current(ctx);});current(ctx);authorizing=false;if(scheduled)return getStatus();if(await executeAuthorizedBatch(ctx))return await advance(ctx);return getStatus();}
  catch(error){if(scheduled)ctx.cancel.abort();await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':'FAILED',ctx.limitReason??error.message);return getStatus();}finally{authorizing=false;}})();
@@ -394,7 +418,7 @@ function workflowRunAuthorizationLink(workflowRun,run){
  if(![childApproved,started,approved,expires].every(Number.isFinite))return missing('AUTHORIZATION_TIME_UNAVAILABLE');
  if(childApproved<approved||childApproved>=expires||started<childApproved||started>=expires)return conflict('AUTHORIZATION_TIME_OUTSIDE_SCOPE');
  if(scope.graph.runPolicy.maxRounds!==undefined&&(!Number.isSafeInteger(run.workflowRound)||run.workflowRound<1||run.workflowRound>scope.graph.runPolicy.maxRounds||run.planSummary?.workflowRound!==run.workflowRound))return conflict('ROUND_SCOPE_MISMATCH');
- if(scope.graph.runPolicy.schedule){const trigger=workflowRun.trigger,at=Date.parse(scope.graph.runPolicy.schedule.at);if(trigger?.state!=='FIRED')return missing('TRIGGER_EVIDENCE_UNAVAILABLE');if(started<at||childApproved<at||childApproved<Date.parse(trigger.firedAt))return conflict('TRIGGER_TIME_OUTSIDE_SCOPE');}
+ if(scope.graph.runPolicy.schedule){const trigger=workflowRun.trigger,at=Date.parse(scope.scheduledAt??scope.graph.runPolicy.schedule.at);if(trigger?.state!=='FIRED')return missing('TRIGGER_EVIDENCE_UNAVAILABLE');if(started<at||childApproved<at||childApproved<Date.parse(trigger.firedAt))return conflict('TRIGGER_TIME_OUTSIDE_SCOPE');}
  const plan=run.planSummary,node=scope.graph.nodes.find(row=>row.id===run.workflowNodeId&&row.type==='ACTION'),selection=node?.selection;
  if(!node||node.module!==run.module||plan.mode!=='Manual'||plan.actions.length!==1||workflowJsonDigest(plan.parameters??{})!==workflowJsonDigest(node.parameters??{})||selection?.unique!==true&&plan.actions[0].actionId!==(typeof selection==='string'?selection:selection?.actionId))return conflict('GRAPH_STRATEGY_MISMATCH');
  if(!plan.runBudgetIdentity||plan.moduleConfig===undefined)return missing('CHILD_CONTRACT_UNAVAILABLE');
@@ -526,7 +550,9 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;
     if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => ({...Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]])),...traceEvidence(row)})); }
-    const raw = read(), account = entry(raw, accountId); account.history = [safe, ...account.history.filter(existing => existing.runId !== safe.runId)]; write(raw); return copy(safe);
+    const raw = read(), account = entry(raw, accountId);
+    if(safe.trigger?.scheduledAt&&(safe.status==='STARTING'||safe.trigger.state==='FIRED')&&account.history.some(existing=>existing.runId!==safe.runId&&existing.workflowId===safe.workflowId&&existing.trigger?.state==='FIRED'&&existing.trigger.scheduledAt===safe.trigger.scheduledAt&&existing.trigger.playerId===safe.trigger.playerId&&existing.trigger.worldId===safe.trigger.worldId))throw fail('本角色世界该图的具体日历时刻已触发；不因回拨或重启重放','WORKFLOW_TRIGGER_CONSUMED');
+    account.history = [safe, ...account.history.filter(existing => existing.runId !== safe.runId)]; write(raw); return copy(safe);
   }
   function history(accountId, { liveRunId = null, runId = null } = {}) {
     const raw = read();
