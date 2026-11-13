@@ -273,10 +273,18 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function extremeFormations(session,payload={}) {exact(payload,[]);return withExtremeFormationRead(session,'SURVEY',null);}
   async function prepareExtremeFormationSource(session,payload) {const parameters=validateExtremeFormationParameters(payload);return withExtremeFormationRead(session,'PREPARE',parameters);}
   function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
-  function claimWorkflow(session, runId, { limits = null } = {}) {
+  function assertWorkflowDeadline(session, runId) {
+    const parent = workflowBudgets.get(session.id);
+    if (parent?.runId === runId && parent.expiresAt !== null && clock() >= Date.parse(parent.expiresAt)) {
+      parent.context?.close('STOPPED');
+      throw error('工作流运行期限已到，旧计划与授权不可续用', 'RUN_BUDGET_CLOSED');
+    }
+  }
+  function claimWorkflow(session, runId, { limits = null, expiresAt = null } = {}) {
+    if (expiresAt !== null && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= clock() || limits === null)) throw error('工作流运行期限必须有效且具有明确累计预算', 'INVALID_INPUT', 400);
     const release = acquire(session, 'operations:WORKFLOW_CLAIM'); release(); const owner={generation:session.generation,client:session.client}; workflowOwners.set(session,owner); session.workflowOwner=runId; session.busy='workflow:'+runId;
     const scope = parentScope(session, runId);
-    try { workflowBudgets.set(session.id, { runId, scope, limits: limits === null ? null : normalizeBudgetClaims(limits), context: limits === null ? null : createRunBudgetContext({ scope, limits }) }); } catch (cause) { session.workflowOwner=null; session.busy=null; throw cause; }
+    try { workflowBudgets.set(session.id, { runId, scope, expiresAt, limits: limits === null ? null : normalizeBudgetClaims(limits), context: limits === null ? null : createRunBudgetContext({ scope, limits }) }); } catch (cause) { session.workflowOwner=null; session.busy=null; throw cause; }
     const heldBudget=workflowBudgets.get(session.id);
     return () => { heldBudget.context?.close('STOPPED'); if(workflowOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client || session.workflowOwner!==runId)return; workflowOwners.delete(session); if(plans.get(session.id)?.workflowId===runId)plans.delete(session.id); session.workflowOwner=null; if(session.busy==='workflow:'+runId)session.busy=null; };
   }
@@ -340,7 +348,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const resourceBudget=budgetClaims.resources;
       const createdAt = now(), batchId = randomUUID(), expiresAt = new Date(clock() + 300000).toISOString();
       let parent = null;
-      if (workflowId) { parent = workflowBudgets.get(session.id); if (!parent || parent.runId !== workflowId) throw error('工作流父预算不存在', 'RUN_BUDGET_SCOPE_MISMATCH'); if (!parent.context) { parent.limits = stockLimits(facts.stock); parent.context = createRunBudgetContext({scope:parent.scope,limits:parent.limits}); } parent.context.assertScope(parentScope(session,workflowId)); }
+      if (workflowId) { parent = workflowBudgets.get(session.id); if (!parent || parent.runId !== workflowId) throw error('工作流父预算不存在', 'RUN_BUDGET_SCOPE_MISMATCH'); if (!parent.context) { parent.limits = stockLimits(facts.stock); parent.context = createRunBudgetContext({scope:parent.scope,limits:parent.limits}); } assertWorkflowDeadline(session,workflowId); parent.context.assertScope(parentScope(session,workflowId)); }
       const summary = { ...(workflowContext?{workflowDefinitionId:workflowContext.workflowId,workflowNodeId:workflowContext.nodeId}:{}), ...(parent ? { parentRunId: workflowId, runBudgetIdentity: { scope: clone(parent.scope), limits: clone(parent.limits) } } : {}), batchId, accountId: session.id, module, mode, actions: operations.map(publicAction), resourceBudget, budgetClaims, productionPolicy: production, ...(adapter ? { moduleConfig, parameters: normalizedParameters } : {}), createdAt, expiresAt,
         notes: ['授权仅覆盖本批次具体操作；新订单和新计划需要重新授权', 'UNKNOWN 停止批次并保留预算；不自动重试'] };
       const preparation=module==='formation'?extremePreparations.get(session.id):null;
@@ -358,7 +366,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     current(session, entry.generation, entry.client);
     if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化，请重新规划','STALE_PLAN');
     if ((session.workflowOwner ?? null) !== entry.workflowId) throw error('工作流归属已变化，重新规划', 'STALE_PLAN');
-    if (entry.workflowId) { const parent=workflowBudgets.get(session.id); if (!parent?.context || parent.runId!==entry.workflowId) throw error('工作流父预算已结束','RUN_BUDGET_CLOSED'); parent.context.assertScope(parentScope(session,entry.workflowId)); if(operationDigest({scope:parent.scope,limits:parent.limits})!==operationDigest(entry.public.runBudgetIdentity))throw error('父预算授权已变化','STALE_PLAN'); }
+    if (entry.workflowId) { const parent=workflowBudgets.get(session.id); if (!parent?.context || parent.runId!==entry.workflowId) throw error('工作流父预算已结束','RUN_BUDGET_CLOSED'); assertWorkflowDeadline(session,entry.workflowId); parent.context.assertScope(parentScope(session,entry.workflowId)); if(operationDigest({scope:parent.scope,limits:parent.limits})!==operationDigest(entry.public.runBudgetIdentity))throw error('父预算授权已变化','STALE_PLAN'); }
     if (entry.dependencyHash) { const adapter=modules[entry.public.module]; const versions=adapter.dependencyVersions({config:getConfig(),rules:loadRules(session.id).config,productionPolicy:loadProduction(session.id).config,moduleConfig:moduleSettings.get(session.id,entry.public.module).config,mode:entry.public.mode,parameters:entry.public.parameters??{},player:session.player}); if(operationDigest(versions)!==entry.dependencyHash)throw error('业务相关配置已变化，请重新规划','STALE_PLAN'); return entry; }
     if (entry.moduleHash && operationDigest(moduleSettings.get(session.id,entry.public.module).config) !== entry.moduleHash) throw error('玩法配置已变化，重新规划', 'STALE_PLAN');
     if (operationDigest(loadProduction(session.id).config) !== entry.productionHash) throw error('生产策略已变化，必须重新规划授权', 'STALE_PLAN');
@@ -396,6 +404,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const authorizedCurrent = () => {
       current(session, generation, client);
       if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化','NOT_EXECUTED');
+      if(entry.workflowId)assertWorkflowDeadline(session,entry.workflowId);
       budget.runBudget.assertScope(parentScope(session,entry.workflowId??record.runId));
       if(activeMemoryOperation)assertMemoryAction(session,activeMemoryOperation,entry.memoryFacts.get(activeMemoryOperation.actionId));
       if(entry.dependencyHash){ lookup(session,{batchId:entry.public.batchId}); return; }

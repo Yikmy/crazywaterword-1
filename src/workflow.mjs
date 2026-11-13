@@ -7,7 +7,7 @@ import { normalizeBudgetClaims } from './resource-ledger.mjs';
 import { validateFunctionParameters } from './function-contracts.mjs';
 import { actionNeedsReconciliation } from './execution-history.mjs';
 
-export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072 });
+export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072, runDurationMs: 86400000, actionPlans: 200 });
 const TYPES = new Set(['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP']);
 const ACTIVE = new Set(['STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION']);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype,null].includes(Object.getPrototypeOf(value));
@@ -53,11 +53,17 @@ function validatePreparation(value) {
   }
   return copy(value);
 }
+function validateRunPolicy(value) {
+ exact(value,['maxDurationMs','maxActions','modules'],'运行边界');
+ if(!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>WORKFLOW_LIMITS.runDurationMs||!Number.isSafeInteger(value.maxActions)||value.maxActions<0||value.maxActions>WORKFLOW_LIMITS.actionPlans||!Array.isArray(value.modules)||value.modules.length>WORKFLOW_LIMITS.nodes||value.modules.some(id=>!text(id)||id.trim()!==id||id.length>100)||new Set(value.modules).size!==value.modules.length)throw fail('运行期限、动作计划上限或明确玩法范围无效');
+ return copy(value);
+}
 export function validateWorkflow(input, options = {}) {
-  exact(input, ['version','id','name','nodes','edges','budget','preparation'], '工作流');
+  exact(input, ['version','id','name','nodes','edges','budget','preparation','runPolicy'], '工作流');
   if (input.version !== 1 || !text(input.id) || input.id.length > 100 || !text(input.name) || input.name.length > 160 || !Array.isArray(input.nodes) || !input.nodes.length || input.nodes.length > WORKFLOW_LIMITS.nodes || !Array.isArray(input.edges) || input.edges.length > WORKFLOW_LIMITS.edges) throw fail('工作流版本、身份或图大小无效');
   const registry = registryOf(options); let graph; try { graph = copy(input); } catch { throw fail('工作流必须为可复制的 JSON'); } const nodes = new Map();
   if (graph.budget !== undefined) { try { graph.budget=normalizeBudgetClaims(graph.budget); } catch { throw fail('工作流预算必须为有限资源/配额/UID上限'); } }
+  if(graph.runPolicy!==undefined){graph.runPolicy=validateRunPolicy(graph.runPolicy);for(const id of graph.runPolicy.modules)registered(registry,id);if(graph.budget===undefined)throw fail('声明运行边界必须同时声明明确累计预算');}
   if (graph.preparation !== undefined) graph.preparation = validatePreparation(graph.preparation);
   const fields = {
     START: [], STOP: [], BRANCH: [], WAIT: ['durationMs'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
@@ -77,6 +83,7 @@ export function validateWorkflow(input, options = {}) {
     }
     if (['CONDITION','RULE'].includes(node.type) || node.condition !== undefined) condition(node.condition);
     if (node.type === 'WAIT' && (!Number.isSafeInteger(node.durationMs) || node.durationMs < 0 || node.durationMs > WORKFLOW_LIMITS.waitMs)) throw fail('WAIT 必须为 0–60000 毫秒');
+    if(graph.runPolicy&&node.module!==undefined&&!graph.runPolicy.modules.includes(node.module))throw fail('节点玩法超出声明运行范围');
     nodes.set(node.id, node);
   }
   const starts = graph.nodes.filter(node => node.type === 'START');
@@ -135,18 +142,20 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
   let context = null, task = null, starting = false, resuming = false, finishing = false;
   const now = () => new Date(clock()).toISOString();
-  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
+  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(context.graph.runPolicy?{runPolicy:context.graph.runPolicy,expiresAt:context.expiresAt,actionPlans:context.actionPlans}:{}), ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
   // Capture both owners: the Console session and the existing client's live
   // connection facts. Reusing a client must never inherit an old workflow.
   const connectionScope = session => [session.id, session.connectionId, session.client?.factContext?.accountId, session.client?.factContext?.generation, session.client?.factContext?.connectionId];
   const roleScope = session => [session.player?.playerId, session.player?.worldId].map(value => { const normalized=toSnapshotJson(value); return typeof normalized==='number'||typeof normalized==='string'?String(normalized):JSON.stringify(normalized); });
   function current(ctx) {
+    if(ctx.graph.runPolicy&&clock()>=Date.parse(ctx.expiresAt)){ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';throw fail(ctx.limitReason,'WORKFLOW_LIMIT');}
     if (ctx.cancel.signal.aborted || signal?.aborted || context !== ctx || ![...ACTIVE].includes(ctx.status) || ctx.session.abort?.signal?.aborted) throw fail('工作流已取消或账号会话失效', 'CANCELLED');
     if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || ctx.client?.connected === false || ctx.session.abort?.signal !== ctx.sessionSignal || connectionScope(ctx.session).some((value,index) => value !== ctx.connectionScope[index]) || roleScope(ctx.session).some((value,index) => value !== ctx.roleScope[index]) || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话或连接已切换', 'CANCELLED');
   }
   async function relinquish(ctx) { if (!ctx.claimed) return; ctx.claimed = false; if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId); }
-  async function finish(ctx, status, reason) {
-    finishing=true;
+  function finish(ctx,status,reason){if(!ctx.finishTask)ctx.finishTask=finishWork(ctx,status,reason);return ctx.finishTask;}
+  async function finishWork(ctx, status, reason) {
+    clearTimeout(ctx.deadlineTimer);finishing=true;
     ctx.status=status; ctx.reason=reason; ctx.finishedAt=now(); ctx.waitingPlan=null;
     signal?.removeEventListener('abort',ctx.externalAbort); ctx.sessionSignal?.removeEventListener('abort',ctx.externalAbort);
     // Close the parent immediately but retain the owner until its operation settles.
@@ -169,10 +178,11 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       while (true) {
         current(ctx); if (++ctx.steps > WORKFLOW_LIMITS.steps) throw fail('工作流步骤上限已达到', 'WORKFLOW_UNKNOWN');
         const node = ctx.graph.nodes.find(entry => entry.id === ctx.nodeId);
-        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) || ctx.graph.preparation?.blocked.length ? '工作流到达 STOP；含未执行的阻塞节点或编译未纳入步骤，详情见运行历史' : '工作流到达 STOP'); break; }
+        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); current(ctx); await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) || ctx.graph.preparation?.blocked.length ? '工作流到达 STOP；含未执行的阻塞节点或编译未纳入步骤，详情见运行历史' : '工作流到达 STOP'); break; }
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'SURVEY') { ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx); ctx.surveyModule = node.module; await trace(ctx, node, 'SURVEYED'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'ACTION') {
+          if(ctx.graph.runPolicy&&ctx.actionPlans>=ctx.graph.runPolicy.maxActions)throw fail('累计动作计划已到声明上限','WORKFLOW_LIMIT');
           ctx.lastPlan = null; ctx.lastRun = null; ctx.lastActionModule = null;
           operations.bindWorkflowNode?.(ctx.session,ctx.runId,{workflowId:ctx.graph.id,nodeId:node.id});
           let selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;
@@ -189,6 +199,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
             selectedId = candidates[0].actionId;
           }
           let plan;
+          if(ctx.graph.runPolicy){ctx.actionPlans++;await onUpdate(getStatus());current(ctx);}
           try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx); }
           catch (error) {
             current(ctx);
@@ -213,7 +224,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
         }
         throw fail('节点未通过静态注册验证', 'WORKFLOW_UNKNOWN');
       }
-    } catch (error) { await finish(ctx, error.code === 'CANCELLED' ? 'CANCELLED' : error.code === 'WORKFLOW_UNKNOWN' ? 'UNKNOWN' : 'FAILED', error.code === 'CANCELLED' ? '工作流已停止或账号会话失效' : error.message); }
+    } catch (error) { await finish(ctx, ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code === 'CANCELLED' ? 'CANCELLED' : error.code === 'WORKFLOW_UNKNOWN' ? 'UNKNOWN' : 'FAILED',ctx.limitReason??(error.code === 'CANCELLED' ? '工作流已停止或账号会话失效' : error.message)); }
     return getStatus();
   }
   async function start(accountId, graph) {
@@ -223,9 +234,11 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     try {
       const session = await getSession(accountId); if (!session || session.id !== accountId) throw fail('工作流账号会话不存在');
       const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
+      if(ctx.graph.runPolicy){ctx.expiresAt=new Date(clock()+ctx.graph.runPolicy.maxDurationMs).toISOString();ctx.actionPlans=0;}
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.sessionSignal?.addEventListener('abort', ctx.externalAbort, { once: true });
-      try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
-      catch (error) { await finish(ctx, error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', error.message); throw error; }
+      if(ctx.graph.runPolicy){ctx.deadlineTimer=setTimeout(()=>{if(context!==ctx||!ACTIVE.has(ctx.status))return;ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';ctx.cancel.abort();if(ctx.status==='AWAITING_AUTHORIZATION')task=finish(ctx,'STOPPED',ctx.limitReason).then(getStatus);},ctx.graph.runPolicy.maxDurationMs);}
+      try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null,...(ctx.graph.runPolicy?{expiresAt:ctx.expiresAt}:{})}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
+      catch (error) { await finish(ctx, ctx.limitReason || error.code === 'WORKFLOW_LIMIT' ? 'STOPPED' : error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', ctx.limitReason ?? error.message); throw error; }
       task = advance(ctx); return await task;
     } finally { starting = false; }
   }
@@ -264,7 +277,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       ctx.lastRun = copy(matches[0]); ctx.waitingPlan = null; ctx.status = 'RUNNING'; ctx.reason = null;
       ctx.nodeId = next(ctx); await onUpdate(getStatus()); current(ctx); task = advance(ctx); return await task;
     } catch (error) {
-      await finish(ctx, error.code === 'CANCELLED' ? 'CANCELLED' : 'UNKNOWN', '无法确认或持久化当前批次执行历史，工作流已停止');
+      await finish(ctx, ctx.limitReason || error.code === 'WORKFLOW_LIMIT' ? 'STOPPED' : error.code === 'CANCELLED' ? 'CANCELLED' : 'UNKNOWN', ctx.limitReason ?? (error.code === 'WORKFLOW_LIMIT' ? error.message : '无法确认或持久化当前批次执行历史，工作流已停止'));
       return getStatus();
     } finally { resuming = false; }
   }
@@ -348,7 +361,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
         verificationStatus: row.verification?.status ?? null, needsReconciliation: actionNeedsReconciliation(run, row),
         reconciliationStatus: Array.isArray(row.reconciliations) ? row.reconciliations.at(-1)?.status ?? null : null })) });
   }
-  return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
+  return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.runPolicy?{runPolicy:validateRunPolicy(workflowRun.runPolicy),expiresAt:workflowRun.expiresAt,actionPlans:workflowRun.actionPlans}:{}), ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
     waits: trace.filter(row=>row?.type==='WAIT').map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
@@ -364,7 +377,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
         || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
-    try { if (run.preparation !== undefined) validatePreparation(run.preparation); } catch { return false; }
+    try { if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
     if (run.trace === undefined) return true;
     if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
@@ -415,9 +428,9 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }
   function save(accountId, graph) { const validated = validateWorkflow(graph, { modules }).workflow, raw = read(), account = entry(raw, accountId); account.workflows = [validated, ...account.workflows.filter(existing => existing.id !== validated.id)]; write(raw); return copy(validated); }
   function record(accountId, run) {
-    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation'];
+    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
-    if (run.preparation !== undefined) validatePreparation(run.preparation);
+    if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');}
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;
     if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => ({...Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]])),...traceEvidence(row)})); }

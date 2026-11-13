@@ -343,3 +343,49 @@ test('WAIT duration audit rejects non-WAIT, unsupported results and invalid dura
   assert.throws(()=>store.record('A',{runId:'invalid',workflowId:'wf',status:'WAITING',trace:[{...base,...change}]}));assert.equal(fs.readFileSync(file,'utf8'),bytes);
  }
 });
+
+const boundedGraph=(g=graph(),policy={})=>({...g,budget:{resources:[],quotas:[],uids:[]},runPolicy:{maxDurationMs:10000,maxActions:1,modules:['fixture'],...policy}});
+test('run boundaries require explicit budget, finite limits and precise module coverage, while legacy graphs remain valid',()=>{
+ assert.equal(validateWorkflow(boundedGraph(),{modules}).valid,true);assert.equal(Object.hasOwn(validateWorkflow(graph(),{modules}).workflow,'runPolicy'),false);
+ for(const change of [g=>delete g.budget,g=>g.runPolicy=null,g=>g.runPolicy.extra=true,g=>g.runPolicy.maxDurationMs=0,g=>g.runPolicy.maxDurationMs=86400001,g=>g.runPolicy.maxDurationMs='10',g=>g.runPolicy.maxActions=-1,g=>g.runPolicy.maxActions=201,g=>g.runPolicy.maxActions=0.5,g=>g.runPolicy.modules=[],g=>g.runPolicy.modules=['fixture','fixture'],g=>g.runPolicy.modules=[' fixture']]){
+  const g=boundedGraph();change(g);assert.throws(()=>validateWorkflow(g,{modules}),{code:'WORKFLOW_INVALID'});
+ }
+ assert.equal(validateWorkflow(boundedGraph(readOnly(),{modules:[],maxActions:0}),{modules}).valid,true);
+});
+test('zero action-plan cap never asks the service to plan or authorize',async()=>{
+ const f=fixture(),status=await f.runner.start(f.session.id,boundedGraph(graph(),{maxActions:0}));assert.equal(status.status,'STOPPED');assert.equal(status.actionPlans,0);assert.equal(f.calls.some(c=>c[0]==='plan'),false);assert.equal(f.released(),1);
+});
+test('action-plan cap is cumulative across explicit batch confirmations',async()=>{
+ const f=fixture(),g=boundedGraph();g.nodes.splice(4,0,{id:'a2',type:'ACTION',module:'fixture',selection:'operation-2'});g.edges=g.edges.filter(e=>e.from!=='v');g.edges.push({from:'v',to:'a2'},{from:'a2',to:'z'});
+ const first=await f.runner.start(f.session.id,g);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(first.actionPlans,1);f.runs.push(f.success());const result=await f.runner.resume();assert.equal(result.status,'STOPPED');assert.equal(result.actionPlans,1);assert.equal(f.calls.filter(c=>c[0]==='plan').length,1);assert.equal(f.released(),1);
+});
+test('authorization pause expires without resume and closes the existing parent before release',async()=>{
+ let closed=0;const f=fixture({closeWorkflowBudget(){closed++;}}),first=await f.runner.start(f.session.id,boundedGraph(graph(),{maxDurationMs:80}));assert.equal(first.status,'AWAITING_AUTHORIZATION');await new Promise(resolve=>setTimeout(resolve,120));const result=await f.runner.settle();assert.equal(result.status,'STOPPED');assert.equal(result.plan,null);assert.equal(closed,1);assert.equal(f.released(),1);await assert.rejects(f.runner.resume());assert.equal(f.calls.filter(c=>c[0]==='plan').length,1);
+});
+test('WAIT deadline cancels remaining nodes and clears the wait timer',async()=>{
+ const f=fixture(),result=await f.runner.start(f.session.id,boundedGraph(readOnly(60000),{maxDurationMs:25,modules:[],maxActions:0}));assert.equal(result.status,'STOPPED');assert.ok(result.trace.some(r=>r.result==='WAIT_STARTED'));assert.equal(result.trace.some(r=>r.result==='WAITED'||r.result==='STOP'),false);assert.equal(f.released(),1);
+});
+test('expired pending plan and its late result cannot revive the run or leak its timer into a replacement',async()=>{
+ let resolvePlan,entered;const pending=new Promise(r=>resolvePlan=r),planning=new Promise(r=>entered=r);const f=fixture({plan(){entered();return pending;}}),starting=f.runner.start(f.session.id,boundedGraph(graph(),{maxDurationMs:40}));await planning;assert.equal((await starting).status,'STOPPED');assert.equal(f.released(),1);resolvePlan(f.plan);await new Promise(r=>setImmediate(r));assert.equal(f.runner.getStatus().plan,null);assert.equal((await f.runner.start(f.session.id,readOnly())).status,'COMPLETED');assert.equal(f.released(),2);
+});
+test('startup claim time counts towards the same deadline and late ownership is released',async()=>{
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};let releaseClaim,entered,released=0,planned=0;const claimGate=new Promise(r=>releaseClaim=r),claimed=new Promise(r=>entered=r);const runner=createWorkflowRunner({modules,getSession:()=>session,claim:async()=>{entered();await claimGate;return()=>released++;},operations:{surveyModule(){planned++;},plan(){planned++;},history(){return{runs:[]};}}});
+ const starting=runner.start('A',boundedGraph(readOnly(),{modules:[],maxDurationMs:20,maxActions:0}));const rejected=assert.rejects(starting,{code:'WORKFLOW_LIMIT'});await claimed;await new Promise(r=>setTimeout(r,40));releaseClaim();await rejected;assert.equal(runner.getStatus().status,'STOPPED');assert.equal(planned,0);assert.equal(released,1);
+});
+test('clock deadline during resume rejects even a successful exact batch without a later node',async()=>{
+ let time=1000;const session={id:'A',generation:1,client:{},abort:new AbortController()},runs=[];let planned=0,released=0;
+ const runner=createWorkflowRunner({modules,clock:()=>time,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:()=>({}),plan:()=>{planned++;return{accountId:'A',module:'fixture',batchId:'b',planHash:'h',actions:[{actionId:'operation-1'}]};},history:()=>({runs})}});
+ const first=await runner.start('A',boundedGraph());runs.push({accountId:'A',runId:'r',finishedAt:'done',finalStatus:'SUCCESS',planSummary:{batchId:'b',planHash:'h'},actions:[{actionId:'operation-1',result:'SUCCESS',verification:'CONFIRMED'}]});time=Date.parse(first.expiresAt);const result=await runner.resume();assert.equal(result.status,'STOPPED');assert.equal(result.trace.some(r=>r.type==='VERIFY'),false);assert.equal(planned,1);assert.equal(released,1);
+});
+test('action count must be durably recorded before plan creation',async()=>{
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};let planned=0,released=0;const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:()=>({}),plan:()=>{planned++;},history:()=>({runs:[]})},onUpdate:state=>{if(state.actionPlans===1)throw Error('synthetic write failure');}});
+ assert.equal((await runner.start('A',boundedGraph())).status,'FAILED');assert.equal(planned,0);assert.equal(released,1);
+});
+test('bounded UNKNOWN stays terminal, and boundaries persist across restart without restoring execution',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-bounded-workflow-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),g=boundedGraph(),f=fixture();store.save(f.session.id,g);const first=await f.runner.start(f.session.id,g);store.record(f.session.id,first);const restarted=createWorkflowStore({file,modules});assert.deepEqual(restarted.list(f.session.id)[0].runPolicy,g.runPolicy);const recovered=restarted.history(f.session.id)[0];assert.equal(recovered.status,'RECOVERED_STOPPED');assert.equal(recovered.expiresAt,first.expiresAt);assert.equal(recovered.actionPlans,1);assert.equal(recovered.resumable,false);assert.deepEqual(restarted.history('B'),[]);
+ f.runs.push(f.success({finalStatus:'UNKNOWN'}));const unknown=await f.runner.resume();assert.equal(unknown.status,'UNKNOWN');store.record(f.session.id,unknown);assert.equal(restarted.history(f.session.id)[0].status,'UNKNOWN');await assert.rejects(f.runner.resume());assert.equal(f.calls.filter(c=>c[0]==='plan').length,1);
+ const bytes=fs.readFileSync(file,'utf8');for(const change of [{actionPlans:2},{actionPlans:-1},{expiresAt:'invalid'},{runPolicy:{...g.runPolicy,allowRetry:true}}]){assert.throws(()=>store.record(f.session.id,{...unknown,...change}));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
+});
+for(const mutate of [s=>s.generation++,s=>s.client={},s=>s.player={playerId:'replacement'},s=>s.connectionId='new'])test('bounded run still rejects changed account execution identity '+String(mutate),async()=>{
+ const f=fixture();await f.runner.start(f.session.id,boundedGraph());f.runs.push(f.success());mutate(f.session);assert.equal((await f.runner.resume()).status,'CANCELLED');assert.equal(f.calls.filter(c=>c[0]==='plan').length,1);assert.equal(f.released(),1);
+});

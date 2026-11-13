@@ -1879,3 +1879,44 @@ test('workflow edge drag locks during pending and running requests and never res
 test('workflow edge drag cannot cross account generations, stale targets or late response replacement',async()=>{
  const h=await parameterPage(),handle=workflowEdgeDragHandle(h,'business'),target=workflowEdgeDrop(h,'stop'),event=workflowDragEvent();handle.ondragstart(event);const read=h.node('wf-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await read;const source=h.node('wf-json').value;handle.ondragstart(event);target.ondrop(event);assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
 });
+
+function policyDraft(h,{enabled=true,duration='60000',actions='1',modules='free-gold'}={}){
+ h.node('wf-policy-enabled').checked=enabled;h.node('wf-policy-enabled').onchange();for(const [key,value]of Object.entries({duration,actions,modules})){h.node('wf-policy-'+key).value=value;h.node('wf-policy-'+key).oninput();}
+}
+test('run boundary form applies only explicit finite policy to the existing graph without authorization',async()=>{
+ const h=await parameterPage('free-gold'),before=conditionGraph(h),intent=h.node('wf-unified-intent').value;assert.equal(h.node('wf-policy-enabled').checked,false);assert.equal(h.node('wf-policy-duration').value,'');policyDraft(h);h.node('wf-policy-apply').click();assert.equal(Object.hasOwn(conditionGraph(h),'runPolicy'),false);assert.match(h.node('wf-policy-hint').textContent,/预算/);
+ graphBudgetEnable(h);h.node('wf-budget-apply').click();h.node('wf-policy-apply').click();const graph=conditionGraph(h);assert.deepEqual(graph.runPolicy,{maxDurationMs:60000,maxActions:1,modules:['free-gold']});assert.deepEqual(graph.nodes,before.nodes);assert.deepEqual(graph.edges,before.edges);assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});assert.equal(h.node('wf-unified-intent').value,intent);assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);assert.equal(writes(h).length,0);
+ graphBudgetEnable(h,false);h.node('wf-budget-apply').click();assert.equal(Object.hasOwn(conditionGraph(h),'budget'),true);assert.match(h.node('wf-budget-hint').textContent,/先明确移除运行边界/);
+ policyDraft(h,{enabled:false});h.node('wf-policy-apply').click();assert.equal(Object.hasOwn(conditionGraph(h),'runPolicy'),false);assert.equal(Object.hasOwn(conditionGraph(h),'budget'),true);
+});
+test('run boundary drafts reject blank, invalid, excessive or out-of-scope fields atomically',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();const source=h.node('wf-json').value;
+ for(const bad of [{duration:''},{duration:'0'},{duration:'86400001'},{duration:'1e3'},{duration:'1.5'},{duration:' 1'},{actions:''},{actions:'201'},{actions:'-1'},{modules:''},{modules:'formation'},{modules:'free-gold\nfree-gold'},{modules:'free-gold\nunknown'},{modules:' free-gold'}]){policyDraft(h,bad);h.node('wf-policy-apply').click();assert.equal(h.node('wf-json').value,source,JSON.stringify(bad));}
+ policyDraft(h,{duration:'86400000',actions:'0',modules:'free-gold\nformation'});h.node('wf-policy-apply').click();assert.deepEqual(conditionGraph(h).runPolicy,{maxDurationMs:86400000,maxActions:0,modules:['free-gold','formation']});assert.equal(writes(h).length,0);
+});
+test('run boundary draft survives original graph rerenders but old graph and account callbacks cannot apply it',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h,{duration:'1234',actions:'0'});const oldApply=h.node('wf-policy-apply').onclick,oldInput=h.node('wf-policy-duration').oninput;workflowCardButton(h,'business','上移').click();assert.equal(h.node('wf-policy-duration').value,'1234');assert.equal(h.node('wf-policy-actions').value,'0');
+ const g=conditionGraph(h);g.id='replacement';h.node('wf-json').value=JSON.stringify(g);h.node('wf-json-apply').click();const source=h.node('wf-json').value;oldApply();oldInput();assert.equal(h.node('wf-json').value,source);assert.equal(h.node('wf-policy-enabled').checked,false);
+ policyDraft(h);const apply=h.node('wf-policy-apply').onclick;h.run("selectAccount('B');selectAccount('A')");const reset=h.node('wf-json').value;apply();assert.equal(h.node('wf-json').value,reset);assert.equal(h.node('wf-policy-duration').value,'');assert.equal(writes(h).length,0);
+});
+test('run boundary edits lock during reads and active runs while retaining the unapplied draft',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h,{duration:'4321'});const source=h.node('wf-json').value,apply=h.node('wf-policy-apply').onclick,edit=h.node('wf-policy-duration').oninput;
+ const loading=h.node('wf-load').click();for(const key of ['enabled','duration','actions','modules','apply'])assert.equal(h.node('wf-policy-'+key).disabled,true,key);apply();edit();assert.equal(h.node('wf-json').value,source);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION',runId:'active'},graphs:[],history:[]});await loading;apply();assert.equal(h.node('wf-json').value,source);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;assert.equal(h.node('wf-policy-duration').value,'4321');h.node('wf-policy-apply').click();assert.equal(conditionGraph(h).runPolicy.maxDurationMs,4321);assert.equal(writes(h).length,0);
+});
+test('invalid persisted run boundaries remain intact until explicit full JSON correction',async()=>{
+ for(const runPolicy of [null,{maxDurationMs:1,maxActions:0,modules:['free-gold'],allowRetry:true},{maxDurationMs:60000,maxActions:1,modules:['<img onerror=alert(1)>']},{maxDurationMs:'1000',maxActions:1,modules:['free-gold']}]){
+  const h=await parameterPage('free-gold'),g=conditionGraph(h);g.runPolicy=runPolicy;h.node('wf-json').value=JSON.stringify(g);h.node('wf-json-apply').click();const source=h.node('wf-json').value;assert.equal(h.node('wf-policy-apply').disabled,true);h.node('wf-policy-apply').click();assert.equal(h.node('wf-json').value,source);assert.deepEqual(conditionGraph(h).runPolicy,runPolicy);assert.match(h.node('wf-policy-hint').textContent,/JSON/);assert.equal(writes(h).length,0);
+ }
+});
+test('run boundary save and simulation use the original graph API and never grant a run authorization',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);h.node('wf-policy-apply').click();const g=conditionGraph(h);
+ for(const action of ['save','simulate']){const request=h.node('wf-'+action).click();const call=writes(h,'/api/workflows/'+action).at(-1);assert.deepEqual(JSON.parse(call.options.body).graph,g);h.respond('/api/workflows/'+action,{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[g],history:[],simulation:{valid:true}});await request;}
+ assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/workflows/start').length,0);
+});
+
+test('run boundary history displays persisted plan counts and expiry without restoring authorization',async()=>{
+ const h=await boot(),loading=h.node('wf-load').click();await tick();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'bounded-history',workflowId:'bounded-flow',status:'RECOVERED_STOPPED'}]});await loading;
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',{accountId:'A',workflowRunId:'bounded-history',workflowDefinitionId:'bounded-flow',status:'RECOVERED_STOPPED',readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[],runPolicy:{maxDurationMs:1200,maxActions:2,modules:['formation']},actionPlans:1,expiresAt:'2026-11-13T03:00:01.200Z'});await reading;const text=h.node('wf-history-detail').textContent;assert.match(text,/总时长 1200 毫秒.*动作计划 1 \/ 2.*允许玩法 formation.*2026-11-13T03:00:01.200Z/);assert.match(text,/不能恢复授权/);assert.equal(writes(h).length,0);
+});

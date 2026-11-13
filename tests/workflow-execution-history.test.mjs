@@ -291,3 +291,9 @@ test('WAIT HTTP history records start before later actions and cancellation/rest
  assert.equal((await f.request('/api/workflows/stop?account=A',{headers,body:{}})).status,200);
  const after=await f.request(url);assert.equal(after.data.status,'CANCELLED');assert.equal(after.data.waits.length,1);assert.deepEqual(f.sent,[]);
 });
+
+test('bounded history API retains exact policy and expiry after restart without restoring execution',async t=>{
+ const f=fixture('bounded-history');t.after(()=>f.close());const run={accountId:'A',runId:'bounded-historical-run',workflowId:'bounded-flow',status:'AWAITING_AUTHORIZATION',runPolicy:{maxDurationMs:1200,maxActions:2,modules:['formation']},expiresAt:'2026-11-13T03:00:01.200Z',actionPlans:1,trace:[]};f.workflowStore.record('A',run);
+ const bytes=fs.readFileSync(workflowFile,'utf8'),result=await f.request(historyUrl('A',run.runId));assert.equal(result.status,200);assert.deepEqual(result.data.runPolicy,run.runPolicy);assert.equal(result.data.expiresAt,run.expiresAt);assert.equal(result.data.actionPlans,1);assert.equal(result.data.status,'RECOVERED_STOPPED');assert.equal(result.data.resumable,false);assert.equal((await f.request(historyUrl('B',run.runId))).status,404);
+ const restarted=createWorkflowStore({file:workflowFile,modules:f.operations.modules}),saved=restarted.history('A',{runId:run.runId})[0];assert.deepEqual(projectWorkflowExecutionHistory('A',saved,[]),result.data);assert.deepEqual(f.sent,[]);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);assert.equal(f.sessions.size,0);
+});

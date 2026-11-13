@@ -16,14 +16,14 @@ const protocol = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyRes
 const claims = amount => ({ resources: [{ id: 'wood', num: amount }], quotas: [], uids: [] });
 const amount = (rows, id = 'wood') => rows.find(row => row.id === id)?.num ?? 0;
 const order = index => ({ index, workerId: 'synthetic-resident-' + index, textId: 1, isSpecial: false, refreshTime: 0, requirements: [{ id: 'wood', num: 40 }] });
-function fixture({ stock = 60, apply = true, connection = true } = {}) {
+function fixture({ stock = 60, apply = true, connection = true, clock = Date.now } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-run-budget-service-'));
   const durable = createExecutionHistory({ file: path.join(dir, 'history.json') });
   let failPut = () => false, writerAllowed = true;
   const journal = [], reads = [], writes = [], clients = new Map(), releases = [];
   const history = { ...durable, put(record) { if (failPut(record)) throw Object.assign(Error('synthetic run-budget persistence failure'), { code: 'HISTORY_UNAVAILABLE' }); journal.push(structuredClone(record)); return durable.put(record); } };
   const moduleSettings = createModuleSettings({ file: path.join(dir, 'module-settings.json'), modules: CORE_OPERATION_MODULES });
-  const service = createOperationService({ protocol, getConfig: () => config, loadRules: () => ({ config: rules }), loadProduction: () => ({ config: production, warning: null }), history, modules: CORE_OPERATION_MODULES, moduleSettings, assertWriter() { if (!writerAllowed) throw Object.assign(Error('synthetic writer owner lost'), { code: 'WRITER_LOST' }); } });
+  const service = createOperationService({ protocol, clock, getConfig: () => config, loadRules: () => ({ config: rules }), loadProduction: () => ({ config: production, warning: null }), history, modules: CORE_OPERATION_MODULES, moduleSettings, assertWriter() { if (!writerAllowed) throw Object.assign(Error('synthetic writer owner lost'), { code: 'WRITER_LOST' }); } });
   function makeSession(id = 'A') {
     const state = { stock, raw: { building: [], workerOrder: [order(0), order(1), order(2)], orderOfTheDay: { orderNum: 7 } }, apply, beforeWrite: null, beforeRead: null };
     const uncertainWrites = new Set();
@@ -237,4 +237,43 @@ for (const limit of [60, 80]) test('real two-ACTION Workflow obeys the same ' + 
     for (const write of f.writes) { assert.equal(write.durableBeforeWrite.runBudget.scope.runId, first.runId); assert.ok(amount(write.durableBeforeWrite.runBudget.reserved.resources) >= 40); }
     assert.equal(f.service.workflowBudget('A').state, 'CLOSED'); assert.equal(f.service.workflowBudget('A').resumable, false); assert.ok(updates.some(row => row.status === 'AWAITING_AUTHORIZATION'));
   } finally { runner?.stop(); await runner?.settle(); await f.cleanup(); }
+});
+
+for(const phase of ['authorize','execute','preflight'])test('existing Service rejects expired Workflow at '+phase+' before any synthetic write',async()=>{
+ let time=Date.now();const f=fixture({stock:1000,clock:()=>time});let runner;
+ try{
+  const facts=await ordersModule.survey(f.session.client,protocol,{config,player:f.session.player}),candidate=ordersModule.view(facts,{config,rules,moduleConfig:{enabled:true},parameters:{}}).candidates[0];
+  const graph={version:1,id:'bounded-orders',name:'Bounded existing service',budget:claims(80),runPolicy:{maxDurationMs:10000,maxActions:1,modules:['orders']},nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'orders',parameters:{},selection:candidate.actionId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};
+  runner=createWorkflowRunner({modules:CORE_OPERATION_MODULES,operations:f.service,clock:()=>time,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+  const status=await runner.start('A',graph);assert.equal(status.status,'AWAITING_AUTHORIZATION');assert.equal(f.writes.length,0);const permit=phase==='authorize'?null:f.authorize(f.session,status.plan);
+  if(phase==='preflight'){
+   let moved=false;f.clients.get(f.session.client).beforeRead=()=>{if(!moved){moved=true;time=Date.parse(status.expiresAt);}};
+   f.service.execute(f.session,permit);await f.service.settle('A');assert.notEqual(f.service.status('A').finalStatus,'SUCCESS');
+  }else{
+   time=Date.parse(status.expiresAt);assert.throws(()=>phase==='authorize'?f.authorize(f.session,status.plan):f.service.execute(f.session,permit),{code:'RUN_BUDGET_CLOSED'});
+  }
+  assert.equal(f.writes.length,0);assert.equal(f.service.workflowBudget('A').state,'CLOSED');const stopped=await runner.resume();assert.equal(stopped.status,'STOPPED');assert.equal(f.session.workflowOwner,null);assert.equal(f.session.busy,null);assert.throws(()=>f.authorize(f.session,status.plan));assert.equal(f.writes.length,0);
+ }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+test('expired runtime boundary never refunds an UNKNOWN child or authorizes a replacement batch',async()=>{
+ let time=Date.now();const f=fixture({stock:100,apply:false,clock:()=>time});let release;
+ try{
+  release=f.service.claimWorkflow(f.session,'bounded-unknown',{limits:claims(80),expiresAt:new Date(time+10000).toISOString()});const planned=await f.plan(),executed=await f.execute(f.session,planned);assert.equal(executed.status.finalStatus,'UNKNOWN');assert.equal(f.writes.length,1);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);
+  time+=10000;assert.throws(()=>f.authorize(f.session,planned));assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(f.service.workflowBudget('A').outcome,'UNKNOWN');assert.equal(f.writes.length,1);
+ }finally{release?.();await f.cleanup();}
+});
+test('invalid or already-expired Workflow deadlines cannot acquire an account or replace its budget',async()=>{
+ const f=fixture();try{for(const options of [{limits:claims(40),expiresAt:'invalid'},{limits:claims(40),expiresAt:new Date(0).toISOString()},{expiresAt:new Date(Date.now()+10000).toISOString()}]){assert.throws(()=>f.service.claimWorkflow(f.session,'invalid-boundary',options),{code:'INVALID_INPUT'});assert.equal(f.session.workflowOwner??null,null);assert.equal(f.session.busy,null);assert.equal(f.writes.length,0);}}finally{await f.cleanup();}
+});
+
+test('deadline while a child awaits verification retains ownership and UNKNOWN reservations until the existing execution settles',async()=>{
+ let time=Date.now();const f=fixture({stock:100,apply:false,clock:()=>time});let runner,allowRead,entered;const blocked=new Promise(r=>allowRead=r),verifying=new Promise(r=>entered=r);
+ try{
+  const facts=await ordersModule.survey(f.session.client,protocol,{config,player:f.session.player}),candidate=ordersModule.view(facts,{config,rules,moduleConfig:{enabled:true},parameters:{}}).candidates[0];
+  const graph={version:1,id:'inflight-boundary',name:'Bound existing execution',budget:claims(80),runPolicy:{maxDurationMs:10000,maxActions:1,modules:['orders']},nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'orders',selection:candidate.actionId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};
+  runner=createWorkflowRunner({modules:CORE_OPERATION_MODULES,operations:f.service,clock:()=>time,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+  const status=await runner.start('A',graph);f.clients.get(f.session.client).beforeRead=async()=>{if(f.writes.length){entered();await blocked;}};
+  const permit=f.authorize(f.session,status.plan);f.service.execute(f.session,permit);await Promise.race([verifying,f.service.settle('A').then(()=>{throw Error('Synthetic child finished before verification gate: '+JSON.stringify(f.service.status('A')));})]);time=Date.parse(status.expiresAt);const stopping=runner.resume();await new Promise(r=>setImmediate(r));assert.equal(runner.getStatus().status,'STOPPED');assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(f.session.workflowOwner,status.runId);await assert.rejects(runner.start('A',graph),{code:'WORKFLOW_BUSY'});
+  allowRead();await stopping;await runner.settle();assert.equal(f.writes.length,1);assert.notEqual(f.service.status('A').finalStatus,'SUCCESS');assert.equal(f.session.workflowOwner,null);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.throws(()=>f.authorize(f.session,status.plan));
+ }finally{allowRead?.();runner?.stop();await runner?.settle();await f.cleanup();}
 });

@@ -416,3 +416,14 @@ for(const unconfirmed of[false,true])test('free gift HTTP binds exact free pack,
   assert.deepEqual(session.giftState.drawnPack,unconfirmed?[]:['赠礼']);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,403);assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);if(unconfirmed)assert.equal((await app.survey()).status,409);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('existing Workflow API stores and simulates optional run boundaries with strict budgets and account isolation offline',async()=>{
+ const app=await harness();try{
+  await app.call();const g=stoppedGraph('bounded-http');g.budget={resources:[],quotas:[],uids:[]};g.runPolicy={maxDurationMs:60000,maxActions:0,modules:[]};
+  assert.equal((await app.call('/api/workflows/save',{body:{graph:g},authorized:false})).status,403);assert.equal((await app.call('/api/workflows/save',{body:{graph:g}})).status,200);
+  const read=await app.call('/api/workflows');assert.deepEqual(read.data.graphs.find(row=>row.id===g.id).runPolicy,g.runPolicy);assert.equal((await app.call('/api/workflows',{id:'B'})).data.graphs.some(row=>row.id===g.id),false);
+  const sim=await app.call('/api/workflows/simulate',{body:{graph:g}});assert.equal(sim.status,200);assert.equal(sim.data.requestsSent,0);assert.equal(sim.data.runtimeCreated,false);
+  for(const change of [bad=>delete bad.budget,bad=>bad.runPolicy.maxDurationMs=0,bad=>bad.runPolicy.maxActions=201,bad=>bad.runPolicy.allowRetry=true,bad=>bad.runPolicy.modules=['unknown']]){const bad=structuredClone(g);change(bad);assert.equal((await app.call('/api/workflows/save',{body:{graph:bad}})).status,400);assert.equal((await app.call('/api/workflows/simulate',{body:{graph:bad}})).status,400);}
+  assert.deepEqual((await app.call('/api/workflows')).data.graphs.find(row=>row.id===g.id).runPolicy,g.runPolicy);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.requests.length,0);
+ }finally{await app.close();}
+});
