@@ -601,3 +601,12 @@ test('daily reward professional prepare validates exact ID and invalidates old p
  const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'daily',taskId:1001}});h.respond('/api/gameplay/survey',data(spec));await survey;
  h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");input.value='1002';prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+test('assembled Dailies page prepares explicit reward claim through account CSRF without authorizing',async()=>{
+ const h=await boot(),opening=h.node('dailies-unified').click();await tick();
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf-A',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
+ const intent={entry:'dailies',dailies:[{taskId:1001,action:'claim'}],budget:{resources:[],quotas:[],uids:[{type:'task-reward',id:'daily:2000:1001'}]}};
+ h.node('wf-unified-intent').value=JSON.stringify(intent);const pending=h.node('wf-unified-prepare').click();await tick();assertMutation(h.pending('/api/workflows/prepare'),'/api/workflows/prepare',intent);
+ const graph={version:1,id:'unified-dailies-claim',name:'Dailies claim',budget:intent.budget,nodes:[{id:'start',type:'START'},{id:'dailies-0-1',type:'ACTION',module:'task-rewards',parameters:{kind:'daily',taskId:1001},selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'dailies-0-1'},{from:'dailies-0-1',to:'stop'}]};
+ h.respond('/api/workflows/prepare',{accountId:'A',blocked:[],graph});await pending;assert.equal(h.node('wf-id').value,graph.id);assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.match(PAGE,/action:"claim"/);
+});

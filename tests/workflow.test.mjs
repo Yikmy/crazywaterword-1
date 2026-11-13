@@ -223,3 +223,13 @@ test('workflow role scope preserves exact int64 identity across equivalent Long 
 test('unified Tasks/Loop preserve explicit daily reward ID through the original Registry path',()=>{
  for(const entry of['tasks','loop']){const result=compileUnifiedExecution({entry,tasks:[{kind:'daily',taskId:1001}],budget:unifiedBudget},{modules:unifiedRegistry});assert.equal(result.blocked.length,0);const action=result.graph.nodes.find(n=>n.type==='ACTION');assert.equal(action.module,'task-rewards');assert.deepEqual(action.parameters,{kind:'daily',taskId:1001});assert.deepEqual(action.selection,{unique:true});assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);}
 });
+test('Dailies claim is an explicit original task-rewards Function intent, preserving perform drivers',()=>{
+ for(const entry of['dailies','loop']){
+  const result=compileUnifiedExecution({entry,dailies:[{taskId:1002},{taskId:1001,action:'claim'},{taskId:1006,action:'perform'}],budget:unifiedBudget},{modules:unifiedRegistry});
+  assert.deepEqual(result.blocked,[]);const actions=result.graph.nodes.filter(n=>n.type==='ACTION');assert.deepEqual(actions.map(n=>n.module),['free-recruit','task-rewards','free-gold']);assert.deepEqual(actions[1].parameters,{kind:'daily',taskId:1001});assert.deepEqual(actions[1].selection,{unique:true});assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+ }
+ const only=compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1001,action:'claim',parameters:{}}],budget:unifiedBudget},{modules:unifiedRegistry});assert.equal(only.graph.nodes[1].module,'task-rewards');
+ for(const row of[{taskId:1001,action:'auto'},{taskId:1001,action:null},{taskId:1001,action:'claim',parameters:{request:'InjectedRequest'}},{taskId:1001,action:'claim',parameters:{uid:1}},{taskId:1001,action:'claim',parameters:null},{taskId:1001,action:'claim',parameters:[]}]){
+  assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[row],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'});
+ }
+});

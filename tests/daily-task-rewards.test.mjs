@@ -247,3 +247,20 @@ test('identity replacement during read and after dispatch never confirms another
  const pending=executeBusinessOperation(x.client,protocol,x.operation,{...x.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(x)});
  for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);x.client.factContext.connectionId='new';release();assert.equal((await pending).status,'UNKNOWN');assert.equal(x.state.writes.length,1);
 });
+
+test('compiled Dailies claim uses actual shared Service authorization and durable history',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t),read=await f.service.surveyModule(f.session,'task-rewards',parameters),row=read.view.candidates[0];
+ const compiled=compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1001,action:'claim'}],budget:row.budgetClaims},{modules:GAMEPLAY_MODULES});assert.deepEqual(compiled.blocked,[]);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);
+ await f.run(run.plan);run=await runner.resume();assert.equal(run.status,'COMPLETED');assert.equal(f.state.writes.length,1);
+ const record=f.durable.list(f.session.id)[0];assert.equal(record.workflowNodeId,'dailies-0-1');assert.equal(record.workflowDefinitionId,compiled.graph.id);assert.deepEqual(record.runBudget.reserved.uids,row.budgetClaims.uids);
+});
+
+for(const apply of[true,false])test('compiled Loop claim never repeats '+(apply?'a claimed daily task':'an UNKNOWN daily write'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{apply}),read=await f.service.surveyModule(f.session,'task-rewards',parameters);
+ const compiled=compileUnifiedExecution({entry:'loop',rounds:2,dailies:[{taskId:1001,action:'claim'}],budget:read.view.candidates[0].budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');await f.run(run.plan);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id).length,1);
+ if(apply)assert.ok(run.trace.some(r=>r.result==='BLOCKED_NO_EXECUTABLE_CANDIDATE'));else assert.equal(f.durable.list(f.session.id)[0].actions[0].unresolvedWrite,true);
+});

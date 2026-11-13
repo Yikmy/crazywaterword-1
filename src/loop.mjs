@@ -143,12 +143,18 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
         module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
       } else if(phase==='dailies'){
-        exact(row,['taskId','parameters']);
+        exact(row,['taskId','parameters','action']);
         if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Dailies 需要精确任务ID');
-        module=({1002:'free-recruit',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep'})[row.taskId];
-        if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
-        parameters=row.parameters??{};
-        if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
+        if(Object.hasOwn(row,'action')&&!['perform','claim'].includes(row.action))invalid('Dailies action 只允许 perform 或 claim');
+        if(row.action==='claim'){
+          if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确taskId，不接受驱动或协议参数');
+          module='task-rewards';parameters={kind:'daily',taskId:row.taskId};
+        }else{
+          module=({1002:'free-recruit',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep'})[row.taskId];
+          if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
+          parameters=row.parameters??{};
+          if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
+        }
       } else {
         exact(row,['module','parameters','selection']);module=row.module;parameters=row.parameters??{};selection=row.selection??selection;
       }

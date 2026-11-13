@@ -363,3 +363,16 @@ for(const unconfirmed of[false,true])test('daily task reward HTTP shares exact C
   if(unconfirmed)assert.equal((await app.survey()).status,409);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('Dailies HTTP preparation compiles claim intent offline and preserves unsupported perform blockers',async()=>{
+ const app=await harness({includeDailyReward:true});try{
+  await app.call('/api/workflows');
+  const payload={entry:'dailies',dailies:[{taskId:1001,action:'claim'},{taskId:1001}],budget:{resources:[],quotas:[],uids:[]}};
+  const p=await app.call('/api/workflows/prepare',{body:payload});assert.equal(p.status,200,JSON.stringify(p.data));assert.equal(p.data.accountId,'A');
+  const actions=p.data.graph.nodes.filter(n=>n.type==='ACTION');assert.equal(actions.length,1);assert.equal(actions[0].module,'task-rewards');assert.deepEqual(actions[0].parameters,{kind:'daily',taskId:1001});
+  assert.deepEqual(p.data.blocked,[{phase:'dailies',index:1,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:1001}]);
+  assert.equal(app.sessions.size,0);assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  assert.equal((await app.call('/api/workflows/prepare',{body:payload,authorized:false})).status,403);
+  const bad={...payload,dailies:[{taskId:1001,action:'claim',parameters:{request:'DrawDailyTaskRewardRequest'}}]};assert.equal((await app.call('/api/workflows/prepare',{body:bad})).status,400);
+ }finally{await app.close();}
+});
