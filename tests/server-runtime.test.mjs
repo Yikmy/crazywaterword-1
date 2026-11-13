@@ -264,3 +264,94 @@ test('trusted explicit player levels publish to the current Session before consu
  const app=await harness({protocol,clientFactory:options=>new GameClient({...options,WebSocketImpl:Socket})});try{const connecting=app.connect();await until(()=>sockets.length===1);const socket=sockets[0];socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'17',worldId:'9',level:1,nickname:'synthetic-player'}});assert.equal((await connecting).status,200);const session=app.sessions.get('account-A'),client=app.clients[0];clearInterval(client.tickTimer);client.tickTimer=null;await app.refresh();assert.equal(session.snapshotStale,false);client.readPlayerLevelEvent=()=>({reliable:true,playerLevel:99});client.emit('message',{name:'SCPlayerExpUpdate',seq:1,body:{level:99}});assert.equal(session.player.level,1);assert.equal(session.snapshotStale,false);socket.receive('SCPlayerLevelGrade',{level:99,grade:1},1);assert.equal(session.player.level,1);let observed;client.on('message',message=>{if(message.name==='SCPlayerExpUpdate')observed=session.player.level;});socket.receive('SCPlayerExpUpdate',{level:3,exp:'9007199254740993'},2);assert.equal(observed,3);assert.equal(session.player.level,3);assert.equal(session.snapshotStale,true);assert.equal((await app.call('/api/overview')).data.player.level,3);assert.equal(app.collects,1);socket.receive('SCPlayerExpUpdate',{level:99},2);assert.equal(session.player.level,3);session.player.worldId='10';socket.receive('SCPlayerExpUpdate',{level:4},3);assert.equal(session.player.level,3);session.player.worldId='9';session.generation++;socket.receive('SCPlayerExpUpdate',{level:5},4);assert.equal(session.player.level,3);assert.equal(app.clients.length,1);assert.equal(app.collects,1);
  }finally{await app.close();}
 });
+
+function dailyRuntimeSnapshot(marker=1780000000) {
+ const bodies={...snapshot().ok,
+  DailyTaskInfoRequest:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[],weeklyRewardClaimed:[],dailyResetTime:marker},
+  DailyGiftPackRequest:{boughtPack:[],drawnPack:[],heroId:'synthetic-hero',resetTime:marker},
+  AchievementInfoRequest:{task:[{id:1,progress:'1',targetProgress:'1',rewardClaimed:false}]},
+  AfkInfoRequest:{clickGoldInfo:{freeTimes:0,paidTimes:0,resetTime:marker,minGold:1}},RecruitInfoRequest:{}};
+ return {ok:structuredClone(bodies),raw:structuredClone(bodies),failed:{},outcomes:Object.fromEntries(Object.keys(bodies).map(name=>[name,{status:'SUCCESS'}]))};
+}
+async function dailyRuntimeHarness(options={}) {
+ const protocol=loadProtocol(),codec=createCodec(protocol),sockets=[],sent=[],observation={marker:1780000000};
+ class Socket{
+  constructor(){this.readyState=0;sockets.push(this);}
+  send(bytes){sent.push(codec.decode(bytes).name);}
+  close(){this.readyState=3;}
+  open(){this.readyState=1;this.onopen();}
+  receive(name,body,seq=0){this.onmessage?.({data:codec.encode(name,seq,body)});}
+ }
+ const app=await harness({protocol,collect:async()=>dailyRuntimeSnapshot(observation.marker),...options,clientFactory:opts=>new GameClient({...opts,WebSocketImpl:Socket})});
+ async function login(account='account-A'){
+  const count=sockets.length,connecting=app.connect(account);await until(()=>sockets.length===count+1);
+  const socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:account==='account-A'?'17':'18',worldId:'9',level:1,nickname:'synthetic-player'}});
+  assert.equal((await connecting).status,200);const client=app.clients.at(-1);clearInterval(client.tickTimer);client.tickTimer=null;return socket;
+ }
+ return {...app,sockets,sent,login,observation,get collects(){return app.collects;}};
+}
+test('daily reset invalidates only the old daily source without changing raw facts or collecting automatically',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  const socket=await app.login();await app.refresh();const session=app.sessions.get('account-A'),raw=JSON.stringify(session.snapshot),sent=app.sent.length;
+  const before=(await app.call('/api/dailies')).data;assert.equal(before.checklist.tasks.counts.eligible,1);
+  socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);
+  const after=(await app.call('/api/dailies')).data;
+  assert.equal(after.checklist.sources.daily.status,'UNKNOWN');assert.equal(after.checklist.tasks.counts.eligible,null);assert.equal(after.checklist.activity.daily.activity,null);assert.equal(after.checklist.resetMarker,null);
+  assert.equal(after.stale,true);assert.deepEqual(after.tasks,[]);assert.equal(after.chests,null);assert.match(after.chestsUnavailable,/重新采集/);
+  for(const key of ['gift','achievements','freeGold'])assert.deepEqual(after.checklist[key],before.checklist[key]);
+  assert.equal(JSON.stringify(session.snapshot),raw);assert.equal(app.collects,1);assert.equal(app.sent.length,sent);
+  await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN','old response marker stays invalid after refresh');
+  app.observation.marker=1780086400;await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');assert.equal(session.snapshotStale,false);assert.equal(app.collects,3);
+ }finally{await app.close();}
+});
+test('daily reset during collection cannot publish the raced daily source as fresh',async()=>{
+ const gate=deferred();let collecting=false;const app=await dailyRuntimeHarness({collect:async()=>{collecting=true;return gate.promise;}});
+ try{
+  const socket=await app.login(),refresh=app.refresh();await until(()=>collecting);
+  socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);gate.resolve(dailyRuntimeSnapshot());
+  assert.equal((await refresh).status,200);const daily=(await app.call('/api/dailies')).data;
+  assert.equal(daily.stale,true);assert.equal(daily.checklist.sources.daily.status,'UNKNOWN');assert.equal(app.sessions.get('account-A').snapshotStale,true);assert.equal(app.collects,1);
+ }finally{gate.resolve(dailyRuntimeSnapshot());await app.close();}
+});
+test('forged daily events and weekly pushes cannot invalidate or renew daily cache authority',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  const socket=await app.login();await app.refresh();const client=app.clients[0];
+  client.readDailyResetEvent=()=>({reliable:true,cursor:99,event:{seq:1,dailyResetTime:1780086400}});
+  client.emit('message',{name:'SCDailyTaskReset',seq:1,body:{dailyResetTime:1780086400}});
+  socket.receive('SCDailyWeeklyReset',{},1);
+  assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');
+  socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},2);app.observation.marker=1780086400;await app.refresh();
+  socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},3);
+  assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');assert.equal(app.sessions.get('account-A').snapshotStale,false);
+ }finally{await app.close();}
+});
+for(const [label,mutate]of[
+ ['account',s=>s.id='account-B'],['role',s=>s.player.playerId='18'],['world',s=>s.player.worldId='10'],
+ ['connection',s=>s.connectionId='other'],['generation',s=>s.generation++]
+])test('daily cache fails closed after '+label+' context changes',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  await app.login();await app.refresh();mutate(app.sessions.get('account-A'));
+  const daily=(await app.call('/api/dailies')).data;assert.equal(daily.checklist.sources.daily.status,'UNKNOWN');assert.equal(daily.stale,true);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+test('daily cache cannot recover from rollback or sequence gaps through a plain refresh',async()=>{
+ for(const gap of [false,true]){
+  const app=await dailyRuntimeHarness();try{
+   const socket=await app.login();socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);app.observation.marker=1780086400;await app.refresh();
+   socket.receive('SCDailyTaskReset',{dailyResetTime:gap?1780172800:1780000000},gap?3:2);
+   assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');
+   await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');assert.equal(app.sessions.get('account-A').snapshotStale,true);
+  }finally{await app.close();}
+ }
+});
+test('daily reset remains account isolated and old connections cannot renew the cache',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  const old=await app.login();await app.refresh();await app.login('account-B');await app.refresh('account-B');
+  old.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);
+  assert.equal((await app.call('/api/dailies',{account:'account-B'})).data.checklist.sources.daily.status,'AVAILABLE');
+  await app.call('/api/disconnect',{method:'POST'});assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');
+  await app.login();old.receive('SCDailyTaskReset',{dailyResetTime:1780172800},2);
+  assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');
+  await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');assert.equal(app.clients.length,3);
+ }finally{await app.close();}
+});

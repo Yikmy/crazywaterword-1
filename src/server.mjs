@@ -13,7 +13,7 @@ import { createStandaloneStageJournal, projectStageBattleHistory } from './stage
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { readPlayerLevelEvent, GameClient } from './client.mjs';
+import { readDailyResetEvent, readPlayerLevelEvent, GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -102,7 +102,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       player: null,
       state: 'IDLE', generation: 0, abort: new AbortController(),
       connectionPromise: null, collectionPromise: null, loginResponse: null,
-      snapshot: null, snapshotAt: null, snapshotStale: false,
+      snapshot: null, snapshotAt: null, snapshotStale: false, snapshotDailyReset: null,
       busy: null,
       stageRunner: null, stageClient: null,
       log: [],
@@ -244,6 +244,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     on('frame', ({ dir, name, seq, bytes }) => { if (current()) trace(session, (dir === 'out' ? '->' : '<-') + ' [' + name + '] seq=' + seq + ' ' + bytes.byteLength + 'B'); });
     on('message', ({ seq, name, body }) => { if (!current()) return;
       if(name==='SCPlayerExpUpdate'){const fact=readPlayerLevelEvent(instance);if(fact.reliable&&fact.accountId===session.id&&fact.generation===session.generation&&fact.connectionId===session.connectionId&&fact.playerId===String(session.player?.playerId)&&fact.worldId===String(session.player?.worldId)&&fact.event?.seq===seq&&session.player.level!==fact.playerLevel){session.player={...session.player,level:fact.playerLevel};session.snapshotStale=true;}}
+      if(name==='SCDailyTaskReset' && dailySnapshotInvalid(session))session.snapshotStale=true;
       trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
     on('pong', ({ latencyMs, offsetMs }) => { if (current()) trace(session, 'pong ' + latencyMs + 'ms offset=' + offsetMs + 'ms'); });
     on('warn', (message) => { if (current()) emit(session, 'warn', message); });
@@ -316,6 +317,23 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     return session.client;
   }
 
+  // Track only attested reset continuity. A push invalidates a cached response;
+  // it never substitutes for the independent DailyTaskInfo read.
+  function currentDailyReset(session) {
+    const fact=readDailyResetEvent(session.client);
+    return fact.reliable && fact.accountId===session.id && fact.generation===session.generation &&
+      fact.connectionId===session.connectionId && fact.playerId===String(session.player?.playerId) &&
+      fact.worldId===String(session.player?.worldId) ? fact : null;
+  }
+  function dailySnapshotInvalid(session) {
+    const baseline=session.snapshotDailyReset;
+    if(!baseline)return false;
+    const fact=currentDailyReset(session);
+    if(!fact || fact.streamId!==baseline.streamId || fact.cursor!==baseline.cursor)return true;
+    const body=(Object.hasOwn(session.snapshot??{},'raw')?session.snapshot.raw:session.snapshot?.ok)?.DailyTaskInfoRequest;
+    return fact.event!==null && body?.dailyResetTime!==fact.event.dailyResetTime;
+  }
+
   function refresh(session, account) {
     if (operations.running(session.id) || (session.busy?.startsWith('operations:') || session.workflowOwner) || session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
       const error = new Error('自动闯关或未决战斗期间不能完整采集；已有缓存仍可浏览');
@@ -328,11 +346,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const instance = await ensureConnected(session);
       assertCurrent(session, generation, instance);
       session.busy = '采集只读状态';
+      const resetBefore=currentDailyReset(session);
+      const trackReset=instance instanceof GameClient || session.snapshotDailyReset!==null && session.snapshotDailyReset!==undefined || resetBefore!==null;
       const result = await activeTask(signal, collect(instance, protocol, { timeout: 15000 }));
       assertCurrent(session, generation, instance);
       session.snapshot = result;
       session.snapshotAt = new Date().toISOString();
-      session.snapshotStale = false;
+      session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null} : null;
+      session.snapshotStale = dailySnapshotInvalid(session);
       return overview(session, account);
     }).finally(() => {
       if (session.collectionPromise === task) { session.collectionPromise = null; session.busy = null; }
@@ -585,8 +606,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   async function dailies(session, account) {
     const config = loadConfigSafe();
-    const checklist = dailyChecklist(session.snapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
-    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true };
+    const dailyInvalid=dailySnapshotInvalid(session);
+    const dailyUnavailable='每日任务重置来源已变化或不可确认，请重新采集';
+    const dailySnapshot=dailyInvalid ? {...session.snapshot,failed:{...session.snapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : session.snapshot;
+    const checklist = dailyChecklist(dailySnapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
+    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid };
+    if(dailyInvalid)return {...base,tasks:[],chests:null,chestsUnavailable:dailyUnavailable,gift:null,ruby:null,text:formatDailyChecklist(checklist)};
     // Partial caches still expose each independently observed checklist section.
     if (!["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"].every(name => Object.hasOwn(session.snapshot?.ok ?? {}, name))) {
       return { ...base, tasks: [], chests: null, chestsUnavailable: '旧日常预览依赖不完整', gift: null, ruby: null, text: formatDailyChecklist(checklist) };
