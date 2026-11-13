@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness } from '../src/asset-readiness.mjs';
+import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness, readRuntimeAsset } from '../src/asset-readiness.mjs';
+
+import { loadProtocol } from '../src/proto.mjs';
+import { loadMapAsset } from '../src/world.mjs';
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-asset-readiness-'));
@@ -156,4 +159,97 @@ test('a manifest directory link is blocked without following retained files',()=
  const f=fixture(),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cw-manifest-link-'));try{
  fs.writeFileSync(path.join(outside,'RUNTIME_ASSETS.json'),JSON.stringify(f.manifest()));const linked=path.join(f.root,'docs');fs.symlinkSync(outside,linked,process.platform==='win32'?'junction':'dir');assert.equal(runtimeAssetReadiness({root:f.root}).reason,'MANIFEST_LINK_NOT_ALLOWED');fs.unlinkSync(linked);
  }finally{f.cleanup();fs.rmSync(outside,{recursive:true,force:true});}
+});
+
+function preserveManifest(f) {
+ const manifest=f.manifest(),file=path.join(f.root,'docs','RUNTIME_ASSETS.json');
+ fs.mkdirSync(path.dirname(file));fs.writeFileSync(file,JSON.stringify(manifest));
+ return {manifest,file,bytes:fs.readFileSync(file,'utf8')};
+}
+const syntheticProtocol = [
+ "define('src/chunks/bundle.synthetic.js',function(require,module,exports){",
+ "System.register([],function(){return {execute(){",
+ "System.register('chunks:///_virtual/proto-bundle.js',['helpers','protobuf'],function(exportValue){",
+ "return {setters:[()=>{},()=>{}],execute(){exportValue('protocol',{SyntheticMessage:{retained:true}});}};",
+ "});",
+ "}};});",
+ "});"
+].join('\n');
+
+test('protocol loader consumes only a matching preserved asset while unrelated missing map stays isolated',()=>{
+ const f=fixture();try{
+  f.write(0,syntheticProtocol);const retained=preserveManifest(f);fs.unlinkSync(path.join(f.root,f.assets[2].path));
+  const protocol=loadProtocol(path.join(f.root,f.assets[0].path),{root:f.root});
+  assert.deepEqual(protocol,{SyntheticMessage:{retained:true}});
+  assert.equal(runtimeAssetReadiness({root:f.root}).ready,false);
+  assert.equal(fs.readFileSync(retained.file,'utf8'),retained.bytes);
+  assert.equal(loadMapAsset(1,{root:f.root}),null);
+ }finally{f.cleanup();}
+});
+
+test('tampered protocol cannot execute even its top-level code before digest verification',()=>{
+ const f=fixture();try{
+  f.write(0,syntheticProtocol);const retained=preserveManifest(f);
+  globalThis.__cwUnexpectedAssetExecution=0;
+  f.write(0,"globalThis.__cwUnexpectedAssetExecution++;\n"+syntheticProtocol);
+  assert.throws(()=>loadProtocol(path.join(f.root,f.assets[0].path),{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
+  assert.equal(globalThis.__cwUnexpectedAssetExecution,0);
+  assert.equal(fs.readFileSync(retained.file,'utf8'),retained.bytes);
+ }finally{delete globalThis.__cwUnexpectedAssetExecution;f.cleanup();}
+});
+
+test('missing unregistered or source-less runtime assets cannot bypass the retained manifest',()=>{
+ const f=fixture();try{
+  assert.throws(()=>readRuntimeAsset('protocol',f.assets[0].path,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'MANIFEST_MISSING'});
+  const retained=preserveManifest(f);
+  for(const [role,relativePath] of [['protocol','data/accounts.json'],['config','../config.json'],['__proto__',f.assets[0].path]])
+   assert.throws(()=>readRuntimeAsset(role,relativePath,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_PATH_NOT_ALLOWED'});
+  assert.throws(()=>readRuntimeAsset('map','work/cdn/world_map.world_map2.json',{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_NOT_REGISTERED'});
+  const manifest=structuredClone(retained.manifest);manifest.assets[0].source=null;fs.writeFileSync(retained.file,JSON.stringify(manifest));
+  assert.throws(()=>readRuntimeAsset('protocol',f.assets[0].path,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_SOURCE_UNKNOWN'});
+  manifest.assets[0].source='synthetic retained';manifest.assets[0].sha256=null;fs.writeFileSync(retained.file,JSON.stringify(manifest));
+  assert.throws(()=>readRuntimeAsset('protocol',f.assets[0].path,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_BASELINE_UNKNOWN'});
+  manifest.schemaVersion=2;fs.writeFileSync(retained.file,JSON.stringify(manifest));
+  assert.throws(()=>readRuntimeAsset('protocol',f.assets[0].path,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'MANIFEST_VERSION_UNKNOWN'});
+ }finally{f.cleanup();}
+});
+
+test('retained map loads the existing grid projection and mutated or malformed grids degrade without accepting a new baseline',()=>{
+ const f=fixture();try{
+  f.write(2,JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},cityInfo:[{cityId:17}],mapData:[10017,0]}]]]));
+  const retained=preserveManifest(f),map=loadMapAsset(1,{root:f.root});
+  assert.equal(map.width,2);assert.equal(map.height,1);assert.equal(map.scenarioId,1);assert.equal(map.fieldCount,1);
+  assert.deepEqual(map.fieldAt(0),{gridIdx:0,resType:1,cityId:17});assert.equal(map.fieldAt(1),null);
+  assert.equal(map.file,path.join(f.root,f.assets[2].path));
+  for(const value of ['{bad',JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},mapData:[0]}]]]),JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},mapData:[20017,0]}]]])]){
+   f.write(2,value);assert.equal(loadMapAsset(1,{root:f.root}),null);
+  }
+  assert.equal(fs.readFileSync(retained.file,'utf8'),retained.bytes);
+  assert.equal(loadMapAsset(2,{root:f.root}),null);
+ }finally{f.cleanup();}
+});
+
+test('runtime consumption never follows asset or manifest links',()=>{
+ const f=fixture(),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cw-runtime-asset-link-'));try{
+  f.write(0,syntheticProtocol);const retained=preserveManifest(f),directory=path.join(f.root,'work','cdn'),moved=path.join(outside,'cdn');
+  fs.renameSync(directory,moved);fs.symlinkSync(moved,directory,process.platform==='win32'?'junction':'dir');
+  assert.throws(()=>readRuntimeAsset('config',f.assets[1].path,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_LINK_NOT_ALLOWED'});
+  assert.equal(loadMapAsset(1,{root:f.root}),null);fs.unlinkSync(directory);
+  const docs=path.join(f.root,'docs'),movedDocs=path.join(outside,'docs');fs.renameSync(docs,movedDocs);fs.symlinkSync(movedDocs,docs,process.platform==='win32'?'junction':'dir');
+  assert.throws(()=>loadProtocol(path.join(f.root,f.assets[0].path),{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'MANIFEST_LINK_NOT_ALLOWED'});
+  assert.equal(fs.readFileSync(path.join(movedDocs,'RUNTIME_ASSETS.json'),'utf8'),retained.bytes);fs.unlinkSync(docs);
+ }finally{f.cleanup();fs.rmSync(outside,{recursive:true,force:true});}
+});
+
+test('protocol loader executes its checked buffer even when the file changes immediately after the final stat',()=>{
+ const f=fixture();const stat=fs.statSync,read=fs.readFileSync;try{
+  f.write(0,syntheticProtocol);preserveManifest(f);const file=path.join(f.root,f.assets[0].path);let stats=0,reads=0;
+  globalThis.__cwUnexpectedAssetExecution=0;
+  fs.readFileSync=function(p,...args){if(p===file)reads++;return read.call(this,p,...args);};
+  fs.statSync=function(p,...args){const value=stat.call(this,p,...args);if(p===file&&++stats===2)fs.writeFileSync(file,"globalThis.__cwUnexpectedAssetExecution++;\n"+syntheticProtocol);return value;};
+  const protocol=loadProtocol(file,{root:f.root});
+  assert.equal(protocol.SyntheticMessage.retained,true);assert.equal(reads,1);assert.equal(globalThis.__cwUnexpectedAssetExecution,0);
+  fs.statSync=stat;fs.readFileSync=read;
+  assert.throws(()=>loadProtocol(file,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
+ }finally{fs.statSync=stat;fs.readFileSync=read;delete globalThis.__cwUnexpectedAssetExecution;f.cleanup();}
 });

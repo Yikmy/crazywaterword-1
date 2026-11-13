@@ -1,6 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { readRuntimeAsset } from './asset-readiness.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -41,8 +41,9 @@ function moduleRequire(name) {
   return emptyHelpers;
 }
 
-export function loadProtocol(bundlePath = DEFAULT_BUNDLE) {
-  const src = fs.readFileSync(bundlePath, 'utf8');
+export function loadProtocol(bundlePath = DEFAULT_BUNDLE, { root = path.resolve(import.meta.dirname, '..') } = {}) {
+  const relative = path.relative(root, bundlePath).split(path.sep).join('/');
+  const src = readRuntimeAsset('protocol', relative, { root }).toString('utf8');
   const collector = { outer: null, target: null };
 
   const System = makeSystem(collector);

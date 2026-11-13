@@ -13,7 +13,7 @@
 // 交互原则与 tasks.mjs 一致：先只读探测，再算出计划，显式授权后才逐条执行；
 // 没有配套 Response 的写请求走 client.sendWatch()。
 
-import fs from 'node:fs';
+import { readRuntimeAsset } from './asset-readiness.mjs';
 import path from 'node:path';
 import { normalize } from './worlds.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
@@ -542,10 +542,12 @@ export function mapPath(scenarioId) {
 }
 
 // 读地图 JsonAsset。没有下载过就返回 null（调用方降级成「不知道这块田在哪」）。
-export function loadMapAsset(scenarioId) {
-  const file = mapPath(scenarioId);
-  if (!fs.existsSync(file)) return null;
-  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+export function loadMapAsset(scenarioId, { root = path.resolve(import.meta.dirname, '..') } = {}) {
+  const relative = 'work/cdn/world_map.world_map' + (scenarioId > 0 ? scenarioId : 1) + '.json';
+  const file = path.join(root, relative);
+  let raw;
+  try { raw = JSON.parse(readRuntimeAsset('map', relative, { root }).toString('utf8')); }
+  catch (error) { if (error?.code === 'ASSET_UNAVAILABLE') return null; throw error; }
   const data = raw?.[5]?.[0]?.[2];
   if (!data?.mapData) return null;
   const { mapInfo, cityInfo, mapData } = data;
