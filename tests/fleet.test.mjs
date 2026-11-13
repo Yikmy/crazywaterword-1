@@ -70,3 +70,10 @@ test('fleet survey exposes only trusted game time and never promotes default off
  const trusted=await surveyFleet(client,{});assert.equal(trusted.now,100);assert.equal(trusted.nowEarliest,99);assert.equal(trusted.nowLatest,101);
  client.gameClock={read:()=>({status:'UNKNOWN',reliable:false,nowMs:100000})};assert.equal((await surveyFleet(client,{})).now,null);
 });
+
+test('fleet formation view projects each existing reliability flag without promoting missing source facts',()=>{
+ const f=formationFacts(),expected={fleets:true,buildings:true,heroes:true,presets:true,config:true};assert.deepEqual(view(f).formationReliability,expected);
+ const fields={fleets:f=>f.fleetReliable=false,buildings:f=>f.formationFacts.buildingsReliable=false,heroes:f=>f.formationFacts.heroesReliable=false,presets:f=>f.formationFacts.presetsReliable=false,config:f=>f.formationFacts.catalog.reliable=false};
+ for(const [key,change]of Object.entries(fields)){const f=formationFacts();change(f);assert.equal(view(f).formationReliability[key],false);}
+ const old=facts();assert.deepEqual(view(old).formationReliability,{fleets:true,buildings:false,heroes:false,presets:false,config:false});assert.deepEqual(view(old).formations,[]);
+});

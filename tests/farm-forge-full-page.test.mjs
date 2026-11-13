@@ -1,3 +1,4 @@
+import { fleetView } from '../src/fleet.mjs';
 import { RUN_BUDGET_LIMITS, normalizeBudgetClaims } from '../src/resource-ledger.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { WORKFLOW_CONDITION_FIELDS, validateWorkflow, evaluateWorkflowCondition } from '../src/workflow.mjs';
@@ -1346,4 +1347,73 @@ test('graph budget saves and simulates using the original Workflow API without i
 test('current graph budget rows can be explicitly replaced without leaking to the old unified budget draft',async()=>{
  const h=await parameterPage('free-gold');unifiedBudget(h,'resources','GOLD','99');const unified=h.node('wf-unified-intent').value,graph=conditionGraph(h);graph.budget={resources:[{id:'GOLD',num:7}],quotas:[],uids:[]};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();
  graphBudgetRemove(h,'resources:0').click();graphBudgetAdd(h,'resources','GOLD','5');h.node('wf-budget-apply').click();assert.deepEqual(conditionGraph(h).budget.resources,[{id:'GOLD',num:5}]);assert.equal(h.node('wf-unified-intent').value,unified);assert.equal(writes(h).length,0);
+});
+
+function fleetEditorFacts() {
+ const fleet=buildingId=>({buildingId,state:1,durability:100,maxDura:100,cityId:1,targetCityId:0,treasureLootUid:0,repairing:null,autoFight:{isOn:false,todayTimes:0}});
+ return {config:{tables:{}},now:100,stockReliable:true,stock:new Map(),fleetReliable:true,fleets:[fleet('f1'),fleet('f2')],repairParams:new Map(),ships:[],cargoReliable:false,protocolReady:{FleetSaveFormationRequest:true},
+ formationFacts:{buildingsReliable:true,heroesReliable:true,presetsReliable:true,buildings:[{buildingId:'f1',level:1,formation:{presetId:1,heroPositions:[{heroId:'hero-a',pos:{x:0,y:0}}]}},{buildingId:'f2',level:1,formation:{presetId:1,heroPositions:[{heroId:'hero-c',pos:{x:0,y:0}}]}}],ownedHeroIds:['hero-a','hero-b','hero-c'],unlockedPresetIds:[1],catalog:{reliable:true,maxHeroes:2,layouts:[{id:1,reliable:true,positions:[{x:0,y:0},{x:1,y:0}]},{id:2,reliable:true,positions:[{x:2,y:0}]}],heroes:['hero-a','hero-b','hero-c','hero-d'].map(heroId=>({heroId,career:'坦克',reliable:true}))}}};
+}
+const fleetEditorConfig={...GAMEPLAY_MODULES.fleet.defaultConfig,enabled:true,formation:true};
+function fleetEditorData(facts=fleetEditorFacts(),parameters={}) {return {accountId:'A',module:'fleet',csrfToken:'synthetic-csrf-A',config:fleetEditorConfig,status:{running:false,blocked:false},functions:[],view:fleetView(facts,{moduleConfig:fleetEditorConfig,parameters})};}
+async function fleetEditorPage(data=fleetEditorData()) {const h=await boot(),load=h.node('gp-fleet-load').click();h.respond('/api/gameplay',data,{module:'fleet'});await load;return h;}
+const fleetEditorControl=(h,key)=>descendants(h.node('gp-fleet-formations')).find(n=>n.dataset.fleetFormation===key);
+const fleetEditorApply=h=>descendants(h.node('gp-fleet-formations')).find(n=>n.dataset.fleetFormationApply);
+const fleetEditorHero=(h,id,axis)=>descendants(h.node('gp-fleet-formations')).find(n=>n.dataset.fleetFormationHero===id&&n.dataset.fleetFormationAxis===axis);
+function fleetEditorTarget(h,id='f1') {const input=fleetEditorControl(h,'building');input.value=id;input.onchange();}
+function fleetEditorChoose(h,id,x,y) {const check=fleetEditorHero(h,id);check.checked=true;fleetEditorHero(h,id,'x').value=x;fleetEditorHero(h,id,'y').value=y;}
+
+test('professional fleet editor prepares exact manual formation parameters without planning or dispatch',async()=>{
+ const h=await fleetEditorPage(),requests=h.requests.length;assert.equal([...PAGE.matchAll(/id="gp-fleet-formations"/g)].length,1);assert.match(h.node('gp-fleet-formations').textContent,/MyFleets.*OnWater/);
+ fleetEditorTarget(h);assert.equal(fleetEditorControl(h,'preset').value,'1');fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','1','0');fleetEditorApply(h).click();
+ const parameters={buildingId:'f1',presetId:1,heroPositions:[{heroId:'hero-b',pos:{x:1,y:0}}]};assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),parameters);assert.deepEqual(GAMEPLAY_MODULES.fleet.validateParameters(parameters),parameters);
+ assert.equal(h.node('gp-fleet-plan').disabled,true);assert.equal(h.node('gp-fleet-authorize').disabled,true);assert.equal(h.requests.length,requests);assert.match(h.node('gp-fleet-hint').textContent,/重新探测/);
+});
+
+test('professional fleet draft resurvey reaches the original exact candidate and Manual preview with shared account and CSRF',async()=>{
+ const facts=fleetEditorFacts(),h=await fleetEditorPage(fleetEditorData(facts));fleetEditorTarget(h);fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','1','0');fleetEditorApply(h).click();const parameters=JSON.parse(h.node('gp-fleet-parameters').value);
+ const scan=h.node('gp-fleet-survey').click();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'fleet',parameters});const next=fleetEditorData(facts,parameters),candidate=next.view.candidates.find(row=>row.actionType==='fleetFormation');assert.equal(candidate.decision,'READY');h.respond('/api/gameplay/survey',next);await scan;
+ const card=h.node('gp-fleet-candidates').children.find(n=>n.children.some(c=>c.textContent.includes('fleetFormation'))),check=descendants(card).find(n=>n.tagName==='input'&&n.type==='checkbox');check.checked=true;check.onchange();const preview=h.node('gp-fleet-plan').click();assertMutation(h.pending('/api/operations/plan'),'/api/operations/plan',{module:'fleet',mode:'Manual',selections:[candidate.actionId],parameters});
+ const spec={module:'fleet',actionId:candidate.actionId,actionType:candidate.actionType,parameters,costs:[],target:candidate.target};h.respond('/api/operations/plan',plan(spec));await preview;assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('fleet editor excludes other-fleet heroes and unowned heroes without moving either formation',async()=>{
+ const h=await fleetEditorPage();fleetEditorTarget(h);assert.equal(fleetEditorHero(h,'hero-c').disabled,true);assert.equal(fleetEditorHero(h,'hero-d').disabled,true);assert.match(h.node('gp-fleet-formations').textContent,/其他舰队占用/);
+ fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-c','0','0');const source=h.node('gp-fleet-parameters').value;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.match(h.node('gp-fleet-hint').textContent,/占用/);assert.equal(writes(h).length,0);
+});
+
+test('fleet manual positions require reliable unlocked templates, exact integers and unique configured coordinates atomically',async()=>{
+ const h=await fleetEditorPage();fleetEditorTarget(h);assert.deepEqual(fleetEditorControl(h,'preset').children.map(n=>n.value),['','1']);fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','0','0');
+ const source=h.node('gp-fleet-parameters').value;for(const value of ['', '1e0','1.0000000000000001',' 0','01','9007199254740993','2147483648','-2147483649','2']){fleetEditorHero(h,'hero-b','x').value=value;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source,value);}
+ fleetEditorHero(h,'hero-b','x').value='0';fleetEditorHero(h,'hero-a').checked=true;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.match(h.node('gp-fleet-hint').textContent,/重叠/);assert.equal(writes(h).length,0);
+});
+
+test('fleet editor respects configured hero count and does not accept forged preset selections',async()=>{
+ const facts=fleetEditorFacts();facts.formationFacts.catalog.maxHeroes=1;const h=await fleetEditorPage(fleetEditorData(facts));fleetEditorTarget(h);fleetEditorChoose(h,'hero-b','1','0');const source=h.node('gp-fleet-parameters').value;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.match(h.node('gp-fleet-hint').textContent,/英雄数量/);
+ fleetEditorHero(h,'hero-a').checked=false;fleetEditorControl(h,'preset').value='2';fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(writes(h).length,0);
+});
+
+test('fleet nonzero pet identity remains blocked and is never copied into writable parameters or silently discarded',async()=>{
+ const facts=fleetEditorFacts();facts.formationFacts.buildings[0].formation.petUid='9007199254740995';const h=await fleetEditorPage(fleetEditorData(facts));fleetEditorTarget(h);assert.equal(fleetEditorApply(h).disabled,true);assert.match(h.node('gp-fleet-formations').textContent,/9007199254740995/);assert.match(h.node('gp-fleet-formations').textContent,/FLEET_PET_BINDING_UNVERIFIED/);const source=h.node('gp-fleet-parameters').value;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(writes(h).length,0);
+});
+
+test('missing fleet formation reliability, disabled config and unavailable fleet states never infer edit eligibility',async()=>{
+ const data=fleetEditorData();for(const mutation of [d=>delete d.view.formationReliability,d=>d.view.formationReliability.heroes=false,d=>d.view.formationCatalog.maxHeroes=null,d=>d.config={...d.config,formation:false},d=>d.view.fleets[0].state=2,d=>d.view.fleets[0].repairing={endTs:200},d=>d.view.fleets[0].autoFight=null]){
+  const next=structuredClone(data);mutation(next);const h=await fleetEditorPage(next);fleetEditorTarget(h);assert.equal(fleetEditorApply(h).disabled,true);const source=h.node('gp-fleet-parameters').value;fleetEditorApply(h).click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(writes(h).length,0);
+ }
+});
+
+test('fleet form old target, roster and apply callbacks expire after selecting another fleet or changing advanced parameters',async()=>{
+ const h=await fleetEditorPage();fleetEditorTarget(h);const old=fleetEditorApply(h),oldTarget=fleetEditorControl(h,'building');fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','1','0');fleetEditorTarget(h,'f2');const source=h.node('gp-fleet-parameters').value;old.click();oldTarget.value='f1';oldTarget.onchange();assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(fleetEditorControl(h,'building').value,'f2');
+ const apply=fleetEditorApply(h);h.node('gp-fleet-parameters').value=JSON.stringify({cityId:7});h.node('gp-fleet-parameters').oninput();apply.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{cityId:7});assert.equal(writes(h).length,0);
+});
+
+test('fleet form locks for pending requests and UNKNOWN status and clears on account switch with late reads ignored',async()=>{
+ const h=await fleetEditorPage();fleetEditorTarget(h);const old=fleetEditorApply(h),reading=h.node('gp-fleet-load').click();assert.equal(old.disabled,true);old.click();const blocked=fleetEditorData();blocked.status={running:false,blocked:true,state:'UNKNOWN'};h.respond('/api/gameplay',blocked,{module:'fleet'});await reading;assert.equal(fleetEditorControl(h,'building').disabled,true);
+ const late=h.node('gp-fleet-load').click();h.run("selectAccount('B')");h.respond('/api/gameplay',fleetEditorData(),{module:'fleet'});await late;old.click();assert.equal(h.node('gp-fleet-formations').textContent,'');assert.equal(writes(h).length,0);
+});
+
+test('fleet editor treats identities as literal DOM values and detached callbacks cannot cross back into the old account',async()=>{
+ const facts=fleetEditorFacts(),literal='<img onerror=alert(1)>',oldId=facts.fleets[0].buildingId;facts.fleets[0].buildingId=literal;facts.formationFacts.buildings.find(b=>b.buildingId===oldId).buildingId=literal;
+ const h=await fleetEditorPage(fleetEditorData(facts));fleetEditorTarget(h,literal);assert.ok(descendants(h.node('gp-fleet-formations')).every(n=>n.tagName!=='img'));fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','1','0');const apply=fleetEditorApply(h);h.run("selectAccount('B');selectAccount('A')");apply.click();assert.equal(h.node('gp-fleet-formations').textContent,'');assert.equal(writes(h).length,0);
 });

@@ -244,7 +244,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
   }
   return candidates;
 }
-export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
   { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },
