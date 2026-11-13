@@ -545,3 +545,16 @@ test('calendar history persists exact occurrence and prevents clock-rollback rep
 for(const entry of ['tasks','dailies','loop'])test(entry+' preserves daily and weekly rules in the existing unified compiler without creating another execution graph',()=>{
  const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});for(const kind of ['DAILY','WEEKLY']){intent.runPolicy.schedule=calendarSchedule(kind);const compiled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(compiled.graph.runPolicy,intent.runPolicy);assert.deepEqual(compiled.graph.nodes,before.graph.nodes);assert.deepEqual(compiled.graph.edges,before.graph.edges);assert.deepEqual(compiled.graph.budget,before.graph.budget);assert.deepEqual(compiled.graph.preparation,before.graph.preparation);}delete intent.runPolicy.schedule.weekDay;assert.throws(()=>compileUnifiedExecution(intent,{modules:unifiedRegistry}));
 });
+
+const vipEventRule=()=>({kind:'VIP_LEVEL_CHANGED',level:3});
+test('business event rule is explicit and cannot inject transports, rewards, retries or calendar authority',()=>{
+ for(const level of [0,3,2147483647])assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:{kind:'VIP_LEVEL_CHANGED',level}}),{modules}).valid,true);
+ for(const rule of [null,{}, {kind:'SCVipUpdate',level:3},{kind:'VIP_LEVEL_CHANGED'},...[-1,1.5,2147483648,'3',null].map(level=>({kind:'VIP_LEVEL_CHANGED',level})),{...vipEventRule(),request:'SCVipUpdate'},{...vipEventRule(),reward:10},{...vipEventRule(),allowRetry:true}])assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:rule}),{modules}),{code:'WORKFLOW_INVALID'});
+ assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:vipEventRule(),schedule:onceSchedule(1050)}),{modules}),{code:'WORKFLOW_INVALID'});
+});
+for(const entry of ['tasks','dailies','loop'])test(entry+' keeps the original business DAG and explicit event rule without creating runtime',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger=vipEventRule();const compiled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(compiled.graph.nodes,before.graph.nodes);assert.deepEqual(compiled.graph.edges,before.graph.edges);assert.deepEqual(compiled.graph.budget,before.graph.budget);assert.deepEqual(compiled.graph.runPolicy,intent.runPolicy);const simulation=simulateWorkflow(compiled.graph,{modules:unifiedRegistry});assert.equal(simulation.runtimeCreated,false);assert.equal(simulation.requestsSent,0);
+});
+test('a forged public VIP reader or plain message source cannot arm an event workflow or obtain a claim',async()=>{
+ const f=fixture();f.session.player={playerId:'17',worldId:1};f.session.connectionId='synthetic';f.session.client.readVipLevel=()=>({reliable:true,accountId:f.session.id,generation:1,connectionId:'synthetic',playerId:'17',worldId:'1',vipLevel:3});await assert.rejects(f.runner.start(f.session.id,boundedGraph(graph(),{eventTrigger:vipEventRule()})),{code:'WORKFLOW_EVENT_UNKNOWN'});assert.equal(f.calls.length,0);assert.equal(f.runner.getStatus().running,false);
+});

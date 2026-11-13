@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -241,4 +241,16 @@ test('accepted terminal protocol messages invalidate VIP before public message o
     assert.equal(observed.status, 'UNKNOWN'); assert.equal(observed.vipLevel, null);
     assert.equal(observed.reason, 'VIP_CONNECTION_ENDED'); assert.equal(f.client.connected, false); unknown(f.client);
   }
+});
+
+test('private VIP event cursors bind changed levels, exact identity and accepted sequence without trusting emitted payloads',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login(1)),baseline=readVipLevelEvent(f.client);assert.equal(baseline.reliable,true);assert.equal(baseline.cursor,0);assert.equal(baseline.event,null);f.client.emit('message',{name:'SCVipUpdate',seq:1,body:{vipLevel:8}});assert.equal(readVipLevelEvent(f.client).cursor,0);socket.receive('SCVipUpdate',{vipLevel:3},1);const event=readVipLevelEvent(f.client);assert.equal(event.streamId,baseline.streamId);assert.equal(event.cursor,1);assert.deepEqual([event.event.previousLevel,event.event.vipLevel,event.event.seq],[1,3,1]);assert.equal(event.event.eventId,event.streamId+':1');assert.equal(event.playerId,'9007199254740993');assert.equal(event.worldId,'9');event.event.vipLevel=99;assert.equal(readVipLevelEvent(f.client,{cursor:1}).event.vipLevel,3);socket.receive('SCVipUpdate',{vipLevel:9},1);assert.equal(readVipLevelEvent(f.client).cursor,1);socket.receive('SCVipUpdate',{vipLevel:4},2);assert.equal(readVipLevelEvent(f.client,{cursor:1}).event.vipLevel,3);assert.equal(readVipLevelEvent(f.client).event.vipLevel,4);
+});
+
+test('private VIP event stream identity changes on relogin and cannot be forged by plain clients or replacement readers',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const oldSocket=await f.ready(login(1)),old=readVipLevelEvent(f.client),oldMessage=oldSocket.onmessage;f.client.readVipLevel=()=>({reliable:true,vipLevel:99});f.client.emit('message',{name:'SCVipUpdate',seq:1,body:{vipLevel:99}});assert.equal(readVipLevelEvent(f.client).cursor,0);assert.equal(readVipLevelEvent({readVipLevel:()=>old}).reliable,false);f.client.stop();assert.equal(readVipLevelEvent(f.client).reliable,false);await f.ready(login(2));const fresh=readVipLevelEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);assert.equal(fresh.cursor,0);oldMessage({data:codec.encode('SCVipUpdate',1,{vipLevel:99})});assert.equal(readVipLevelEvent(f.client).cursor,0);
+});
+
+test('private VIP event retention is bounded and gaps or decoding failures invalidate all pending event authority',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login(0));for(let seq=1;seq<=201;seq++)socket.receive('SCVipUpdate',{vipLevel:seq},seq);assert.equal(readVipLevelEvent(f.client).cursor,201);assert.equal(readVipLevelEvent(f.client,{cursor:1}).reliable,false);assert.equal(readVipLevelEvent(f.client,{cursor:2}).event.vipLevel,2);socket.receive('SCVipUpdate',{vipLevel:203},203);assert.equal(readVipLevelEvent(f.client).reliable,false);socket.receive('SCVipUpdate',{vipLevel:202},202);assert.equal(readVipLevelEvent(f.client).reliable,false);
 });

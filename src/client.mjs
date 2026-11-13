@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { createCodec } from './codec.mjs';
 import { trustedGameClock } from './state-facts.mjs';
 
@@ -92,12 +93,12 @@ function seedVipLevel(client, body, socket) {
   if (!playerId || !worldId || vipOwn(player, 'id') && vipIdentity(vipValue(player, 'id')) !== playerId) {
     invalidateVipLevel(client, 'VIP_PLAYER_IDENTITY_UNKNOWN'); return;
   }
-  state.identity = { playerId, worldId };
+  state.identity = { playerId, worldId };state.streamId=randomUUID();state.cursor=0;state.events=[];
   const level = vipValue(vipValue(player, 'vip'), 'vipLevel');
   if (!vipLevel(level)) { invalidateVipLevel(client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID'); return; }
   state.level = level; state.source = 'LoginResponse.playerInfo.vip'; state.reason = null; state.seeded = true;
 }
-function updateVipLevel(client, body, seq) {
+function updateVipLevel(client, body, seq, receivedAt) {
   const state = liveVipLevels.get(client);
   if (!state || state.invalid) return;
   if (!client.connected || state.socket !== client.socket || !vipCurrentContext(client, state)) {
@@ -107,7 +108,18 @@ function updateVipLevel(client, body, seq) {
   if (!Number.isInteger(seq) || seq <= 0 || seq > MAX_SEQ) { invalidateVipLevel(client, 'VIP_UPDATE_SEQUENCE_UNKNOWN'); return; }
   const level = vipValue(body, 'vipLevel');
   if (!vipLevel(level)) { invalidateVipLevel(client, 'VIP_LEVEL_NOT_EXPLICIT_OR_INVALID'); return; }
+  if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidateVipLevel(client,'VIP_EVENT_CURSOR_EXHAUSTED');return;}
+  const cursor=++state.cursor;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,previousLevel:state.level,vipLevel:level,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();
   state.level = level; state.source = 'SCVipUpdate'; state.reason = null;
+}
+// Attested event cursors share the existing private continuous VIP fact owner.
+// Raw EventEmitter payloads, public login copies and replacement methods cannot seed them.
+export function readVipLevelEvent(client,{cursor}={}){
+ const state=liveVipLevels.get(client),fact=GameClient.prototype.readVipLevel.call(client);
+ if(!fact.reliable||!state?.streamId)return {status:'UNKNOWN',reliable:false,reason:fact.reason??'VIP_EVENT_BASELINE_UNKNOWN'};
+ const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);
+ if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'VIP_EVENT_CURSOR_UNAVAILABLE'};
+ return {...fact,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};
 }
 export const LIVE_VIP_LEVEL_EVIDENCE = Object.freeze({
   packageSha256: '4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',
@@ -701,7 +713,7 @@ export class GameClient extends EventEmitter {
       invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
     }
     if (name === 'SCServerTimeChanged') this.gameClock.reset();
-    if (name === 'SCVipUpdate') updateVipLevel(this, body, seq);
+    if (name === 'SCVipUpdate') updateVipLevel(this, body, seq, receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });
