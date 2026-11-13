@@ -1053,3 +1053,87 @@ test('integer parameter input refuses rounding decimals, exponent and whitespace
 test('legacy node modules without a static parameter schema keep their existing JSON editor',async()=>{
  const h=await parameterPage('fixture',{targetId:'exact'}),editor=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea');assert.ok(editor);editor.value=JSON.stringify({targetId:'edited'});editor.onchange();assert.deepEqual(businessNode(h).parameters,{targetId:'edited'});assert.equal(writes(h).length,0);
 });
+
+const parameterListControls=(h,key,control)=>descendants(h.node('wf-nodes')).filter(n=>n.dataset.workflowParameter==='business'&&n.dataset.parameterField===key&&n.dataset.parameterControl===control);
+const parameterListButton=(h,key,control,index)=>parameterListControls(h,key,control).find(n=>index===undefined||n.dataset.parameterIndex===String(index));
+function parameterListAdd(h,key,value,type) {
+ const include=parameterControl(h,key,'enabled');include.checked=true;include.onchange();parameterListButton(h,key,'add').click();
+ const inputs=parameterListControls(h,key,'item'),input=inputs.at(-1);if(type){const kind=parameterListControls(h,key,'item-type').at(-1);kind.value=type;kind.onchange();}input.value=value;
+}
+
+test('Workflow list form preserves precise mixed alliance identities and applies drafts only on explicit apply',async()=>{
+ const original={memberIds:['9007199254740995',7,{low:-1,high:1,unsigned:true}],reqIds:[],itemIds:['<img onerror=alert(1)>']},h=await parameterPage('alliance',original),before=h.node('wf-json').value;
+ parameterListAdd(h,'memberIds','9007199254740997','string');parameterListAdd(h,'reqIds','0','integer');
+ assert.equal(h.node('wf-json').value,before);parameterApply(h).click();
+ assert.deepEqual(businessNode(h).parameters,{...original,memberIds:[...original.memberIds,'9007199254740997'],reqIds:[0]});
+ assert.ok(descendants(h.node('wf-nodes')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
+});
+
+test('list fields keep omitted, enabled empty and explicitly removed declarations distinct',async()=>{
+ const h=await parameterPage('formation',{presetId:1});assert.equal(parameterControl(h,'heroIds','enabled').checked,false);
+ parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{presetId:1});
+ parameterControl(h,'heroIds','enabled').checked=true;parameterControl(h,'heroIds','enabled').onchange();parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{presetId:1,heroIds:[]});
+ parameterListAdd(h,'heroIds','A');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.heroIds,['A']);
+ parameterControl(h,'heroIds','enabled').checked=false;parameterControl(h,'heroIds','enabled').onchange();assert.equal(parameterListButton(h,'heroIds','add').disabled,true);parameterApply(h).click();assert.equal(Object.hasOwn(businessNode(h).parameters,'heroIds'),false);assert.equal(writes(h).length,0);
+});
+
+test('list reorder and removal preserve current text and type while detached row callbacks cannot edit replacements',async()=>{
+ const h=await parameterPage('naval',{excludeGuildIds:['old',2,'last']});
+ parameterListControls(h,'excludeGuildIds','item')[0].value='9007199254740995';const stale=parameterListButton(h,'excludeGuildIds','remove',0);
+ parameterListButton(h,'excludeGuildIds','down',0).click();stale.click();assert.equal(parameterListControls(h,'excludeGuildIds','item').length,3);
+ assert.deepEqual(parameterListControls(h,'excludeGuildIds','item').map(n=>n.value),['2','9007199254740995','last']);
+ assert.deepEqual(parameterListControls(h,'excludeGuildIds','item-type').map(n=>n.value),['integer','string','string']);
+ parameterListButton(h,'excludeGuildIds','up',2).click();parameterListButton(h,'excludeGuildIds','remove',0).click();parameterApply(h).click();
+ assert.deepEqual(businessNode(h).parameters.excludeGuildIds,['last','9007199254740995']);assert.equal(writes(h).length,0);
+});
+
+test('invalid list integers or forged types abort all parameter changes without rounding or partial apply',async()=>{
+ const h=await parameterPage('naval',{cityIds:[1],playerId:'exact'});
+ for(const value of ['', '1.0000000000000001','1e3',' 1','01','+1','9007199254740993','NaN','true']){
+  parameterSet(h,'playerId','changed',{type:'string'});parameterListControls(h,'cityIds','item')[0].value=value;const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source,value);
+ }
+ parameterListControls(h,'cityIds','item')[0].value='2';parameterListAdd(h,'excludeGuildIds','7','string');parameterListControls(h,'excludeGuildIds','item-type')[0].value='object';const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('list controls retain opaque Long objects through reorder and only remove them explicitly',async()=>{
+ const exact={low:-1,high:2147483647,unsigned:false},h=await parameterPage('alliance',{reqIds:[exact,'7']});
+ assert.equal(parameterListControls(h,'reqIds','item').length,1);parameterListButton(h,'reqIds','down',0).click();parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.reqIds,['7',exact]);
+ parameterListButton(h,'reqIds','remove',1).click();parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.reqIds,['7']);assert.equal(writes(h).length,0);
+});
+
+test('existing malformed arrays and unsupported entries remain visible and unchanged for original validation',async()=>{
+ const h=await parameterPage('naval',{cityIds:'wrong-shape',excludeGuildIds:[{unexpected:'keep'},null]});
+ assert.equal(parameterListButton(h,'cityIds','add'),undefined);parameterSet(h,'playerId','7',{type:'string'});parameterApply(h).click();
+ assert.deepEqual(businessNode(h).parameters,{cityIds:'wrong-shape',excludeGuildIds:[{unexpected:'keep'},null],playerId:'7'});
+ assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{naval:GAMEPLAY_MODULES.naval}}));assert.equal(writes(h).length,0);
+});
+
+test('list editor respects the existing hundred-item Function limit without dropping original oversized values',async()=>{
+ const ids=Array.from({length:100},(_,i)=>'hero-'+i),h=await parameterPage('formation',{presetId:1,heroIds:ids});
+ assert.equal(parameterListButton(h,'heroIds','add').disabled,true);parameterListButton(h,'heroIds','add').click();assert.equal(parameterListControls(h,'heroIds','item').length,100);
+ parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.heroIds,ids);
+ const oversized=await parameterPage('formation',{heroIds:[...ids,'overflow']});parameterSet(oversized,'presetId','2');const source=oversized.node('wf-json').value;parameterApply(oversized).click();assert.equal(oversized.node('wf-json').value,source);
+ assert.equal(writes(h).length,0);assert.equal(writes(oversized).length,0);
+});
+
+test('list form uses production alliance identity normalization and rejects duplicate aliases without weakening domain validation',async()=>{
+ const h=await parameterPage('alliance');parameterListAdd(h,'memberIds','9007199254740995','string');parameterListAdd(h,'reqIds','7','integer');parameterListAdd(h,'itemIds','wood');
+ parameterApply(h).click();assert.equal(validateWorkflow(conditionGraph(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}).valid,true);
+ parameterListAdd(h,'reqIds','7','string');parameterApply(h).click();assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}),/联盟身份无效或重复/);assert.equal(writes(h).length,0);
+});
+
+test('list edits invalidate original candidates but preserve nested formation objects and exact action selection',async()=>{
+ const positions=[{heroId:'A',pos:{x:0,y:2}}],h=await parameterPage('formation',{presetId:1,heroIds:['A'],heroPositions:positions});
+ const reading=descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowCandidate==='business').click();await tick();h.respond('/api/gameplay/survey',{accountId:'A',module:'formation',view:{candidates:[{actionId:'exact-action',actionType:'SAVE',parameters:{presetId:1,heroIds:['A'],heroPositions:positions},costs:[],executable:true}]}});await reading;
+ assert.ok(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'));parameterListAdd(h,'heroIds','B');parameterApply(h).click();
+ assert.deepEqual(businessNode(h).parameters.heroPositions,positions);assert.deepEqual(businessNode(h).parameters.heroIds,['A','B']);assert.equal(businessNode(h).selection.actionId,'exact-action');assert.equal(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'),false);assert.equal(writes(h,'/api/operations/plan').length,0);
+});
+
+test('list add and row callbacks lock during Workflow requests and running status then expire across graph or account replacement',async()=>{
+ const h=await parameterPage('alliance',{reqIds:['7']}),add=parameterListButton(h,'reqIds','add'),remove=parameterListButton(h,'reqIds','remove',0),apply=parameterApply(h);
+ const reading=h.node('wf-load').click();assert.equal(add.disabled,true);assert.equal(remove.disabled,true);add.click();remove.click();assert.equal(parameterListControls(h,'reqIds','item').length,1);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;assert.equal(add.disabled,true);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;
+ const advanced=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea');advanced.value=JSON.stringify({reqIds:['new']});advanced.onchange();add.click();remove.click();apply.click();assert.deepEqual(businessNode(h).parameters.reqIds,['new']);assert.equal(parameterListControls(h,'reqIds','item').length,1);
+ const currentAdd=parameterListButton(h,'reqIds','add');h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-json').value;currentAdd.click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});

@@ -575,10 +575,54 @@ function wfParameterForm(card,node) {
  const live=()=>editable()&&gpSafe(scope,revision)&&wfGraph===graph&&graph.nodes.includes(node)&&node.module===module&&node.type===type&&gpJson(node.parameters)===stored&&Array.from($('wf-nodes').children).includes(card);
  const section=gpEl('div'),note=gpEl('p','明确启用字段后填写业务选择，再应用。未启用字段从声明中移除；复杂参数原样保留。领域资格、成本和 D6 仍由原 Function 校验。');
  section.appendChild(gpEl('h4','业务参数'));section.appendChild(note);card.appendChild(section);
- const labels={packId:'礼包 ID',itemId:'物品 ID',num:'数量',action:'业务操作',buildingId:'建筑 ID',jobIdx:'培育队列索引（含 0）',level:'等级',pageNo:'邮件页号（含 0）',emailId:'精确邮件 ID',kind:'任务种类',taskId:'精确任务 ID',tierId:'活跃奖励档位',uid:'精确目标 UID',cityId:'城市 ID',allowLowerLevel:'允许已授权的较低等级目标',antiqueId:'古董 ID',suitId:'古董套装 ID',heroId:'英雄 ID',pos:'栏位',presetId:'阵容模板 ID',makeId:'制造配方 ID',allowUniversal:'允许万能材料',productId:'产品 ID',mode:'业务模式',raidId:'远征 raidId',season:'赛季',techId:'科技 ID',targetLevel:'目标等级',stageId:'关卡 ID',factor:'培养倍率',exhibitionId:'展览 ID',useNum:'使用数量',payment:'支付方式',caseIndex:'展示栏位',keywordType:'关键词类型',shipIndex:'货船索引',cargoIndex:'货格索引',targetId:'目标 ID',playerId:'精确玩家 ID',minimumPower:'最低战力',maximumPower:'最高战力',skillIdx:'技能索引（含 0）'};
+ const labels={packId:'礼包 ID',itemId:'物品 ID',num:'数量',action:'业务操作',buildingId:'建筑 ID',jobIdx:'培育队列索引（含 0）',level:'等级',pageNo:'邮件页号（含 0）',emailId:'精确邮件 ID',kind:'任务种类',taskId:'精确任务 ID',tierId:'活跃奖励档位',uid:'精确目标 UID',cityId:'城市 ID',allowLowerLevel:'允许已授权的较低等级目标',antiqueId:'古董 ID',suitId:'古董套装 ID',heroId:'英雄 ID',pos:'栏位',presetId:'阵容模板 ID',makeId:'制造配方 ID',allowUniversal:'允许万能材料',productId:'产品 ID',mode:'业务模式',raidId:'远征 raidId',season:'赛季',techId:'科技 ID',targetLevel:'目标等级',stageId:'关卡 ID',factor:'培养倍率',exhibitionId:'展览 ID',useNum:'使用数量',payment:'支付方式',caseIndex:'展示栏位',keywordType:'关键词类型',shipIndex:'货船索引',cargoIndex:'货格索引',targetId:'目标 ID',playerId:'精确玩家 ID',minimumPower:'最低战力',maximumPower:'最高战力',skillIdx:'技能索引（含 0）',memberIds:'精确联盟成员 ID 列表',reqIds:'精确联盟求助 ID 列表',itemIds:'物品 ID 列表',heroIds:'英雄 ID 列表',fleetBuildingIds:'舰队建筑 ID 列表',excludeGuildIds:'排除联盟 ID 列表',cityIds:'城市 ID 列表'};
  const enums={feed:'投喂',claim:'领取',read:'标为已读',main:'主线',branch:'支线',achievement:'成就',daily:'每日任务','daily-activity':'日活跃','daily-gift':'固定免费赠礼',activate:'激活',star:'升星',suit:'套装成长',master:'大师成长',exchange:'碎片兑换','put-on':'穿戴',refine:'精炼',make:'制造',pick:'收取',plant:'播种',harvest:'收取',expedition:'远征',level:'升级',skill:'技能升级','exclusive-level':'专武升级','exclusive-star':'专武升星','fragment-exchange':'万能碎片兑换',ITEM:'自有物品',FREE:'免费',PREMIUM:'钻石（D6 禁止）'};
  const fields=[],values=node.parameters&&typeof node.parameters==='object'&&!Array.isArray(node.parameters)?node.parameters:{};
+ const primitiveTypes=spec=>[...new Set((spec.anyOf||[spec]).flatMap(row=>Array.isArray(row.type)?row.type:[row.type]))].filter(type=>['string','integer','number','boolean','null'].includes(type));
+ const valueType=value=>value===null?'null':typeof value==='number'?(Number.isInteger(value)?'integer':'number'):typeof value;
+ const tag=(input,key,control)=>{input.dataset.workflowParameter=node.id;input.dataset.parameterField=key;input.dataset.parameterControl=control;return input;};
+ const readPrimitive=({key,kind,input,choices,types})=>{
+  if(!types.includes(kind.value))throw Error('参数类型无效。');let value;
+  if(choices){if(input.value==='')throw Error((labels[key]||key)+'需要明确值。');value=JSON.parse(input.value);if(!choices.includes(value)||value==='PREMIUM')throw Error('该业务值未开放。');}
+  else if(kind.value==='string')value=input.value;
+  else if(kind.value==='null')value=null;
+  else if(kind.value==='boolean'){if(!['true','false'].includes(input.value))throw Error('请选择明确布尔值。');value=input.value==='true';}
+  else {
+   if(kind.value==='integer'&&!/^-?(0|[1-9][0-9]*)$/.test(input.value))throw Error((labels[key]||key)+'需要明确十进制整数。');
+   try{value=JSON.parse(input.value);}catch{throw Error((labels[key]||key)+'需要明确有限数值。');}
+   if(typeof value!=='number'||!Number.isFinite(value)||kind.value==='integer'&&!Number.isSafeInteger(value)||Number.isInteger(value)&&!Number.isSafeInteger(value))throw Error((labels[key]||key)+'需要可靠数值；精确 UID 使用对应文本类型。');
+  }
+  return value;
+ };
  for(const [key,spec]of Object.entries(schema.properties||{})){
+  if(spec.type==='array'&&primitiveTypes(spec.items||{}).length&&(!Object.hasOwn(values,key)||Array.isArray(values[key]))){
+   const group=gpEl('div'),label=gpEl('label'),enabled=tag(gpEl('input'),key,'enabled');enabled.type='checkbox';enabled.checked=Object.hasOwn(values,key);
+   label.appendChild(enabled);label.appendChild(document.createTextNode(' '+(labels[key]||key)));group.appendChild(label);section.appendChild(group);
+   const box=gpEl('div');group.appendChild(box);const add=tag(gpEl('button','添加一项'),key,'add');add.type='button';group.appendChild(add);
+   const types=primitiveTypes(spec.items),field={key,enabled,list:true,rows:[],add};fields.push(field);
+   const blank=()=>({type:types[0],text:'',preserved:false}),snapshot=entry=>entry.preserved?{preserved:true,value:entry.value}:{type:entry.kind.value,text:entry.input.value,preserved:false};
+   const render=entries=>{
+    gpClear(box);field.rows=entries.map((entry,index)=>{
+     const row=gpEl('div'),model={...entry,row};box.appendChild(row);
+     if(entry.preserved)row.appendChild(gpEl('span','原复杂值（保持原文）：'+gpJson(entry.value)));
+     else {
+      const kind=tag(gpEl('select'),key,'item-type');for(const t of types){const option=gpEl('option',({string:'文本（精确原文）',integer:'整数',number:'数值',boolean:'布尔',null:'null'})[t]);option.value=t;kind.appendChild(option);}kind.value=entry.type;kind.dataset.parameterIndex=String(index);model.kind=kind;if(types.length>1)row.appendChild(kind);
+      const input=tag(gpEl('input'),key,'item');input.value=entry.text;input.dataset.parameterIndex=String(index);model.input=input;row.appendChild(input);kind.onchange=sync;
+     }
+     model.buttons=[];for(const [action,text,delta]of [['up','上移',-1],['down','下移',1],['remove','移除此项',0]]){
+      const button=tag(gpEl('button',text),key,action);button.type='button';button.dataset.parameterIndex=String(index);row.appendChild(button);model.buttons.push({button,delta});
+      button.onclick=()=>{
+       if(!live()||!enabled.checked||!field.rows.includes(model)||!Array.from(box.children).includes(row))return;
+       const next=field.rows.map(snapshot);if(action==='remove')next.splice(index,1);else {const target=index+delta;if(target<0||target>=next.length)return;[next[index],next[target]]=[next[target],next[index]];}
+       render(next);sync();
+      };
+     }return model;
+    });
+   };
+   enabled.onchange=sync;add.onclick=()=>{if(!live()||!enabled.checked||field.rows.length>=100)return;render([...field.rows.map(snapshot),blank()]);sync();};
+   render((values[key]||[]).map(value=>{const type=valueType(value);return types.includes(type)?{type,text:value===null?'':String(value),preserved:false}:{preserved:true,value};}));
+   continue;
+  }
   const variants=spec.anyOf||[spec],types=[...new Set(variants.flatMap(row=>Array.isArray(row.type)?row.type:[row.type]))];
   if(!types.length||types.some(type=>!['string','integer','number','boolean','null'].includes(type))){section.appendChild(gpEl('p',(labels[key]||key)+'：复杂业务参数保持原样，可从专业候选导入或高级编辑。'));continue;}
   const row=gpEl('label'),enabled=gpEl('input');enabled.type='checkbox';enabled.checked=Object.hasOwn(values,key);enabled.dataset.workflowParameter=node.id;enabled.dataset.parameterField=key;enabled.dataset.parameterControl='enabled';row.appendChild(enabled);row.appendChild(document.createTextNode(' '+(labels[key]||key)+' '));
@@ -592,26 +636,21 @@ function wfParameterForm(card,node) {
   input.dataset.workflowParameter=node.id;input.dataset.parameterField=key;input.dataset.parameterControl='value';row.appendChild(input);section.appendChild(row);fields.push({key,enabled,kind,input,choices,types});
  }
  const apply=gpEl('button','应用业务参数');apply.type='button';apply.dataset.workflowParameterApply=node.id;section.appendChild(apply);
- const sync=()=>{const locked=!editable();for(const field of fields){field.enabled.disabled=locked;field.kind.disabled=locked||!field.enabled.checked;field.input.disabled=locked||!field.enabled.checked||field.kind.value==='null';}apply.disabled=locked;};
- for(const field of fields){field.enabled.onchange=sync;field.kind.onchange=sync;}
+ function sync(){const locked=!editable();for(const field of fields){field.enabled.disabled=locked;const inactive=locked||!field.enabled.checked;
+  if(field.list){field.add.disabled=inactive||field.rows.length>=100;field.rows.forEach((entry,index)=>{if(!entry.preserved){entry.kind.disabled=inactive;entry.input.disabled=inactive||entry.kind.value==='null';}for(const {button,delta}of entry.buttons)button.disabled=inactive||delta!==0&&(index+delta<0||index+delta>=field.rows.length);});}
+  else {field.kind.disabled=inactive;field.input.disabled=inactive||field.kind.value==='null';}
+ }apply.disabled=locked;}
+ for(const field of fields){field.enabled.onchange=sync;if(!field.list)field.kind.onchange=sync;}
  apply.onclick=()=>{
   if(!live())return;
   try{
    if(node.parameters!==undefined&&(!node.parameters||typeof node.parameters!=='object'||Array.isArray(node.parameters)))throw Error('原业务参数需为对象，请先修正高级编辑。');
    const next=JSON.parse(JSON.stringify(node.parameters||{}));
    for(const field of fields){
-    const {key,enabled,kind,input,choices,types}=field;if(!enabled.checked){delete next[key];continue;}
-    if(!types.includes(kind.value))throw Error('参数类型无效。');let value;
-    if(choices){if(input.value==='')throw Error((labels[key]||key)+'需要明确值。');value=JSON.parse(input.value);if(!choices.includes(value)||value==='PREMIUM')throw Error('该业务值未开放。');}
-    else if(kind.value==='string')value=input.value;
-    else if(kind.value==='null')value=null;
-    else if(kind.value==='boolean'){if(!['true','false'].includes(input.value))throw Error('请选择明确布尔值。');value=input.value==='true';}
-    else {
-     if(kind.value==='integer'&&!/^-?(0|[1-9][0-9]*)$/.test(input.value))throw Error((labels[key]||key)+'需要明确十进制整数。');
-     try{value=JSON.parse(input.value);}catch{throw Error((labels[key]||key)+'需要明确有限数值。');}
-     if(typeof value!=='number'||!Number.isFinite(value)||kind.value==='integer'&&!Number.isSafeInteger(value)||Number.isInteger(value)&&!Number.isSafeInteger(value))throw Error((labels[key]||key)+'需要可靠数值；精确 UID 使用对应文本类型。');
-    }
-    next[key]=value;
+    const {key,enabled}=field;if(!enabled.checked){delete next[key];continue;}
+    if(field.list){if(field.rows.length>100)throw Error('列表超出原 Function JSON 上限。');next[key]=field.rows.map(entry=>entry.preserved?JSON.parse(JSON.stringify(entry.value)):readPrimitive({key,kind:entry.kind,input:entry.input,choices:null,types:primitiveTypes(schema.properties[key].items)}));}
+    else next[key]=readPrimitive(field);
+
    }
    node.parameters=next;wfCandidateCache.delete(node.id);wfChanged();wfRenderGraph();$('wf-hint').textContent='业务参数已应用；原候选选择仍需重新采集核验，保存与执行继续由原Function校验。';
   }catch(error){note.textContent='参数未应用：'+error.message;}
