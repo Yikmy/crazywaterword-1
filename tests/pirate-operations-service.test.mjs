@@ -28,7 +28,7 @@ const config = { tables: {
 
 // Actual Service, adapter, Codec, GameClient and durable stores. The only
 // transport is a synthetic socket that returns explicit sequenced read frames.
-async function fixture(t, { delta = 1, file = null, generation = 1 } = {}) {
+async function fixture(t, { delta = 1, file = null, generation = 1, usedCount = beforeUsed, playerId = '9007199254740993', worldId = '9' } = {}) {
   const dir = file === null ? fs.mkdtempSync(path.join(os.tmpdir(), 'cw-pirate-service-')) : null;
   file ??= path.join(dir, 'history.json');
   const history = createExecutionHistory({ file });
@@ -43,7 +43,7 @@ async function fixture(t, { delta = 1, file = null, generation = 1 } = {}) {
       accountId, generation, earliestMs: nowMs - 10, nowMs, latestMs: nowMs + 10 };
   } };
   const reads = [], writes = [];
-  let seq = 0, used = beforeUsed;
+  let seq = 0, used = usedCount;
   class SyntheticSocket {
     constructor() { this.readyState = 0; }
     close() { this.readyState = 3; }
@@ -84,7 +84,7 @@ async function fixture(t, { delta = 1, file = null, generation = 1 } = {}) {
   client.socket.readyState = 1;
   client.socket.onopen();
   client.socket.receive('LoginResponse', { result: 0, initSeqNo: 12, playerInfo: {
-    playerId: '9007199254740993', worldId: '9', vip: { vipLevel: 1, vipExp: '0' },
+    playerId, worldId, vip: { vipLevel: 1, vipExp: '0' },
   } }, 0);
   const player = (await login).playerInfo;
   const session = { id: accountId, client, player, generation, connectionId, state: 'READY', abort: new AbortController() };
@@ -92,7 +92,7 @@ async function fixture(t, { delta = 1, file = null, generation = 1 } = {}) {
     const surveyed = await service.surveyModule(session, moduleId, parameters);
     const row = surveyed.view.candidates[0];
     assert.ok(row?.executable, 'current explicit target should be eligible: ' + JSON.stringify({ row, notes: surveyed.view.notes }));
-    assert.deepEqual(surveyed.view.quota, { dayKey: '2026-11-12', used: beforeUsed, total: 16, remaining: 13, reason: null });
+    assert.deepEqual(surveyed.view.quota, { dayKey: '2026-11-12', used: usedCount, total: 16, remaining: 16-usedCount, reason: null });
     const planInput = { module: moduleId, mode: 'Manual', parameters, selections: [row.actionId] };
     const plan = await service.plan(session, planInput);
     assert.deepEqual(FUNCTION_CONTRACTS[moduleId].requirementIds.C, ['C151']);
@@ -180,4 +180,29 @@ test('C151 unchanged counter retains the quota and UID, blocks a new plan after 
   assert.deepEqual(restarted.writes, []);
   assert.deepEqual(restarted.reads, [], 'unresolved write blocks before a new plan or transport');
   assert.equal(restarted.history.list(accountId).length, 1);
+});
+
+test('C151 definite refusal survives a new socket with the same target and quota',async t=>{
+ const f=await fixture(t,{delta:0}),{plan}=await f.plan();
+ f.client.sendWatch=async(_name,_body,options)=>{options.beforeDispatch?.();return {status:'REJECTED'};};
+ f.service.execute(f.session,f.authorize(plan));await f.service.settle(accountId);
+ assert.equal(f.history.list(accountId)[0].finalStatus,'REJECTED');
+ const historyBefore=fs.readFileSync(f.file,'utf8'),memoryBefore=fs.readFileSync(f.file+'.memory.json','utf8');
+ const next=await fixture(t,{file:f.file,generation:2});
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.deepEqual(next.writes,[]);
+ assert.equal(fs.readFileSync(f.file,'utf8'),historyBefore);assert.equal(fs.readFileSync(f.file+'.memory.json','utf8'),memoryBefore);
+});
+async function refusedPirate(t){
+ const f=await fixture(t,{delta:0}),{plan}=await f.plan();
+ f.client.sendWatch=async(_name,_body,options)=>{options.beforeDispatch?.();return {status:'REJECTED'};};
+ f.service.execute(f.session,f.authorize(plan));await f.service.settle(accountId);assert.equal(f.history.list(accountId)[0].finalStatus,'REJECTED');return f;
+}
+for(const changed of ['quota','player','world'])test('C151 refusal permits fresh '+changed+' facts and retains the original scope',async t=>{
+ const f=await refusedPirate(t),next=await fixture(t,{file:f.file,generation:2,...(changed==='quota'?{usedCount:4}:changed==='player'?{playerId:'9007199254740994'}:{worldId:'10'})});
+ assert.equal((await next.plan()).plan.actions.length,1);assert.deepEqual(next.writes,[]);assert.equal(next.service.executionMemory(accountId).events.length,1);
+ const back=await fixture(t,{file:f.file,generation:3});await assert.rejects(back.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.deepEqual(back.writes,[]);
+});
+for(const missing of ['executionContext','worldId'])test('C151 refusal missing original '+missing+' cannot be unlocked by a new connection',async t=>{
+ const f=await refusedPirate(t),saved=f.history.list(accountId)[0];if(missing==='executionContext')delete saved.executionContext;else delete saved.executionContext.worldId;f.history.put(saved);
+ const next=await fixture(t,{file:f.file,generation:2,usedCount:4});await assert.rejects(next.plan(),error=>['REJECTION_MEMORY_ACTIVE','MEMORY_EVENT_CONFLICT'].includes(error.code));assert.deepEqual(next.writes,[]);
 });

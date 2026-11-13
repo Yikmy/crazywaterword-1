@@ -1,6 +1,6 @@
 // W12 / C151: one explicit, ordinary PirateSweep with independent readback.
 import { createHash } from 'node:crypto';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
@@ -333,5 +333,11 @@ export const pirateSweepModule = Object.freeze({
   id: moduleId, label: '海盗单次扫荡', capabilities: Object.freeze([capabilityId]), defaultConfig: PIRATE_SWEEP_DEFAULT_CONFIG,
   validateConfig: validatePirateSweepConfig, validateParameters: validatePirateSweepParameters,
   survey: surveyPirateSweep, view: viewPirateSweep, plan: planPirateSweep, verify: verifyPirateSweep,
+  // Existing History already owns the original role/connection context. Compare
+  // business quota/target facts without treating a new connection as new evidence.
+  rejectionIdentity(operation,{context}={}) {
+    if(!operation?.beforeState||!operation.expectedState||!context)return null;
+    return businessRejectionIdentity({...operation,beforeState:{...operation.beforeState,context},expectedState:{...operation.expectedState,context}});
+  },
   dependencyVersions: pirateSweepDependencyVersions,
 });

@@ -116,12 +116,13 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const query={module:operation.module,actionType:operation.actionType,target:operation.target,identity:operation.identity??operation.beforeState};
     const rejectionIdentity=modules[operation.module]?.rejectionIdentity;
     if(typeof rejectionIdentity==='function') {
-      const key=executionMemoryKey(query),fresh=rejectionIdentity(operation);
+      const key=executionMemoryKey(query),fresh=rejectionIdentity(operation,{context:executionContext(session)});
       for(const event of snapshot.events.filter(event=>event.status==='REJECTED'&&event.key===key)) {
         // Compare original History business facts, never mutate or reinterpret the
         // event digest. An absent/mismatched origin cannot prove a changed fact.
-        const original=snapshot.entries.find(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId)?.actions.find(row=>row.actionId===event.actionId);
-        const prior=original&&event.historyOrigin.status==='REJECTED'?rejectionIdentity(original):null;
+        const originalRun=snapshot.entries.find(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId);
+        const original=originalRun?.actions.find(row=>row.actionId===event.actionId);
+        const prior=original&&event.historyOrigin.status==='REJECTED'?rejectionIdentity(original,{context:originalRun.executionContext}):null;
         if(fresh==null||prior==null||operationDigest(toSnapshotJson(fresh))===operationDigest(toSnapshotJson(prior)))throw error('该目标的确定拒绝仍有效；连接或世代变化不构成业务事实变化','REJECTION_MEMORY_ACTIVE');
       }
     }
