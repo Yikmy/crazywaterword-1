@@ -418,7 +418,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
           } } : {}) });
         if (operation.module === 'formation') {
           formationProofs.delete(session.id);
-          if (result.status === 'SUCCESS' && result.verification?.status === 'CONFIRMED') formationProofs.set(session.id, { generation, client, operation: clone(operation), batchId: entry.public.batchId, planHash: entry.public.planHash });
+          if (operation.actionType === 'SAVE' && result.status === 'SUCCESS' && result.verification?.status === 'CONFIRMED') formationProofs.set(session.id, { generation, client, operation: clone(operation), batchId: entry.public.batchId, planHash: entry.public.planHash });
         }
         Object.assign(row, evidence(result), { result: result.status ?? 'UNKNOWN', timestamp: now() });
         row.requestStatus = result.requestStatus ?? result.status ?? 'UNKNOWN';

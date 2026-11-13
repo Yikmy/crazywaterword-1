@@ -1,3 +1,4 @@
+import {validateExpeditionFormationParameters,surveyExpeditionFormation,viewExpeditionFormation,planExpeditionFormation,verifyExpeditionFormation} from './expedition-formations.mjs';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Mainline Formation adapter. Shared execution owns authorization, locks and dispatch.
 import { createHash } from 'node:crypto';
@@ -51,6 +52,7 @@ function canonical(v) { const out = parseFormation(v); if (out) out.heroPosition
 function same(a, b) { const x = canonical(a), y = canonical(b); return x !== null && y !== null && hash(x) === hash(y); }
 function samePet(a, b) { return own(a, 'petUid') === own(b, 'petUid') && (!own(a, 'petUid') || exactInteger(a.petUid) === exactInteger(b.petUid)); }
 export function validateFormationParameters(v = {}) {
+  if(own(v,'mode')&&v.mode==='expedition')return validateExpeditionFormationParameters(v);
   if (!object(v) || Object.keys(v).some(k => !['presetId', 'heroIds', 'heroPositions'].includes(k))) throw invalid('阵容参数只允许 presetId、heroIds 或 heroPositions；宠物 UID 从当前阵容保留');
   if (own(v, 'presetId') && !positive(v.presetId)) throw invalid('presetId 必须为正 int32');
   if (own(v, 'heroIds') && own(v, 'heroPositions')) throw invalid('heroIds 与 heroPositions 不能同时提供');
@@ -96,7 +98,8 @@ export function catalogFrom(config, player) {
     heroes: [...heroes].map(([heroId, career]) => ({ heroId, career, reliable: !badHeroes.has(heroId) })),
     maxHeroes, reliable: positions !== null && heroRows !== null && limits !== null };
 }
-export async function surveyFormation(client, protocol, { config, player, signal } = {}) {
+export function surveyFormation(client,protocol,options={}) {return options.parameters?.mode==='expedition'?surveyExpeditionFormation(client,protocol,options):surveyMainlineFormation(client,protocol,options);}
+async function surveyMainlineFormation(client, protocol, { config, player, signal } = {}) {
   assertExecutionActive(client, { signal });
   const errors = [];
   if (!config) { try { config = getConfig(); } catch { errors.push('静态阵型配置不可用'); } }
@@ -154,14 +157,16 @@ function candidate(facts, parameters, { moduleConfig = defaultConfig } = {}) {
     restoreParameters: before ? { presetId: before.presetId, heroPositions: before.heroPositions } : null,
     ...(reason === null ? { action: { request: 'SaveFormationRequest', response: 'SaveFormationResponse', body: { module: 1, formation: after } } } : {}) };
 }
-export function viewFormation(facts, { parameters = {}, moduleConfig = defaultConfig } = {}) {
+export function viewFormation(facts,options={}) {return facts?.mode==='expedition'?viewExpeditionFormation(facts,options):viewMainlineFormation(facts,options);}
+function viewMainlineFormation(facts, { parameters = {}, moduleConfig = defaultConfig } = {}) {
   parameters = validateFormationParameters(parameters);
   const choices = Object.keys(parameters).length ? [parameters] : (facts?.catalog?.layouts ?? []).map(r => ({ presetId: r.id }));
   return { module: 'formation', formation: parseFormation(facts?.formation), unlockedPresetIds: facts?.unlockedPresetIds ?? [], maxHeroes: facts?.catalog?.maxHeroes ?? null,
     heroes: facts?.catalog?.heroes ?? [], layouts: facts?.catalog?.layouts ?? [], templatesAreNotSavedTeams: true, reliability: facts?.reliability ?? {},
     candidates: choices.map(choice => candidate(facts, choice, { moduleConfig })), notes: [...(facts?.errors ?? [])] };
 }
-export function planFormation(facts, { parameters = {}, moduleConfig = defaultConfig, selections, ledger = new ResourceLedger(facts?.stockReliable === true ? facts.stock : null) } = {}) {
+export function planFormation(facts,options={}) {return facts?.mode==='expedition'?planExpeditionFormation(facts,options):planMainlineFormation(facts,options);}
+function planMainlineFormation(facts, { parameters = {}, moduleConfig = defaultConfig, selections, ledger = new ResourceLedger(facts?.stockReliable === true ? facts.stock : null) } = {}) {
   parameters = validateFormationParameters(parameters);
   if (selections !== undefined && (!Array.isArray(selections) || selections.some(id => typeof id !== 'string'))) throw invalid('selections 必须为 actionId 数组');
   if (!Object.keys(parameters).length) return { module: 'formation', actions: [], notes: ['需要明确选择阵型或英雄站位'] };
@@ -170,7 +175,8 @@ export function planFormation(facts, { parameters = {}, moduleConfig = defaultCo
   if (row.executable && selected && ledger.reserve(row.costs)) return { module: 'formation', actions: [row], notes: [] };
   return { module: 'formation', actions: [], notes: [row.blockedReason ?? (selected ? '共享资源预算不可用' : '动作未选择')] };
 }
-export function verifyFormation(operation, beforeFacts, afterFacts, response) {
+export function verifyFormation(operation,beforeFacts,afterFacts,response) {return operation?.actionType==='SAVE_EXPEDITION'?verifyExpeditionFormation(operation,beforeFacts,afterFacts,response):verifyMainlineFormation(operation,beforeFacts,afterFacts,response);}
+function verifyMainlineFormation(operation, beforeFacts, afterFacts, response) {
   const before = parseFormation(beforeFacts?.formation), after = parseFormation(afterFacts?.formation);
   const acknowledged = own(response, 'formation') ? parseFormation(response.formation) : null;
   const desired = parseFormation(operation?.expectedState), sent = parseFormation(operation?.action?.body?.formation);
