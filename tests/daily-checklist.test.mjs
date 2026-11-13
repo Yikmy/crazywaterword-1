@@ -229,3 +229,9 @@ test('seasonal cached observations require the current API context when supplied
  const snapshot=withFestival(),context={accountId:'synthetic-A',generation:2,connectionId:'festival-connection',playerId:'9007199254740993',worldId:17};assert.equal(dailyChecklist(snapshot,{context}).festival.status,'OBSERVED');
  for(const mutate of[c=>c.accountId='B',c=>c.generation++,c=>c.connectionId='replacement',c=>c.playerId='1',c=>c.worldId=18,c=>delete c.worldId]){const c=clone(context);mutate(c);const v=dailyChecklist(snapshot,{context:c});assert.equal(v.festival.status,'UNKNOWN');assert.equal(v.festival.source.reason,'FESTIVAL_CURRENT_CONTEXT_MISMATCH');assert.deepEqual(v.festival.rows,[]);assert.equal(v.tasks.counts.total,3);}
 });
+test('cached daily rows expose original unified drivers without inventing execution eligibility or driver targets',()=>{
+ const taskIds=[1003,1012,1016,1008,1013,1014],state={raw:{DailyTaskInfoRequest:typed('DailyTaskInfoRequest',{dailyTask:taskIds.map(id=>({id,progress:0,targetProgress:1,rewardClaimed:false}))})},outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}};
+ const rows=dailyChecklist(state,{config}).tasks.rows;assert.deepEqual(rows.map(row=>row.functionId),['stage','alliance','museum',undefined,undefined,undefined]);
+ for(const row of rows){assert.equal(row.status,'INCOMPLETE');assert.equal(row.eligible,false);assert.equal(row.executable,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily',taskId:row.taskId});assert.equal(Object.hasOwn(row,'action'),false);assert.equal(Object.hasOwn(row,'parameters'),false);}
+ assert.equal(state.raw.DailyTaskInfoRequest.dailyTask[0].progress,0);
+});

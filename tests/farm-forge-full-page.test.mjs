@@ -2212,3 +2212,14 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' alliance order for
  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
  const stale=h.node('wf-unified-add').onclick;h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-unified-intent').value;stale();assert.equal(h.node('wf-unified-intent').value,source);
 });
+test('daily checklist opens original unified declaration without changing a draft or trusting an old driver readiness',async()=>{
+ const h=await unifiedForm('dailies'),before=h.requests.length,source=h.node('wf-unified-intent').value;
+ const tasks=[1003,1012,1016].map(id=>({id,progress:0,targetProgress:1,rewardClaimed:false})),checklist=dailyChecklist({ok:{DailyTaskInfoRequest:{dailyTask:tasks}},failed:{}},{config:{tables:{}}});
+ h.run('renderDailies('+JSON.stringify({checklist,tasks:tasks.map(task=>({task,status:'blocked',reason:'旧驱动锁定说明'}))})+')');
+ const text=h.node('dailies-table').textContent;assert.match(text,/主线战斗；明确最多尝试次数/);assert.match(text,/联盟城市募兵订单；明确城市ID/);assert.match(text,/博物馆出发；明确关卡、英雄队伍和时间倍率/);assert.match(text,/资格和成本需重新探测并授权/);assert.doesNotMatch(text,/旧驱动锁定说明/);
+ const link=descendants(h.node('dailies-table')).find(n=>n.textContent==='打开日常统一执行声明');assert.ok(link);
+ h.run("globalThis.openedUnified=false;document.querySelector=selector=>({click:()=>{if(selector!=='#tabs button[data-tab=\"workflow\"]')throw Error('wrong tab');globalThis.openedUnified=true;}});");
+ link.click();assert.equal(h.run('globalThis.openedUnified'),true);assert.equal(h.node('wf-unified-intent').value,source);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ h.run("globalThis.openedUnified=false;selectAccount('B');");link.click();assert.equal(h.run('globalThis.openedUnified'),false);assert.equal(h.requests.length,before);
+ const blocked=dailyChecklist({ok:{DailyTaskInfoRequest:{dailyTask:[{id:1013,progress:0,targetProgress:1,rewardClaimed:false}]}},failed:{}},{config:{tables:{}}});h.run('renderDailies('+JSON.stringify({checklist:blocked,tasks:[]})+')');assert.equal(descendants(h.node('dailies-table')).some(n=>n.textContent==='打开日常统一执行声明'),false);
+});

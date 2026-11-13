@@ -48,7 +48,7 @@ function dailyTasks(body,config) {
     const activity=count(definition,'point'),experience=count(definition,'exp');
     return {taskId,title:described.title,description:described.desc,progress,targetProgress:target,rewardClaimed,eligible,status,
       configuredReward:activity!==null&&experience!==null?{activity,experience}:null,
-      executable:false,blockedReason:'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION',claimFunctionId:'task-rewards',claimParameters:{kind:'daily',taskId},...(taskId===1010?{functionId:'pirate-sweep'}:taskId===1006?{functionId:'free-gold'}:taskId===1002?{functionId:'free-recruit'}:taskId===1009?{functionId:'trial-challenge'}:{})};
+      executable:false,blockedReason:'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION',claimFunctionId:'task-rewards',claimParameters:{kind:'daily',taskId},...(taskId===1010?{functionId:'pirate-sweep'}:taskId===1006?{functionId:'free-gold'}:taskId===1002?{functionId:'free-recruit'}:taskId===1009?{functionId:'trial-challenge'}:taskId===1003?{functionId:'stage'}:taskId===1012?{functionId:'alliance'}:taskId===1016?{functionId:'museum'}:{})};
   });
   const complete=row=>row.progress!==null&&row.targetProgress!==null&&row.targetProgress>0;
   return {status:tasks.every(row=>row.eligible!==null)?'AVAILABLE':'PARTIAL',reason:tasks.some(row=>row.eligible===null)?'DAILY_TASK_FIELDS_UNKNOWN':null,rows:tasks,

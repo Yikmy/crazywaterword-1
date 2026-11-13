@@ -905,3 +905,11 @@ test('alliance daily cancelled late order remains UNKNOWN with original reservat
   release();await new Promise(resolve=>setImmediate(resolve));assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);assert.equal(app.history.unresolved('A'),true);assert.equal(session.allianceOrderState.completed,1);assert.deepEqual(app.requests.filter(r=>r.options?.mutate).map(r=>r.name),['FinishGuildOrderRequest']);
  }finally{release?.();await app.close();}
 });
+test('daily cached HTTP advertises existing unified drivers per account without asserting perform eligibility',async()=>{
+ const app=await harness();try{
+  const session=app.ready('A');app.ready('B');session.snapshot={raw:{DailyTaskInfoRequest:heroWire('DailyTaskInfoResponse',{dailyTask:[1003,1012,1016].map(id=>({id,progress:0,targetProgress:1,rewardClaimed:false}))})},outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}};
+  const response=await app.call('/api/dailies');assert.equal(response.status,200);assert.deepEqual(response.data.checklist.tasks.rows.map(r=>r.functionId),['stage','alliance','museum']);
+  for(const row of response.data.checklist.tasks.rows){assert.equal(row.executable,false);assert.equal(row.eligible,false);assert.equal(Object.hasOwn(row,'parameters'),false);assert.deepEqual(row.claimParameters,{kind:'daily',taskId:row.taskId});}
+  assert.deepEqual((await app.call('/api/dailies',{id:'B'})).data.checklist.tasks.rows,[]);assert.equal(app.requests.length,0);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

@@ -1857,16 +1857,21 @@ const DAILY_LABEL = { ready: '可做', paid: '需付费', partial: '部分可做
 
 function renderDailyChecklist(data) {
   const view=data.checklist,box=clear($('dailies-table')),known=value=>value??'未知';
+  const unifiedDrivers={stage:'统一执行：主线战斗；明确最多尝试次数，战败停止',alliance:'统一执行：联盟城市募兵订单；明确城市ID',museum:'统一执行：博物馆出发；明确关卡、英雄队伍和时间倍率'};
   const labels={CLAIMED:'已领',ELIGIBLE:'达到门槛',INCOMPLETE:'未达标',UNKNOWN:'未知'};
   box.appendChild(table(['每日任务','进度','奖励状态','完成途径','配置奖励 / 当前限制'],view.tasks.rows.map(row=>{
     const driver=(data.tasks||[]).find(entry=>entry.task.id===row.taskId);
     return [row.title,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知',
-      driver?(DAILY_LABEL[driver.status]||'未知')+(driver.reason?' · '+driver.reason:''):'前置状态未知',
+      Object.hasOwn(unifiedDrivers,row.functionId)?(unifiedDrivers[row.functionId]+'；资格和成本需重新探测并授权'):driver?(DAILY_LABEL[driver.status]||'未知')+(driver.reason?' · '+driver.reason:''):'前置状态未知',
       (row.configuredReward?'活跃 '+row.configuredReward.activity+' / 经验 '+row.configuredReward.experience:'奖励配置未知')+'；任务奖励中指定日常 ID 后重新探测、预览与授权'];
   })));
   if(view.tasks.rows.length){
     const scope=viewGuard.capture(),link=el('button','','打开日常任务奖励');link.type='button';
     link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
+  }
+  if(view.tasks.rows.some(row=>Object.hasOwn(unifiedDrivers,row.functionId))){
+    const scope=viewGuard.capture(),link=el('button','','打开日常统一执行声明');link.type='button';
+    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="workflow"]')?.click();$('wf-unified-entry').scrollIntoView?.({block:'start'});};box.appendChild(link);
   }
   if(!view.tasks.rows.length)box.appendChild(el('div','dim',view.tasks.counts.total===0?'本次缓存的每日任务列表为空':'每日任务列表未知'));
   if(view.tasks.rows.some(row=>row.functionId==='pirate-sweep')){
