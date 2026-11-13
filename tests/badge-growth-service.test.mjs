@@ -24,7 +24,7 @@ const costs = { [xp]: 5, GOLD: 100 };
 const uidClaim = [{ type: 'badge', id: uid }];
 const costMap = rows => Object.fromEntries(rows.map(({ id, num }) => [id, num]));
 
-function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false, star = false } = {}) {
+function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false, star = false, initialExp = 0 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-badge-service-'));
   const file = path.join(dir, 'execution-history.json');
   const newHistory = () => createExecutionHistory({ file });
@@ -66,7 +66,7 @@ function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false,
     const connectionId = 'offline-badge-' + generation;
     const core = { uid, badgeId:star?'红法师徽章':badgeId, level: 1, star: 0, attr: { attr: 1, value: 1.5, rating: 2 } };
     const worn = { ...structuredClone(core), pos: 1 };
-    const badge = { ...structuredClone(core), exp: 0 };
+    const badge = { ...structuredClone(core), exp: initialExp };
     const hero = { heroId: 'A', level: 20, star: 3, power: '9007199254741001', attributes: [{ attr: 1, value: 4 }], skillLevels: [1, 2], badges: putOn ? [] : [worn] };
     const stock = new Map([[xp, 25], ['GOLD', 500], ['其他', 1]]);
     if(star){stock.set('徽章升星石',32);stock.set('GOLD',10000000);}
@@ -96,7 +96,7 @@ function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false,
           options.beforeDispatch?.();
           assert.equal(name, star ? 'BadgeStarRequest' : 'EnhanceBadgeRequest');
           assert.equal(reply, star ? 'BadgeStarResponse' : 'EnhanceBadgeResponse');
-          assert.deepEqual(decoded, star ? {uid,decomposeUid:[],starItemNum:2**badge.star} : { uid, decomposeUid: [], expItemNum: 5 });
+          assert.deepEqual(decoded, star ? {uid,decomposeUid:[],starItemNum:2**badge.star} : { uid, decomposeUid: [], expItemNum: 5 - initialExp });
           // Read the actual file at the transport boundary, before altering
           // synthetic game state. The snapshot is not a stubbed history callback.
           const durable = JSON.parse(fs.readFileSync(file, 'utf8')).accounts[account][0];
@@ -104,11 +104,11 @@ function fixture(t, { effect = 'apply', material = { asset: [] }, putOn = false,
           if (effect !== 'none') {
             const increase = effect === 'double-level' ? 2 : 1;
             if(star){badge.star+=effect==='double-star'?2:1;worn.star=badge.star;badge.attr.value++;worn.attr.value++;}
-            else {badge.level += increase;worn.level += increase;}
+            else {badge.level += increase;badge.exp=effect==='retained-xp'?initialExp:0;worn.level += increase;}
             hero.power = '9007199254741007';
             hero.attributes[0].value++;
             if(star){stock.set('徽章升星石',stock.get('徽章升星石')-decoded.starItemNum);stock.set('GOLD',stock.get('GOLD')-500000*decoded.starItemNum);}
-            else {stock.set(xp, stock.get(xp) - 5);stock.set('GOLD', stock.get('GOLD') - 100);}
+            else {stock.set(xp, stock.get(xp) - decoded.expItemNum);stock.set('GOLD', stock.get('GOLD') - decoded.expItemNum * 20 + (effect==='wrong-debit'?1:0));}
           }
           if(session.onWrite)return session.onWrite();
           return wire(reply, { material });
@@ -354,4 +354,79 @@ for(const mode of ['level','star','put-on'])test('W19 badge '+mode+' refusal sur
  if(mode==='put-on'){const send=a.client.sendWatch.bind(a.client);a.client.sendWatch=async(...args)=>{await send(...args);return {status:'REJECTED'};};}else a.onWrite=()=>{throw Object.assign(Error('synthetic definite badge refusal'),{code:'REJECTED'});};
  const p=await f.displayed(service,a),permit=service.authorize(a,f.permitPayload(p));service.execute(a,permit);await service.settle(account);assert.equal(f.newHistory().list(account)[0].finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');
  const next=f.newService(),b=f.newSession(2);await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId='10';assert.equal((await f.displayed(next,b)).actions.length,1);b.player.worldId='9';await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+
+const partialCosts={ [xp]:3,GOLD:60 };
+for(const effect of ['apply','none','retained-xp','double-level','wrong-debit'])test('partial XP shared Service persists exact deficit and restores outcome: '+effect,async t=>{
+ const f=fixture(t,{initialExp:2,effect}),service=f.newService(f.history),s=f.newSession(),p=await f.displayed(service,s);
+ assert.deepEqual(costMap(p.resourceBudget),partialCosts);assert.equal(p.actions[0].beforeState.badge.exp,2);
+ assert.equal(s.writes.length,0);const permit=service.authorize(s,f.permitPayload(p));service.execute(s,permit);await service.settle(account);
+ assert.equal(s.writes.length,1);const [{body,durable}]=s.writes;
+ assert.deepEqual(body,{uid,decomposeUid:[],expItemNum:3});
+ assert.equal(durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+ assert.deepEqual(costMap(durable.runBudget.reserved.resources),partialCosts);assert.deepEqual(durable.runBudget.reserved.uids,uidClaim);
+ const reopened=f.newHistory(),[run]=reopened.list(account);assert.equal(run.finalStatus,effect==='apply'?'SUCCESS':'UNKNOWN');
+ assert.throws(()=>service.execute(s,permit));
+ if(effect==='apply'){
+  assert.equal(run.actions[0].afterState.badge.exp,0);assert.equal(run.actions[0].afterState.badge.level,2);
+  assert.equal(s.stock.get(xp),22);assert.equal(s.stock.get('GOLD'),440);assert.equal(reopened.unresolved(account),false);
+ }else{
+  assert.equal(run.actions[0].unresolvedWrite,true);assert.deepEqual(costMap(run.runBudget.reserved.resources),partialCosts);
+  const restarted=f.newService(reopened),fresh=f.newSession(2);
+  await assert.rejects(f.displayed(restarted,fresh),{code:'RECOVERY_UNCERTAIN'});assert.equal(fresh.writes.length,0);
+ }
+});
+
+for(const drift of ['generation','connectionId','playerId','worldId','xp'])test('partial XP preflight still binds observed state and identity: '+drift,async t=>{
+ const f=fixture(t,{initialExp:2}),service=f.newService(f.history),s=f.newSession(),p=await f.displayed(service,s),permit=service.authorize(s,f.permitPayload(p));
+ if(drift==='generation')s.generation++;
+ else if(drift==='connectionId')s.client.factContext.connectionId='other-connection';
+ else if(drift==='xp')s.badge.exp++;
+ else s.player[drift]='99';
+ try{service.execute(s,permit);await service.settle(account);}catch{}
+ assert.equal(s.writes.length,0);assert.notEqual(f.newHistory().list(account)[0]?.finalStatus,'SUCCESS');
+});
+
+test('partial XP persistence failure sends nothing and cancelled late reply preserves UNKNOWN after restart',async t=>{
+ {
+  const f=fixture(t,{initialExp:2}),service=f.newService(f.history),s=f.newSession(),p=await f.displayed(service,s);
+  const permit=service.authorize(s,f.permitPayload(p));
+  f.failPersist(row=>row.actions?.some(action=>action.stages?.some(stage=>stage.stage==='DISPATCH_INTENT')));
+  try{service.execute(s,permit);await service.settle(account);assert.equal(s.writes.length,0);}finally{f.failPersist(()=>false);}
+ }
+ {
+  const f=fixture(t,{initialExp:2}),service=f.newService(f.history),s=f.newSession(),p=await f.displayed(service,s);
+  let finish;s.onWrite=()=>new Promise(resolve=>{finish=resolve;});
+  service.execute(s,service.authorize(s,f.permitPayload(p)));
+  for(let i=0;i<100&&!finish;i++)await new Promise(setImmediate);assert.ok(finish);service.stop(account);
+  finish(wire('EnhanceBadgeResponse',{material:{asset:[]}}));await service.settle(account);
+  const [run]=f.newHistory().list(account);assert.equal(run.finalStatus,'UNKNOWN');assert.equal(run.actions[0].unresolvedWrite,true);
+  assert.deepEqual(costMap(run.runBudget.reserved.resources),partialCosts);
+  const restarted=f.newService(),fresh=f.newSession(2);await assert.rejects(f.displayed(restarted,fresh),{code:'RECOVERY_UNCERTAIN'});
+  assert.equal(s.writes.length,1);assert.equal(fresh.writes.length,0);
+ }
+});
+
+for(const enough of [true,false])test('partial XP Workflow uses original parent budget and batch permit: '+enough,async t=>{
+ const f=fixture(t,{initialExp:2}),service=f.newService(f.history),s=f.newSession(),survey=await service.surveyModule(s,moduleId,parameters);
+ const limits={resources:[{id:xp,num:3},{id:'GOLD',num:enough?60:59}],quotas:[],uids:uidClaim};
+ const graph={version:1,id:'badge-partial-'+enough,name:'Offline partial XP',budget:limits,nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:moduleId,parameters,selection:survey.view.candidates.find(row=>row.executable).actionId},{id:'v',type:'VERIFY',module:moduleId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};
+ const runner=createWorkflowRunner({operations:service,modules:GAMEPLAY_MODULES,getSession:id=>id===account?s:null,claim:(id,runId,opts)=>service.claimWorkflow(s,runId,opts),isCurrent:(target,generation,client)=>target===s&&target.generation===generation&&target.client===client});
+ t.after(async()=>{runner.stop();await runner.settle();});const first=await runner.start(account,graph);
+ assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(s.writes.length,0);
+ if(enough){service.execute(s,service.authorize(s,f.permitPayload(first.plan)));await service.settle(account);assert.equal((await runner.resume()).status,'COMPLETED');assert.equal(s.writes.length,1);}
+ else{assert.throws(()=>service.execute(s,service.authorize(s,f.permitPayload(first.plan))),{code:'RUN_BUDGET_INVALID'});assert.equal(s.writes.length,0);}
+});
+
+ test('partial XP refusal memory survives reconnect and account permits stay isolated',async t=>{
+ const f=fixture(t,{initialExp:2,effect:'none'}),service=f.newService(f.history),s=f.newSession(),p=await f.displayed(service,s),permit=service.authorize(s,f.permitPayload(p));
+ assert.throws(()=>service.execute({...s,id:'another-account',client:{...s.client,factContext:{...s.client.factContext,accountId:'another-account'}}},permit));
+ assert.equal(s.writes.length,0);
+ s.onWrite=()=>{throw Object.assign(Error('synthetic definite partial XP refusal'),{code:'REJECTED'});};
+ service.execute(s,permit);await service.settle(account);assert.equal(f.newHistory().list(account)[0].finalStatus,'REJECTED');
+ const bytes=fs.readFileSync(f.file,'utf8'),restarted=f.newService(),fresh=f.newSession(2);
+ await assert.rejects(f.displayed(restarted,fresh),{code:'REJECTION_MEMORY_ACTIVE'});
+ fresh.player.worldId='10';assert.equal((await f.displayed(restarted,fresh)).actions.length,1);
+ fresh.player.worldId='9';await assert.rejects(f.displayed(restarted,fresh),{code:'REJECTION_MEMORY_ACTIVE'});
+ assert.equal(fresh.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
 });

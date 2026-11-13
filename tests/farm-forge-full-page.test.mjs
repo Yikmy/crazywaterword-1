@@ -101,7 +101,7 @@ const cases = [
   { module:'equipment-growth',actionId:'equipment-growth:PUT-ON:synthetic-exact',actionType:'PUT-ON',parameters:{heroId:'A',uid:'9007199254740994',action:'put-on'},costs:[],beforeState:{equipment:{equipId:'蓝武器1',level:1,star:0,refineLv:0}},facts:{heroes:[{heroId:'A',equips:[]}]},blockedReason:'EQUIPMENT_TARGET_SLOT_NOT_EMPTY' },
   { module:'badge-growth',actionId:'badge-growth:PUT-ON:synthetic-exact',actionType:'PUT-ON',parameters:{action:'put-on',heroId:'A',pos:2,uid:'9007199254740997'},costs:[],beforeState:{badge:{badgeId:'闲置纹章',level:1,exp:0}},facts:{mode:'put-on',heroes:[{heroId:'A',level:70,badges:[],emptySlots:[1,2]}]},blockedReason:'BADGE_TARGET_SLOT_NOT_EMPTY' },
   { module:'badge-growth',actionId:'badge-growth:STAR:synthetic-exact',actionType:'STAR',parameters:{heroId:'A',uid:'9007199254740995',action:'star'},costs:[{id:'徽章升星石',num:1},{id:'GOLD',num:500000}],beforeState:{badge:{badgeId:'红法师徽章',level:1,star:0,exp:2}},facts:{mode:'star'},blockedReason:'BADGE_STAR_STOCK_INSUFFICIENT' },
-  { module:'badge-growth',actionId:'badge-growth:LEVEL:synthetic-exact',actionType:'LEVEL',parameters:{heroId:'A',uid:'9007199254740995'},costs:[{id:'徽章经验',num:5},{id:'GOLD',num:100}],beforeState:{badge:{badgeId:'测试纹章',level:1,exp:0}},facts:{},blockedReason:'BADGE_PARTIAL_XP_OUTSIDE_SCOPE' },
+  { module:'badge-growth',actionId:'badge-growth:LEVEL:synthetic-exact',actionType:'LEVEL',parameters:{heroId:'A',uid:'9007199254740995'},costs:[{id:'徽章经验',num:3},{id:'GOLD',num:60}],beforeState:{badge:{badgeId:'测试纹章',level:1,exp:2}},facts:{},blockedReason:'BADGE_CAP_BOUNDARY_OUTSIDE_SCOPE' },
   { module: 'formation-unlock', actionId: 'formation-unlock:UNLOCK:2:synthetic-exact', actionType: 'UNLOCK', parameters: {presetId:2}, costs:[{id:'阵型2图纸',num:1}], facts:{templates:[{presetId:2,name:'普通图纸模板',costs:[{id:'阵型2图纸',num:1}]}],unlockedPresetIds:[1]}, blockedReason:'OWNED_BLUEPRINT_REQUIRED' },
   { module: 'farm', actionId: 'farm:HARVEST:synthetic-exact', actionType: 'HARVEST', parameters: {buildingId:'1农田',action:'harvest'}, target:{buildingId:'1农田',productId:'小麦'}, beforeState:{buildingId:'1农田',farm:{productId:'小麦',plantTime:1700000000,ripeTime:1700001800}}, costs:[], facts:{plots:[{buildingId:'1农田',state:'GROWING_OR_RIPE_UNVERIFIED',productId:'小麦',plantTime:1700000000,ripeTime:1700001800}],autoFarming:false,crops:[{productId:'小麦',costs:[{id:'小麦种子',num:1}],reliable:true}]}, blockedReason:'FARM_TRUSTED_CLOCK_OR_CONNECTION_UNKNOWN' },
   { module: 'farm', actionId: 'farm:PLANT:synthetic-exact', actionType: 'PLANT', parameters: { buildingId: '1农田', action: 'plant', productId: '小麦' }, costs: [{ id: '小麦种子', num: 1 }], facts: { plots: [{ buildingId: '1农田', state: 'EMPTY', productId: '', plantTime: 0, ripeTime: 0 }], autoFarming: false, crops: [{ productId: '小麦', costs: [{ id: '小麦种子', num: 1 }], reliable: true }] }, blockedReason: 'FARM_TRUSTED_CLOCK_OR_CONNECTION_UNKNOWN' },
@@ -291,7 +291,9 @@ test('exclusive STAR selector changes only the draft and invalidates prior appro
 
 test('badge growth assembled hero page shows a worn slot, UID and both costs',async()=>{
  const spec=cases.find(row=>row.module==='badge-growth'&&row.actionType==='LEVEL'),h=await loaded(spec),facts=h.node('gp-badge-growth-facts').textContent;
- for(const word of ['已佩戴徽章','测试纹章','9007199254740995','徽章经验','GOLD'])assert.ok(facts.includes(word),word);
+ for(const word of ['已佩戴徽章','测试纹章','9007199254740995','徽章经验','GOLD','精确补足下一级经验','经验余量须为零'])assert.ok(facts.includes(word),word);
+ assert.doesNotMatch(facts,/当前经验为零/);
+ assert.equal(spec.beforeState.badge.exp,2);assert.deepEqual(spec.costs,[{id:'徽章经验',num:3},{id:'GOLD',num:60}]);
  assert.equal(writes(h).length,0);
 });
 

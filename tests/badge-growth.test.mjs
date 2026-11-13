@@ -36,8 +36,8 @@ const expectedAction = { request: 'EnhanceBadgeRequest', response: 'EnhanceBadge
 const costs = [{ id: xpItem, num: 5 }, { id: 'GOLD', num: 100 }];
 const options = (config = cfg(), extra = {}) => ({ config, parameters: params, player, moduleConfig: { enabled: true }, ...extra });
 
-function fake({ wireMode = false, apply = true, response = {}, afterWrite, onWrite, star = false } = {}) {
-  const pool = [badge(uid), badge(otherUid, { exp: 1 }), badge(idleUid, { attr: undefined })];
+function fake({ wireMode = false, apply = true, response = {}, afterWrite, onWrite, star = false, initialExp = 0, initialLevel = 1 } = {}) {
+  const pool = [badge(uid, { exp: initialExp, level: initialLevel }), badge(otherUid, { exp: 1 }), badge(idleUid, { attr: undefined })];
   delete pool[2].attr;
   if(star) for(const row of pool) row.badgeId='红法师徽章';
   const client = {
@@ -59,7 +59,7 @@ function fake({ wireMode = false, apply = true, response = {}, afterWrite, onWri
           const owner = this.heroes.find(row => row.badges.some(item => item.uid === body.uid));
           const nextGoldRatio = target.level === 1 ? 20 : 25;
           if(star){target.star++;const worn=owner.badges.find(row=>row.uid===body.uid);worn.star++;target.attr.value++;worn.attr.value++;}
-          else {target.level++;owner.badges.find(row => row.uid === body.uid).level++;}
+          else {target.level++;target.exp=0;owner.badges.find(row => row.uid === body.uid).level++;}
           owner.power = (BigInt(owner.power) + 6n).toString();
           owner.attributes[0].value++;
           if(star){this.stock.set('徽章升星石',this.stock.get('徽章升星石')-body.starItemNum);this.stock.set('GOLD',this.stock.get('GOLD')-500000*body.starItemNum);}
@@ -158,9 +158,9 @@ test('survey reads each independent authority only and plan binds one slot, exac
   assert.deepEqual(view.candidates[0].beforeState, { badge: operation.beforeState.badge });
 });
 
-test('partial XP, cap landing, locked slot, wrong career and either missing resource block before writing', async () => {
+test('invalid XP, cap landing, locked slot, wrong career and either missing resource block before writing', async () => {
   for (const change of [
-    ({ client }) => client.pool[0].exp++,
+    ...[5, 6, -1, 1.5, undefined].map(exp => ({ client }) => { client.pool[0].exp = exp; }),
     ({ client }) => { client.pool[0].level = 3; client.heroes[0].badges[0].level = 3; },
     ({ client }) => client.heroes[0].badges[0].pos++,
     ({ config }) => config.tables.HeroCfg.data[0].career = '射手',
@@ -509,4 +509,53 @@ test('STAR D6 independently refuses sacrifice, extra fields, substituted currenc
   a=>a.body.uid=Number(uid),a=>a.body.universal=false,a=>a.costs.pop(),a=>delete a.costs,
   a=>a.costs[0].id='RUBY',a=>a.costs[1].num=0,a=>a.costs.push({id:'其他',num:1}),
  ]){const a=structuredClone({...operation.action,costs:operation.costs});change(a);assert.throws(()=>assertPaymentAllowed(a));}
+});
+
+for (const [initialLevel,initialExp,needed,ratio] of [[1,1,4,20],[1,4,1,20],[2,3,4,25],[2,6,1,25]]) {
+ test('partial XP exactly reaches next below-cap level: '+initialLevel+'/'+initialExp,async()=>{
+  const input=await prepared({wireMode:true,initialLevel,initialExp,response:{material:{asset:[]}}});
+  const expected=[{id:xpItem,num:needed},{id:'GOLD',num:needed*ratio}];
+  assert.deepEqual(input.operation.costs,expected);
+  assert.equal(input.operation.beforeState.badge.exp,initialExp);
+  assert.equal(input.operation.action.body.expItemNum,needed);
+  assert.equal(input.operation.expectedState.exp,0);
+  input.client.stock.set(xpItem,needed);input.client.stock.set('GOLD',needed*ratio);
+  const unchanged=structuredClone(input.client.pool.slice(1));
+  const result=await run(input);
+  assert.equal(result.status,'SUCCESS',JSON.stringify(result));
+  assert.equal(input.client.pool[0].exp,0);assert.equal(input.client.pool[0].level,initialLevel+1);
+  assert.deepEqual(input.client.pool.slice(1),unchanged);
+  assert.equal(input.client.stock.get(xpItem),0);assert.equal(input.client.stock.get('GOLD'),0);
+ });
+}
+
+test('partial XP cannot authorize whole-level prices or change the observed deficit before dispatch',async()=>{
+ for(const drift of ['xp','whole-level-plan','short-xp','short-gold']){
+  const input=await prepared({initialExp:2});
+  if(drift==='xp')input.client.pool[0].exp++;
+  if(drift==='whole-level-plan'){input.operation.action.body.expItemNum=5;input.operation.costs=structuredClone(costs);input.operation.budgetClaims.resources=structuredClone(costs);}
+  if(drift==='short-xp')input.client.stock.set(xpItem,2);
+  if(drift==='short-gold')input.client.stock.set('GOLD',59);
+  assert.equal((await run(input)).status,'NOT_EXECUTED',drift);assert.equal(input.client.writes.length,0);
+ }
+});
+
+test('partial XP independent settlement rejects retained XP, double levels, wrong debits or foreign pool changes',async()=>{
+ for(const afterWrite of [c=>c.pool[0].exp=2,c=>c.pool[0].level++,c=>c.stock.set('GOLD',401),c=>c.stock.set(xpItem,20),c=>c.pool[1].exp++]){
+  const input=await prepared({wireMode:true,initialExp:2,afterWrite});
+  const budget=makeBudget(input.operation),result=await run(input,{budget});
+  assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);
+  assert.equal(input.client.writes.length,1);assert.equal(input.client.uncertainWrites.size,1);
+  assert.deepEqual(budget.runBudget.snapshot().reserved.uids,[{type:'badge',id:uid}]);
+ }
+});
+
+test('fixed configuration subtracts observed partial XP without rounding or implicit defaults',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))};
+ const client=fake({wireMode:true,initialExp:2});
+ client.heroes[0].heroId=config.tables.HeroCfg.data.find(row=>row.type==='英雄'&&row.career==='法师').id;
+ const parameters={heroId:client.heroes[0].heroId,uid};
+ const operation=plan(await survey(client,config,{parameters}),config,{parameters}).actions[0];
+ assert.ok(operation);assert.deepEqual(operation.costs,[{id:xpItem,num:3},{id:'GOLD',num:60}]);
+ assert.equal(operation.action.body.expItemNum,3);assert.equal(operation.expectedState.exp,0);
 });

@@ -26,7 +26,7 @@ const maxAgeMs = 30000, scope = Object.freeze({ kind: 'ACCOUNT' });
 const source = 'v76 /subpackages/main/game.js: BadgeLvUpPop._onBtnUse; BadgeUtil.calBadgeEnhanceNextLevelExp/calBadgeEnhanceGold/getBadgeMaxLevel; AllItemsModel.WellKnownItems.BADGE_EXP_ITEM';
 export const BADGE_GROWTH_DEFAULT_CONFIG = Object.freeze({ enabled: false });
 export const BADGE_GROWTH_EVIDENCE = Object.freeze({
-  source, request, response, scope: 'EXPLICIT_WORN_ZERO_XP_ONE_LEVEL_NO_SACRIFICE',
+  source, request, response, scope: 'EXPLICIT_WORN_EXACT_NEXT_LEVEL_BELOW_CAP_NO_SACRIFICE',
   packageSha256: '4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',
   entrySha256: 'a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54',
   protocolSha256: 'ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc',
@@ -302,10 +302,10 @@ function candidate(facts, params, { config, moduleConfig, authoritative, include
   const unlock = catalog?.unlocks.find(row => row.pos === worn?.pos);
   const cap = catalog?.attrs.find(row => row.id === badge?.badgeId && row.star === badge.star)?.maxLevel;
   const next = badge && catalog?.levels.find(row => row.level === badge.level + 1);
-  // The documented branch uses exactly one level's EXP from an explicit zero.
-  // The last level has a separate client display path that hides residual XP;
-  // leave cap landing and partial starting XP for evidence-backed follow-up.
-  const expItemNum = next?.exp ?? 0, goldNum = expItemNum * (next?.goldExpRadio ?? 0);
+  // BadgeUtil subtracts observed residual XP from the next level's requirement.
+  // Cap landing has a separate client display path that hides residual XP.
+  const validXp = uint(badge?.exp) && next && badge.exp < next.exp;
+  const expItemNum = validXp ? next.exp - badge.exp : 0, goldNum = expItemNum * (next?.goldExpRadio ?? 0);
   const costs = positive(expItemNum) && safeResourceQuantity(goldNum) !== null && goldNum > 0
     ? [{ id: xpItem, num: expItemNum }, { id: gold, num: goldNum }] : [];
   const action = { request, response, body: { uid: params.uid, decomposeUid: [], expItemNum } };
@@ -318,7 +318,6 @@ function candidate(facts, params, { config, moduleConfig, authoritative, include
   else if (!heroCfg || heroCfg.type !== '英雄' || !badgeCfg || heroCfg.career !== badgeCfg.career || !unlock || hero.level < unlock.level) blockedReason = 'BADGE_SLOT_OR_CAREER_NOT_ELIGIBLE';
   else if (!positive(cap) || !next || costs.length !== 2) blockedReason = 'BADGE_EXACT_NEXT_COST_OR_CAP_UNKNOWN';
   else if (next.level >= cap) blockedReason = 'BADGE_CAP_BOUNDARY_OUTSIDE_SCOPE';
-  else if (badge.exp !== 0) blockedReason = 'BADGE_PARTIAL_XP_OUTSIDE_SCOPE';
   else if (!facts.available?.includes(request) || !facts.available?.includes(response)) blockedReason = 'PROTOCOL_UNAVAILABLE';
   else if (costs.some(cost => (facts.stock.get(cost.id) ?? 0) < cost.num)) blockedReason = 'BADGE_OWNED_STOCK_INSUFFICIENT';
   else {
@@ -491,7 +490,7 @@ export function verifyBadgeGrowth(operation, before, after, responseBody) {
   if (isStar(params)) return verifyStar(params, contract, before, after);
 
   const { hero: beforeHero, badge: beforeBadge } = contract.beforeState;
-  const nextBadge = { ...beforeBadge, level: beforeBadge.level + 1 };
+  const nextBadge = { ...beforeBadge, level: beforeBadge.level + 1, exp: 0 };
   const expectedPool = before.ownership.pool.map(row => row.uid === params.uid ? nextBadge : row);
   if (!same(expectedPool, after.ownership.pool)) return fail('BADGE_EXACT_LEVEL_AND_POOL_NOT_CONFIRMED');
   const afterHero = after.ownership.heroes.find(hero => hero.heroId === params.heroId);

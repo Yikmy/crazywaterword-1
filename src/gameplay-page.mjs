@@ -335,7 +335,7 @@ function gpRenderDomain(id,view){
    box.appendChild(gpEl('p','红徽章每次只升一星，使用自有徽章升星石和金币；不分解其他徽章。'));
   }else{
    table('已佩戴徽章',['英雄','槽位','徽章','UID','等级','当前经验','本次消耗'],rows.filter(row=>row.actionType==='LEVEL'&&row.beforeState?.badge).map(row=>[row.target.heroId,row.target.pos,row.beforeState.badge.badgeId,row.target.uid,row.beforeState.badge.level,row.beforeState.badge.exp,operationCosts(row.costs)]));
-   box.appendChild(gpEl('p','只给已佩戴、当前经验为零的徽章升一级。只消耗自有徽章经验和金币，不消耗其他徽章。'));
+   box.appendChild(gpEl('p','给已佩戴徽章精确补足下一级经验，扣除对应金币；升级后经验余量须为零。只消耗自有材料，不消耗其他徽章；达到等级上限的升级仍待结算证据。'));
   }
  }else if(id==='equipment-growth'){
   table('已佩戴装备单次成长',['英雄','UID','装备','等级','星级','精炼等级'],(view?.heroes||[]).flatMap(hero=>(hero.equips||[]).map(equip=>[hero.heroId,equip.uid,equip.equipId,equip.level,equip.star,equip.refineLv])));
