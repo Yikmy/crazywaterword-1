@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { createCliOutput, loadCliCredential } from '../src/cli-safety.mjs';
 import { runAction } from '../src/actions.mjs';
 import { normalize } from '../src/worlds.mjs';
-import { headless, state, act, accountsCli, planLoot, writerCli } from '../src/app.mjs';
+import { headless, state, act, accountsCli, planLoot, writerCli, assetsCli } from '../src/app.mjs';
 import { runWorldProbe } from '../tools/probe-world.mjs';
 import { runDailiesProbe } from '../tools/probe-dailies.mjs';
 
@@ -350,4 +350,17 @@ test('account list/show remain read-only with unchanged synthetic credentials an
   await accountsCli(['list'], { accountStore }); await accountsCli(['show', '1'], { accountStore });
   assert.equal(reads, 2); assert.equal(JSON.stringify(original), before); clean(lines.join('\n'));
   assert.match(lines.join('\n'), /账号 fixtur/); assert.doesNotMatch(lines.join('\n'), /fixture-cli-open-id/);
+});
+test('assets CLI archives, verifies and restores only fixed offline paths without opening accounts or a game socket',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'cw-cli-assets-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const lines=capture(t);
+ const {createAssetManifest}=await import('../src/asset-readiness.mjs');
+ const relative='work/cdn/config_cn_pack.json',file=path.join(root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify([[1,'ResourceCfg',{data:[]}]]));
+ const manifest=createAssetManifest({root,assets:[{id:'synthetic-config',role:'config',path:relative,source:'synthetic retained local file; upstream version unknown'}]});
+ fs.mkdirSync(path.join(root,'docs'));fs.writeFileSync(path.join(root,'docs/RUNTIME_ASSETS.json'),JSON.stringify(manifest));
+ const original=fs.readFileSync.bind(fs);t.mock.method(fs,'readFileSync',(file,...args)=>{assert.doesNotMatch(String(file),/accounts[.]json|credentials[.]json/);return original(file,...args);});
+ const {GameClient}=await import('../src/client.mjs');t.mock.method(GameClient.prototype,'connect',()=>{throw Error('offline assets must never connect');});
+ const archived=assetsCli(['archive'],{root});assert.equal(archived.complete,true);assert.deepEqual(assetsCli(['verify'],{root}),archived);
+ fs.unlinkSync(file);assert.deepEqual(assetsCli(['restore'],{root}).restored,[relative]);assert.equal(assetsCli([],{root}).ready,true);
+ assert.doesNotMatch(lines.join('\n'),/base64|synthetic-secret|eworldParams|cw-cli-assets-/);
+ for(const args of [['download'],['archive','data/accounts.json'],['restore','--force'],['../accounts.json'],['verify','--root','other'],['']])assert.throws(()=>assetsCli(args,{root}),/用法/);
 });

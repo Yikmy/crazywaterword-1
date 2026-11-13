@@ -31,5 +31,10 @@
   ],
   "observedAt": "2026-11-11",
   "codeBaseline": "7aef482eda751bb3d9e9ae88b3b5bf282dfec4ec",
-  "provenanceNote": "Observed local baseline only. Original package/CDN version and portable restore archive are not established; map-1 is missing. Never discover account caches, fetch, or execute assets automatically."
+  "provenanceNote": "Preserved local baseline only. Exact protocol/config bytes retained in the recorded portable archive; map-1 remains missing. Original package/CDN versions remain unrecorded. Archive metadata is a retained record, not a current file check. Never discover account caches, fetch, or execute assets automatically.",
+  "recoveryArchive": {
+    "path": "work/runtime-assets.cwassets.gz",
+    "sha256": "6fc273f772e236c8f5f1028e59a456f3104e791f4dbddcc34c7e435043fff0ce",
+    "size": 1901461
+  }
 }

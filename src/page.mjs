@@ -1618,6 +1618,7 @@ function renderAssetReadiness(data){
  const box=clear($('assets-readiness'));box.appendChild(el('p',data.ready?'ok':'warn',data.ready?'当前声明的本地文件与保留清单一致':'部分运行资产不可用，相关能力继续等待证据'));
  if(data.reason)box.appendChild(el('p','warn','清单状态：'+data.reason));
  if(data.provenanceNote)box.appendChild(el('p','dim',data.provenanceNote));
+ if(data.recoveryArchive){const archive=data.recoveryArchive;box.appendChild(el('p','dim','保留归档记录：'+archive.path+' · SHA-256 '+archive.sha256+' · '+archive.size+' 字节；记录不证明文件当前存在。离线执行 node src/app.mjs assets verify 校验；需要时执行 node src/app.mjs assets restore，仅补缺失文件，现有冲突文件保留。'));}
  const roleNames={protocol:'协议',config:'配置',map:'地图'};
  for(const row of data.assets||[]){const card=el('article');card.appendChild(el('h3','',roleNames[row.role]||row.role));for(const text of ['文件：'+row.path,'状态：'+row.status+(row.reason?' · '+row.reason:''),'保留哈希：'+(row.expectedSha256||'未知'),'当前哈希：'+(row.actualSha256||'未知')])card.appendChild(el('p','',text));const guide=data.recovery?.find(value=>value.id===row.id);card.appendChild(el('p','dim','保留来源：'+(guide?.source||'未知')));if(guide)for(const step of guide.steps||[])card.appendChild(el('p','dim',step));box.appendChild(card);}
  box.appendChild(el('p','dim','缺失文件需从保留来源恢复后重新检查；不会自动下载或执行文件。本结果不代表玩法验收通过。'));

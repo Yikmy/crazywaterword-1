@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { runtimeAssetReadiness } from './asset-readiness.mjs';
+import { runtimeAssetReadiness, runtimeAssetArchive } from './asset-readiness.mjs';
 import { createWriterOwnership, rejectStandaloneGameWrite } from './writer-ownership.mjs';
 import { assertExecutionActive, executionDelay, executionOutcome, stopsExecution } from './execution.mjs';
 import { createCliOutput, loadCliStore, loadCliCredential, cliAccountSelector, isCliEntry } from './cli-safety.mjs';
@@ -765,6 +765,14 @@ export async function writerCli(args, { writerOwnership } = {}) {
   return safe;
 }
 
+export function assetsCli(args=[],{root=path.resolve(import.meta.dirname,'..')}={}) {
+  if(!Array.isArray(args)||args.length>1||args.length===1&&!['archive','verify','restore'].includes(args[0]))
+    throw new Error('用法: node src/app.mjs assets [archive|verify|restore]（固定离线清单与归档路径）');
+  const result=args.length?runtimeAssetArchive(args[0],{root}):runtimeAssetReadiness({root});
+  cli.log(cli.json(result,null,2));
+  return result;
+}
+
 export async function main() {
   const mode = process.argv[2] || 'console';
 
@@ -773,12 +781,7 @@ export async function main() {
     return;
   }
 
-  if (mode === 'assets') {
-    if (process.argv.length > 3) throw new Error('用法: node src/app.mjs assets（固定离线清单；不扫描缓存或下载）');
-    const root = path.resolve(import.meta.dirname, '..');
-    const result = runtimeAssetReadiness({ root });
-    cli.log(cli.json(result, null, 2)); return result;
-  }
+  if (mode === 'assets') return assetsCli(process.argv.slice(3));
 
   if (mode === 'writer') {
     await writerCli(process.argv.slice(3));

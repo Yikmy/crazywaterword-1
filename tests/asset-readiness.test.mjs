@@ -1,11 +1,12 @@
 import test from 'node:test';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness, readRuntimeAsset } from '../src/asset-readiness.mjs';
+import { createRuntimeAssetArchive, inspectRuntimeAssetArchive, restoreRuntimeAssetArchive, runtimeAssetArchive, createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness, readRuntimeAsset } from '../src/asset-readiness.mjs';
 
 import { loadConfig, loadTables } from '../src/config.mjs';
 import { loadProtocol } from '../src/proto.mjs';
@@ -299,4 +300,115 @@ test('config consumes a checked buffer without reopening a replaced retained fil
   assert.deepEqual(loadTables(file,{root:f.root}),{ResourceCfg:{data:[{id:'GOLD'}]}});
   assert.equal(reads,1);
  }finally{fs.statSync=stat;fs.readFileSync=read;f.cleanup();}
+});
+
+test('portable runtime archive retains exact manifest bytes, never executes code, and restores a fresh checkout',()=>{
+ const f=fixture(),target=fs.mkdtempSync(path.join(os.tmpdir(),'cw-asset-restore-'));
+ try{
+  preserveManifest(f);const before=fs.readFileSync(path.join(f.root,'docs/RUNTIME_ASSETS.json'));
+  const {bytes,report}=createRuntimeAssetArchive({root:f.root});
+  assert.equal(report.complete,true);assert.deepEqual(report.archived,f.assets.map(row=>row.path));assert.equal(report.sha256,createHash('sha256').update(bytes).digest('hex'));
+  assert.ok(bytes.equals(createRuntimeAssetArchive({root:f.root}).bytes),'archive is reproducible');
+  fs.mkdirSync(path.join(target,'docs'));fs.writeFileSync(path.join(target,'docs/RUNTIME_ASSETS.json'),before);
+  fs.mkdirSync(path.join(target,'data'));fs.writeFileSync(path.join(target,'data/accounts.json'),'synthetic-secret-not-an-asset');
+  const restored=restoreRuntimeAssetArchive(bytes,{root:target});assert.equal(restored.readiness.ready,true);assert.deepEqual(restored.restored,report.archived);assert.deepEqual(restored.present,[]);
+  for(const row of f.assets)assert.ok(fs.readFileSync(path.join(target,row.path)).equals(fs.readFileSync(path.join(f.root,row.path))));
+  assert.ok(fs.readFileSync(path.join(target,'docs/RUNTIME_ASSETS.json')).equals(before));assert.equal(fs.readFileSync(path.join(target,'data/accounts.json'),'utf8'),'synthetic-secret-not-an-asset');
+  const repeated=restoreRuntimeAssetArchive(bytes,{root:target});assert.deepEqual(repeated.restored,[]);assert.deepEqual(repeated.present,report.archived);
+  const json=gunzipSync(bytes).toString();assert.doesNotMatch(json,/synthetic-secret-not-an-asset/);assert.doesNotMatch(JSON.stringify(restored),/must never execute|synthetic-secret|cw-asset-restore-/);
+ }finally{f.cleanup();fs.rmSync(target,{recursive:true,force:true});}
+});
+test('portable archive retains missing map gaps without claiming upstream provenance or complete readiness',()=>{
+ const f=fixture();try{
+  const manifest=f.manifest();manifest.assets[2].source=null;manifest.assets[2].sha256=null;manifest.assets[2].size=null;fs.unlinkSync(path.join(f.root,f.assets[2].path));const retained=preserveManifest(f);fs.writeFileSync(retained.file,JSON.stringify(manifest));
+  const {bytes,report}=createRuntimeAssetArchive({root:f.root});assert.equal(report.complete,false);assert.equal(report.upstreamProvenance,'UNCHANGED_FROM_PRESERVED_MANIFEST');assert.equal(report.missing[0].path,f.assets[2].path);
+  fs.unlinkSync(path.join(f.root,f.assets[0].path));fs.unlinkSync(path.join(f.root,f.assets[1].path));const restored=restoreRuntimeAssetArchive(bytes,{root:f.root});
+  assert.deepEqual(restored.restored,f.assets.slice(0,2).map(row=>row.path));assert.equal(restored.readiness.ready,false);assert.equal(restored.readiness.assets[2].reason,'ASSET_MISSING');assert.equal(fs.existsSync(path.join(f.root,f.assets[2].path)),false);
+ }finally{f.cleanup();}
+});
+test('archive excludes modified assets and refuses an empty verified set',()=>{
+ const f=fixture();try{preserveManifest(f);f.write(1,'{}');const result=createRuntimeAssetArchive({root:f.root});assert.equal(result.report.archived.includes(f.assets[1].path),false);assert.equal(result.report.missing[0].reason,'CONFIG_TABLES_INVALID');f.write(0,'changed');f.write(2,'{}');assert.throws(()=>createRuntimeAssetArchive({root:f.root}),{reason:'NO_VERIFIED_ASSETS'});}finally{f.cleanup();}
+});
+test('archive validation rejects traversal, duplicate, changed baseline and corrupted payload before any restore write',()=>{
+ const f=fixture();try{
+  preserveManifest(f);const {bytes}=createRuntimeAssetArchive({root:f.root}),data=JSON.parse(gunzipSync(bytes)),original=fs.readFileSync(path.join(f.root,'docs/RUNTIME_ASSETS.json'));
+  fs.unlinkSync(path.join(f.root,f.assets[0].path));
+  const corruptions=[
+   d=>d.files[1].base64=Buffer.from('tampered').toString('base64'),
+   d=>d.files.push(d.files[0]),d=>d.files[0].path='../accounts.json',
+   d=>d.assets[0].source='different baseline',d=>d.assets[0].sha256='0'.repeat(64),
+   d=>d.files.pop(),d=>d.missing.push({path:d.files[0].path,reason:'ASSET_MISSING'}),
+   d=>d.kind='other',d=>d.schemaVersion=2,d=>d.files[0].base64='!'.repeat(d.files[0].base64.length)
+  ];
+  for(const mutate of corruptions){const copy=structuredClone(data);mutate(copy);assert.throws(()=>restoreRuntimeAssetArchive(gzipSync(JSON.stringify(copy)),{root:f.root}),{code:'ASSET_ARCHIVE_UNAVAILABLE'});assert.equal(fs.existsSync(path.join(f.root,f.assets[0].path)),false);assert.ok(fs.readFileSync(path.join(f.root,'docs/RUNTIME_ASSETS.json')).equals(original));}
+  for(const value of [Buffer.from('invalid gzip'),Buffer.alloc(0),null])assert.throws(()=>inspectRuntimeAssetArchive(value,{root:f.root}),{code:'ASSET_ARCHIVE_UNAVAILABLE'});
+ }finally{f.cleanup();}
+});
+test('restore preserves conflicting and interrupted files and preflights all destinations before writing',()=>{
+ const f=fixture();try{
+  preserveManifest(f);const {bytes}=createRuntimeAssetArchive({root:f.root});fs.unlinkSync(path.join(f.root,f.assets[0].path));f.write(2,'partial interrupted bytes');
+  assert.throws(()=>restoreRuntimeAssetArchive(bytes,{root:f.root}),{reason:'RESTORE_FILE_CONFLICT'});assert.equal(fs.existsSync(path.join(f.root,f.assets[0].path)),false);assert.equal(fs.readFileSync(path.join(f.root,f.assets[2].path),'utf8'),'partial interrupted bytes');
+ }finally{f.cleanup();}
+});
+test('archive and restore reject linked sources and destination directories without following them',()=>{
+ const f=fixture(),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cw-restore-link-'));
+ try{
+  preserveManifest(f);const {bytes}=createRuntimeAssetArchive({root:f.root}),directory=path.join(f.root,'work/cdn'),retained=path.join(outside,'cdn');
+  fs.renameSync(directory,retained);fs.symlinkSync(retained,directory,process.platform==='win32'?'junction':'dir');
+  const report=createRuntimeAssetArchive({root:f.root}).report;assert.equal(report.archived.length,1);assert.ok(report.missing.every(row=>row.reason==='ASSET_LINK_NOT_ALLOWED'));
+  assert.throws(()=>restoreRuntimeAssetArchive(bytes,{root:f.root}),{reason:'RESTORE_PATH_CONFLICT'});fs.unlinkSync(directory);
+ }finally{f.cleanup();fs.rmSync(outside,{recursive:true,force:true});}
+});
+test('fixed archive CLI service writes exclusively, verifies offline and repairs only absent assets',()=>{
+ const f=fixture();try{
+  preserveManifest(f);const report=runtimeAssetArchive('archive',{root:f.root}),archive=path.join(f.root,report.path),original=fs.readFileSync(archive);
+  assert.equal(report.path,'work/runtime-assets.cwassets.gz');assert.throws(()=>runtimeAssetArchive('archive',{root:f.root}),{reason:'ARCHIVE_ALREADY_EXISTS'});assert.ok(fs.readFileSync(archive).equals(original));
+  assert.deepEqual(runtimeAssetArchive('verify',{root:f.root}),report);fs.unlinkSync(path.join(f.root,f.assets[1].path));const restored=runtimeAssetArchive('restore',{root:f.root});assert.deepEqual(restored.restored,[f.assets[1].path]);assert.equal(restored.readiness.ready,true);assert.ok(fs.readFileSync(archive).equals(original));
+  assert.throws(()=>runtimeAssetArchive('download',{root:f.root}),{reason:'ARCHIVE_ACTION_INVALID'});
+  fs.writeFileSync(archive,'bad archive');assert.throws(()=>runtimeAssetArchive('restore',{root:f.root}),{reason:'ARCHIVE_INVALID'});
+ }finally{f.cleanup();}
+});
+
+test('interrupted restore leaves a visible partial file and refuses silent replay',t=>{
+ const f=fixture();try{
+  preserveManifest(f);const {bytes}=createRuntimeAssetArchive({root:f.root}),file=path.join(f.root,f.assets[0].path);fs.unlinkSync(file);
+  const original=fs.writeFileSync.bind(fs);t.mock.method(fs,'writeFileSync',(target,content,...args)=>{if(typeof target==='number'){original(target,content.subarray(0,9),...args);throw Object.assign(Error('synthetic interruption'),{code:'EIO'});}return original(target,content,...args);});
+  assert.throws(()=>restoreRuntimeAssetArchive(bytes,{root:f.root}),{reason:'RESTORE_WRITE_FAILED'});assert.equal(fs.readFileSync(file).length,9);
+  assert.throws(()=>restoreRuntimeAssetArchive(bytes,{root:f.root}),{reason:'RESTORE_FILE_CONFLICT'});assert.equal(fs.readFileSync(file).length,9);
+ }finally{t.mock.restoreAll();f.cleanup();}
+});
+test('fixed archive rejects a link and never follows a file outside the archive path',()=>{
+ const f=fixture();try{
+  preserveManifest(f);runtimeAssetArchive('archive',{root:f.root});const archive=path.join(f.root,'work/runtime-assets.cwassets.gz'),other=path.join(f.root,'unrelated-directory');fs.mkdirSync(other);const sentinel=path.join(other,'untouched');fs.writeFileSync(sentinel,'preserve unrelated');fs.unlinkSync(archive);fs.symlinkSync(other,archive,process.platform==='win32'?'junction':'dir');
+  for(const action of ['verify','restore'])assert.throws(()=>runtimeAssetArchive(action,{root:f.root}),{reason:'ARCHIVE_PATH_CONFLICT'});
+  assert.throws(()=>runtimeAssetArchive('archive',{root:f.root}),{reason:'ARCHIVE_ALREADY_EXISTS'});assert.equal(fs.readFileSync(sentinel,'utf8'),'preserve unrelated');fs.unlinkSync(archive);
+ }finally{f.cleanup();}
+});
+test('restore exclusive creation preserves a destination appearing after preflight',t=>{
+ const f=fixture();try{
+  preserveManifest(f);const {bytes}=createRuntimeAssetArchive({root:f.root}),file=path.join(f.root,f.assets[0].path);fs.unlinkSync(file);
+  const original=fs.openSync.bind(fs);t.mock.method(fs,'openSync',(target,flags,...args)=>{if(target===file&&flags==='wx')fs.writeFileSync(file,'new competing work');return original(target,flags,...args);});
+  assert.throws(()=>restoreRuntimeAssetArchive(bytes,{root:f.root}),{reason:'RESTORE_WRITE_FAILED'});assert.equal(fs.readFileSync(file,'utf8'),'new competing work');
+ }finally{t.mock.restoreAll();f.cleanup();}
+});
+
+test('retained archive metadata is a read-only record, never proof that a missing archive exists',()=>{
+ const f=fixture();try{
+  const retained=preserveManifest(f),manifest=retained.manifest;
+  manifest.recoveryArchive={path:'work/runtime-assets.cwassets.gz',sha256:'a'.repeat(64),size:123,token:'must not leak'};
+  fs.writeFileSync(retained.file,JSON.stringify(manifest));const report=runtimeAssetReadiness({root:f.root});
+  assert.deepEqual(report.recoveryArchive,{path:'work/runtime-assets.cwassets.gz',sha256:'a'.repeat(64),size:123,status:'RETAINED_RECORD_ONLY'});assert.equal(fs.existsSync(path.join(f.root,manifest.recoveryArchive.path)),false);assert.doesNotMatch(JSON.stringify(report),/must not leak|"token":/);
+  for(const value of [{path:'data/accounts.json',sha256:'a'.repeat(64),size:1},{path:'work/runtime-assets.cwassets.gz',sha256:'unknown',size:1},null]){manifest.recoveryArchive=value;fs.writeFileSync(retained.file,JSON.stringify(manifest));assert.equal(runtimeAssetReadiness({root:f.root}).recoveryArchive,undefined);}
+ }finally{f.cleanup();}
+});
+
+test('a recorded archive fingerprint is checked independently of valid embedded asset bytes',()=>{
+ const f=fixture();try{
+  const retained=preserveManifest(f),{bytes,report}=createRuntimeAssetArchive({root:f.root}),manifest=retained.manifest;
+  manifest.recoveryArchive={path:'work/runtime-assets.cwassets.gz',sha256:report.sha256,size:bytes.length};fs.writeFileSync(retained.file,JSON.stringify(manifest));
+  assert.equal(inspectRuntimeAssetArchive(bytes,{root:f.root}).report.sha256,report.sha256);
+  const changed=Buffer.from(bytes);changed[4]=changed[4]===0?1:0;assert.ok(gunzipSync(changed).equals(gunzipSync(bytes)),'only gzip metadata changed');
+  assert.throws(()=>inspectRuntimeAssetArchive(changed,{root:f.root}),{reason:'ARCHIVE_HASH_MISMATCH'});
+  assert.throws(()=>restoreRuntimeAssetArchive(changed,{root:f.root}),{reason:'ARCHIVE_HASH_MISMATCH'});
+ }finally{f.cleanup();}
 });

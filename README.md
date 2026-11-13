@@ -11,6 +11,18 @@ PHASE 3 已加入阵容、联盟、博物馆、世界宝藏、舰队与海战规
 
 ---
 
+
+运行资产可以在离线环境单独检查和保留：
+
+~~~bash
+node src/app.mjs assets
+node src/app.mjs assets archive
+node src/app.mjs assets verify
+node src/app.mjs assets restore
+~~~
+
+归档固定写入 `work/runtime-assets.cwassets.gz`，已有同名文件会保留并拒绝覆盖。迁移时携带仓库中的 `docs/RUNTIME_ASSETS.json` 和该归档，先运行 verify，再按需 restore。恢复仅补缺失的已登记协议、配置和地图文件；先完整校验归档及全部目标，任何现有冲突文件均保留。中断写入留下的部分文件也不会被自动覆盖。归档缺失项继续显示为缺口，保留本地字节不等于证明原始包/CDN版本或真实玩法通过；命令不读取账号凭证、不连接游戏。
+
 ## 免责声明
 
 **本项目仅供协议分析与学习研究。使用它会违反游戏的用户协议，账号可能被处罚或封禁。**

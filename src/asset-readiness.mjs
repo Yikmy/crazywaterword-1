@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { extractTables } from './config.mjs';
@@ -143,10 +144,124 @@ export function readRuntimeAsset(role, relativePath, {root=path.resolve(import.m
   return observed.bytes;
 }
 
+function retainedArchive(value) {
+  return value?.path==='work/runtime-assets.cwassets.gz' && digest(value.sha256) && Number.isSafeInteger(value.size) && value.size>0
+    ? {path:value.path,sha256:value.sha256,size:value.size,status:'RETAINED_RECORD_ONLY'} : null;
+}
+
 /** Read-only diagnosis never restores, discovers or executes assets. */
 export function runtimeAssetReadiness({root=path.resolve(import.meta.dirname,'..')}={}) {
   try {
     const manifest=readRuntimeManifest(root),report=assetReadinessReport(manifest,{root});
-    return {...report,provenanceNote:reference(manifest.provenanceNote)?manifest.provenanceNote:null,recovery:assetRecoveryInstructions(manifest)};
+    return {...report,...(retainedArchive(manifest.recoveryArchive)?{recoveryArchive:retainedArchive(manifest.recoveryArchive)}:{}),provenanceNote:reference(manifest.provenanceNote)?manifest.provenanceNote:null,recovery:assetRecoveryInstructions(manifest)};
   }catch(error){return {status:'BLOCKED',ready:false,reason:error?.reason??'MANIFEST_INVALID_OR_UNREADABLE',assets:[],recovery:[]};}
+}
+
+const ARCHIVE_LIMIT = 128 * 1024 * 1024;
+const archiveFail = reason => Object.assign(new Error('离线资产归档不可用：'+reason), {code:'ASSET_ARCHIVE_UNAVAILABLE',reason});
+const archiveIdentity = entry => ({...publicEntry(entry),source:entry.source??null,sha256:entry.sha256??null,size:entry.size??null,...(entry.requiredTables?{requiredTables:[...entry.requiredTables]}:{})});
+function archiveManifest(manifest,root) {
+  if(manifest?.schemaVersion!==1)throw archiveFail('MANIFEST_VERSION_UNKNOWN');
+  validateList(root,manifest.assets);
+  return manifest.assets.map(archiveIdentity);
+}
+
+/** Retain only hash-verified declared files. Missing entries remain explicit gaps;
+ * this archive preserves the local baseline, never invents an upstream version. */
+export function createRuntimeAssetArchive({root=path.resolve(import.meta.dirname,'..')}={}) {
+  const manifest=readRuntimeManifest(root),assets=archiveManifest(manifest,root),files=[],missing=[];
+  for(const entry of manifest.assets){
+    const observed=inspect(root,entry,{includeBytes:true}),checked=readinessEntry(entry,observed);
+    if(checked.status==='READY')files.push({path:entry.path,base64:observed.bytes.toString('base64')});
+    else missing.push({path:entry.path,reason:checked.reason});
+  }
+  if(!files.length)throw archiveFail('NO_VERIFIED_ASSETS');
+  const json=Buffer.from(JSON.stringify({schemaVersion:1,kind:'CRAZYWATER_RUNTIME_ASSETS',assets,files,missing}));
+  if(json.length>ARCHIVE_LIMIT)throw archiveFail('ARCHIVE_TOO_LARGE');
+  const bytes=gzipSync(json,{level:9});
+  return {bytes,report:{schemaVersion:1,sha256:hash(bytes),size:bytes.length,archived:files.map(row=>row.path),missing,complete:missing.length===0,upstreamProvenance:'UNCHANGED_FROM_PRESERVED_MANIFEST'}};
+}
+
+/** Validate against the independently retained manifest before exposing bytes.
+ * The embedded manifest cannot grant paths, change hashes or add sources. */
+export function inspectRuntimeAssetArchive(bytes,{root=path.resolve(import.meta.dirname,'..')}={}) {
+  const manifest=readRuntimeManifest(root),expected=archiveManifest(manifest,root),record=retainedArchive(manifest.recoveryArchive);
+  if(!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>ARCHIVE_LIMIT)throw archiveFail('ARCHIVE_SIZE_INVALID');
+  if(record&&(record.size!==bytes.length||record.sha256!==hash(bytes)))throw archiveFail('ARCHIVE_HASH_MISMATCH');
+  let data;
+  try{data=JSON.parse(gunzipSync(bytes,{maxOutputLength:ARCHIVE_LIMIT}).toString('utf8'));}catch{throw archiveFail('ARCHIVE_INVALID');}
+  if(data?.schemaVersion!==1||data?.kind!=='CRAZYWATER_RUNTIME_ASSETS'||JSON.stringify(data.assets)!==JSON.stringify(expected)
+      ||!Array.isArray(data.files)||!Array.isArray(data.missing)||!data.files.length)throw archiveFail('ARCHIVE_MANIFEST_MISMATCH');
+  const seen=new Set(),files=[];
+  for(const row of data.files){
+    const entry=expected.find(entry=>entry.path===row?.path);
+    if(!entry||seen.has(row.path)||!reference(entry.source)||!digest(entry.sha256)||!Number.isSafeInteger(entry.size)||entry.size<1
+        ||typeof row.base64!=='string'||row.base64.length!==4*Math.ceil(entry.size/3))throw archiveFail('ARCHIVE_ENTRY_INVALID');
+    const content=Buffer.from(row.base64,'base64');
+    if(content.toString('base64')!==row.base64||content.length!==entry.size||hash(content)!==entry.sha256)throw archiveFail('ARCHIVE_ENTRY_HASH_MISMATCH');
+    seen.add(row.path);files.push({path:row.path,bytes:content});
+  }
+  for(const row of data.missing){
+    if(!expected.some(entry=>entry.path===row?.path)||seen.has(row.path)||!reference(row.reason))throw archiveFail('ARCHIVE_GAP_INVALID');
+    seen.add(row.path);
+  }
+  if(seen.size!==expected.length)throw archiveFail('ARCHIVE_COVERAGE_INVALID');
+  return {files,report:{schemaVersion:1,sha256:hash(bytes),size:bytes.length,archived:files.map(row=>row.path),missing:structuredClone(data.missing),complete:data.missing.length===0,upstreamProvenance:'UNCHANGED_FROM_PRESERVED_MANIFEST'}};
+}
+
+/** Restore only missing declared files. Preflight every destination before any
+ * write; preserve conflicts, original manifest, account data and all other files.
+ * Interrupted new-file writes remain visible and cannot be silently overwritten. */
+export function restoreRuntimeAssetArchive(bytes,{root=path.resolve(import.meta.dirname,'..')}={}) {
+  const checked=inspectRuntimeAssetArchive(bytes,{root}),pending=[],present=[];
+  for(const row of checked.files){
+    const segments=row.path.split('/');let current=root,exists=true;
+    for(let index=0;index<segments.length;index++){
+      current=path.join(current,segments[index]);
+      let stat;try{stat=fs.lstatSync(current);}catch(error){if(error.code==='ENOENT'){exists=false;continue;}throw archiveFail('RESTORE_PATH_UNREADABLE');}
+      if(stat.isSymbolicLink()||(index<segments.length-1?!stat.isDirectory():!stat.isFile()))throw archiveFail('RESTORE_PATH_CONFLICT');
+    }
+    if(exists){if(!fs.readFileSync(current).equals(row.bytes))throw archiveFail('RESTORE_FILE_CONFLICT');present.push(row.path);}
+    else pending.push(row);
+  }
+  const restored=[];
+  for(const row of pending){
+    const segments=row.path.split('/');let current=root;
+    for(const segment of segments.slice(0,-1)){
+      current=path.join(current,segment);
+      try{fs.mkdirSync(current);}catch(error){if(error.code!=='EEXIST')throw archiveFail('RESTORE_DIRECTORY_FAILED');}
+      const stat=fs.lstatSync(current);if(stat.isSymbolicLink()||!stat.isDirectory())throw archiveFail('RESTORE_PATH_CONFLICT');
+    }
+    let descriptor;
+    try{descriptor=fs.openSync(path.join(root,row.path),'wx');fs.writeFileSync(descriptor,row.bytes);fs.fsyncSync(descriptor);}
+    catch{throw archiveFail('RESTORE_WRITE_FAILED');}
+    finally{if(descriptor!==undefined)fs.closeSync(descriptor);}
+    restored.push(row.path);
+  }
+  return {...checked.report,restored,present,readiness:runtimeAssetReadiness({root})};
+}
+
+/** Fixed offline CLI entry: no caller-supplied paths and no overwrite. */
+export function runtimeAssetArchive(action,{root=path.resolve(import.meta.dirname,'..')}={}) {
+  if(typeof root!=='string'||!path.isAbsolute(root))throw archiveFail('ARCHIVE_ROOT_INVALID');
+  if(!['archive','verify','restore'].includes(action))throw archiveFail('ARCHIVE_ACTION_INVALID');
+  const directory=path.join(root,'work'),relative='work/runtime-assets.cwassets.gz',file=path.join(root,relative);
+  let stat;
+  try{stat=fs.lstatSync(directory);}catch{throw archiveFail('ARCHIVE_DIRECTORY_MISSING');}
+  if(stat.isSymbolicLink()||!stat.isDirectory())throw archiveFail('ARCHIVE_PATH_CONFLICT');
+  if(action==='archive'){
+    const result=createRuntimeAssetArchive({root});
+    let descriptor;
+    try{descriptor=fs.openSync(file,'wx');fs.writeFileSync(descriptor,result.bytes);fs.fsyncSync(descriptor);}
+    catch(error){throw archiveFail(error.code==='EEXIST'?'ARCHIVE_ALREADY_EXISTS':'ARCHIVE_WRITE_FAILED');}
+    finally{if(descriptor!==undefined)fs.closeSync(descriptor);}
+    return {...result.report,path:relative};
+  }
+  try{
+    const before=fs.lstatSync(file);if(before.isSymbolicLink()||!before.isFile())throw archiveFail('ARCHIVE_PATH_CONFLICT');
+    if(before.size>ARCHIVE_LIMIT)throw archiveFail('ARCHIVE_SIZE_INVALID');
+    const bytes=fs.readFileSync(file),after=fs.lstatSync(file);
+    if(before.ino!==after.ino||before.size!==after.size||before.mtimeMs!==after.mtimeMs||bytes.length!==after.size)throw archiveFail('ARCHIVE_CHANGED_DURING_READ');
+    return {...(action==='verify'?inspectRuntimeAssetArchive(bytes,{root}).report:restoreRuntimeAssetArchive(bytes,{root})),path:relative};
+  }catch(error){if(error.code==='ASSET_ARCHIVE_UNAVAILABLE')throw error;throw archiveFail('ARCHIVE_UNREADABLE');}
 }
