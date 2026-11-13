@@ -404,3 +404,65 @@ test('bounded unified intent keeps specific evidence blockers and no-operation r
  const input={entry:'loop',tasks:[{kind:'orderDaily',taskId:1}],dailies:[{taskId:1001},{taskId:1006}],budget:unifiedBudget,runPolicy:{maxDurationMs:1000,maxActions:1,modules:['free-gold']}},result=compileUnifiedExecution(input,{modules:unifiedRegistry});assert.equal(result.blocked.length,2);assert.deepEqual(result.graph.preparation.blocked,result.blocked);assert.deepEqual(result.graph.runPolicy,input.runPolicy);assert.equal(result.graph.nodes.filter(n=>n.type==='ACTION').length,1);
  const none=compileUnifiedExecution({...input,dailies:[{taskId:1001}]},{modules:unifiedRegistry});assert.equal(none.graph,null);assert.equal(none.blocked.length,2);
 });
+
+const repeatingGraph=(g=graph(),policy={})=>boundedGraph(g,{maxActions:3,maxRounds:3,roundIntervalMs:0,...policy});
+test('finite outer repetition is an explicit run contract and keeps the original graph acyclic',()=>{
+ const g=repeatingGraph();assert.deepEqual(validateWorkflow(g,{modules}).workflow.runPolicy,g.runPolicy);assert.equal(g.nodes.length,graph().nodes.length);assert.deepEqual(g.edges,graph().edges);
+ for(const change of [p=>p.maxRounds=0,p=>p.maxRounds=201,p=>p.maxRounds='2',p=>p.maxRounds=1.5,p=>p.roundIntervalMs=-1,p=>p.roundIntervalMs=60001,p=>p.roundIntervalMs='0',p=>delete p.maxRounds]){const bad=structuredClone(g);change(bad.runPolicy);assert.throws(()=>validateWorkflow(bad,{modules}));}
+ const cyclic=repeatingGraph();cyclic.edges[cyclic.edges.length-1].to='a';assert.throws(()=>validateWorkflow(cyclic,{modules}));assert.equal(Object.hasOwn(validateWorkflow(boundedGraph(),{modules}).workflow.runPolicy,'maxRounds'),false);
+});
+
+test('manual repeated rounds use fresh surveys and distinct plans while sharing action count and the original claim',async()=>{
+ let planned=0;const bound=[];const f=fixture({bindWorkflowNode:(_s,_id,node)=>bound.push(node),plan:()=>({...f.plan,batchId:'round-batch-'+(++planned),planHash:'round-hash-'+planned})});let pending=await f.runner.start(f.session.id,repeatingGraph());
+ for(let round=1;round<=3;round++){assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(pending.round,round);assert.equal(pending.completedRounds,round-1);assert.equal(pending.actionPlans,round);assert.equal(f.released(),0);if(round>1){const noResult=await f.runner.resume();assert.equal(noResult.status,'AWAITING_AUTHORIZATION');assert.equal(noResult.round,round);}
+ f.runs.push(f.success({runId:'child-'+round,authorizationSummary:{batchId:pending.plan.batchId},planSummary:{batchId:pending.plan.batchId,planHash:pending.plan.planHash}}));pending=await f.runner.resume();}
+ assert.equal(pending.status,'COMPLETED');assert.equal(pending.round,3);assert.equal(pending.completedRounds,3);assert.equal(planned,3);assert.deepEqual(bound.map(row=>row.round),[1,2,3]);assert.equal(f.calls.filter(row=>row[0]==='survey').length,3);assert.equal(f.calls.filter(row=>row[0]==='claim').length,1);assert.equal(f.released(),1);assert.deepEqual(pending.trace.filter(row=>row.type==='STOP').map(row=>row.round),[1,2,3]);
+});
+
+for(const unknown of [false,true])test('outer repetition does not reset its action cap or repeat UNKNOWN '+unknown,async()=>{
+ let planned=0;const f=fixture({plan:()=>({...f.plan,batchId:'unique-'+(++planned),planHash:'h-'+planned})});const first=await f.runner.start(f.session.id,repeatingGraph(graph(),{maxActions:1}));f.runs.push(f.success({finalStatus:unknown?'UNKNOWN':'SUCCESS',authorizationSummary:{batchId:first.plan.batchId},planSummary:{batchId:first.plan.batchId,planHash:first.plan.planHash}}));const result=await f.runner.resume();assert.equal(result.status,unknown?'UNKNOWN':'STOPPED');assert.equal(result.completedRounds,unknown?0:1);assert.equal(result.actionPlans,1);assert.equal(planned,1);assert.equal(f.released(),1);await assert.rejects(f.runner.resume());
+});
+
+test('stopping during an outer round interval cancels the timer and restart stays read-only',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-round-wait-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),session={id:'A',generation:1,client:{},abort:new AbortController()};let entered,released=0;const waiting=new Promise(r=>entered=r);
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule(){assert.fail('read-only graph');},plan(){assert.fail('read-only graph');},history:()=>({runs:[]})},claim:()=>()=>released++,onUpdate:state=>{store.record('A',state);if(state.trace.at(-1)?.result==='ROUND_WAIT_STARTED')entered();}});
+ const running=runner.start('A',repeatingGraph(readOnly(),{maxActions:0,modules:[],roundIntervalMs:60000}));await waiting;const pending=runner.getStatus();assert.equal(pending.status,'WAITING');assert.equal(pending.round,1);assert.equal(pending.completedRounds,1);const bytes=fs.readFileSync(file,'utf8'),recovered=createWorkflowStore({file,modules}).history('A')[0];assert.equal(recovered.status,'RECOVERED_STOPPED');assert.equal(recovered.resumable,false);assert.equal(recovered.trace.at(-1).round,1);assert.equal(fs.readFileSync(file,'utf8'),bytes);runner.stop();assert.equal((await running).status,'CANCELLED');assert.equal(released,1);assert.equal(runner.getStatus().trace.filter(row=>row.type==='START').length,1);
+});
+
+test('the original overall deadline includes outer round intervals',async()=>{
+ const f=fixture();const result=await f.runner.start(f.session.id,repeatingGraph(readOnly(),{maxDurationMs:50,maxActions:0,modules:[],roundIntervalMs:1000}));assert.equal(result.status,'STOPPED');assert.equal(result.completedRounds,1);assert.equal(result.round,1);assert.equal(result.trace.filter(row=>row.type==='START').length,1);assert.equal(f.released(),1);
+});
+
+test('failure persisting the next round prevents another survey or action',async()=>{
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};let released=0;const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule(){assert.fail('no next round work');},plan(){assert.fail('no next round work');},history:()=>({runs:[]})},onUpdate:state=>{if(state.round===2&&!state.finishedAt)throw Error('synthetic round persistence failure');}});const result=await runner.start('A',repeatingGraph(readOnly(),{maxActions:0,modules:[]}));assert.equal(result.status,'FAILED');assert.equal(result.completedRounds,1);assert.equal(result.trace.filter(row=>row.type==='START').length,1);assert.equal(released,1);
+});
+
+test('repetition retains the original cumulative step and trace limits in a persistable terminal snapshot',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-repeat-limit-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),session={id:'A',generation:1,client:{},abort:new AbortController()};const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule(){assert.fail('none');},plan(){assert.fail('none');},history:()=>({runs:[]})},onUpdate:state=>store.record('A',state)});const result=await runner.start('A',repeatingGraph(readOnly(),{maxRounds:200,maxActions:0,modules:[]}));assert.equal(result.status,'STOPPED');assert.ok(result.steps<=200);assert.equal(result.trace.length,200);assert.ok(result.completedRounds<200);assert.equal(store.history('A')[0].status,'STOPPED');
+ const bytes=fs.readFileSync(file,'utf8');for(const change of [s=>s.round=201,s=>s.completedRounds=s.round+1,s=>delete s.round,s=>delete s.trace[0].round,s=>s.trace[0].round=201,s=>delete s.runPolicy.maxRounds]){const bad=structuredClone(result);change(bad);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
+});
+
+test('one captured start timestamp defines the entire deadline even when successive clock reads advance',async()=>{
+ let time=1000;const session={id:'A',generation:1,client:{},abort:new AbortController()},runner=createWorkflowRunner({modules,clock:()=>time++,getSession:()=>session,operations:{surveyModule(){},plan(){},history:()=>({runs:[]})}});const result=await runner.start('A',repeatingGraph(readOnly(),{maxActions:0,modules:[],maxRounds:1}));assert.equal(result.status,'COMPLETED');assert.equal(Date.parse(result.expiresAt)-Date.parse(result.startedAt),10000);
+});
+
+test('a repeated simulation exposes the whole fixed contract and one static DAG pass without runtime creation',()=>{
+ const g=repeatingGraph(graph(),{maxRounds:3,roundIntervalMs:20}),simulation=simulateWorkflow(g,{modules});assert.deepEqual(simulation.runPolicy,g.runPolicy);assert.equal(simulation.traceCoverage,'ONE_STATIC_DAG_PASS');assert.equal(simulation.trace.length,g.nodes.length);assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.deepEqual(g.edges,graph().edges);
+});
+
+test('damaged repeated history cannot alter the declared interval or round order and retains original bytes',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-repeat-corrupt-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),run={accountId:'A',runId:'repeat-history',workflowId:'wf',status:'WAITING',runPolicy:{maxDurationMs:10000,maxActions:0,modules:[],maxRounds:3,roundIntervalMs:10},round:2,completedRounds:2,actionPlans:0,expiresAt:'2026-11-14T00:00:10Z',trace:[{nodeId:'s',type:'START',result:'START',round:1},{nodeId:'z',type:'STOP',result:'STOP',round:1},{nodeId:'s',type:'START',result:'START',round:2},{nodeId:'z',type:'STOP',result:'STOP',round:2},{nodeId:'z',type:'STOP',result:'ROUND_WAIT_STARTED',round:2,durationMs:10}]};store.record('A',run);const bytes=fs.readFileSync(file,'utf8');
+ for(const change of [r=>r.trace.at(-1).durationMs=11,r=>r.trace.at(-1).result='ROUND_FAKE',r=>r.trace[1].round=2,r=>r.completedRounds=0,r=>r.trace.at(-1).round=3]){const bad=structuredClone(run);change(bad);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);const raw=JSON.parse(bytes);raw.accounts.A.history[0]=bad;fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8'),restarted=createWorkflowStore({file,modules});assert.throws(()=>restarted.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.throws(()=>restarted.save('A',graph()));assert.equal(fs.readFileSync(file,'utf8'),damaged);fs.writeFileSync(file,bytes);}
+});
+
+for(const change of ['generation','connection'])test('identity change during a repeated round interval invalidates the original run '+change,async()=>{
+ const session={id:'A',generation:1,connectionId:'one',client:{},abort:new AbortController()};let released=0;const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule(){assert.fail('none');},plan(){assert.fail('none');},history:()=>({runs:[]})},onUpdate:state=>{if(state.trace.at(-1)?.result==='ROUND_WAIT_STARTED'){if(change==='generation')session.generation++;else session.connectionId='two';}}});const result=await runner.start('A',repeatingGraph(readOnly(),{modules:[],maxActions:0,roundIntervalMs:1}));assert.equal(result.status,'CANCELLED');assert.equal(result.round,1);assert.equal(result.completedRounds,1);assert.equal(result.trace.filter(row=>row.type==='START').length,1);assert.equal(released,1);
+});
+
+test('a stopped second-round plan and its late reply cannot affect a replacement run',async()=>{
+ let planned=0,entered,resolvePlan;const waiting=new Promise(r=>entered=r),late=new Promise(r=>resolvePlan=r),f=fixture({plan:()=>{planned++;if(planned===2){entered();return late;}return f.plan;}});const first=await f.runner.start(f.session.id,repeatingGraph());f.runs.push(f.success());const advancing=f.runner.resume();await waiting;assert.equal(f.runner.getStatus().round,2);f.runner.stop();assert.equal((await advancing).status,'CANCELLED');assert.equal(f.released(),1);assert.equal((await f.runner.start(f.session.id,readOnly())).status,'COMPLETED');resolvePlan({...f.plan,batchId:'late-second-round'});await new Promise(r=>setImmediate(r));assert.equal(f.runner.getStatus().workflowId,'readonly');assert.equal(f.runner.getStatus().plan,null);assert.equal(f.released(),2);
+});
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' retains finite outer repetition in the original compiler without expanding or replacing its DAG',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.maxRounds=3;intent.runPolicy.roundIntervalMs=20;const repeated=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(repeated.graph.nodes,before.graph.nodes);assert.deepEqual(repeated.graph.edges,before.graph.edges);assert.deepEqual(repeated.graph.budget,before.graph.budget);assert.deepEqual(repeated.graph.runPolicy,intent.runPolicy);assert.deepEqual(repeated.graph.preparation,before.graph.preparation);
+});

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createOperationService } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
 import { createModuleSettings } from '../src/gameplay-settings.mjs';
-import { createWorkflowRunner, createWorkflowStore } from '../src/workflow.mjs';
+import { createWorkflowRunner, createWorkflowStore, projectWorkflowExecutionHistory } from '../src/workflow.mjs';
 import { CORE_OPERATION_MODULES, ordersModule } from '../src/core-operation-adapters.mjs';
 
 const rules = { version: 1, enabled: true, rules: [] };
@@ -366,4 +366,34 @@ test('finite graph and parent claims cannot authorize RUBY or inherit a differen
  for(const opts of [{limits:claims(400),expiresAt:new Date(Date.now()+500).toISOString()},{limits:claims(40),expiresAt:new Date(Date.now()+5000).toISOString()},{limits:{resources:[{id:'RUBY',num:1}],quotas:[],uids:[]},expiresAt:new Date(Date.now()+500).toISOString(),graph:{...graph,budget:{resources:[{id:'RUBY',num:1}],quotas:[],uids:[]}}}])assert.throws(()=>f.service.claimWorkflow(f.session,'invalid-contract',{graph,...opts}));
  assert.equal(f.session.workflowOwner,null);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
  }finally{await f.cleanup();}
+});
+
+async function repeatingOrderWorkflow({limit=120,maxActions=3,maxRounds=3,roundIntervalMs=0,apply=true,onUpdate=()=>{},beforeStart=()=>{}}={}){
+ const f=fixture({stock:1000,apply}),file=path.join(path.dirname(f.history.storagePath),'workflows.json'),store=createWorkflowStore({file,modules:CORE_OPERATION_MODULES});f.state().raw.workerOrder=[order(0)];f.state().beforeWrite=(_name,body)=>f.state().raw.workerOrder.push(order(body.index+1));
+ const graph={version:1,id:'repeated-orders',name:'Finite new orders in existing run',budget:claims(limit),runPolicy:{maxDurationMs:10000,maxActions,modules:['orders'],maxRounds,roundIntervalMs},nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'orders',parameters:{}},{id:'a',type:'ACTION',module:'orders',parameters:{},selection:{unique:true}},{id:'v',type:'VERIFY',module:'orders'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};
+ const runner=createWorkflowRunner({modules:CORE_OPERATION_MODULES,operations:f.service,getSession:()=>f.session,claim:(_id,runId,opts)=>f.service.claimWorkflow(f.session,runId,opts),onUpdate:async state=>{await onUpdate(state);store.record('A',state);}});beforeStart(f.session);const status=await runner.start('A',graph);
+ return{...f,runner,graph,status,file,store,payload:{offer:status.authorizationOffer,batchId:status.plan.batchId,planHash:status.plan.planHash,confirm:true},async cleanup(){runner.stop();await runner.settle();await f.cleanup();}};
+}
+for(const options of [{},{limit:80},{maxActions:2},{apply:false}])test('finite repeated real Service orders preserve shared budget, unique plans and UNKNOWN '+JSON.stringify(options),async()=>{
+ const f=await repeatingOrderWorkflow(options);try{
+ assert.equal(f.status.round,1);assert.equal(f.writes.length,0);const result=await f.runner.authorizeRun(f.payload),expected=options.apply===false?1:options.limit===80||options.maxActions===2?2:3;assert.equal(f.writes.length,expected,JSON.stringify(result));assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40*expected);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(result.status,options.apply===false?'UNKNOWN':expected===3?'COMPLETED':options.maxActions===2?'STOPPED':'UNKNOWN');assert.equal(result.actionPlans,options.limit===80?3:expected);assert.equal(result.completedRounds,options.apply===false?0:expected);
+ const operations=f.history.list('A').sort((a,b)=>a.workflowRound-b.workflowRound),recordCount=expected+(options.limit===80?1:0);assert.deepEqual(operations.map(row=>row.workflowRound),Array.from({length:recordCount},(_,i)=>i+1));assert.equal(new Set(operations.map(row=>row.planSummary.batchId)).size,recordCount);if(options.limit===80){assert.notEqual(operations.at(-1).finalStatus,'SUCCESS');assert.ok(operations.at(-1).actions.every(row=>row.dispatched!==true));}assert.deepEqual(f.writes.map(row=>row.body.index),Array.from({length:expected},(_,i)=>i));for(const row of operations)assert.equal(row.planSummary.workflowRound,row.workflowRound);
+ const saved=f.store.history('A',{runId:f.status.runId})[0],detail=projectWorkflowExecutionHistory('A',saved,operations);assert.equal(detail.nodes.length,recordCount);assert.equal(detail.unlinkedOperationCount,0);assert.deepEqual(detail.nodes.map(row=>row.round),operations.map(row=>row.workflowRound));assert.ok(detail.nodes.every(row=>row.batches.length===1&&row.batches[0].runAuthorizationLink.status==='MATCHED'));assert.equal(detail.completedRounds,result.completedRounds);
+ const wrong=structuredClone(operations);wrong[0].workflowRound=2;assert.ok(projectWorkflowExecutionHistory('A',saved,wrong).unlinkedOperationCount>=1);const bytes=fs.readFileSync(f.file,'utf8'),reopened=createWorkflowStore({file:f.file,modules:CORE_OPERATION_MODULES}).history('A')[0];assert.equal(reopened.round,result.round);assert.equal(reopened.resumable,false);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);await assert.rejects(Promise.resolve().then(()=>f.runner.authorizeRun(f.payload)));assert.equal(f.writes.length,expected);
+ }finally{await f.cleanup();}
+});
+
+test('finite run round identity cannot be omitted, forged, or substituted in a child permission',async()=>{
+ const f=await repeatingOrderWorkflow();try{
+ for(const round of [undefined,0,4,'1'])assert.throws(()=>f.service.bindWorkflowNode(f.session,f.status.runId,{workflowId:f.graph.id,nodeId:'a',...(round===undefined?{}:{round})}));
+ await f.service.authorizeWorkflow(f.session,f.payload,audit=>f.store.record('A',{...f.status,runAuthorization:audit}));const child={runId:f.status.runId,nodeId:'a',batchId:f.status.plan.batchId,planHash:f.status.plan.planHash};for(const round of [undefined,0,2,4,'1'])assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,{...child,...(round===undefined?{}:{round})}));const permit=f.service.authorizeWorkflowPlan(f.session,{...child,round:1});f.runner.stop();await f.runner.settle();assert.throws(()=>f.service.execute(f.session,permit));assert.equal(f.writes.length,0);
+ }finally{await f.cleanup();}
+});
+
+test('stopping a real authorized run in its round interval retains consumed resources and invalidates later rounds',async()=>{
+ let entered;const waiting=new Promise(r=>entered=r),f=await repeatingOrderWorkflow({roundIntervalMs:60000,onUpdate:state=>{if(state.trace.at(-1)?.result==='ROUND_WAIT_STARTED')entered();}});let running;try{running=f.runner.authorizeRun(f.payload);await waiting;assert.equal(f.writes.length,1);assert.equal(f.runner.getStatus().round,1);assert.equal(f.runner.getStatus().completedRounds,1);assert.equal(f.session.workflowOwner,f.status.runId);f.runner.stop();const result=await running;assert.equal(result.status,'CANCELLED');assert.equal(f.writes.length,1);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(f.session.workflowOwner,null);await assert.rejects(f.service.authorizeWorkflow(f.session,f.payload,()=>{}));}finally{f.runner.stop();await running;await f.cleanup();}
+});
+
+test('finite repetition without complete role identity keeps original per-batch operation and exposes no run grant',async()=>{
+ const f=await repeatingOrderWorkflow({maxRounds:2,maxActions:2,beforeStart:session=>delete session.player.worldId});try{let status=f.status;assert.equal(status.authorizationOffer,undefined);await assert.rejects(Promise.resolve().then(()=>f.runner.authorizeRun(f.payload)));assert.equal(f.writes.length,0);for(let round=1;round<=2;round++){assert.equal(status.round,round);assert.equal(status.status,'AWAITING_AUTHORIZATION');const permit=f.authorize(f.session,status.plan);f.service.execute(f.session,permit);await f.service.settle('A');status=await f.runner.resume();}assert.equal(status.status,'COMPLETED');assert.equal(status.completedRounds,2);assert.equal(f.writes.length,2);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),80);assert.equal(status.runAuthorization,undefined);}finally{await f.cleanup();}
 });
