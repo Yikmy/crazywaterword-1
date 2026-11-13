@@ -187,7 +187,7 @@ test('exclusive STAR extends the same contract without level-only configuration 
 });
 
 test('badge growth C228 contract declares typed evidence plus reread and leaves other branches blocked',()=>{
- const c=FUNCTION_CONTRACTS['badge-growth'];assert.deepEqual(c.requirementIds.C,['C228']);assert.deepEqual(c.implementation.actions,['LEVEL','PUT-ON']);assert.deepEqual(c.inputSchema.properties.action.enum,['put-on']);
+ const c=FUNCTION_CONTRACTS['badge-growth'];assert.deepEqual(c.requirementIds.C,['C228']);assert.deepEqual(c.implementation.actions,['LEVEL','PUT-ON','STAR']);assert.deepEqual(c.inputSchema.properties.action.enum,['put-on','star']);
  assert.equal(c.verification.authoritativeRead,true);assert.equal(c.verification.typedResponseAlone,false);
  assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='SACRIFICE_OR_REPLACE'&&!row.executable));
 });

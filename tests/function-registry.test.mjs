@@ -313,3 +313,13 @@ test('antique modes bind exact price, gate and item tables without invalidating 
 test('equipment STAR registry declares precisely the adapter star dependencies',()=>{
  const f=fixture(),module=f.modules['equipment-growth'],options=f.options('equipment-growth');options.parameters={action:'star'};options.config.tables.EquipUpStarCfg={revision:1,data:[{star:1,upCosts:[['装备升星石',1],['精铁',100000]]}]};const versions=module.dependencyVersions(options);assert.deepEqual(versions,equipmentGrowthModule.dependencyVersions(options));assert.equal(Object.hasOwn(versions,'config.EquipRefineCfg'),false);assert.equal(Object.hasOwn(versions,'config.EquipUpDecomposeCfg'),false);assert.ok(Object.hasOwn(versions,'config.EquipUpStarCfg'));const unrelated=clone(options);unrelated.config.tables.EquipRefineCfg={revision:9};assert.deepEqual(module.dependencyVersions(unrelated),versions);noExecution(f);
 });
+
+test('badge STAR conditional dependencies match the trusted declaration and exclude unrelated LEVEL prices',()=>{
+ const f=fixture(),options=clone(f.options('badge-growth'));options.parameters={heroId:'A',uid:'9007199254740993',action:'star'};
+ options.config.tables.HeroBadgeStarCfg={revision:1,data:[{star:1,upBadgeNum:1,consume:['GOLD',500000]}]};
+ const raw={...badgeGrowthModule};delete raw.dependencyVersions;const custom=f.modules['badge-growth'].dependencyVersions(options),declared=registerBusinessFunction(raw);
+ assert.deepEqual(declared.dependencyVersions(options),custom);assert.ok(Object.hasOwn(custom,'config.HeroBadgeStarCfg'));
+ assert.equal(Object.hasOwn(custom,'config.HeroBadgeLevelCfg'),false);assert.equal(Object.hasOwn(custom,'config.ModuleOpenCfg'),false);
+ const changed=clone(options);changed.config.tables.HeroBadgeStarCfg.revision++;assert.notDeepEqual(f.modules['badge-growth'].dependencyVersions(changed),custom);
+ const unrelated=clone(options);unrelated.config.tables.HeroBadgeLevelCfg.revision++;assert.deepEqual(f.modules['badge-growth'].dependencyVersions(unrelated),custom);
+});

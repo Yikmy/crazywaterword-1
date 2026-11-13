@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import {
-  BADGE_GROWTH_DEFAULT_CONFIG, BADGE_GROWTH_EVIDENCE, badgeGrowthModule, badgeGrowthDependencyVersions,
+  BADGE_GROWTH_DEFAULT_CONFIG, BADGE_GROWTH_EVIDENCE, BADGE_STAR_EVIDENCE, badgeGrowthModule, badgeGrowthDependencyVersions,
   parseBadgeOwnership, planBadgeGrowth, surveyBadgeGrowth, validateBadgeGrowthConfig,
   validateBadgeGrowthParameters, verifyBadgeGrowth, viewBadgeGrowth,
 } from '../src/badge-growth.mjs';
@@ -36,32 +36,34 @@ const expectedAction = { request: 'EnhanceBadgeRequest', response: 'EnhanceBadge
 const costs = [{ id: xpItem, num: 5 }, { id: 'GOLD', num: 100 }];
 const options = (config = cfg(), extra = {}) => ({ config, parameters: params, player, moduleConfig: { enabled: true }, ...extra });
 
-function fake({ wireMode = false, apply = true, response = {}, afterWrite, onWrite } = {}) {
+function fake({ wireMode = false, apply = true, response = {}, afterWrite, onWrite, star = false } = {}) {
   const pool = [badge(uid), badge(otherUid, { exp: 1 }), badge(idleUid, { attr: undefined })];
   delete pool[2].attr;
+  if(star) for(const row of pool) row.badgeId='红法师徽章';
   const client = {
     connected: true, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites: new Map(),
     factContext: { accountId: 'badge-account', generation: 3, connectionId: 'badge-connection' },
     pool, heroes: [hero('A', pool[0]), hero('B', pool[1])], stock: new Map([[xpItem, 25], ['GOLD', 500], ['其他', 1]]), reads: [], writes: [],
+    ...(star ? {stock:new Map([['徽章升星石',32],['GOLD',10000000],[xpItem,25],['其他',1]])} : {}),
     markUnverifiedWrite(name, body) { this.uncertainWrites.set(JSON.stringify({ name, body }), true); },
     confirmWatchedWrite(name, body) { this.uncertainWrites.delete(JSON.stringify({ name, body })); },
     async request(name, body, reply, _timeout, options = {}) {
       if (options.mutate) {
         options.beforeDispatch?.();
-        assert.equal(name, expectedAction.request);
-        assert.equal(reply, expectedAction.response);
+        assert.equal(name, star ? 'BadgeStarRequest' : expectedAction.request);
+        assert.equal(reply, star ? 'BadgeStarResponse' : expectedAction.response);
         if (wireMode) assert.deepEqual(toSnapshotJson(wire(name, body)), body);
         this.writes.push({ name, body: structuredClone(body) });
         if (apply) {
           const target = this.pool.find(row => row.uid === body.uid);
           const owner = this.heroes.find(row => row.badges.some(item => item.uid === body.uid));
           const nextGoldRatio = target.level === 1 ? 20 : 25;
-          target.level++;
-          owner.badges.find(row => row.uid === body.uid).level++;
+          if(star){target.star++;const worn=owner.badges.find(row=>row.uid===body.uid);worn.star++;target.attr.value++;worn.attr.value++;}
+          else {target.level++;owner.badges.find(row => row.uid === body.uid).level++;}
           owner.power = (BigInt(owner.power) + 6n).toString();
           owner.attributes[0].value++;
-          this.stock.set(xpItem, this.stock.get(xpItem) - body.expItemNum);
-          this.stock.set('GOLD', this.stock.get('GOLD') - body.expItemNum * nextGoldRatio);
+          if(star){this.stock.set('徽章升星石',this.stock.get('徽章升星石')-body.starItemNum);this.stock.set('GOLD',this.stock.get('GOLD')-500000*body.starItemNum);}
+          else {this.stock.set(xpItem, this.stock.get(xpItem) - body.expItemNum);this.stock.set('GOLD', this.stock.get('GOLD') - body.expItemNum * nextGoldRatio);}
         }
         afterWrite?.(this);
         if (onWrite) return onWrite();
@@ -146,7 +148,7 @@ test('survey reads each independent authority only and plan binds one slot, exac
   noActions({ parameters: { heroId: 'A', uid: idleUid } });
   noActions({ moduleConfig: BADGE_GROWTH_DEFAULT_CONFIG });
   noActions({ selections: ['other-action'] });
-  assert.deepEqual(Object.keys(badgeGrowthDependencyVersions(options(config))).sort(), badgeGrowthModule.dependencyKeys.filter(key => key !== 'config.ModuleOpenCfg').sort());
+  assert.deepEqual(Object.keys(badgeGrowthDependencyVersions(options(config))).sort(), badgeGrowthModule.dependencyKeys.filter(key => !['config.ModuleOpenCfg','config.HeroBadgeStarCfg'].includes(key)).sort());
   const view = viewBadgeGrowth(before, options(config));
   assert.equal(view.candidates.length, 1);
   assert.equal(view.candidates[0].executable, true);
@@ -394,4 +396,117 @@ test('fixed local configuration charges exact current table values for the eligi
   assert.deepEqual(operation.costs, costs);
   assert.equal(operation.expectedState.level, 2);
   assert.equal(operation.expectedState.exp, 0);
+});
+
+
+const starParams = {...params,action:'star'};
+function starConfig() {
+ const config=cfg();config.tables.HeroBadgeCfg.data=[{id:'红法师徽章',career:'法师',quality:'RED'}];
+ config.tables.HeroBadgeAttrCfg.data=[0,1,2,3,4,5].map(star=>({id:'红法师徽章',star,maxLevel:100}));
+ config.tables.HeroBadgeStarCfg={data:[1,2,3,4,5].map(star=>({star,upBadgeNum:2**(star-1),consume:['GOLD',500000*2**(star-1)]}))};return config;
+}
+const starSurvey=(client,config,extra={})=>survey(client,config,{parameters:starParams,...extra});
+const starPlan=(facts,config,extra={})=>plan(facts,config,{parameters:starParams,...extra});
+async function starPrepared(input={},config=starConfig()){
+ const client=fake({...input,star:true}),before=await starSurvey(client,config),operation=starPlan(before,config).actions[0];
+ assert.ok(operation,JSON.stringify(viewBadgeGrowth(before,options(config,{parameters:starParams})).blocked));return {client,config,before,operation};
+}
+test('red badge STAR is an explicit BIZ-R09 branch with exact owned stones, gold, same UID and no sacrifice',async()=>{
+ assert.equal(BADGE_STAR_EVIDENCE.requirement,'BIZ-R09');assert.equal(BADGE_STAR_EVIDENCE.realGame,'REAL_UNVERIFIED');
+ assert.deepEqual(validateBadgeGrowthParameters(starParams),starParams);
+ for(const extra of [{pos:1},{star:1},{decomposeUid:[]},{starItemNum:1},{count:2},{allowPaid:false},{action:'replace'}])assert.throws(()=>validateBadgeGrowthParameters({...starParams,...extra}),{code:'INVALID_PARAMETERS'});
+ const {client,config,before,operation}=await starPrepared({wireMode:true});
+ assert.equal(client.writes.length,0);assert.equal(operation.actionType,'STAR');
+ assert.deepEqual(operation.action,{request:'BadgeStarRequest',response:'BadgeStarResponse',body:{uid,decomposeUid:[],starItemNum:1}});
+ assert.deepEqual(operation.budgetClaims,{resources:[{id:'徽章升星石',num:1},{id:'GOLD',num:500000}],quotas:[],uids:[{type:'badge',id:uid}]});
+ assert.deepEqual(operation.expectedState,{heroId:'A',uid,pos:1,badgeId:'红法师徽章',star:1,level:1,exp:0});
+ assert.deepEqual(Object.keys(badgeGrowthDependencyVersions(options(config,{parameters:starParams}))),['moduleConfig','config.HeroCfg','config.HeroBadgeCfg','config.HeroBadgeUnlockCfg','config.HeroBadgeAttrCfg','config.HeroBadgeStarCfg']);
+ const v=viewBadgeGrowth(before,options(config,{parameters:{action:'star'}}));assert.equal(v.mode,'star');assert.ok(v.candidates.every(row=>row.parameters.action==='star'));
+ assert.equal(starPlan(before,config,{parameters:{action:'star'}}).actions.length,0);
+ assert.equal(starPlan(before,config,{parameters:{heroId:'A',action:'star'}}).actions.length,0);
+});
+test('fixed badge STAR configuration charges each next star exact owned stones and GOLD',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))};
+ for(let star=0;star<5;star++){
+  const client=fake({star:true,wireMode:true}),hero=client.heroes[0];hero.heroId=config.tables.HeroCfg.data.find(row=>row.type==='英雄'&&row.career==='法师').id;
+  client.pool[0].star=star;hero.badges[0].star=star;const p={heroId:hero.heroId,uid,action:'star'};
+  const before=await starSurvey(client,config,{parameters:p}),op=starPlan(before,config,{parameters:p}).actions[0];assert.ok(op);
+  assert.deepEqual(op.costs,[{id:'徽章升星石',num:2**star},{id:'GOLD',num:500000*2**star}]);
+  assert.equal(op.action.body.starItemNum,2**star);assert.equal(op.expectedState.star,star+1);
+ }
+});
+test('badge STAR rejects unknown or non-red states, material shortages, duplicate identities and untrusted facts',async()=>{
+ for(const mutate of [
+  (c,cfg)=>cfg.tables.HeroBadgeCfg.data[0].quality='BLUE',
+  (c,cfg)=>delete cfg.tables.HeroBadgeCfg.data[0].quality,
+  (c,cfg)=>delete cfg.tables.HeroBadgeStarCfg,
+  (c,cfg)=>cfg.tables.HeroBadgeStarCfg.data[0].consume=['RUBY',1],
+  (c,cfg)=>cfg.tables.HeroBadgeStarCfg.data[0].upBadgeNum=0,
+  (c,cfg)=>cfg.tables.HeroBadgeStarCfg.data[0].consume[1]=-1,
+  (c,cfg)=>cfg.tables.HeroBadgeStarCfg.data.push(cfg.tables.HeroBadgeStarCfg.data[0]),
+  (c,cfg)=>cfg.tables.HeroBadgeAttrCfg.data.splice(1,1),
+  c=>{c.pool[0].star=5;c.heroes[0].badges[0].star=5;},
+  c=>c.stock.set('徽章升星石',0),c=>c.stock.set('GOLD',499999),
+  c=>c.pool.push(structuredClone(c.pool[0])),
+  c=>c.heroes[0].badges[0].star++,c=>delete c.pool[0].exp,
+  c=>delete c.heroes[0].attributes,c=>c.heroes[0].badges[0].pos=2,
+  c=>delete c.factContext.connectionId,
+ ]){
+  const c=fake({star:true}),cfg=starConfig();mutate(c,cfg);assert.equal(starPlan(await starSurvey(c,cfg),cfg).actions.length,0);
+ }
+ const {client,config,before}=await starPrepared();
+ for(const change of [f=>f.stock.set('GOLD',999999999),f=>f.sourceFacts.badges.provenance.sourceAt-=31000,f=>f.ownership.pool[0].star++,
+   f=>f.sourceFacts.badges.provenance.accountId='other',f=>f.sourceFacts.heroes.provenance.generation++,
+   f=>f.sourceFacts.items.value.items.push({itemId:'fake',num:1})]){
+  const tampered=structuredClone(before);change(tampered);assert.equal(starPlan(tampered,config).actions.length,0);
+ }
+ assert.equal(starPlan(before,config,{moduleConfig:{enabled:false}}).actions.length,0);assert.equal(client.writes.length,0);
+});
+test('STAR preserves partial XP and level, allows only server-observed target random attr and confirms typed full effect',async()=>{
+ const f=await starPrepared({wireMode:true});f.client.pool[0].exp=3;
+ const before=await starSurvey(f.client,f.config),operation=starPlan(before,f.config).actions[0];assert.ok(operation);
+ const stages=[],result=await run({...f,before,operation},{onStage:s=>stages.push(s)});
+ assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(result.afterState.badge.exp,3);assert.equal(result.afterState.badge.level,1);assert.equal(result.afterState.badge.star,1);
+ assert.equal(f.client.pool[0].attr.value,2.5);assert.equal(f.client.stock.get('徽章升星石'),31);assert.equal(f.client.stock.get('GOLD'),9500000);
+ assert.deepEqual(stages,['SURVEY','RESOURCE_PREFLIGHT','DISPATCH_INTENT','DISPATCHED','RESPONSE','VERIFY','VERIFIED']);
+ assert.equal(f.client.uncertainWrites.size,0);
+});
+test('STAR response alone, unexpected refunds, wrong debit or any unrelated change stays UNKNOWN without replay',async()=>{
+ for(const input of [
+  {apply:false},{response:{material:{asset:[{id:'refund',num:1}]}}},{response:{material:{}}},
+  {afterWrite:c=>c.pool[0].star++},{afterWrite:c=>c.pool[0].exp++},
+  {afterWrite:c=>{c.pool[0].level++;c.heroes[0].badges[0].level++;}},
+  {afterWrite:c=>c.heroes[0].badges[0].pos=2},
+  {afterWrite:c=>{c.heroes[1].badges.push(c.heroes[0].badges.pop());}},
+  {afterWrite:c=>c.heroes[1].power='123'},{afterWrite:c=>c.pool[1].star++},
+  {afterWrite:c=>c.pool.pop()},{afterWrite:c=>c.stock.set('GOLD',9500001)},
+  {afterWrite:c=>c.stock.set('徽章升星石',32)},{afterWrite:c=>c.stock.set(xpItem,24)},
+  {afterWrite:c=>c.stock.set('unexpected',1)},{afterWrite:c=>c.factContext.generation++},
+ ]){
+  const f=await starPrepared(input),r=await run(f);assert.equal(r.status,'UNKNOWN',JSON.stringify({input,r}));assert.equal(f.client.writes.length,1);assert.equal(f.client.uncertainWrites.size,1);
+ }
+});
+test('STAR plan tampering, stale costs or missing parent resource/UID never dispatches',async()=>{
+ for(const change of [
+  op=>op.action.body.decomposeUid.push(idleUid),op=>op.action.body.starItemNum++,
+  op=>op.costs[0].num++,op=>op.expectedState.star++,op=>op.target.uid=otherUid,
+  op=>op.budgetClaims.uids[0].id=otherUid,
+ ]){
+  const f=await starPrepared();change(f.operation);const result=await run(f);assert.notEqual(result.status,'SUCCESS');assert.equal(f.client.writes.length,0);
+ }
+ const stale=await starPrepared();stale.config.tables.HeroBadgeStarCfg.data[0].consume[1]++;assert.notEqual((await run(stale)).status,'SUCCESS');assert.equal(stale.client.writes.length,0);
+ for(const omitted of ['徽章升星石','GOLD','uid']){
+  const f=await starPrepared(),limits=structuredClone(f.operation.budgetClaims);
+  if(omitted==='uid')limits.uids=[];else limits.resources=limits.resources.filter(row=>row.id!==omitted);
+  const result=await run(f,{budget:makeBudget(f.operation,{limits})});assert.notEqual(result.status,'SUCCESS');assert.equal(f.client.writes.length,0);
+ }
+});
+test('STAR D6 independently refuses sacrifice, extra fields, substituted currencies and unknown costs',async()=>{
+ const {assertPaymentAllowed}=await import('../src/actions.mjs'),{operation}=await starPrepared();
+ assert.doesNotThrow(()=>assertPaymentAllowed({...operation.action,costs:operation.costs}));
+ for(const change of [
+  a=>a.body.decomposeUid.push(idleUid),a=>delete a.body.decomposeUid,a=>a.body.starItemNum=0,a=>a.body.starItemNum++,
+  a=>a.body.uid=Number(uid),a=>a.body.universal=false,a=>a.costs.pop(),a=>delete a.costs,
+  a=>a.costs[0].id='RUBY',a=>a.costs[1].num=0,a=>a.costs.push({id:'其他',num:1}),
+ ]){const a=structuredClone({...operation.action,costs:operation.costs});change(a);assert.throws(()=>assertPaymentAllowed(a));}
 });

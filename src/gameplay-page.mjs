@@ -216,7 +216,7 @@ function gpRenderDomain(id,view){
   numLabel.appendChild(num);box.appendChild(numLabel);box.appendChild(apply);s.actionControls.push(num,apply);
  }else if(id==='badge-growth'){
   const scope=viewGuard.capture(),revision=gpRevision,rows=view?.candidates||[];
-  const putOn=view?.mode==='put-on'||rows.some(row=>row.actionType==='PUT-ON');
+  const putOn=view?.mode==='put-on'||rows.some(row=>row.actionType==='PUT-ON'),star=view?.mode==='star'||rows.some(row=>row.actionType==='STAR');
   function draftButton(label,key,value,draft){
    const button=gpEl('button',label);button.dataset[key]=value;button.disabled=!gpDomainSelectable(id);
    button.onclick=()=>{
@@ -228,12 +228,16 @@ function gpRenderDomain(id,view){
   }
   draftButton('查看单次升级','badgeGrowthMode','level',()=>({}));
   draftButton('穿到空槽','badgeGrowthMode','put-on',()=>({action:'put-on'}));
+  draftButton('查看红徽章单次升星','badgeGrowthMode','star',()=>{const old=gpParse('gp-'+id+'-parameters'),draft={action:'star'};for(const key of ['heroId','uid'])if(old[key]!==undefined)draft[key]=old[key];return draft;});
   if(putOn){
    box.appendChild(gpEl('p','选择已解锁的空槽，再探测该槽可穿戴的自有闲置徽章。'));
    for(const hero of view?.heroes||[])for(const pos of hero.emptySlots||[]){
     if(typeof hero.heroId==='string'&&Number.isSafeInteger(pos)&&pos>=1&&pos<=4)draftButton(hero.heroId+' · '+pos+' 号空槽','badgeEmptySlot',String(pos),()=>({action:'put-on',heroId:hero.heroId,pos}));
    }
    if(rows.length)table('空槽徽章候选',['英雄','槽位','徽章','UID','本次消耗'],rows.filter(row=>row.actionType==='PUT-ON'&&row.beforeState?.badge).map(row=>[row.target.heroId,row.target.pos,row.beforeState.badge.badgeId,row.target.uid,operationCosts(row.costs)]));
+  }else if(star){
+   table('红徽章单次升星',['英雄','槽位','徽章','UID','等级','星级','当前经验','本次消耗'],rows.filter(row=>row.actionType==='STAR'&&row.beforeState?.badge).map(row=>[row.target.heroId,row.target.pos,row.beforeState.badge.badgeId,row.target.uid,row.beforeState.badge.level,row.beforeState.badge.star,row.beforeState.badge.exp,operationCosts(row.costs)]));
+   box.appendChild(gpEl('p','红徽章每次只升一星，使用自有徽章升星石和金币；不分解其他徽章。'));
   }else{
    table('已佩戴徽章',['英雄','槽位','徽章','UID','等级','当前经验','本次消耗'],rows.filter(row=>row.actionType==='LEVEL'&&row.beforeState?.badge).map(row=>[row.target.heroId,row.target.pos,row.beforeState.badge.badgeId,row.target.uid,row.beforeState.badge.level,row.beforeState.badge.exp,operationCosts(row.costs)]));
    box.appendChild(gpEl('p','只给已佩戴、当前经验为零的徽章升一级。只消耗自有徽章经验和金币，不消耗其他徽章。'));

@@ -87,6 +87,7 @@ const cases = [
   { module:'equipment-growth',actionId:'equipment-growth:LEVEL:synthetic-exact',actionType:'LEVEL',parameters:{heroId:'A',uid:'9007199254740994'},costs:[{id:'精铁',num:4}],facts:{heroes:[{heroId:'A',equips:[{uid:'9007199254740994',equipId:'蓝武器1',level:1,star:0,refineLv:0}]}]},blockedReason:'TARGET_HERO_DERIVED_STATE_UNKNOWN' },
   { module:'equipment-growth',actionId:'equipment-growth:PUT-ON:synthetic-exact',actionType:'PUT-ON',parameters:{heroId:'A',uid:'9007199254740994',action:'put-on'},costs:[],beforeState:{equipment:{equipId:'蓝武器1',level:1,star:0,refineLv:0}},facts:{heroes:[{heroId:'A',equips:[]}]},blockedReason:'EQUIPMENT_TARGET_SLOT_NOT_EMPTY' },
   { module:'badge-growth',actionId:'badge-growth:PUT-ON:synthetic-exact',actionType:'PUT-ON',parameters:{action:'put-on',heroId:'A',pos:2,uid:'9007199254740997'},costs:[],beforeState:{badge:{badgeId:'闲置纹章',level:1,exp:0}},facts:{mode:'put-on',heroes:[{heroId:'A',level:70,badges:[],emptySlots:[1,2]}]},blockedReason:'BADGE_TARGET_SLOT_NOT_EMPTY' },
+  { module:'badge-growth',actionId:'badge-growth:STAR:synthetic-exact',actionType:'STAR',parameters:{heroId:'A',uid:'9007199254740995',action:'star'},costs:[{id:'徽章升星石',num:1},{id:'GOLD',num:500000}],beforeState:{badge:{badgeId:'红法师徽章',level:1,star:0,exp:2}},facts:{mode:'star'},blockedReason:'BADGE_STAR_STOCK_INSUFFICIENT' },
   { module:'badge-growth',actionId:'badge-growth:LEVEL:synthetic-exact',actionType:'LEVEL',parameters:{heroId:'A',uid:'9007199254740995'},costs:[{id:'徽章经验',num:5},{id:'GOLD',num:100}],beforeState:{badge:{badgeId:'测试纹章',level:1,exp:0}},facts:{},blockedReason:'BADGE_PARTIAL_XP_OUTSIDE_SCOPE' },
   { module: 'formation-unlock', actionId: 'formation-unlock:UNLOCK:2:synthetic-exact', actionType: 'UNLOCK', parameters: {presetId:2}, costs:[{id:'阵型2图纸',num:1}], facts:{templates:[{presetId:2,name:'普通图纸模板',costs:[{id:'阵型2图纸',num:1}]}],unlockedPresetIds:[1]}, blockedReason:'OWNED_BLUEPRINT_REQUIRED' },
   { module: 'farm', actionId: 'farm:PLANT:synthetic-exact', actionType: 'PLANT', parameters: { buildingId: '1农田', action: 'plant', productId: '小麦' }, costs: [{ id: '小麦种子', num: 1 }], facts: { plots: [{ buildingId: '1农田', state: 'EMPTY', productId: '', plantTime: 0, ripeTime: 0 }], autoFarming: false, crops: [{ productId: '小麦', costs: [{ id: '小麦种子', num: 1 }], reliable: true }] }, blockedReason: 'FARM_MATURITY_TIME_UNIT_UNVERIFIED' },
@@ -520,4 +521,16 @@ test('hero fragment form rejects empty target and nonpositive, fractional or ove
 test('equipment STAR mode changes only explicit draft, needs new survey and cannot reuse account callbacks',async()=>{
  const spec=cases.find(s=>s.module==='equipment-growth'&&s.actionType==='STAR'),h=await loaded(spec),mode=descendants(h.node('gp-equipment-growth-facts')).find(e=>e.dataset.equipmentGrowthMode==='star');const before=h.requests.length;mode.click();assert.deepEqual(JSON.parse(h.node('gp-equipment-growth-parameters').value),{action:'star'});assert.equal(h.requests.length,before);assert.equal(h.node('gp-equipment-growth-plan').disabled,true);assert.equal(h.node('gp-equipment-growth-authorize').disabled,true);
  const task=h.node('gp-equipment-growth-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'equipment-growth',parameters:{action:'star'}});h.respond('/api/gameplay/survey',data(spec));await task;for(const route of ['/api/operations/plan','/api/operations/authorize','/api/operations/execute'])assert.equal(writes(h,route).length,0);h.run("selectAccount('B');selectAccount('A');");mode.click();assert.deepEqual(JSON.parse(h.node('gp-equipment-growth-parameters').value),{});
+});
+
+test('badge STAR mode preserves exact hero/UID, drops old slot, and invalidates authorization until a fresh survey',async()=>{
+ const spec=cases.find(row=>row.module==='badge-growth'&&row.actionType==='STAR'),h=await loaded(spec);
+ const box=h.node('gp-badge-growth-facts'),before=h.requests.length,params=h.node('gp-badge-growth-parameters');
+ params.value=JSON.stringify({heroId:'A',uid:spec.parameters.uid,action:'put-on',pos:2});
+ descendants(box).find(n=>n.dataset.badgeGrowthMode==='star').click();
+ assert.deepEqual(JSON.parse(params.value),spec.parameters);assert.equal(h.requests.length,before);
+ assert.equal(h.node('gp-badge-growth-plan').disabled,true);assert.equal(h.node('gp-badge-growth-authorize').disabled,true);
+ const pending=h.node('gp-badge-growth-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'badge-growth',parameters:spec.parameters});h.respond('/api/gameplay/survey',data(spec));await pending;
+ for(const word of ['红徽章单次升星','徽章升星石','500000','9007199254740995','不分解其他徽章'])assert.ok(box.textContent.includes(word),word);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
 });
