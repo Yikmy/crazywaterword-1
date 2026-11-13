@@ -913,3 +913,10 @@ test('daily cached HTTP advertises existing unified drivers per account without 
   assert.deepEqual((await app.call('/api/dailies',{id:'B'})).data.checklist.tasks.rows,[]);assert.equal(app.requests.length,0);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('HTTP unified AFK declaration uses full Registry, requires exact level and stays static across accounts',async()=>{
+ const app=await harness({includeMuseum:true});try{await app.call();const input={entry:'tasks',tasks:[{kind:'afk-level-reward',level:2}],budget:{resources:[],quotas:[],uids:[{type:'afk-level-reward',id:'2'}]}},count=app.requests.length;
+ for(const id of ['A','B']){const response=await app.call('/api/workflows/prepare',{id,body:input});assert.equal(response.status,200);assert.equal(response.data.accountId,id);const node=response.data.graph.nodes.find(n=>n.type==='ACTION');assert.equal(node.module,'afk-level-rewards');assert.deepEqual(node.parameters,{level:2});assert.equal(app.requests.length,count);}
+ assert.equal((await app.call('/api/workflows/prepare',{body:input,authorized:false})).status,403);assert.equal((await app.call('/api/workflows/prepare',{id:null,body:input})).status,400);assert.equal((await app.call('/api/workflows/prepare',{body:{...input,tasks:[{kind:'afk-level-reward',level:2,useAdvCard:true}]}})).status,400);assert.equal(app.requests.length,count);
+ }finally{await app.close();}
+});

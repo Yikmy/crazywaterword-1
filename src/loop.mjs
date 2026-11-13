@@ -4,6 +4,7 @@ import { validateWorkflow } from './workflow.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
 import { validateMailParameters } from './mail.mjs';
+import { validateAfkLevelRewardsParameters } from './afk-level-rewards.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorld } from './world.mjs';
@@ -139,6 +140,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
+      if(phase==='tasks'&&row?.kind==='afk-level-reward'){
+        exact(row,['kind','level']);
+        try{parameters=validateAfkLevelRewardsParameters({level:row.level});}catch{invalid('Tasks挂机等级奖励须明确正int32等级');}
+        steps.push({phase,index,module:'afk-level-rewards',parameters,selection});continue;
+      }
       if(phase==='tasks'&&row?.kind==='mail'){
         exact(row,['kind','pageNo','emailId','action']);
         if(!['claim','read'].includes(row.action))invalid('Tasks邮件仅支持明确单封claim/read');

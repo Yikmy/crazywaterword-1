@@ -2253,3 +2253,13 @@ test('unified mail form rejects malformed or missing exact inputs and keeps mail
  h.node('wf-unified-phase').value='dailies';h.node('wf-unified-phase').onchange();assert.equal(h.node('wf-unified-kind').children.some(n=>n.value==='mail-claim'||n.value==='mail-read'),false);assert.equal(h.node('wf-unified-mail-page').disabled,true);unifiedAdd(h,'dailies','alliance-order','2');assert.equal(h.node('wf-unified-target').disabled,false);
  assert.equal(writes(h,'/api/workflows/prepare').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+for(const entry of ['tasks','loop'])test('unified '+entry+' AFK form declares exact separate milestones while retaining explicit UID budgets and no dispatch',async()=>{
+ const h=await unifiedForm(entry),before=h.requests.length;unifiedAdd(h,'tasks','afk-level-reward','2');assert.equal(h.node('wf-unified-target').disabled,false);assert.match(h.node('wf-unified-target-label').textContent,/精确挂机奖励等级/);assert.equal(h.node('wf-unified-mail-page').disabled,true);unifiedAdd(h,'tasks','afk-level-reward','5');
+ const draft=unifiedDraft(h);assert.deepEqual(draft.tasks,[{kind:'afk-level-reward',level:2},{kind:'afk-level-reward',level:5}]);assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});assert.match(h.node('wf-unified-steps').textContent,/挂机单档等级奖励.*2.*挂机单档等级奖励.*5/);assert.equal(compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES}).graph.nodes.filter(n=>n.module==='afk-level-rewards').length,2);
+ const old=unifiedStep(h,'tasks:0','0');assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);h.run("selectAccount('B')");const source=h.node('wf-unified-intent').value;old.click();assert.equal(h.node('wf-unified-intent').value,source);assert.equal(h.node('wf-unified-target').value,'');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('unified AFK form rejects missing or malformed levels and never aliases the daily interval-income task',async()=>{
+ const h=await unifiedForm('loop');for(const value of ['','0','-1','2.5','2e0','2147483648','<img src=x>']){const before=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','afk-level-reward',value);assert.equal(h.node('wf-unified-intent').value,before);}
+ h.node('wf-unified-phase').value='dailies';h.node('wf-unified-phase').onchange();assert.equal(h.node('wf-unified-kind').children.some(n=>n.value==='afk-level-reward'),false);assert.equal(writes(h,'/api/workflows/prepare').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
