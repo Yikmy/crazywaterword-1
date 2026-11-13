@@ -68,7 +68,7 @@ test('observation and protocol-only branches cannot become executable capabiliti
     assert.equal(blocked.executable, false); assert.ok(blocked.reason.length); assert.ok(!value.implementation.actions.includes(blocked.capability));
   }
   assert.equal(FUNCTION_CONTRACTS.naval.implementation.actions.length, 0);
-  assert.deepEqual(FUNCTION_CONTRACTS.mail.implementation.actions,['CLAIM']);
+  assert.deepEqual(FUNCTION_CONTRACTS.mail.implementation.actions,['CLAIM','READ']);
   assert.equal(validateFunctionContract('mail',adapter('mail'),{requireExecutable:true}).id,'mail');
   assert.ok(!FUNCTION_CONTRACTS.alliance.implementation.actions.includes('ask'));
   assert.ok(!FUNCTION_CONTRACTS.alliance.implementation.actions.includes('help'));

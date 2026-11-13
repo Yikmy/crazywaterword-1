@@ -63,6 +63,7 @@ const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',
  quota:{dayKey:pirateDay,used:2,total:13,remaining:11,reason:null},quotaBreakdown:{base:10,vip:1,monthCards:2},targets:[pirateTarget,{...pirateTarget,uid:18,level:4,levelRelation:'FIRST_KILL_REQUIRED'}],
 }};
 const cases = [
+  { module:'mail',actionId:'mail:READ:synthetic-exact',actionType:'READ',parameters:{pageNo:2,action:'read',emailId:'9007199254740995'},target:{pageNo:2,emailId:'9007199254740995',attachmentFingerprint:'synthetic-empty'},costs:[],facts:{page:{pageNo:2,pageCount:1,totalReported:37,emails:[{emailId:'9007199254740995',subject:'synthetic empty',read:false,got:false,attachment:{hasAttachment:false},eligibility:false}],allPagesComplete:false}},blockedReason:'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN' },
   { module:'mail',actionId:'mail:CLAIM:synthetic-exact',actionType:'CLAIM',parameters:{pageNo:2,action:'claim',emailId:'9007199254740995'},target:{pageNo:2,emailId:'9007199254740995',attachmentFingerprint:'synthetic-fingerprint'},costs:[],facts:{page:{pageNo:2,pageCount:1,totalReported:37,emails:[{emailId:'9007199254740995',subject:'synthetic',read:false,got:false,attachment:{hasAttachment:true},eligibility:false}],allPagesComplete:false}},blockedReason:'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN' },
   { module:'pet',actionId:'pet:FEED:synthetic-exact',actionType:'FEED',parameters:{action:'feed',buildingId:'1宠物培育室',jobIdx:0},costs:[{id:'鱼肠线',num:12},{id:'粗铁',num:4}],facts:{secondsReduced:14400,rooms:[{buildingId:'1宠物培育室',level:1,queue:{breedQ:[{idx:0,petId:'蓝宠物1',startTime:900,finishTime:20000,star:0,feedRequirements:[{type:0,id:'鱼肠线',num:12},{type:0,id:'粗铁',num:4}]}],maturePets:[],maxQLength:2}}]},blockedReason:'PET_JOB_IDX_AMBIGUOUS' },
   {module:'trial-challenge',actionId:'trial-challenge:1:1001:synthetic',actionType:'CHALLENGE',parameters:{},costs:[],facts:{raid:{raidId:1,passedStage:0,sweepTimes:0,buySweepTimes:0}},blockedReason:'TRIAL_CHALLENGE_LEVEL_LOCKED'},
@@ -542,9 +543,16 @@ test('badge STAR mode preserves exact hero/UID, drops old slot, and invalidates 
 });
 
 test('mail claim prepare keeps exact int64 target and requires a fresh survey before any plan or authorization',async()=>{
- const spec=cases.find(r=>r.module==='mail'),h=await loaded(spec),button=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailClaimPrepare===spec.parameters.emailId);assert.ok(button);
+ const spec=cases.find(r=>r.module==='mail'&&r.actionType==='CLAIM'),h=await loaded(spec),button=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailClaimPrepare===spec.parameters.emailId);assert.ok(button);
  const before=h.requests.length;button.click();assert.equal(h.requests.length,before);assert.deepEqual(JSON.parse(h.node('gp-mail-parameters').value),spec.parameters);assert.equal(h.node('gp-mail-plan').disabled,true);assert.equal(h.node('gp-mail-authorize').disabled,true);
  const task=h.node('gp-mail-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'mail',parameters:spec.parameters});h.respond('/api/gameplay/survey',data(spec));await task;
  await preview(h,spec);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  const detached=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailClaimPrepare===spec.parameters.emailId);h.run("selectAccount('B'); selectAccount('A');");detached.click();assert.deepEqual(JSON.parse(h.node('gp-mail-parameters').value),{});assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('empty mail READ prepare requires fresh survey, exact preview and account-scoped authorization',async()=>{
+ const spec=cases.find(r=>r.module==='mail'&&r.actionType==='READ'),h=await loaded(spec),button=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailReadPrepare===spec.parameters.emailId);assert.ok(button);
+ const before=h.requests.length;button.click();assert.equal(h.requests.length,before);assert.deepEqual(JSON.parse(h.node('gp-mail-parameters').value),spec.parameters);assert.equal(h.node('gp-mail-plan').disabled,true);assert.equal(h.node('gp-mail-authorize').disabled,true);
+ const task=h.node('gp-mail-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'mail',parameters:spec.parameters});h.respond('/api/gameplay/survey',data(spec));await task;await preview(h,spec);assert.equal(writes(h,'/api/operations/execute').length,0);
+ const detached=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailReadPrepare===spec.parameters.emailId);h.run("selectAccount('B'); selectAccount('A');");detached.click();assert.deepEqual(JSON.parse(h.node('gp-mail-parameters').value),{});assert.equal(writes(h,'/api/operations/execute').length,0);
 });

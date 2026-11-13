@@ -1,4 +1,4 @@
-// W16/C511: exact page observations and explicit single-mail asset attachment claims.
+// W16/C511: exact page observations, single-mail attachment claims and empty-mail reads.
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { createHash } from 'node:crypto';
@@ -24,9 +24,9 @@ export function validateMailConfig(v={}) {
 }
 export function validateMailParameters(v={}) {
   if(!fields(v,['pageNo','action','emailId'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId；pageNo 须为非负 int32');
-  if(Object.hasOwn(v,'action')&&v.action!=='claim')throw invalid('邮件写操作仅支持单封 action=claim');
+  if(Object.hasOwn(v,'action')&&!['claim','read'].includes(v.action))throw invalid('邮件写操作仅支持单封 action=claim/read');
   if(Object.hasOwn(v,'emailId')&&(typeof v.emailId!=='string'||int64(v.emailId,{positive:true})!==v.emailId))throw invalid('emailId 须为精确正 int64 字符串');
-  if(Object.hasOwn(v,'action')!==Object.hasOwn(v,'emailId'))throw invalid('单封领取必须同时指定 action=claim 和 emailId');
+  if(Object.hasOwn(v,'action')!==Object.hasOwn(v,'emailId'))throw invalid('单封操作必须同时指定 action=claim/read 和 emailId');
   return {...v,pageNo:v.pageNo??0};
 }
 function int64(v,{positive=false}={}) {
@@ -64,7 +64,7 @@ export function mailPage(raw,{pageNo=0}={}) {
     scope:'CURRENT_PAGE_ONLY',allPagesComplete:false,hasNext:null,hasPrevious:pageNo>0};
 }
 export async function surveyMail(client,protocol,{config,parameters={},player,signal,stop,timeout=15000}={}) {
-  parameters=validateMailParameters(parameters);if(parameters.action==='claim')return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
+  parameters=validateMailParameters(parameters);if(['claim','read'].includes(parameters.action))return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
   const active=()=>assertExecutionActive(client,options);active();
   let page=mailPage(null,parameters),sourceAt=null;
   const contextKnown=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
@@ -93,8 +93,8 @@ function claimObservation(raw,p,config){
  if(page.status!=='AVAILABLE'||!uint(total)||!cat)return null;
  const target=rows.find(row=>int64(own(row,'emailId'),{positive:true})===p.emailId);
  if(!target)return null;
- const attachment=own(target,'attachment'),assets=own(own(attachment,'assets'),'asset');
- if(!dense(assets)||!assets.length||!['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0))return null;
+ const attachment=own(target,'attachment'),assets=own(own(attachment,'assets'),'asset'),emptyAttachment=attachment===null||(object(attachment)&&dense(assets)&&assets.length===0&&['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0));
+ if(p.action==='read' ? !emptyAttachment : !dense(assets)||!assets.length||!object(attachment)||!['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0))return null;
  const rewards=[];
  for(const r of assets){
   const type=own(r,'type'),id=own(r,'id'),num=safeResourceQuantity(own(r,'num'));
@@ -103,7 +103,7 @@ function claimObservation(raw,p,config){
  }
  if(new Set(rewards.map(r=>r.id)).size!==rewards.length||![1,2].includes(own(target,'status'))||typeof own(target,'got')!=='boolean')return null;
  const normalized=toSnapshotJson(target);
- return {page,target:page.emails.find(r=>r.emailId===p.emailId),rewards:rewards.sort((a,b)=>a.id.localeCompare(b.id)),
+ return {page,target:page.emails.find(r=>r.emailId===p.emailId),hasAttachment:!emptyAttachment,rewards:rewards.sort((a,b)=>a.id.localeCompare(b.id)),
   immutable:hash(omitStatus(normalized)),others:rows.filter(r=>int64(own(r,'emailId'),{positive:true})!==p.emailId).map(r=>({id:int64(own(r,'emailId'),{positive:true}),hash:hash(toSnapshotJson(r))})).sort((a,b)=>a.id.localeCompare(b.id)),total};
 }
 async function surveyClaim(client,protocol,{config,parameters,player,signal,stop,timeout}){
@@ -127,15 +127,15 @@ export function mailDependencyVersions({config,moduleConfig=MAIL_DEFAULT_CONFIG}
  return {moduleConfig:validateMailConfig(moduleConfig),'config.ItemCfg':copy(config?.tables?.ItemCfg??null)};
 }
 function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
- const p=validateMailParameters(parameters),enabled=validateMailConfig(moduleConfig).enabled,valid=authority(f,config),o=valid?f.observation:null;
- let reason=p.action!=='claim'?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
+ const p=validateMailParameters(parameters),enabled=validateMailConfig(moduleConfig).enabled,valid=authority(f,config),o=valid?f.observation:null,read=p.action==='read',actionType=read?'READ':'CLAIM';
+ let reason=!['claim','read'].includes(p.action)?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':read?(o.hasAttachment!==false?'MAIL_READ_REQUIRES_EMPTY_ATTACHMENT':o.target.read!==false?'MAIL_ALREADY_READ':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null):o.hasAttachment!==true?'MAIL_ATTACHMENT_REQUIRED':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
  if(!reason&&(!f.available.includes('QuickGotReadEmailRequest')||f.available.includes('QuickGotReadEmailResponse')))reason='MAIL_PROTOCOL_UNAVAILABLE';
  if(!reason&&(!same(f.parameters,p)||o.rewards.some(r=>!Number.isSafeInteger((f.stock.get(r.id)??0)+r.num))))reason='MAIL_PARAMETERS_OR_REWARD_RANGE_INVALID';
  const action={request:'QuickGotReadEmailRequest',response:null,body:{emailId:[p.emailId],all:false}};
  if(!reason)try{assertPaymentAllowed({...action,costs:[]});}catch(e){reason=e.code??'MAIL_REQUEST_NOT_ALLOWED';}
  const target={pageNo:p.pageNo,emailId:p.emailId??null,attachmentFingerprint:o?.immutable??null};
- return {module:moduleId,actionId:'mail:CLAIM:'+hash(target),actionType:'CLAIM',label:'领取单封邮件附件 '+(p.emailId??'')+(o?'：'+o.rewards.map(r=>r.id+' × '+r.num).join('；'):''),parameters:p,target,
-  executable:reason===null,blockedReason:reason,costs:[],rewards:o?copy(o.rewards):[],costSource:'v76 MailDetailPop._onBtnGotOrDelete; exact EmailDetail.attachment; all=false, one emailId',
+ return {module:moduleId,actionId:'mail:'+actionType+':'+hash(target),actionType,label:(read?'标记单封无附件邮件已读 ':'领取单封邮件附件 ')+(p.emailId??'')+(o&&!read?'：'+o.rewards.map(r=>r.id+' × '+r.num).join('；'):''),parameters:p,target,
+  executable:reason===null,blockedReason:reason,costs:[],rewards:o?copy(o.rewards):[],costSource:read?'v76 MailDetailPop.open ES_NEW without attachments; _onBtnGotOrDelete exact emailId/all=false; independent empty attachments and unchanged inventory':'v76 MailDetailPop._onBtnGotOrDelete; exact EmailDetail.attachment; all=false, one emailId',
   identity:o?hash({context:f.context,observation:o,dependencies:mailDependencyVersions({config,moduleConfig})}):null,configEvidence:{ItemCfg:copy(config?.tables?.ItemCfg??null)},
   beforeState:o?copy(o.target):null,expectedState:o?{emailId:p.emailId,read:true,got:true,rewards:copy(o.rewards)}:null,
   budgetClaims:{resources:[],quotas:[],uids:p.emailId?[{type:'mail',id:p.emailId}]:[]},...(reason===null?{action}:{})};
@@ -143,12 +143,12 @@ function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?
 export function viewMail(facts,options={}) {
  const claim=privateClaims.has(facts),candidate=claim?claimCandidate(facts,options):null;
  return {module:moduleId,page:copy(facts?.page??mailPage(null)),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],
-  notes:[...(facts?.notes??[]),'只展示所选页；total 原值不证明页数、全量或快照一致性。单封普通道具/资源附件可精确授权；全量、批量、无附件已读及实例附件继续冻结。']};
+  notes:[...(facts?.notes??[]),'只展示所选页；total 原值不证明页数、全量或快照一致性。单封普通道具/资源附件和完整空附件未读邮件可精确授权；全量、批量及实例附件继续冻结。']};
 }
 export function planMail(facts,{parameters={},selections=[],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),...options}={}) {
  const p=validateMailParameters(parameters);
  if(!dense(selections)||selections.length>1||selections.some(v=>!identifier(v)))throw invalid('每批仅允许一个明确邮件动作');
- if(p.action!=='claim'){if(selections.length)throw Object.assign(new Error('分页观察不接受写动作选择'),{code:'MAIL_READ_ONLY',statusCode:400});return {module:moduleId,actions:[],notes:['MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED']};}
+ if(!['claim','read'].includes(p.action)){if(selections.length)throw Object.assign(new Error('分页观察不接受写动作选择'),{code:'MAIL_READ_ONLY',statusCode:400});return {module:moduleId,actions:[],notes:['MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED']};}
  const c=claimCandidate(facts,{...options,parameters:p});return {module:moduleId,actions:c.executable&&selections.includes(c.actionId)&&ledger.reserve([])?[c]:[],notes:c.blockedReason?[c.blockedReason]:[]};
 }
 export function verifyMailClaim(op,b,a){
@@ -162,7 +162,7 @@ export function verifyMailClaim(op,b,a){
  const income=new Map(x.rewards.map(r=>[r.id,r.num]));
  if([...new Set([...b.stock.keys(),...a.stock.keys(),...income.keys()])].some(k=>(a.stock.get(k)??0)!==(b.stock.get(k)??0)+(income.get(k)??0)))return fail('MAIL_EXACT_ATTACHMENT_NET_INCOME_NOT_CONFIRMED');
  if(!authority(b,config)||!authority(a,config))return fail('MAIL_AUTHORITY_EXPIRED_DURING_VERIFICATION');
- return {confirmed:true,reason:'独立邮件页确认同一邮件已读已领且附件不变，完整库存确认精确附件净入；未领取其他邮件',afterState:copy(y.target)};
+ return {confirmed:true,reason:op.actionType==='READ'?'独立邮件页确认同一空附件邮件已读，完整库存不变；未领取或删除其他邮件':'独立邮件页确认同一邮件已读已领且附件不变，完整库存确认精确附件净入；未领取其他邮件',afterState:copy(y.target)};
 }
 export const mailModule=Object.freeze({id:moduleId,label:'邮件',capabilities:Object.freeze(['C511']),defaultConfig:MAIL_DEFAULT_CONFIG,validateConfig:validateMailConfig,
  validateParameters:validateMailParameters,survey:surveyMail,view:viewMail,plan:planMail,verify:verifyMailClaim,dependencyVersions:mailDependencyVersions});

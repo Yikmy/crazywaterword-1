@@ -74,9 +74,9 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone receipt plus independent AFK and complete inventory reads; unchanged level, interval and unrelated stock'),
     dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg']),
   }),
-  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim']},emailId:string},{
-    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('BULK_ENUMERATION_AND_INSTANCE_ATTACHMENTS','Complete mailbox enumeration, bulk claims, attachmentless read and hero/equipment/antique attachments need distinct contracts')]},
-    verification:verification('verifyMailClaim','src/mail.mjs#verifyMailClaim','Exact emailId and immutable attachment, independently read+got with unchanged page peers and complete exact asset net income; a page is never a complete mailbox'),
+  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim','read']},emailId:string},{
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','READ'],blockedCapabilities:[blocked('BULK_ENUMERATION_AND_INSTANCE_ATTACHMENTS','Complete mailbox enumeration, bulk actions and hero/equipment/antique attachments need distinct contracts')]},
+    verification:verification('verifyMailClaim','src/mail.mjs#verifyMailClaim','Exact emailId and immutable attachment, independently read+got with unchanged page peers and complete exact asset net income; READ requires a complete empty attachment and unchanged inventory; a page is never a complete mailbox'),
     dependencyVersions:dependencies(['moduleConfig','config.ItemCfg']),
   }),
   'task-rewards': contract('task-rewards',['C502','C503'],['P6-2'],['src/task-rewards.mjs#taskRewardsModule','src/tasks.mjs#taskTarget'],{kind:{type:'string',enum:['main','branch','achievement']},taskId:integer},{
