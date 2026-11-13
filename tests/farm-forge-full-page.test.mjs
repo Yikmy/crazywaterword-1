@@ -1,3 +1,4 @@
+import { WORKFLOW_CONDITION_FIELDS, validateWorkflow, evaluateWorkflowCondition } from '../src/workflow.mjs';
 import { compileUnifiedExecution } from '../src/loop.mjs';
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import assert from 'node:assert/strict';
@@ -850,4 +851,106 @@ test('candidate import respects world step limit and renders exact identities as
  unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:Array.from({length:48},(_,i)=>({module:'free-gold',parameters:{},selection:'known-'+i})),budget:{resources:[],quotas:[],uids:[]}});
  const source=h.node('wf-unified-intent').value;unifiedCandidateButton(h,spec).click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-free-gold-hint').textContent,/最多48/);
  unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],budget:{resources:[],quotas:[],uids:[]}});unifiedCandidateButton(h,spec).click();assert.ok(h.node('wf-unified-steps').textContent.includes(spec.actionId));assert.ok(descendants(h.node('wf-unified-steps')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
+});
+
+
+async function conditionPage(type='CONDITION',condition={source:'survey',path:['view','count'],operator:'GTE',value:2}) {
+ const h=await unifiedForm(),node={id:'check',type,condition};
+ if(type==='VERIFY')node.module='free-gold';
+ const graph={version:1,id:'condition-form',name:'条件表单',nodes:[{id:'start',type:'START'},node,{id:'pass',type:'STOP'},...(type==='VERIFY'?[]:[{id:'fail',type:'STOP'}])],edges:[{from:'start',to:'check'},...(type==='VERIFY'?[{from:'check',to:'pass'}]:[{from:'check',to:'pass',when:'PASS'},{from:'check',to:'fail',when:'FAIL'}])]};
+ h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();return h;
+}
+const conditionFields=(h,key)=>descendants(h.node('wf-nodes')).filter(n=>n.dataset.workflowCondition==='check'&&n.dataset.conditionField===key);
+const conditionField=(h,key)=>conditionFields(h,key)[0];
+const conditionButton=(h,key)=>descendants(h.node('wf-nodes')).find(n=>n.dataset[key]==='check');
+const conditionGraph=h=>JSON.parse(h.node('wf-json').value);
+const storedCondition=h=>conditionGraph(h).nodes.find(n=>n.id==='check').condition;
+
+test('condition forms for CONDITION, RULE and VERIFY roundtrip through the existing validator without requests',async()=>{
+ for(const type of ['CONDITION','RULE','VERIFY']){
+  const original={source:'survey',path:['view','count'],operator:'GTE',value:2},h=await conditionPage(type,original),before=h.requests.length;
+  assert.equal(conditionField(h,'source').value,'survey');assert.deepEqual(conditionFields(h,'path').map(n=>n.value),original.path);assert.equal(conditionField(h,'valueType').value,'number');conditionButton(h,'workflowConditionApply').click();
+  assert.deepEqual(storedCondition(h),original);assert.equal(validateWorkflow(conditionGraph(h),{modules:{'free-gold':{id:'free-gold',survey(){},view(){},plan(){},verify(){}}}}).valid,true);
+  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ }
+});
+
+test('condition form applies every existing comparator and original evaluator retains UNKNOWN for missing facts',async()=>{
+ const h=await conditionPage();
+ for(const operator of WORKFLOW_CONDITION_FIELDS.operators){
+  const before=h.node('wf-json').value;conditionField(h,'operator').value=operator;conditionField(h,'operator').onchange();
+  assert.equal(h.node('wf-json').value,before,'draft changes require explicit apply');assert.equal(conditionField(h,'value').disabled,operator==='EXISTS');
+  conditionButton(h,'workflowConditionApply').click();const rule=storedCondition(h);assert.equal(rule.operator,operator);
+  if(operator==='EXISTS')assert.equal(Object.hasOwn(rule,'value'),false);
+  assert.equal(evaluateWorkflowCondition(rule,{survey:{}}).status,'UNKNOWN');
+  assert.equal(evaluateWorkflowCondition(rule,{survey:{view:{count:null}}}).status,'UNKNOWN');
+  assert.equal(evaluateWorkflowCondition(rule,{survey:{view:{count:3}}}).status,({EQ:'FAIL',NE:'PASS',GT:'PASS',GTE:'PASS',LT:'FAIL',LTE:'FAIL',EXISTS:'PASS'})[operator]);
+ }
+ assert.equal(writes(h).length,0);
+});
+
+test('typed condition values preserve strings, negative decimals, booleans and null without coercing facts',async()=>{
+ const h=await conditionPage();
+ for(const [type,value,expected]of [['string','9007199254740995','9007199254740995'],['number','-1.25',-1.25],['number','1e3',1000],['boolean','false',false],['boolean','true',true],['null','',null],['string','','']]){
+  conditionField(h,'operator').value='EQ';conditionField(h,'operator').onchange();conditionField(h,'valueType').value=type;conditionField(h,'valueType').onchange();
+  conditionField(h,'value').value=value;conditionField(h,'boolean').value=value;conditionButton(h,'workflowConditionApply').click();
+  const rule=storedCondition(h);assert.deepEqual(rule.value,expected);assert.equal(evaluateWorkflowCondition(rule,{survey:{view:{count:expected}}}).status,'PASS');
+  if(type==='string'&&value)assert.equal(evaluateWorkflowCondition(rule,{survey:{view:{count:Number(value)}}}).status,'UNKNOWN');
+ }
+ assert.equal(writes(h).length,0);
+});
+
+test('condition path fields preserve literal keys, enforce original depth and reject forbidden or missing paths atomically',async()=>{
+ const h=await conditionPage('RULE',{source:'run',path:['literal.key'],operator:'EXISTS'});
+ conditionField(h,'path').value='literal.key';conditionButton(h,'workflowConditionApply').click();assert.deepEqual(storedCondition(h).path,['literal.key']);assert.equal(evaluateWorkflowCondition(storedCondition(h),{run:{'literal.key':0}}).status,'PASS');
+ for(let i=1;i<WORKFLOW_CONDITION_FIELDS.maxDepth;i++)conditionButton(h,'workflowConditionPathAdd').click();
+ let fields=conditionFields(h,'path');assert.equal(fields.length,8);assert.equal(conditionButton(h,'workflowConditionPathAdd').disabled,true);conditionButton(h,'workflowConditionPathAdd').click();assert.equal(conditionFields(h,'path').length,8);
+ fields.forEach((field,i)=>field.value='key'+i);conditionButton(h,'workflowConditionApply').click();assert.equal(storedCondition(h).path.length,8);
+ for(const key of ['', ' ', '__proto__','constructor','request','TOKEN']){
+  conditionField(h,'path').value=key;const source=h.node('wf-json').value;conditionButton(h,'workflowConditionApply').click();assert.equal(h.node('wf-json').value,source,key);
+ }
+ assert.equal(writes(h).length,0);
+});
+
+test('invalid scalar comparisons leave the original condition and graph intact',async()=>{
+ const h=await conditionPage();
+ for(const input of ['', 'Infinity','NaN','1e309','9007199254740993','"3"','true','null','[]','{}','0x10']){
+  conditionField(h,'valueType').value='number';conditionField(h,'valueType').onchange();conditionField(h,'value').value=input;const source=h.node('wf-json').value;conditionButton(h,'workflowConditionApply').click();assert.equal(h.node('wf-json').value,source,input);
+ }
+ conditionField(h,'valueType').value='string';conditionField(h,'value').value='a'.repeat(2001);const source=h.node('wf-json').value;conditionButton(h,'workflowConditionApply').click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('condition path removal and advanced JSON edits stay compatible with the original node editor',async()=>{
+ const h=await conditionPage();
+ const remove=descendants(h.node('wf-nodes')).find(n=>n.dataset.conditionPathRemove==='1');remove.click();assert.equal(conditionFields(h,'path').length,1);conditionButton(h,'workflowConditionApply').click();assert.deepEqual(storedCondition(h).path,['view']);
+ const advanced=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea'),rule={source:'run',path:['actions','0','result'],operator:'EQ',value:'SUCCESS'};advanced.value=JSON.stringify(rule);advanced.onchange();assert.deepEqual(storedCondition(h),rule);assert.deepEqual(conditionFields(h,'path').map(n=>n.value),rule.path);assert.equal(conditionField(h,'source').value,'run');
+ assert.equal(writes(h).length,0);
+});
+
+test('condition VERIFY can explicitly return to original successful-history verification without removing its module',async()=>{
+ const h=await conditionPage('VERIFY');conditionButton(h,'workflowConditionClear').click();const node=conditionGraph(h).nodes.find(n=>n.id==='check');assert.equal(Object.hasOwn(node,'condition'),false);assert.equal(node.module,'free-gold');assert.equal(conditionButton(h,'workflowConditionClear').disabled,true);assert.equal(writes(h).length,0);
+});
+
+test('condition drafts reject detached graph and account callbacks and lock while existing Workflow is pending or running',async()=>{
+ const h=await conditionPage(),old=conditionButton(h,'workflowConditionApply'),before=h.node('wf-json').value;
+ const reading=h.node('wf-load').click();assert.equal(old.disabled,true);old.click();assert.equal(h.node('wf-json').value,before);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;assert.equal(old.disabled,true);old.click();assert.equal(h.node('wf-json').value,before);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;
+ const replacement=conditionGraph(h);replacement.nodes.find(n=>n.id==='check').condition.value=5;h.node('wf-json').value=JSON.stringify(replacement);h.node('wf-json-apply').click();old.click();assert.equal(storedCondition(h).value,5);
+ const detached=conditionButton(h,'workflowConditionApply');h.run("selectAccount('B');selectAccount('A')");const current=h.node('wf-json').value;old.click();detached.click();assert.equal(h.node('wf-json').value,current);assert.equal(writes(h).length,0);
+});
+
+
+test('condition source and boolean inputs reject unsupported selections and path callbacks expire when detached',async()=>{
+ const h=await conditionPage(),source=h.node('wf-json').value;
+ conditionField(h,'source').value='forged';conditionButton(h,'workflowConditionApply').click();assert.equal(h.node('wf-json').value,source);
+ conditionField(h,'source').value='run';conditionField(h,'valueType').value='boolean';conditionField(h,'valueType').onchange();conditionField(h,'boolean').value='1';conditionButton(h,'workflowConditionApply').click();assert.equal(h.node('wf-json').value,source);
+ const old=descendants(h.node('wf-nodes')).find(n=>n.dataset.conditionPathRemove==='1');old.click();conditionButton(h,'workflowConditionPathAdd').click();assert.equal(conditionFields(h,'path').length,2);old.click();assert.equal(conditionFields(h,'path').length,2);assert.equal(writes(h).length,0);
+});
+
+test('EXISTS preserves the original empty-string and zero semantics and condition paths remain literal DOM values',async()=>{
+ const literal='<img onerror=alert(1)>',h=await conditionPage('CONDITION',{source:'survey',path:[literal],operator:'EXISTS'});
+ conditionButton(h,'workflowConditionApply').click();const rule=storedCondition(h);assert.deepEqual(rule.path,[literal]);
+ for(const value of ['',0,false,{}])assert.equal(evaluateWorkflowCondition(rule,{survey:{[literal]:value}}).status,'PASS');
+ assert.equal(evaluateWorkflowCondition(rule,{survey:{[literal]:null}}).status,'UNKNOWN');assert.ok(descendants(h.node('wf-nodes')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
 });

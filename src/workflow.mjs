@@ -15,6 +15,7 @@ const text = value => typeof value === 'string' && value.trim().length > 0;
 const copy = value => structuredClone(value);
 const fail = (message, code = 'WORKFLOW_INVALID') => Object.assign(new Error(message), { code, statusCode: 400 });
 const forbidden = new Set(['__proto__','prototype','constructor','request','body','costs','permit','permitid','authorization','authorizationheader','credentials','credential','password','token','sign','login','loginframehex','wsurl','url','javascript','script','code','eval']);
+export const WORKFLOW_CONDITION_FIELDS = Object.freeze({ sources:Object.freeze(['survey','run']), operators:Object.freeze(['EQ','NE','GT','GTE','LT','LTE','EXISTS']), maxDepth:8, forbidden:Object.freeze([...forbidden]) });
 function exact(value, keys, label) { if (!plain(value) || Object.keys(value).some(key => !keys.includes(key))) throw fail(label + ' 包含未知字段'); }
 function json(value, depth = 0) {
   if (depth > 8) throw fail('业务参数嵌套过深');
@@ -33,7 +34,7 @@ function registered(registry, id, type) {
 }
 function condition(value) {
   exact(value, ['source','path','operator','value'], '条件');
-  if (!['survey','run'].includes(value.source) || !Array.isArray(value.path) || !value.path.length || value.path.length > 8 || value.path.some(key => !text(key) || forbidden.has(key.toLowerCase())) || !['EQ','NE','GT','GTE','LT','LTE','EXISTS'].includes(value.operator)) throw fail('条件必须使用受支持的事实路径和比较器');
+  if (!WORKFLOW_CONDITION_FIELDS.sources.includes(value.source) || !Array.isArray(value.path) || !value.path.length || value.path.length > WORKFLOW_CONDITION_FIELDS.maxDepth || value.path.some(key => !text(key) || forbidden.has(key.toLowerCase())) || !WORKFLOW_CONDITION_FIELDS.operators.includes(value.operator)) throw fail('条件必须使用受支持的事实路径和比较器');
   if (value.operator !== 'EXISTS' && !Object.hasOwn(value, 'value')) throw fail('条件比较值缺失');
   if (Object.hasOwn(value, 'value')) { if (value.value !== null && !['string','number','boolean'].includes(typeof value.value)) throw fail('条件比较值必须是标量'); json(value.value); }
 }
