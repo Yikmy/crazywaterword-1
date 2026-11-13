@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  pet: contract('pet',[],['P3-6','P3-7'],['src/pet-operations.mjs#petModule','src/pet-operations.mjs#planPet'],{action:{type:'string',enum:['feed']},buildingId:string,jobIdx:integer},{
+    inventoryRequirementIds:['BIZ-R08'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['FEED'],blockedCapabilities:[blocked('BREED','Breeding needs a separately recoverable assigned queue and result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},
+    verification:verification('verifyPet','src/pet-operations.mjs#verifyPet','Full OnWater queue identity and AllPet plus exact material debits prove a single configured time reduction or precise transition to mature list; no new owned pet or automatic claim'),
+    dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.PetParamCfg','config.PetBaseCfg','config.ItemCfg']),
+  }),
   'trial-challenge': contract('trial-challenge',[],['P6-2'],['src/trial-challenge.mjs#trialChallengeModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D09'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CHALLENGE'],blockedCapabilities:[blocked('SWEEP_OTHER_RAIDS','Only raid1 next first-clear stage; sweep, buy, ads and other raids need distinct contracts')]},
