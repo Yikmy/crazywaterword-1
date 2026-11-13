@@ -23,12 +23,12 @@ const config = () => ({ tables: {
 const parameters = (action = 'level', heroId = 'A') => ({ heroId, action, ...(action === 'skill' ? { skillIdx: 1 } : {}) });
 const claims = amount => ({ resources: [{ id: '英雄经验', num: amount }], quotas: [], uids: [] });
 const amount = rows => rows.find(row => row.id === '英雄经验')?.num ?? 0;
-function fixture({ enabled = true, apply = true, historyFile } = {}) {
+function fixture({ enabled = true, apply = true, historyFile, serviceClock = Date.now } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-hero-service-')), file = historyFile ?? path.join(dir, 'history.json'), journal = [], sessions = new Map(), runners = [];
   const durable = createExecutionHistory({ file }), moduleSettings = createModuleSettings({ file: path.join(dir, 'modules.json'), modules: GAMEPLAY_MODULES });
   let gameConfig = config(), failPersist = () => false;
   const history = { ...durable, put(record) { if (failPersist(record)) throw Error('synthetic hero persistence unavailable'); journal.push(structuredClone(record)); return durable.put(record); } };
-  const service = createOperationService({ protocol, modules: GAMEPLAY_MODULES, moduleSettings, history, getConfig: () => structuredClone(gameConfig), loadRules: () => ({ config: { version: 1, enabled: true, rules: [] } }), loadProduction: () => ({ config: { version: 1, enabled: false } }) });
+  const service = createOperationService({ protocol, modules: GAMEPLAY_MODULES, moduleSettings, history, clock:serviceClock, getConfig: () => structuredClone(gameConfig), loadRules: () => ({ config: { version: 1, enabled: true, rules: [] } }), loadProduction: () => ({ config: { version: 1, enabled: false } }) });
   function session(accountId = 'account-A') {
     const state = { heroes: ['A', 'B'].map(heroId => ({ heroId, level: 1, star: 2, power: '9007199254740993', skillLevels: [1, 1], attributes: [{ attr: 1, value: 1.5 }] })), stock: new Map([['英雄经验', 30], ['A碎片', 10], ['B碎片', 10], ['技能书', 20], ['万能碎片', 20]]), writes: [], reads: [], apply, onRead: null, onWrite: null };
     const client = { connected: true, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites: new Map(),
@@ -240,5 +240,21 @@ for(const action of ['level','skill','star','fragment-exchange'])test('W19 hero 
  const prepare=t=>{if(action==='star')t.synthetic.heroes[0].star=1;if(action==='fragment-exchange')t.synthetic.stock.set('蓝卡万能碎片',20);};
  try{prepare(a);if(action==='fragment-exchange')configureFragments(f,a);a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite hero refusal'),{code:'REJECTED'});};assert.equal((await f.execute(a,await f.displayed(a,p))).record.finalStatus,'REJECTED');
  next=fixture({apply:false,historyFile:f.file});const b=next.session();prepare(b);if(action==='fragment-exchange')configureFragments(next,b);b.generation=2;b.connectionId='replacement-hero';b.client.factContext={accountId:b.id,generation:2,connectionId:b.connectionId};await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});b.player.playerId='1003';assert.equal((await next.displayed(b,p)).actions.length,1);b.player.playerId='1001';await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
+ }finally{await next?.cleanup();await f.cleanup();}
+});
+
+for(const changed of ['player','world'])test('W19 base hero identity isolates '+changed+' and returning to original role keeps refusal',async()=>{
+ const f=fixture({apply:false}),a=f.session();let next;try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};await f.execute(a,await f.displayed(a));next=fixture({apply:false,historyFile:f.file});const b=next.session();b.generation=2;b.connectionId='replacement-hero-role';
+ b.player[changed==='player'?'playerId':'worldId']=changed==='player'?'1003':2;assert.equal((await next.displayed(b)).actions.length,1);b.player={playerId:'1001',worldId:1,level:2};await assert.rejects(next.displayed(b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);assert.equal(next.service.executionMemory(b.id).events.length,1);
+ }finally{await next?.cleanup();await f.cleanup();}
+});
+
+for(const age of [300000,300001])test('W19 changed world needs authoritative planning facts within age '+age,async()=>{
+ let now=1700000000000;const f=fixture({apply:false,serviceClock:()=>now}),a=f.session();let next;try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};await f.execute(a,await f.displayed(a));next=fixture({apply:false,historyFile:f.file,serviceClock:()=>now});const b=next.session();b.player.worldId=2;b.generation=2;b.connectionId='replacement-age';let advanced=false;b.synthetic.onRead=()=>{if(!advanced&&b.synthetic.reads.length===4){advanced=true;now+=age;}};
+ if(age===300000)assert.equal((await next.displayed(b)).actions.length,1);else await assert.rejects(next.displayed(b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);assert.equal(next.service.executionMemory(b.id).events.length,1);
+ }finally{await next?.cleanup();await f.cleanup();}
+});
+for(const missing of ['beforeState','expectedState','budgetClaims'])test('W19 changed world cannot clear hero refusal missing original '+missing,async()=>{
+ const f=fixture({apply:false}),a=f.session();let next;try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};await f.execute(a,await f.displayed(a));const r=f.durable.list(a.id)[0];delete r.actions[0][missing];f.durable.put(r);next=fixture({apply:false,historyFile:f.file});const b=next.session();b.player.worldId=2;await assert.rejects(next.displayed(b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
  }finally{await next?.cleanup();await f.cleanup();}
 });

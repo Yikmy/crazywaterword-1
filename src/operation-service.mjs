@@ -3,7 +3,7 @@ import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeForm
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createExecutionMemory, executionMemoryKey } from './execution-memory.mjs';
-import { createStateFact } from './state-facts.mjs';
+import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { createNamedFormationStore, NAMED_FORMATION_SCOPE } from './named-formations.mjs';
 import { ResourceLedger, resourceCosts, createRunBudgetContext, normalizeBudgetClaims, operationBudgetClaims } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, stopsExecution } from './execution.mjs';
@@ -117,6 +117,9 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const rejectionIdentity=modules[operation.module]?.rejectionIdentity;
     if(typeof rejectionIdentity==='function') {
       const key=executionMemoryKey(query),fresh=rejectionIdentity(operation,{context:executionContext(session)});
+      // Domain business comparison requires the same fresh authoritative fact.
+      const freshness=factsFreshnessPolicy(identityFact,{accountId:session.id,generation:session.generation,now:clock(),maxAgeMs:300000,scope:{kind:'ENTITY',key}});
+      if(freshness.status!=='FRESH'||operationDigest(toSnapshotJson(identityFact.value))!==operationDigest(toSnapshotJson(query.identity)))throw error('拒绝记忆需要当前账号的新鲜权威事实','REJECTION_MEMORY_ACTIVE');
       for(const event of snapshot.events.filter(event=>event.status==='REJECTED'&&event.key===key)) {
         // Compare original History business facts, never mutate or reinterpret the
         // event digest. An absent/mismatched origin cannot prove a changed fact.
@@ -125,6 +128,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
         const prior=original&&event.historyOrigin.status==='REJECTED'?rejectionIdentity(original,{context:originalRun.executionContext}):null;
         if(fresh==null||prior==null||operationDigest(toSnapshotJson(fresh))===operationDigest(toSnapshotJson(prior)))throw error('该目标的确定拒绝仍有效；连接或世代变化不构成业务事实变化','REJECTION_MEMORY_ACTIVE');
       }
+      return;
     }
     const evaluated=decisionMemory.evaluate(session.id,query,{generation:session.generation,identityFact,maxFactAgeMs:300000}),rejection=evaluated.rejection??evaluated;
     if(rejection.blocked)throw error('该目标的确定拒绝仍有效，须权威新身份后重新规划','REJECTION_MEMORY_ACTIVE');
