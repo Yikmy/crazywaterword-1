@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  'material-packs': contract('material-packs',[],['P2-2'],['src/material-packs.mjs#materialPackModule','src/material-packs.mjs#planMaterialPacks'],{packId:string,itemId:string,num:integer},{
+    inventoryRequirementIds:['BIZ-R14'],
+    implementation:{mode:'CONTROLLED_WRITE',actions:['EXCHANGE'],blockedCapabilities:[blocked('OTHER_PACKS_OR_AUTO_PRODUCTION','Only owned raw/fort material packs, explicit target and pack count; no purchases or automatic production')]},
+    verification:verification('verifyMaterialPack','src/material-packs.mjs#verifyMaterialPack','Independent complete inventory must debit exactly the owned packs, credit the configured selected material and preserve all other balances; season from exact bound worldId'),
+    dependencyVersions:dependencies(['moduleConfig','config.ItemCfg','config.SelectPackLibCfg']),
+  }),
   pet: contract('pet',[],['P3-6','P3-7'],['src/pet-operations.mjs#petModule','src/pet-operations.mjs#planPet'],{action:{type:'string',enum:['feed']},buildingId:string,jobIdx:integer},{
     inventoryRequirementIds:['BIZ-R08'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['FEED'],blockedCapabilities:[blocked('BREED','Breeding needs a separately recoverable assigned queue and result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},

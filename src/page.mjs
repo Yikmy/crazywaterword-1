@@ -253,6 +253,7 @@ export const PAGE = `<!doctype html>
   </section>
   <section id="tab-production" class="hidden">
     ${CORE_GAMEPLAY_HTML.production}
+    ${CORE_GAMEPLAY_HTML['material-packs']}
     ${CORE_GAMEPLAY_HTML.farm}
     <h2>生产管理</h2>
     <p class="dim">生产策略按账号保存在本地，仅限制 Automatic 本批次候选；保存配置不会启动生产。每批仍须预览与明确授权。</p>

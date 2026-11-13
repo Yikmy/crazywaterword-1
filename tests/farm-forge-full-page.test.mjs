@@ -63,6 +63,7 @@ const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',
  quota:{dayKey:pirateDay,used:2,total:13,remaining:11,reason:null},quotaBreakdown:{base:10,vip:1,monthCards:2},targets:[pirateTarget,{...pirateTarget,uid:18,level:4,levelRelation:'FIRST_KILL_REQUIRED'}],
 }};
 const cases = [
+  {module:'material-packs',actionId:'material-packs:synthetic-exact',actionType:'EXCHANGE',parameters:{packId:'原料自选包',itemId:'木材',num:2},target:{packId:'原料自选包',itemId:'木材'},costs:[{id:'原料自选包',num:2}],facts:{season:1,packs:[{packId:'原料自选包',have:5,targets:[{itemId:'木材',perPack:1,requiredSeason:1,have:0}]}]},blockedReason:'MATERIAL_PACK_SHORTAGE'},
   { module:'mail',actionId:'mail:READ:synthetic-exact',actionType:'READ',parameters:{pageNo:2,action:'read',emailId:'9007199254740995'},target:{pageNo:2,emailId:'9007199254740995',attachmentFingerprint:'synthetic-empty'},costs:[],facts:{page:{pageNo:2,pageCount:1,totalReported:37,emails:[{emailId:'9007199254740995',subject:'synthetic empty',read:false,got:false,attachment:{hasAttachment:false},eligibility:false}],allPagesComplete:false}},blockedReason:'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN' },
   { module:'mail',actionId:'mail:CLAIM:synthetic-exact',actionType:'CLAIM',parameters:{pageNo:2,action:'claim',emailId:'9007199254740995'},target:{pageNo:2,emailId:'9007199254740995',attachmentFingerprint:'synthetic-fingerprint'},costs:[],facts:{page:{pageNo:2,pageCount:1,totalReported:37,emails:[{emailId:'9007199254740995',subject:'synthetic',read:false,got:false,attachment:{hasAttachment:true},eligibility:false}],allPagesComplete:false}},blockedReason:'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN' },
   { module:'pet',actionId:'pet:FEED:synthetic-exact',actionType:'FEED',parameters:{action:'feed',buildingId:'1宠物培育室',jobIdx:0},costs:[{id:'鱼肠线',num:12},{id:'粗铁',num:4}],facts:{secondsReduced:14400,rooms:[{buildingId:'1宠物培育室',level:1,queue:{breedQ:[{idx:0,petId:'蓝宠物1',startTime:900,finishTime:20000,star:0,feedRequirements:[{type:0,id:'鱼肠线',num:12},{type:0,id:'粗铁',num:4}]}],maturePets:[],maxQLength:2}}]},blockedReason:'PET_JOB_IDX_AMBIGUOUS' },
@@ -580,4 +581,13 @@ test('runtime assets assembled PAGE clears previous readiness on failed refresh 
 });
 test('runtime assets assembled PAGE does not render late older reads over a newer missing-manifest report',async()=>{
  const h=await boot(),older=h.node('assets-read').onclick(),newer=h.node('assets-read').onclick();const first=h.pending('/api/assets/readiness');first.settled=true;h.respond('/api/assets/readiness',{status:'BLOCKED',ready:false,reason:'MANIFEST_MISSING',assets:[],recovery:[]});await newer;first.resolve({ok:true,json:async()=>({...assetUiReport,ready:true})});await older;assert.match(h.node('assets-readiness').textContent,/MANIFEST_MISSING/);assert.doesNotMatch(h.node('assets-readiness').textContent,/清单一致/);
+});
+
+test('material packs professional form requires exact quantity and fresh survey, then ignores old-account controls',async()=>{
+ const spec=cases.find(row=>row.module==='material-packs'),h=await loaded(spec),box=h.node('gp-material-packs-facts');
+ const find=key=>descendants(box).find(node=>node.dataset[key]);const select=find('materialPackTarget'),num=find('materialPackQuantity'),button=find('materialPackPrepare');
+ assert.ok(select&&num&&button);assert.equal(num.value,'');select.value=JSON.stringify({packId:'原料自选包',itemId:'木材'});button.click();assert.match(h.node('gp-material-packs-hint').textContent,/正整数/);assert.equal(writes(h).length,0);
+ num.value='3';button.click();assert.deepEqual(JSON.parse(h.node('gp-material-packs-parameters').value),{packId:'原料自选包',itemId:'木材',num:3});assert.equal(h.node('gp-material-packs-plan').disabled,true);assert.equal(h.node('gp-material-packs-authorize').disabled,true);assert.equal(writes(h).length,0);
+ const survey=h.node('gp-material-packs-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'material-packs',parameters:{packId:'原料自选包',itemId:'木材',num:3}});h.respond('/api/gameplay/survey',data(spec));await survey;
+ h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");button.click();assert.equal(h.node('gp-material-packs-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);assert.match(PAGE,/id=\"gp-material-packs-section\"/);
 });

@@ -10,7 +10,7 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-p3-settings-'));
 const file=path.join(dir,'settings.json'), settings=createModuleSettings({file,modules:GAMEPLAY_MODULES});
 test.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
 test('all static functions use one contract and default to disabled without reading or creating a runtime',()=>{
- assert.deepEqual(listBusinessFunctions().map(x=>x.id),['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','pirate-sweep','task-rewards','mail','afk-level-rewards','free-gold','free-recruit','trial-challenge','pet']);
+ assert.deepEqual(listBusinessFunctions().map(x=>x.id),['formation','alliance','museum','treasure','fleet','naval','orders','city','production','heroes','farm','equipment-forge','formation-unlock','equipment-growth','badge-growth','antique-growth','pirate-sweep','task-rewards','mail','afk-level-rewards','free-gold','free-recruit','trial-challenge','pet','material-packs']);
  for(const id of Object.keys(GAMEPLAY_MODULES)) assert.equal(settings.get('A',id).config.enabled,false);
  assert.equal(fs.existsSync(file),false);
  assert.throws(()=>settings.get('A','constructor'));

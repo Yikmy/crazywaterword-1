@@ -39,8 +39,8 @@ export function produceFinalTime(produceTime,reduce,speedUp=0){
 }
 
 export const MATERIAL_PACKS=Object.freeze(['原料自选包','工事材料自选包']);
-// Package count is only an explanation. SelectPack count semantics must be
-// independently proven before a domain adapter may turn this into a request.
+// Coverage remains a projection. Explicit owned-pack exchange is separately
+// authorized by material-packs; confirmed inventory must be surveyed anew.
 export function packCoverPlan(config,{costs,stock}={}){
  const table=rows(config,'SelectPackLibCfg');let normalized;
  try{normalized=resourceCosts(costs);}catch{return {...unknown('COST_UNKNOWN'),gaps:[],needs:[],ok:false,executable:false};}
