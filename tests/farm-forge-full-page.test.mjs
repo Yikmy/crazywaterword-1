@@ -1,3 +1,4 @@
+import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { WORKFLOW_CONDITION_FIELDS, validateWorkflow, evaluateWorkflowCondition } from '../src/workflow.mjs';
 import { compileUnifiedExecution } from '../src/loop.mjs';
 import { dailyChecklist } from '../src/daily-checklist.mjs';
@@ -953,4 +954,102 @@ test('EXISTS preserves the original empty-string and zero semantics and conditio
  conditionButton(h,'workflowConditionApply').click();const rule=storedCondition(h);assert.deepEqual(rule.path,[literal]);
  for(const value of ['',0,false,{}])assert.equal(evaluateWorkflowCondition(rule,{survey:{[literal]:value}}).status,'PASS');
  assert.equal(evaluateWorkflowCondition(rule,{survey:{[literal]:null}}).status,'UNKNOWN');assert.ok(descendants(h.node('wf-nodes')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
+});
+
+
+async function parameterPage(module='pet',parameters={},type='ACTION') {
+ const h=await unifiedForm(),graph={version:1,id:'parameter-form',name:'业务参数表单',nodes:[{id:'start',type:'START'},{id:'business',type,module,parameters,...(type==='ACTION'?{selection:{actionId:'exact-action'}}:{})},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'business'},{from:'business',to:'stop'}]};
+ h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();return h;
+}
+const parameterControl=(h,key,control='value')=>descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowParameter==='business'&&n.dataset.parameterField===key&&n.dataset.parameterControl===control);
+const parameterApply=h=>descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowParameterApply==='business');
+const businessNode=h=>conditionGraph(h).nodes.find(n=>n.id==='business');
+function parameterSet(h,key,value,{type,enabled=true}={}) {
+ const include=parameterControl(h,key,'enabled');assert.ok(include,key);include.checked=enabled;include.onchange();
+ if(type){const select=parameterControl(h,key,'type');select.value=type;select.onchange();}
+ if(value!==undefined)parameterControl(h,key).value=value;
+}
+
+test('Workflow parameter form creates explicit Pet feed including queue zero and preserves precise mail UID strings',async()=>{
+ const pet=await parameterPage();const before=pet.node('wf-json').value;parameterSet(pet,'action',JSON.stringify('feed'));parameterSet(pet,'buildingId','1宠物培育室');parameterSet(pet,'jobIdx','0');
+ assert.equal(pet.node('wf-json').value,before);parameterApply(pet).click();assert.deepEqual(businessNode(pet).parameters,{action:'feed',buildingId:'1宠物培育室',jobIdx:0});assert.equal(businessNode(pet).selection.actionId,'exact-action');assert.equal(writes(pet).length,0);
+ const mail=await parameterPage('mail',{},'SURVEY');parameterSet(mail,'action',JSON.stringify('claim'));parameterSet(mail,'pageNo','0');parameterSet(mail,'emailId','9007199254740995');parameterApply(mail).click();assert.deepEqual(businessNode(mail).parameters,{action:'claim',pageNo:0,emailId:'9007199254740995'});assert.equal(writes(mail).length,0);
+});
+
+test('parameter fields preserve omitted values separately from zero, false and empty text',async()=>{
+ const h=await parameterPage('equipment-forge');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{});
+ parameterSet(h,'allowUniversal','false');parameterSet(h,'buildingId','');parameterSet(h,'makeId','0');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{allowUniversal:false,buildingId:'',makeId:0});
+ parameterSet(h,'allowUniversal',undefined,{enabled:false});parameterSet(h,'buildingId',undefined,{enabled:false});parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{makeId:0});assert.equal(writes(h).length,0);
+});
+
+test('primitive forms retain existing formation arrays and nested fields exactly while changing only explicit scalars',async()=>{
+ const parameters={presetId:1,heroIds:['A','B'],heroPositions:[{heroId:'A',pos:{x:1,y:2}}],extra:{keep:['exact',0,false]}},h=await parameterPage('formation',parameters);
+ parameterSet(h,'presetId','2');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{...parameters,presetId:2});assert.match(h.node('wf-nodes').textContent,/复杂业务参数保持原样/);assert.equal(writes(h).length,0);
+});
+
+test('union types keep large decimal identities as text and reject overflowing integer input atomically',async()=>{
+ const h=await parameterPage('naval',{playerId:'9007199254740995',minimumPower:'18446744073709551615',screenCenter:{x:0,y:0}});
+ assert.equal(parameterControl(h,'playerId','type').value,'string');parameterSet(h,'maximumPower','9007199254740993',{type:'string'});parameterApply(h).click();assert.equal(businessNode(h).parameters.maximumPower,'9007199254740993');assert.equal(businessNode(h).parameters.playerId,'9007199254740995');
+ parameterSet(h,'playerId','9007199254740993',{type:'integer'});const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source);
+ parameterSet(h,'playerId','7',{type:'integer'});parameterApply(h).click();assert.equal(businessNode(h).parameters.playerId,7);assert.deepEqual(businessNode(h).parameters.screenCenter,{x:0,y:0});assert.equal(writes(h).length,0);
+});
+
+test('invalid primitive values never partially apply earlier valid fields or fake domain eligibility',async()=>{
+ const h=await parameterPage('pet',{action:'feed',buildingId:'original',jobIdx:0});
+ for(const value of ['','1.5','1e309','NaN','Infinity','9007199254740993','true','"1"','[]','{}']){
+  parameterSet(h,'buildingId','changed');parameterSet(h,'jobIdx',value);const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source,value);
+ }
+ parameterSet(h,'action',JSON.stringify('breed'));parameterSet(h,'jobIdx','1');const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('primitive choices never offer a D6 premium operation as an enabled option and cannot apply it',async()=>{
+ const h=await parameterPage('museum',{payment:'ITEM'}),input=parameterControl(h,'payment'),premium=input.children.find(n=>n.value===JSON.stringify('PREMIUM'));assert.equal(premium.disabled,true);
+ parameterSet(h,'payment',JSON.stringify('PREMIUM'));const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source);assert.match(h.node('wf-nodes').textContent,/该业务值未开放/);assert.equal(writes(h).length,0);
+});
+
+test('parameter changes discard only the node candidate cache and preserve explicit action identity until a fresh plan',async()=>{
+ const h=await parameterPage('free-gold'),load=descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowCandidate==='business');
+ const reading=load.click();await tick();h.respond('/api/gameplay/survey',data(cases.find(s=>s.module==='free-gold')));await reading;
+ assert.ok(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'));parameterApply(h).click();assert.equal(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'),false);assert.equal(businessNode(h).selection.actionId,'exact-action');assert.equal(writes(h).length,1);assert.equal(writes(h,'/api/operations/plan').length,0);
+});
+
+test('advanced parameter editor remains usable and refreshes the primitive form without overriding typed values',async()=>{
+ const h=await parameterPage('mail',{action:'read',pageNo:0,emailId:'9007199254740995'}),old=parameterApply(h);
+ const advanced=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea'),next={action:'claim',pageNo:3,emailId:'9007199254740997'};advanced.value=JSON.stringify(next);advanced.onchange();old.click();
+ assert.deepEqual(businessNode(h).parameters,next);assert.equal(parameterControl(h,'pageNo').value,'3');assert.equal(parameterControl(h,'emailId').value,'9007199254740997');assert.equal(writes(h).length,0);
+});
+
+test('parameter form locks during existing Workflow requests and running status and invalidates old account and graph callbacks',async()=>{
+ const h=await parameterPage(),old=parameterApply(h),source=h.node('wf-json').value,reading=h.node('wf-load').click();assert.equal(old.disabled,true);old.click();assert.equal(h.node('wf-json').value,source);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;assert.equal(old.disabled,true);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;assert.equal(old.disabled,false);
+ const graph=conditionGraph(h);graph.nodes.find(n=>n.id==='business').parameters={action:'feed',jobIdx:1,buildingId:'new'};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();old.click();assert.equal(businessNode(h).parameters.buildingId,'new');
+ const current=parameterApply(h);h.run("selectAccount('B');selectAccount('A')");const reset=h.node('wf-json').value;old.click();current.click();assert.equal(h.node('wf-json').value,reset);assert.equal(writes(h).length,0);
+});
+
+test('switching a node module rerenders parameter choices and rejects retained callbacks from its former contract',async()=>{
+ const h=await parameterPage('mail',{action:'read',pageNo:0,emailId:'exact'}),old=parameterApply(h),module=descendants(h.node('wf-nodes')).find(n=>n.tagName==='select'&&n.children.some(c=>c.value==='mail')&&n.children.some(c=>c.value==='pet'));
+ module.value='pet';module.onchange();assert.ok(parameterControl(h,'jobIdx'));assert.equal(parameterControl(h,'emailId'),undefined);const source=h.node('wf-json').value;old.click();assert.equal(h.node('wf-json').value,source);assert.equal(businessNode(h).module,'pet');assert.equal(writes(h).length,0);
+});
+
+
+test('parameter forms feed real Pet and mail adapters while domain cross-field rules remain authoritative',async()=>{
+ const pet=await parameterPage();parameterSet(pet,'action',JSON.stringify('feed'));parameterSet(pet,'buildingId','1宠物培育室');parameterSet(pet,'jobIdx','0');parameterApply(pet).click();
+ assert.equal(validateWorkflow(conditionGraph(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}).valid,true);
+ parameterSet(pet,'jobIdx','-1');parameterApply(pet).click();assert.throws(()=>validateWorkflow(conditionGraph(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}),/jobIdx/);assert.equal(writes(pet).length,0);
+ const mail=await parameterPage('mail');parameterSet(mail,'pageNo','0');parameterSet(mail,'action',JSON.stringify('claim'));parameterSet(mail,'emailId','9007199254740995');parameterApply(mail).click();
+ assert.equal(validateWorkflow(conditionGraph(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}).valid,true);
+ parameterSet(mail,'emailId',undefined,{enabled:false});parameterApply(mail).click();assert.throws(()=>validateWorkflow(conditionGraph(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}),/同时指定/);assert.equal(writes(mail).length,0);
+});
+
+
+test('integer parameter input refuses rounding decimals, exponent and whitespace spellings',async()=>{
+ const h=await parameterPage('pet',{action:'feed',buildingId:'1宠物培育室',jobIdx:0});
+ for(const value of ['1.0000000000000001','1e3',' 1','1 ','01','+1']){
+  parameterSet(h,'jobIdx',value);const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source,value);
+ }
+ assert.equal(writes(h).length,0);
+});
+test('legacy node modules without a static parameter schema keep their existing JSON editor',async()=>{
+ const h=await parameterPage('fixture',{targetId:'exact'}),editor=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea');assert.ok(editor);editor.value=JSON.stringify({targetId:'edited'});editor.onchange();assert.deepEqual(businessNode(h).parameters,{targetId:'edited'});assert.equal(writes(h).length,0);
 });
