@@ -327,7 +327,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const explicitFree=emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value);
   if(suitAntique&&(!fields(body,['id'])||!positiveInt32(body.id)||!(explicitFree||exactCosts(costs)&&costs.length===2&&costs.every(row=>positiveInt32(row.num))&&costs.some(row=>row.id==='GOLD')&&costs.some(row=>suitXp.includes(row.id)))))fail('COST_UNKNOWN','藏品套装仅允许明确套装ID，零成本激活或自有金币及同品质藏品经验');
   if(masterAntique&&(!fields(Object.getOwnPropertyDescriptor(action,'body')?.value,[])||!(explicitFree||exactCosts(costs)&&costs.length===1&&costs[0].id==='藏品大师经验'&&positiveInt32(costs[0].num))))fail('COST_UNKNOWN','藏品精通仅允许明确空请求、零成本首级或自有藏品大师经验');
-  if(exchangeAntique&&(!fields(body,['antiqueId','fragItemId','num'])||!identifier(body.antiqueId)||!universalFragments.includes(body.fragItemId)||!positiveInt32(body.num)||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.fragItemId||costs[0].num!==body.num))fail('COST_UNKNOWN','藏品碎片兑换仅允许明确藏品、已持有万能碎片与精确正数量');
+  if(exchangeAntique&&(!fields(body,['antiqueId','fragItemId','num'])||!identifier(body.antiqueId)||body.fragItemId!==body.antiqueId+'碎片'||!positiveInt32(body.num)||!exactCosts(costs)||costs.length!==1||!universalFragments.includes(costs[0].id)||costs[0].num!==body.num))fail('COST_UNKNOWN','藏品碎片兑换仅允许明确藏品及其目标专属碎片、已持有万能碎片与精确正数量');
   const putOnEquip=request==='PutOnEquipRequest';
   if(putOnEquip&&(!fields(body,['uid','heroId'])||!exactUid(body.uid)||!identifier(body.heroId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','装备穿戴仅允许明确自有UID和英雄，且不消耗资源');
   const putOnBadge=request==='PutOnBadgeRequest';

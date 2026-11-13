@@ -15,7 +15,7 @@ const advancedKinds = Object.freeze(['suit', 'master', 'exchange']);
 const colorIndexes = Object.freeze({ BLUE: 1, PURPLE: 2, ORANGE: 3, RED: 4 });
 const suitMaterials = Object.freeze({ BLUE: '蓝藏品经验', PURPLE: '紫藏品经验', ORANGE: '橙藏品经验', RED: '红藏品经验' });
 const universalMaterials = Object.freeze({ BLUE: '蓝藏万能碎片', PURPLE: '紫藏万能碎片', ORANGE: '橙藏万能碎片', RED: '红藏万能碎片' });
-const advancedSource = 'v76 AntiqueSuitPop._toUpRequest; AntiqueMasterPop._onBtnLevelUp; FragExchangePop; AntiqueUtil.suitLvCfg/masterLvCfg';
+const advancedSource = 'v76 AntiqueSuitPop._toUpRequest; AntiqueMasterPop._onBtnLevelUp; FragExchangePop target fragItemId and 1:1 universal debit; AntiqueUtil.suitLvCfg/masterLvCfg';
 const requests = Object.freeze({ activate: 'ActivateAntiqueRequest', star: 'AntiqueStarUpRequest', suit: 'AntiqueSuitLevelUpRequest', master: 'AntiqueMasterLevelUpRequest', exchange: 'AntiqueFragExchangeRequest' });
 const source = 'v76 AntiqueItem._onItemClick; AntiqueDetailPop._onBtnStarUp; AntiqueUtil.fragItemId/starUpConsume; AntiqueModel.initData';
 export const ANTIQUE_GROWTH_DEFAULT_CONFIG = Object.freeze({ enabled: false });
@@ -197,7 +197,7 @@ function advancedCandidate(facts, parameters, { config, moduleConfig, authoritat
       source: { id: base?.universalItemId ?? null, before: sourceBefore, after: sourceBefore - (parameters.num ?? 0) },
       target: { id: parameters.antiqueId ? parameters.antiqueId + '碎片' : null, before: targetBefore, after: targetBefore + (parameters.num ?? 0) },
     } };
-    action = { request: requests.exchange, response: null, body: { antiqueId: parameters.antiqueId, fragItemId: base?.universalItemId, num: parameters.num } };
+    action = { request: requests.exchange, response: null, body: { antiqueId: parameters.antiqueId, fragItemId: parameters.antiqueId ? parameters.antiqueId + '碎片' : null, num: parameters.num } };
   }
   let blockedReason = null;
   if (parameters.action === 'suit' && !parameters.suitId) blockedReason = 'EXPLICIT_SUIT_REQUIRED';

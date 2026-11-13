@@ -31,7 +31,7 @@ function fixture(t,spec,effect='apply'){
  settings.save(account,moduleId,{enabled:true});
  const parameters=spec.action==='suit'?{action:'suit',suitId}:spec.action==='master'?{action:'master'}:{action:'exchange',antiqueId,num:7};
  const request={suit:'AntiqueSuitLevelUpRequest',master:'AntiqueMasterLevelUpRequest',exchange:'AntiqueFragExchangeRequest'}[spec.action];
- const body=spec.action==='suit'?{id:suitId}:spec.action==='master'?{}:{antiqueId,fragItemId:'蓝藏万能碎片',num:7};
+ const body=spec.action==='suit'?{id:suitId}:spec.action==='master'?{}:{antiqueId,fragItemId:fragment,num:7};
  const claims=[spec.action==='suit'?{type:'antique-suit',id:String(suitId)}:spec.action==='master'?{type:'antique-master',id:'GLOBAL'}:{type:'antique',id:antiqueId}];
  t.after(async()=>{
   for(const session of sessions)session.abort.abort();

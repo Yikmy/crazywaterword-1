@@ -63,7 +63,9 @@ function fake({ state, apply = true, afterWrite, receipt, onRead } = {}) {
         this.state.masterLv++;
         if (this.state.masterLv > 1) this.stock.set('藏品大师经验', this.stock.get('藏品大师经验') - (this.state.masterLv === 2 ? 5 : 10));
       } else if (apply && name === 'AntiqueFragExchangeRequest') {
-        this.stock.set(body.fragItemId, this.stock.get(body.fragItemId) - body.num);
+        const source = cfg.tables.AntiqueBaseCfg.data.find(row => row.antiqueId === body.antiqueId).universalItemId;
+        assert.equal(body.fragItemId,body.antiqueId+'碎片');
+        this.stock.set(source, this.stock.get(source) - body.num);
         const item = body.antiqueId + '碎片'; this.stock.set(item, this.stock.get(item) + body.num);
       }
       afterWrite?.(this, name, body);
@@ -176,7 +178,7 @@ test('exchange constructs each quality universal source and exact 1:1 specific c
     const f = await fixture({ action: 'exchange', antiqueId: id(color), num: 70 });
     assert.deepEqual(f.operation.costs, [{ id: universal[i], num: 70 }]);
     assert.deepEqual(f.operation.action, { request: 'AntiqueFragExchangeRequest', response: null,
-      body: { antiqueId: id(color), fragItemId: universal[i], num: 70 } });
+      body: { antiqueId: id(color), fragItemId: id(color)+'碎片', num: 70 } });
     assert.equal(f.operation.expectedState.exchange.target.after, 170);
     assert.deepEqual(f.operation.budgetClaims, { resources: f.operation.costs, quotas: [], uids: [{ type: 'antique', id: id(color) }] });
     const result = await run(f); assert.equal(result.status, 'SUCCESS'); assert.equal(f.client.writes.length, 1);

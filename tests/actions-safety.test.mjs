@@ -235,7 +235,7 @@ test('Antique advanced D6 requires explicit free costs, exact XP currencies and 
  const paidSuit=()=>({...freeSuit(),costs:[{id:'GOLD',num:50},{id:'蓝藏品经验',num:370}]});
  const freeMaster=()=>({request:'AntiqueMasterLevelUpRequest',body:{},costs:[]});
  const paidMaster=()=>({...freeMaster(),costs:[{id:'藏品大师经验',num:5}]});
- const exchange=()=>({request:'AntiqueFragExchangeRequest',body:{antiqueId:'藏品蓝1',fragItemId:'蓝藏万能碎片',num:7},costs:[{id:'蓝藏万能碎片',num:7}]});
+ const exchange=()=>({request:'AntiqueFragExchangeRequest',body:{antiqueId:'藏品蓝1',fragItemId:'藏品蓝1碎片',num:7},costs:[{id:'蓝藏万能碎片',num:7}]});
  for(const make of [freeSuit,paidSuit,freeMaster,paidMaster,exchange]){
   assert.doesNotThrow(()=>assertPaymentAllowed(make()));
   for(const mutate of [a=>delete a.costs,a=>a.costs=null,a=>a.costs.extra=1,a=>a.body.buyMissing=false,a=>a.body.universal=true]){
@@ -252,7 +252,7 @@ test('Antique advanced D6 requires explicit free costs, exact XP currencies and 
  for(const mutate of [a=>delete a.body,a=>a.body=null,a=>a.body={level:1},a=>a.body=Object.create({}),a=>a.costs[0].id='蓝藏品经验']){
   const a=paidMaster();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
  }
- for(const mutate of [a=>a.body.num=6,a=>a.body.num=0,a=>a.body.num=2147483648,a=>a.body.antiqueId='',a=>a.body.fragItemId='万能碎片',a=>a.costs[0].id='藏品蓝1碎片',a=>a.costs.push({id:'GOLD',num:1})]){
+ for(const mutate of [a=>a.body.num=6,a=>a.body.num=0,a=>a.body.num=2147483648,a=>a.body.antiqueId='',a=>a.body.fragItemId='万能碎片',a=>a.body.fragItemId='蓝藏万能碎片',a=>a.body.fragItemId='藏品蓝2碎片',a=>a.costs[0].id='藏品蓝1碎片',a=>a.costs.push({id:'GOLD',num:1})]){
   const a=exchange();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});
  }
 });
