@@ -307,3 +307,39 @@ test('invalid persisted preparation fails closed without replacing existing Work
  const raw=JSON.parse(original);raw.accounts.A.history[0].preparation.blocked[0].reason='ALLOW_RETRY';fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');
  const restarted=createWorkflowStore({file,modules});assert.throws(()=>restarted.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
 });
+
+test('WAIT start is persisted before its timer and restart never continues the pending interval',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-wait-start-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules});let release,entered;const pending=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+ const session={id:'A',generation:1,client:{connected:true},abort:new AbortController()};let planned=0;
+ const g=readOnly(0);g.nodes.splice(-1,0,{id:'write',type:'ACTION',module:'fixture',selection:'one'});g.edges[1].to='write';g.edges.push({from:'write',to:'z'});
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule(){throw Error('No survey while WAIT persists');},plan(){planned++;throw Error('No plan before wait ends');},history:()=>({runs:[]})},onUpdate:async state=>{store.record('A',state);if(state.trace.at(-1)?.result==='WAIT_STARTED'&&state.status==='WAITING'){entered();await pending;}}});
+ t.after(async()=>{release();runner.stop();await runner.settle();});const running=runner.start('A',g);await started;
+ assert.equal(runner.getStatus().status,'WAITING');await new Promise(resolve=>setImmediate(resolve));assert.equal(planned,0);
+ const bytes=fs.readFileSync(file,'utf8'),restarted=createWorkflowStore({file,modules}),saved=restarted.history('A')[0];
+ assert.equal(saved.status,'RECOVERED_STOPPED');assert.equal(saved.resumable,false);assert.equal(saved.trace.at(-1).result,'WAIT_STARTED');assert.equal(saved.trace.at(-1).durationMs,0);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ runner.stop();release();const end=await running;assert.equal(end.status,'CANCELLED');assert.equal(planned,0);assert.equal(end.trace.some(row=>row.result==='WAITED'),false);
+});
+test('WAIT persistence failure prevents its timer and every subsequent business plan',async()=>{
+ const session={id:'A',generation:1,client:{connected:true},abort:new AbortController()};let planned=0;
+ const g=readOnly(0);g.nodes.splice(-1,0,{id:'write',type:'ACTION',module:'fixture',selection:'one'});g.edges[1].to='write';g.edges.push({from:'write',to:'z'});
+ const states=[],runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule(){},plan(){planned++;throw Error('must not plan');},history:()=>({runs:[]})},onUpdate:state=>{states.push(state);if(state.trace.at(-1)?.result==='WAIT_STARTED')throw Object.assign(Error('synthetic disk failure'),{code:'WORKFLOW_STORE_UNAVAILABLE'});}});
+ const end=await runner.start('A',g);assert.equal(end.status,'FAILED');assert.equal(planned,0);assert.equal(end.trace.some(row=>row.result==='WAITED'),false);assert.ok(states.some(s=>s.status==='WAITING'));await runner.settle();
+});
+test('completed waits persist exact bounded duration separately from any game clock or expiry policy',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-wait-ended-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules}),session={id:'A',generation:1,client:{connected:true},abort:new AbortController()};
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule(){throw Error('no reads');},plan(){throw Error('no writes');},history:()=>({runs:[]})},onUpdate:state=>store.record('A',state)});
+ assert.equal((await runner.start('A',readOnly(0))).status,'COMPLETED');
+ const saved=store.history('A')[0],waits=saved.trace.filter(row=>row.type==='WAIT');assert.deepEqual(waits.map(row=>[row.result,row.durationMs]),[['WAIT_STARTED',0],['WAITED',0]]);
+ assert.equal(saved.runBudget,undefined);assert.equal(saved.resumable,false);
+ const legacy={runId:'legacy-wait',workflowId:'readonly',status:'STOPPED',trace:[{nodeId:'w',type:'WAIT',result:'WAITED'}]};store.record('A',legacy);assert.equal(Object.hasOwn(store.history('A',{runId:legacy.runId})[0].trace[0],'durationMs'),false);
+});
+test('WAIT duration audit rejects non-WAIT, unsupported results and invalid durations without replacing the store',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-wait-invalid-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules}),base={nodeId:'w',type:'WAIT',result:'WAIT_STARTED',durationMs:60000};
+ store.record('A',{runId:'known',workflowId:'wf',status:'WAITING',trace:[base]});const bytes=fs.readFileSync(file,'utf8');
+ for(const change of[{durationMs:-1},{durationMs:60001},{durationMs:0.5},{durationMs:null},{durationMs:'1000'},{type:'ACTION'},{result:'RESUME_ALLOWED'}]){
+  assert.throws(()=>store.record('A',{runId:'invalid',workflowId:'wf',status:'WAITING',trace:[{...base,...change}]}));assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }
+});

@@ -652,3 +652,11 @@ test('unified saved graph and history retain original excluded declarations with
  assert.equal(h.node('wf-unified-blocked').textContent,'');assert.equal(h.node('wf-history-detail').textContent,'');
  assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/plan').length,0);
 });
+
+test('wait history shows exact local interval and preserves missing legacy duration without inferring eligibility',async()=>{
+ const h=await boot(),loading=h.node('wf-load').click();await tick();
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'waiting-run',workflowId:'wait-flow',status:'RECOVERED_STOPPED'}]});await loading;
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',{accountId:'A',workflowRunId:'waiting-run',workflowDefinitionId:'wait-flow',status:'RECOVERED_STOPPED',recovered:true,readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[{nodeId:'interval',result:'WAIT_STARTED',durationMs:60000,timestamp:'2026-11-13T00:00:00.000Z'},{nodeId:'legacy',result:'WAITED',timestamp:null}]});await reading;
+ const text=h.node('wf-history-detail').textContent;assert.match(text,/interval.*等待已开始.*60000 毫秒/);assert.match(text,/legacy.*等待已结束.*时长 未知.*时间未知/);assert.match(text,/不代表游戏冷却或可重放资格/);
+ assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);
+});

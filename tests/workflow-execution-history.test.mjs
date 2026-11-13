@@ -278,3 +278,16 @@ for(const apply of[true,false])test('unified compilation exclusions survive exac
  assert.equal((await f.request(historyUrl('B',pending.runId))).status,404);assert.deepEqual(f.sent,sent);assert.deepEqual([workflowFile,f.file].map(file=>fs.readFileSync(file,'utf8')),bytes);
  if(!apply){await assert.rejects(f.operations.surveyModule(session,'formation',{presetId:2}));assert.equal(f.sent.filter(n=>n==='SaveFormationRequest').length,1);}
 });
+
+test('WAIT HTTP history records start before later actions and cancellation/restart remain read-only',async t=>{
+ const f=fixture('wait-start');t.after(()=>f.close());f.ready();
+ const headers={'x-cw-csrf':(await f.request('/api/workflows?account=A')).data.csrfToken};
+ const graph={version:1,id:'wait-before-business',name:'Wait before business',nodes:[{id:'start',type:'START'},{id:'interval',type:'WAIT',durationMs:60000},{id:'save',type:'ACTION',module:'formation',parameters:{presetId:2},selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'interval'},{from:'interval',to:'save'},{from:'save',to:'stop'}]};
+ assert.equal((await f.request('/api/workflows/start?account=A',{headers,body:{graph}})).status,200);
+ const state=(await waitStatus(f,'WAITING')).status,url=historyUrl('A',state.runId),before=await f.request(url);
+ assert.equal(before.status,200);assert.deepEqual(before.data.nodes,[]);assert.deepEqual(before.data.waits.map(row=>[row.nodeId,row.result,row.durationMs]),[['interval','WAIT_STARTED',60000]]);assert.deepEqual(f.sent,[]);
+ const bytes=fs.readFileSync(workflowFile,'utf8'),store=createWorkflowStore({file:workflowFile,modules:f.operations.modules}),recovered=store.history('A',{runId:state.runId})[0];
+ assert.equal(recovered.status,'RECOVERED_STOPPED');assert.equal(recovered.resumable,false);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);assert.deepEqual(f.sent,[]);
+ assert.equal((await f.request('/api/workflows/stop?account=A',{headers,body:{}})).status,200);
+ const after=await f.request(url);assert.equal(after.data.status,'CANCELLED');assert.equal(after.data.waits.length,1);assert.deepEqual(f.sent,[]);
+});

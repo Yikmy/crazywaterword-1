@@ -198,7 +198,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
           if (plan.actions[0].actionId !== selectedId || plan.module && plan.module !== node.module) throw fail('计划与工作流精确操作选择不一致', 'WORKFLOW_UNKNOWN');
           ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION', {actionId:selectedId,batchId:plan.batchId,...(plan.planHash?{planHash:plan.planHash}:{})}); break;
         }
-        if (node.type === 'WAIT') { ctx.status = 'WAITING'; let timer; try { await cancelled(ctx, new Promise(resolve => { timer = setTimeout(resolve, node.durationMs); })); } finally { clearTimeout(timer); } ctx.status = 'RUNNING'; current(ctx); await trace(ctx, node, 'WAITED'); ctx.nodeId = next(ctx); continue; }
+        if (node.type === 'WAIT') { ctx.status = 'WAITING'; await trace(ctx, node, 'WAIT_STARTED', {durationMs:node.durationMs}); current(ctx); let timer; try { await cancelled(ctx, new Promise(resolve => { timer = setTimeout(resolve, node.durationMs); })); } finally { clearTimeout(timer); } ctx.status = 'RUNNING'; current(ctx); await trace(ctx, node, 'WAITED', {durationMs:node.durationMs}); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'BRANCH') { if (!['PASS','FAIL'].includes(ctx.lastResult)) throw fail('分支缺少已验证的条件结果', 'WORKFLOW_UNKNOWN'); await trace(ctx, node, ctx.lastResult); ctx.nodeId = next(ctx, ctx.lastResult); continue; }
         if (node.type === 'VERIFY' && !node.condition) {
           if (!ctx.lastPlan || !confirmedRun(ctx.lastRun, ctx.lastPlan, ctx.accountId) || node.module && node.module !== ctx.lastActionModule) throw fail('VERIFY 缺少当前批次成功且确认的执行历史', 'WORKFLOW_UNKNOWN');
@@ -291,6 +291,10 @@ function traceEvidence(row) {
     if(!Array.isArray(row.blockedReasons)||row.blockedReasons.length>50||row.blockedReasons.some(reason=>!historyId(reason)))throw fail('工作流阻塞原因无效');
     evidence.blockedReasons=[...row.blockedReasons];
   }
+  if(row.durationMs!==undefined){
+    if(row.type!=='WAIT'||!['WAIT_STARTED','WAITED'].includes(row.result)||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('等待历史时长无效');
+    evidence.durationMs=row.durationMs;
+  }
   return evidence;
 }
 const sameIds = (left, right) => left && right && left.length === right.length && left.every((id, index) => id === right[index]);
@@ -346,6 +350,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
   return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
+    waits: trace.filter(row=>row?.type==='WAIT').map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
     nodes: [...nodes.values()] };
 }
 
