@@ -1417,3 +1417,59 @@ test('fleet editor treats identities as literal DOM values and detached callback
  const facts=fleetEditorFacts(),literal='<img onerror=alert(1)>',oldId=facts.fleets[0].buildingId;facts.fleets[0].buildingId=literal;facts.formationFacts.buildings.find(b=>b.buildingId===oldId).buildingId=literal;
  const h=await fleetEditorPage(fleetEditorData(facts));fleetEditorTarget(h,literal);assert.ok(descendants(h.node('gp-fleet-formations')).every(n=>n.tagName!=='img'));fleetEditorHero(h,'hero-a').checked=false;fleetEditorChoose(h,'hero-b','1','0');const apply=fleetEditorApply(h);h.run("selectAccount('B');selectAccount('A')");apply.click();assert.equal(h.node('gp-fleet-formations').textContent,'');assert.equal(writes(h).length,0);
 });
+
+function fleetOperationsData(parameters={},change=()=>{}) {
+ const f=fleetEditorFacts();f.stock=new Map([['汽油',100]]);f.citiesReliable=true;f.cities=[{id:2,state:1,guildIdx:3},{id:7,state:1,guildIdx:9}];f.guildIdx=3;f.fleets[0].durability=90;f.repairParams.set('f1',{unitRepairCost:1.25,unitRepairTime:0.15});f.protocolReady={...f.protocolReady,RepairFleetRequest:true,MoveFleetsToCityRequest:true,StopRepairingRequest:true,SetFleetAutoFightRequest:true};
+ const config={...fleetEditorConfig,formation:false,repair:true,repairBelowDurabilityRatio:1,maximumRepairPetrolPerPlan:20,move:true,stopRepair:true,autoFight:true};change(f,config);
+ const view=fleetView(f,{moduleConfig:config,parameters});view.candidates=view.candidates.map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false&&row.decision!=='BLOCKED'}));
+ return {accountId:'A',module:'fleet',csrfToken:'synthetic-csrf-A',config,status:{running:false,blocked:false},functions:[],view};
+}
+const fleetOperationButton=(h,type)=>descendants(h.node('gp-fleet-operations')).find(n=>n.dataset.fleetOperation?.startsWith('fleet:'+type+':'));
+const fleetMoveControl=(h,key)=>descendants(h.node('gp-fleet-operations')).find(n=>n.dataset.fleetMovement===key);
+const fleetMovePrepare=h=>descendants(h.node('gp-fleet-operations')).find(n=>n.dataset.fleetMovementPrepare);
+function fleetMoveDraft(h,building='f1',city='2') {fleetMoveControl(h,'building').value=building;fleetMoveControl(h,'city').value=city;fleetMovePrepare(h).click();}
+
+test('professional fleet maintenance table selects the existing precise repair candidate and previews original rounded cost',async()=>{
+ const next=fleetOperationsData(),h=await fleetEditorPage(next),button=fleetOperationButton(h,'fleetRepair');assert.equal([...PAGE.matchAll(/id="gp-fleet-operations"/g)].length,1);assert.equal(button.disabled,false);assert.match(h.node('gp-fleet-operations').textContent,/维修.*汽油/);
+ const requests=h.requests.length;button.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{buildingId:'f1'});assert.equal(h.requests.length,requests);
+ const candidate=next.view.candidates.find(row=>row.actionId===button.dataset.fleetOperation);assert.deepEqual(candidate.costs,[{id:'汽油',num:13}]);const request=h.node('gp-fleet-plan').click();assertMutation(h.pending('/api/operations/plan'),'/api/operations/plan',{module:'fleet',mode:'Manual',selections:[candidate.actionId],parameters:{buildingId:'f1'}});
+ h.respond('/api/operations/plan',plan({module:'fleet',actionId:candidate.actionId,actionType:candidate.actionType,costs:candidate.costs,target:candidate.target,parameters:{buildingId:'f1'}}));await request;assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('professional movement prepares only a current-view city then resurvey selects the original movement candidate',async()=>{
+ const h=await fleetEditorPage(fleetOperationsData()),requests=h.requests.length;assert.equal(fleetMovePrepare(h).disabled,false);assert.match(h.node('gp-fleet-operations').textContent,/WorldInfo 当前视野/);fleetMoveDraft(h);
+ const parameters={buildingId:'f1',cityId:2};assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),parameters);assert.equal(h.requests.length,requests);assert.equal(h.node('gp-fleet-plan').disabled,true);
+ const scan=h.node('gp-fleet-survey').click();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'fleet',parameters});const next=fleetOperationsData(parameters);h.respond('/api/gameplay/survey',next);await scan;
+ const candidate=next.view.candidates.find(row=>row.actionType==='fleetMove');assert.equal(candidate.decision,'READY');const button=fleetOperationButton(h,'fleetMove');assert.equal(button.disabled,false);button.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),parameters);assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
+
+test('fleet movement rejects absent, forged and non-current targets without numeric coercion',async()=>{
+ const h=await fleetEditorPage(fleetOperationsData()),source=h.node('gp-fleet-parameters').value;
+ for(const [building,city]of [['','2'],['missing','2'],['f1',''],['f1','999'],['f1','2.0'],['f1','2e0'],['f1',' 2']]){fleetMoveDraft(h,building,city);assert.equal(h.node('gp-fleet-parameters').value,source);}
+ assert.equal(writes(h).length,0);
+});
+
+test('fleet maintenance blocked cost is displayed as unresolved and cross-guild movement remains blocked when map cost is unknown',async()=>{
+ const next=fleetOperationsData({buildingId:'f1',cityId:7},f=>f.repairParams.clear()),h=await fleetEditorPage(next);const repair=fleetOperationButton(h,'fleetRepair'),move=fleetOperationButton(h,'fleetMove');assert.equal(repair.disabled,true);assert.equal(move.disabled,true);assert.match(h.node('gp-fleet-operations').textContent,/尚未形成可执行成本/);assert.match(h.node('gp-fleet-operations').textContent,/MOVE_COST_UNKNOWN/);const source=h.node('gp-fleet-parameters').value;repair.click();move.click();assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(writes(h).length,0);
+});
+
+test('fleet stop-repair and stop-autofight remain separate exact candidates with original premium and automation exclusions visible',async()=>{
+ const next=fleetOperationsData({},f=>{f.fleets[0].state=4;f.fleets[0].repairing={startTs:100,endTs:200,endDura:100};f.fleets[1].autoFight={isOn:true,todayTimes:0};}),h=await fleetEditorPage(next);
+ assert.equal(fleetOperationButton(h,'fleetStopRepair').disabled,false);const auto=descendants(h.node('gp-fleet-operations')).find(n=>n.dataset.fleetOperation?.startsWith('fleet:fleetStopAutoFight:f2'));assert.ok(auto);assert.equal(auto.disabled,false);auto.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{buildingId:'f2'});assert.match(h.node('gp-fleet-operations').textContent,/PREMIUM_BLOCKED/);assert.match(h.node('gp-fleet-operations').textContent,/AUTOMATION_UNVERIFIED/);assert.equal(writes(h).length,0);
+});
+
+test('movement editing requires real reliability and config while maintenance remains independently selectable',async()=>{
+ for(const change of [d=>delete d.view.citiesReliable,d=>d.view.citiesReliable=false,d=>delete d.view.formationReliability,d=>d.config={...d.config,move:false}]){
+  const next=fleetOperationsData();change(next);const h=await fleetEditorPage(next);assert.equal(fleetMovePrepare(h).disabled,true);assert.equal(fleetOperationButton(h,'fleetRepair').disabled,false);const source=h.node('gp-fleet-parameters').value;fleetMoveDraft(h);assert.equal(h.node('gp-fleet-parameters').value,source);assert.equal(writes(h).length,0);
+ }
+});
+
+test('maintenance and movement controls lock on pending and UNKNOWN and old view or parameter callbacks cannot replace fresh targets',async()=>{
+ const h=await fleetEditorPage(fleetOperationsData()),repair=fleetOperationButton(h,'fleetRepair'),prepare=fleetMovePrepare(h);fleetMoveControl(h,'building').value='f1';fleetMoveControl(h,'city').value='2';
+ h.node('gp-fleet-parameters').value=JSON.stringify({buildingId:'f2'});h.node('gp-fleet-parameters').oninput();repair.click();prepare.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{buildingId:'f2'});
+ const reading=h.node('gp-fleet-load').click();assert.equal(repair.disabled,true);const next=fleetOperationsData();next.status={blocked:true,running:false,state:'UNKNOWN'};h.respond('/api/gameplay',next,{module:'fleet'});await reading;assert.equal(fleetOperationButton(h,'fleetRepair').disabled,true);assert.equal(fleetMovePrepare(h).disabled,true);repair.click();prepare.click();assert.equal(writes(h).length,0);
+});
+
+test('fleet movement current-view options render literal identities and late account responses do not revive old operation selectors',async()=>{
+ const next=fleetOperationsData();next.view.fleets[0].buildingId='<img onerror=alert(1)>';const h=await fleetEditorPage(next),old=fleetOperationButton(h,'fleetRepair'),prepare=fleetMovePrepare(h),load=h.node('gp-fleet-load').click();assert.ok(descendants(h.node('gp-fleet-operations')).every(n=>n.tagName!=='img'));h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',next,{module:'fleet'});await load;old.click();prepare.click();assert.equal(h.node('gp-fleet-operations').textContent,'');assert.equal(writes(h).length,0);
+});

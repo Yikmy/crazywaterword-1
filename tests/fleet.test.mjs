@@ -77,3 +77,8 @@ test('fleet formation view projects each existing reliability flag without promo
  for(const [key,change]of Object.entries(fields)){const f=formationFacts();change(f);assert.equal(view(f).formationReliability[key],false);}
  const old=facts();assert.deepEqual(view(old).formationReliability,{fleets:true,buildings:false,heroes:false,presets:false,config:false});assert.deepEqual(view(old).formations,[]);
 });
+
+test('fleet view exposes only the existing WorldInfo city list with explicit source reliability',()=>{
+ const f=facts(),result=view(f);assert.deepEqual(result.cities,f.cities);assert.equal(result.citiesReliable,true);
+ f.citiesReliable=false;assert.equal(view(f).citiesReliable,false);delete f.citiesReliable;assert.equal(view(f).citiesReliable,false);delete f.cities;assert.deepEqual(view(f).cities,[]);
+});
