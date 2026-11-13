@@ -130,7 +130,7 @@ function nextThreshold(config, kind, { activity = null, claimed = [], status } =
 
 // 「每日精选」面板每天有一档免费赠礼，领走的是 GotFreeDailyPackRequest{packId:"赠礼"}。
 // packId 是客户端硬编码的字符串，服务端状态在 DailyGiftPackResponse.drawnPack 里；
-// resetTime 是次日 0 点，所以这是真正的「日奖励」，和活跃度宝箱是两回事。
+// resetTime 保留为服务端原样标记；未闭合单位与日界合同，不据此安排重领。
 //
 // 面板里另外三个（礼包1/2/3）要走充值，"合并礼包" 要先买过前三个才可领，都不在本工具范围内。
 export function planDailyGift(response) {
@@ -148,6 +148,7 @@ export function planDailyGift(response) {
     actions: available
       ? [{
         request: 'GotFreeDailyPackRequest',
+        costs: [],
         body: { packId: FREE_DAILY_PACK_ID },
         response: null,
         cost: '无',

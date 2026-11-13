@@ -20,8 +20,9 @@ import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish());
 const parameters={kind:'daily',taskId:1001};
-function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null}={}){
+function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null,gift=false}={}){
  const state={wall:1000000,mono:100,daily:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false},{id:1002,progress:0,targetProgress:2,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[1],weeklyRewardClaimed:[],dailyResetTime:2000},stock:[{itemId:'unrelated',num:9}],resources:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
+ state.gift={heroId:'马斯克',resetTime:1,boughtPack:[],drawnPack:[]};
  const clock=trustedGameClock({accountId:'synthetic-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
  clock.markPing(state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:state.wall,serverTimestamp:state.wall}));
  const client={connected:true,factContext:{accountId:'synthetic-A',generation:3,connectionId:'offline-daily'},gameClock:clock,pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),
@@ -34,15 +35,16 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
    await state.onWrite?.();return codec?wire(r,receipt):clone(receipt);
   }
   state.reads.push(n);await state.onRead?.(n);
-  let value=n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
+  let value=n==='DailyGiftPackRequest'?state.gift:n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  },
  async sendWatch(n,b,opts){
+  if(gift){assert.equal(n,'GotFreeDailyPackRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.gift.drawnPack.push('赠礼');state.resources.find(r=>r.res===4).amount+=10;}await state.onWrite?.();return {status:'UNKNOWN'};}
   assert.equal(n,'DrawDailyRewardRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});
   if(apply){const season=Number(BigInt(options.player.worldId)/1000000n%1000n),rows=actual.tables.DailyActivityRewardCfg.data,selected=Math.max(...rows.filter(r=>r.season<=season).map(r=>r.season)),row=rows.find(r=>r.season===selected&&r.id===b.index[0]);state.daily.dailyRewardClaimed.push(row.id);const [id,num]=row.reward,old=state.stock.find(i=>i.itemId===id);if(old)old.num+=num;else state.stock.push({itemId:id,num});}
   await state.onWrite?.();return {status:'UNKNOWN'};
  }};
- const options={config:{tables:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null?'17':'1000001')}};
+ const options={config:{tables:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
  return {state,client,options};
 }
 async function ready(input={},mutate){const f=fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
@@ -387,5 +389,118 @@ test('manual activity refusal remains shared across Dailies and Tasks reconnecti
   const phase=entry==='tasks'?'tasks':'dailies',intent=phase==='tasks'?{kind:'daily-activity',tierId:2}:{kind:'daily-activity',tierId:2,action:'claim'};
   const compiled=compileUnifiedExecution({entry,[phase]:[intent],budget:plan.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:next.service,claim:(_id,runId,options)=>next.service.claimWorkflow(next.session,runId,options),getSession:()=>next.session});t.after(()=>runner.stop());
   const run=await runner.start(next.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(next.state.writes.length,0);assert.equal(next.durable.list(next.session.id).length,1);
+ }
+});
+
+
+test('C513 explicit free gift binds full server state and exact RUBY income without inferring resetTime',async()=>{
+ const f=await ready({gift:true},f=>f.client.gameClock=null);assert.ok(f.operation,JSON.stringify(f.row));assert.deepEqual(f.operation.parameters,{kind:'daily-gift',packId:'赠礼'});assert.equal(f.operation.target.resetMarker,1);
+ assert.deepEqual(f.state.reads,['DailyGiftPackRequest','AllItemRequest','AllResourceRequest']);assert.deepEqual(f.operation.action,{request:'GotFreeDailyPackRequest',response:null,body:{packId:'赠礼'}});assert.deepEqual(f.operation.costs,[]);assert.deepEqual(f.operation.rewards,[{id:'RUBY',num:10}]);assert.equal(f.operation.budgetClaims.uids[0].type,'free-daily-gift');
+ await f.client.sendWatch('GotFreeDailyPackRequest',{packId:'赠礼'});const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);assert.equal(after.stock.get('RUBY'),60);assert.deepEqual(after.daily.drawnPack,['赠礼']);assert.equal(after.daily.heroId,'马斯克');assert.equal(after.daily.resetMarker,1);
+ assert.equal(verifyTaskReward(f.operation,f.facts,after,{reward:[{id:'RUBY',num:10}]}).confirmed,false);assert.equal(viewTaskRewards(after,f.options).candidates[0].executable,false);
+});
+test('free gift strict parameters and D6 preserve paid/combine exclusion',()=>{
+ assert.deepEqual(validateTaskRewardsParameters({kind:'daily-gift',packId:'赠礼'}),{kind:'daily-gift',packId:'赠礼'});
+ for(const p of[{kind:'daily-gift'},{kind:'daily-gift',packId:'礼包1'},{kind:'daily-gift',packId:'合并礼包'},{kind:'daily-gift',packId:'赠礼',tierId:1},{kind:'daily-gift',packId:'赠礼',taskId:1},{kind:'daily',taskId:1,packId:'赠礼'},{kind:'main',taskId:1,packId:'赠礼'}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
+ const base={request:'GotFreeDailyPackRequest',body:{packId:'赠礼'},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(base));assert.deepEqual(ACTIONS.freeDailyPackDraw.costs,[]);
+ for(const body of[{}, {packId:'礼包1'},{packId:'合并礼包'},{packId:'赠礼',buy:false}])assert.throws(()=>assertPaymentAllowed({...base,body}));
+ for(const costs of[undefined,[{id:'RUBY',num:1}],[{id:'GOLD',num:1}],Array(1)])assert.throws(()=>assertPaymentAllowed({...base,costs}));
+});
+for(const [worldId,selected]of[['1000001',1],['2000001',1],['3000001',3],['4000001',4],['5000001',4],['9007199254740993',4]])test('free gift exact world season '+worldId,async()=>{
+ const f=await ready({gift:true,worldId});assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.target.configuredSeason,selected);assert.equal(f.operation.capabilityId,'C513');
+});
+for(const [label,mutate]of[
+ ['already claimed',f=>f.state.gift.drawnPack=['赠礼']],
+ ['missing hero',f=>delete f.state.gift.heroId],
+ ['missing marker',f=>delete f.state.gift.resetTime],
+ ['missing drawn list',f=>delete f.state.gift.drawnPack],
+ ['missing bought list',f=>delete f.state.gift.boughtPack],
+ ['duplicate drawn',f=>f.state.gift.drawnPack=['礼包1','礼包1']],
+ ['duplicate bought',f=>f.state.gift.boughtPack=['礼包1','礼包1']],
+ ['missing RUBY',f=>f.state.resources=f.state.resources.filter(r=>r.res!==4)],
+ ['overflow RUBY',f=>f.state.resources.find(r=>r.res===4).amount=Number.MAX_SAFE_INTEGER],
+ ['unknown season',f=>f.options.player.worldId='17'],
+ ['missing config',f=>delete f.options.config.tables.DailyChargeGiftPackCfg],
+ ['duplicate config',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.push(clone(f.options.config.tables.DailyChargeGiftPackCfg.data[0]))],
+ ['unsorted config',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.reverse()],
+ ['paid price',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.find(r=>r.packId==='赠礼').price=1],
+ ['hero fragment income',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.find(r=>r.packId==='赠礼').fragNum=1],
+ ['guild reward',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.find(r=>r.packId==='赠礼').guildPack=['礼包',1]],
+ ['unknown reward',f=>f.options.config.tables.DailyChargeGiftPackCfg.data.find(r=>r.packId==='赠礼').reward=[['GOLD',10]]],
+ ['missing price',f=>delete f.options.config.tables.DailyChargeGiftPackCfg.data.find(r=>r.packId==='赠礼').price],
+ ['read failed',f=>f.state.overrides.DailyGiftPackRequest=Error('synthetic unavailable')],
+])test('free gift blocks uncertain qualification or costs: '+label,async()=>{const f=await ready({gift:true,codec:false},mutate);assert.equal(f.operation,undefined);assert.equal(f.state.writes.length,0);});
+
+for(const [label,mutate]of[
+ ['no claimed state',f=>f.state.gift.drawnPack=[]],
+ ['extra claimed peer',f=>f.state.gift.drawnPack.push('合并礼包')],
+ ['paid state changed',f=>f.state.gift.boughtPack.push('礼包1')],
+ ['marker changed',f=>f.state.gift.resetTime=2],
+ ['hero changed',f=>f.state.gift.heroId='牛顿'],
+ ['reward absent',f=>f.state.resources.find(r=>r.res===4).amount=50],
+ ['wrong reward',f=>f.state.resources.find(r=>r.res===4).amount=61],
+ ['other resource changed',f=>f.state.resources[0].amount++],
+ ['other item changed',f=>f.state.stock[0].num++],
+ ['config changed',f=>f.options.config.tables.DailyChargeGiftPackCfg.revision=2],
+ ['connection changed',f=>f.client.factContext.connectionId='replaced'],
+])test('free gift ambiguous settlement stays UNKNOWN: '+label,async()=>{
+ const f=await ready({gift:true});await f.client.sendWatch('GotFreeDailyPackRequest',{packId:'赠礼'});mutate(f);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,false);
+});
+
+test('free gift dependency binds only its selected config and canonical intent cannot be forged',async()=>{
+ const f=await ready({gift:true}),v=taskRewardsDependencyVersions(f.options);assert.deepEqual(Object.keys(v.tables),['DailyChargeGiftPackCfg']);const config=clone(f.options.config);config.tables.DailyTaskCfg={revision:3};assert.deepEqual(taskRewardsDependencyVersions({...f.options,config}),v);
+ config.tables.DailyChargeGiftPackCfg.revision=2;assert.notDeepEqual(taskRewardsDependencyVersions({...f.options,config}),v);
+ await f.client.sendWatch('GotFreeDailyPackRequest',{packId:'赠礼'});const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,clone(f.facts),after,null).confirmed,false);
+ for(const mutate of[op=>op.action.body.packId='合并礼包',op=>op.budgetClaims.uids=[],op=>op.expectedState.inventory=[],op=>op.rewards[0].num=11]){const op=clone(f.operation);mutate(op);assert.equal(verifyTaskReward(op,f.facts,after,null).confirmed,false);}
+});
+
+for(const apply of[true,false])test('free gift shared Service persists exact write '+(apply?'success':'UNKNOWN across marker change/restart'),async t=>{
+ const f=serviceFixture(t,{gift:true,apply}),p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.writes[0],{name:'GotFreeDailyPackRequest',body:{packId:'赠礼'}});
+ assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(record.runBudget.reserved.uids,p.budgetClaims.uids);
+ if(!apply){const next=serviceFixture(t,{gift:true,file:f.file});next.state.gift.resetTime=2;next.state.gift.heroId='牛顿';await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+test('free gift zero sends on persist failure, stale config, cancellation or exhausted parent UID',async t=>{
+ for(const mode of['disk','config','cancel','budget']){
+  const f=serviceFixture(t,{gift:true});
+  if(mode==='budget'){f.service.claimWorkflow(f.session,'gift-parent',{limits:{resources:[],quotas:[],uids:[]}});await assert.rejects(f.plan());assert.equal(f.state.writes.length,0);continue;}
+  const p=await f.plan();if(mode==='config'){f.options.config.tables.DailyChargeGiftPackCfg.revision=2;assert.throws(()=>f.authorize(p));continue;}
+  const permit=f.authorize(p);if(mode==='cancel')f.session.abort.abort();else{const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}
+  try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0,mode);
+ }
+});
+for(const apply of[true,false])test('free gift unified Loop uses original Service and '+(apply?'blocks duplicate aliases':'stops UNKNOWN before another alias'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{gift:true,apply}),read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),compiled=compileUnifiedExecution({entry:'loop',tasks:[{kind:'daily-gift',packId:'赠礼'}],dailies:[{kind:'daily-gift',packId:'赠礼',action:'claim'}],rounds:2,budget:read.view.candidates[0].budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(()=>runner.stop());
+ let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(run.plan);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'tasks-0-1');
+});
+
+
+test('free gift protocol, fresh facts and exact account authority fail closed before any write',async()=>{
+ const f=fixture({gift:true}),limited={...protocol};delete limited.GotFreeDailyPackRequest;const facts=await surveyTaskRewards(f.client,limited,f.options);assert.equal(viewTaskRewards(facts,f.options).candidates[0].blockedReason,'PROTOCOL_UNAVAILABLE');assert.equal(f.state.writes.length,0);
+ for(const mutate of[
+  f=>f.facts.sourceFacts.daily.provenance.sourceAt=Date.now()-30001,
+  f=>f.facts.inputs.daily.drawnPack.push('礼包1'),
+  f=>f.client.factContext.accountId='synthetic-B',
+  f=>f.client.factContext.generation++,
+  f=>f.client.factContext.connectionId='replacement',
+  f=>f.options.player.worldId='2000001',
+ ]){
+  const x=await ready({gift:true});mutate(x);assert.equal(planTaskRewards(x.facts,{...x.options,selections:[x.operation.actionId]}).actions.length,0);assert.equal(x.state.writes.length,0);
+ }
+ const no=await ready({gift:true}),result=await executeBusinessOperation(no.client,protocol,no.operation,{...no.options,adapter:taskRewardsModule,allowMutate:false,budget:budget(no)});assert.equal(result.dispatched,false);assert.equal(no.state.writes.length,0);
+});
+
+test('free gift late watch after cancellation remains UNKNOWN and cannot be replayed from another entry',async t=>{
+ const f=serviceFixture(t,{gift:true}),plan=await f.plan();let release;f.state.onWrite=()=>new Promise(r=>release=r);f.service.execute(f.session,f.authorize(plan));for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();await f.service.settle(f.session.id);
+ assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');assert.equal(f.state.writes.length,1);const next=serviceFixture(t,{gift:true,file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);
+});
+
+test('free gift refusal is shared across reconnecting Tasks and Dailies aliases',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{gift:true,apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic refused'),{code:'REJECTED'});};const plan=await f.plan();assert.equal((await f.run(plan)).record.finalStatus,'REJECTED');
+ for(const phase of['tasks','dailies']){
+  const next=serviceFixture(t,{gift:true,file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement-'+phase;
+  const row={kind:'daily-gift',packId:'赠礼',...(phase==='dailies'?{action:'claim'}:{})},compiled=compileUnifiedExecution({entry:phase,[phase]:[row],budget:plan.budgetClaims},{modules:GAMEPLAY_MODULES});
+  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:next.service,claim:(_id,runId,options)=>next.service.claimWorkflow(next.session,runId,options),getSession:()=>next.session});t.after(()=>runner.stop());
+  const run=await runner.start(next.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(next.state.writes.length,0);
  }
 });

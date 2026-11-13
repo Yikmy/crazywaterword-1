@@ -1853,7 +1853,7 @@ function renderDailyChecklist(data) {
     if(kind==='daily'&&activity.tiers.length){const scope=viewGuard.capture(),link=el('button','','打开日活跃宝箱领奖');link.type='button';link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);}
     if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
   }
-  box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','仅显示免费赠礼状态；领取合同待核实']]));
+  box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','缓存仅供查看；选择固定赠礼，重新探测、预览与授权，不推断日界']]));
   if(view.achievements){
     box.appendChild(el('h3','','成就 · 缓存已领观察与进度'));
     box.appendChild(table(['成就 ID','精确进度','已领 / 门槛状态','当前限制'],view.achievements.rows.map(row=>[

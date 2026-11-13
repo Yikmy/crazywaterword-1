@@ -161,6 +161,7 @@ export const ACTIONS = {
     request: 'GotFreeDailyPackRequest',
     response: null,
     mutate: true,
+    costs: [],
     desc: '领「每日精选」里那档免费礼包（packId 由客户端硬编码为「赠礼」，可领性看 DailyGiftPackResponse.drawnPack）',
     // 付费那三档与「合并礼包」不在工具范围内，所以参数写死、不开放给命令行。
     body: () => ({ packId: FREE_DAILY_PACK_ID }),
@@ -326,6 +327,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(request==='TrialRaidChallengeRequest'&&(!fields(body,['raidId','stageId'])||body.raidId!==1||!positiveInt32(body.stageId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','经验试炼只允许精确 raidId=1、stageId 和明确零支出');
   if(request==='RecruitStartRequest'&&body.way===1&&(!fields(body,['way'])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','免费英雄招募仅允许明确 way=1 与零支出');
   if(request==='ClickGoldRequest'&&(!fields(body,['times','free'])||body.times!==1||body.free!==true||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','普通免费点金仅允许 times=1、free=true 与明确零支出');
+  if(request==='GotFreeDailyPackRequest'&&(!fields(body,['packId'])||body.packId!=='赠礼'||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','仅明确免费赠礼packId与零支出允许领取');
   const rewardIndices=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length>0&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value')&&positiveInt32(d.value))&&new Set(v).size===v.length;
   if(request==='DrawDailyRewardRequest'&&(!fields(body,['index'])||!rewardIndices(body.index)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','日活跃奖励只允许明确唯一档位列表与零支出');
   if(request==='DrawDailyTaskRewardRequest'&&(!fields(body,['id'])||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','日常任务奖励仅允许精确 id 与明确零支出');

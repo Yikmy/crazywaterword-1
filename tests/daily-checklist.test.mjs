@@ -194,3 +194,8 @@ test('cached recruit/trial objectives point to existing controlled Functions wit
 test('daily activity cache provides only a fresh-survey navigation target, while weekly period stays blocked',()=>{
  const v=dailyChecklist(fixture(),{config});for(const row of v.activity.daily.tiers){assert.equal(row.executable,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily-activity',tierId:row.id});assert.equal(Object.hasOwn(row,'action'),false);}for(const row of v.activity.weekly.tiers){assert.equal(row.executable,false);assert.equal(Object.hasOwn(row,'claimParameters'),false);assert.equal(row.blockedReason,'ACTIVITY_CLAIM_CONTRACT_UNVERIFIED');}
 });
+
+
+test('free gift cache only points to exact fresh-survey Function and does not infer reset period',()=>{
+ const v=dailyChecklist(fixture(),{config});assert.equal(v.gift.executable,false);assert.equal(v.gift.claimFunctionId,'task-rewards');assert.deepEqual(v.gift.claimParameters,{kind:'daily-gift',packId:'赠礼'});assert.equal(Object.hasOwn(v.gift,'action'),false);assert.equal(v.gift.blockedReason,'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION');
+});

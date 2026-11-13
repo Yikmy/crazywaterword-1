@@ -129,7 +129,7 @@ function giftView(body) {
   const known=drawn!==null&&text(heroId),gift=known?planDailyGift({drawnPack:drawn,heroId,resetTime:resetMarker}):null;
   return {packId:'赠礼',heroId:text(heroId)?heroId:null,drawn,resetMarker,eligible:gift?.freeAvailable??null,
     status:known?gift.freeAvailable?'ELIGIBLE':'CLAIMED':'UNKNOWN',reason:known?null:'DAILY_GIFT_STATE_UNKNOWN',
-    executable:false,blockedReason:'FREE_GIFT_CLAIM_CONTRACT_UNVERIFIED'};
+    executable:false,claimFunctionId:'task-rewards',claimParameters:{kind:'daily-gift',packId:'赠礼'},blockedReason:'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION'};
 }
 function vipView(state,config) {
   // Reuse the existing connection tracker observation; public LoginResponse.vip

@@ -254,3 +254,12 @@ test('daily activity entry refuses implicit claims, mixed identities and arbitra
   for(const row of rows)assert.throws(()=>compileUnifiedExecution({entry:phase,[phase]:[row],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'},JSON.stringify(row));
  }
 });
+
+
+test('free gift unified intents are explicit, offline, and reject paid or mixed task identities',()=>{
+ for(const entry of['tasks','dailies','loop']){
+  const phase=entry==='tasks'?'tasks':'dailies',row={kind:'daily-gift',packId:'赠礼',...(phase==='dailies'?{action:'claim'}:{})};
+  const r=compileUnifiedExecution({entry,[phase]:[row],budget:unifiedBudget},{modules:unifiedRegistry});assert.deepEqual(r.blocked,[]);assert.deepEqual(r.graph.nodes[1].parameters,{kind:'daily-gift',packId:'赠礼'});assert.equal(simulateWorkflow(r.graph,{modules:unifiedRegistry}).requestsSent,0);
+  for(const bad of[{...row,packId:'礼包1'},{...row,packId:'合并礼包'},{...row,taskId:1001},{...row,tierId:1},{...row,parameters:{request:'GotFreeDailyPackRequest'}},...(phase==='dailies'?[{kind:'daily-gift',packId:'赠礼'},{...row,action:'perform'}]:[])])assert.throws(()=>compileUnifiedExecution({entry,[phase]:[bad],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'});
+ }
+});

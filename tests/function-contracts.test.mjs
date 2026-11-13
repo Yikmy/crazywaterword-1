@@ -211,6 +211,6 @@ test('equipment STAR contract is explicit RED single growth and keeps replacemen
 });
 
 test('task rewards retain C capability identity with explicit daily inventory references and a blocked weekly contract',()=>{
- const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C516']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
+ const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C513','C516']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
  assert.ok(c.dependencyVersions.conditional.some(r=>r.when==='parameters.kind=daily-activity'&&JSON.stringify(r.keys)===JSON.stringify(['config.DailyActivityRewardCfg','config.ItemCfg'])));
 });
