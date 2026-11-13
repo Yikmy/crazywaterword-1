@@ -147,9 +147,36 @@ function vipView(state,config) {
     claimStatus:'UNKNOWN',eligible:null,executable:false,blockedReason:'VIP_DAILY_REWARD_AUTHORITY_UNAVAILABLE',
     note:'VIP 等级为本次采集的连接观察值。配置包仅供查看；等级条件不证明每日礼包可领，月卡不代替 VIP。'};
 }
-export function dailyChecklist(state,{config=null}={}) {
+// Cached accepted pushes are observations, never a claim or day-boundary proof.
+const festivalInteger = (value,positiveOnly=false) => {
+  if(typeof value==='number')return Number.isSafeInteger(value)&&value>=(positiveOnly?1:0)?value:null;
+  if(typeof value!=='string'||!(positiveOnly?/^[1-9][0-9]{0,18}$/:/^(0|[1-9][0-9]{0,18})$/).test(value))return null;
+  return BigInt(value)<(1n<<63n)?value:null;
+};
+function festivalView(state,context=null) {
+  const s=own(own(state,'sessionFacts'),'festivalActivities'),raw=own(s,'activities');
+  const matches=context===null||['accountId','generation','connectionId'].every(k=>own(context,k)!==undefined&&own(context,k)===own(s,k))&&['playerId','worldId'].every(k=>festivalInteger(own(context,k),true)!==null&&String(festivalInteger(own(context,k),true))===String(festivalInteger(own(s,k),true)));
+  const observed=matches&&own(s,'status')==='OBSERVED'&&own(s,'reliable')===true&&own(s,'source')==='SCAllActivity.festivalActivities'&&own(s,'scope')==='ACCEPTED_STREAM_OBSERVATION_ONLY'
+    &&text(own(s,'accountId'))&&Number.isSafeInteger(own(s,'generation'))&&own(s,'generation')>=0&&text(own(s,'connectionId'))&&festivalInteger(own(s,'playerId'),true)!==null&&festivalInteger(own(s,'worldId'),true)!==null
+    &&text(own(s,'observedAt'))&&Number.isFinite(Date.parse(own(s,'observedAt')))&&positive(own(s,'seq'))&&dense(raw);
+  const source={source:'SCAllActivity.festivalActivities',status:observed?'OBSERVED':'UNKNOWN',observedAt:observed?s.observedAt:null,seq:observed?s.seq:null,reason:observed?null:!matches?'FESTIVAL_CURRENT_CONTEXT_MISMATCH':own(s,'reason')??'FESTIVAL_PUSH_NOT_OBSERVED'};
+  const ids=observed?raw.map(r=>festivalInteger(own(r,'activityId'),true)):[],counts=new Map();for(const id of ids)if(id!==null)counts.set(String(id),(counts.get(String(id))??0)+1);
+  const rows=observed?raw.map((r,index)=>{
+    const activityId=ids[index],duplicate=activityId!==null&&counts.get(String(activityId))!==1,sub=own(r,'subActivity');
+    const activeRows=dense(sub)?sub.filter(v=>own(v,'subActivityType')===11):null,active=activeRows?.length===1?own(activeRows[0],'dailyActive'):null,checkIn=list(own(active,'checkInId'),uint);
+    const times=Object.fromEntries(['startTime','openTime','closeTime','endTime'].map(k=>[k,count(r,k)]));
+    const status=activityId!==null&&!duplicate?'OBSERVED':'UNKNOWN';
+    return {activityId,status,reason:duplicate?'FESTIVAL_ACTIVITY_ID_AMBIGUOUS':activityId===null?'FESTIVAL_ACTIVITY_ID_UNKNOWN':null,festival:count(r,'festival'),type:text(own(r,'type'))?r.type:null,season:count(r,'season'),...times,
+      checkInRecord:{status:!duplicate&&activityId!==null&&checkIn!==null?'OBSERVED':'UNKNOWN',checkInId:!duplicate&&activityId!==null?checkIn:null,activeScore:count(active,'activeScore'),claimedRewardId:count(active,'claimedRewardId'),checkRuby:festivalInteger(own(active,'checkRuby'))},
+      eligible:null,claimStatus:'UNKNOWN',executable:false,blockedReason:'FESTIVAL_SIGN_ELIGIBILITY_AND_INDEPENDENT_REREAD_UNVERIFIED'};
+  }):[];
+  return {readOnly:true,status:source.status,source,rows,complete:false,eligible:null,executable:false,independentRereadAvailable:false,
+    note:'仅显示本连接最近一次已接受推送中的活动ID、窗口和签到记录。未报活动不推导为不存在；不据窗口/列表推算游戏日界、当前可领或领奖成功。签到写操作仍缺资格及独立复读合同。'};
+}
+
+export function dailyChecklist(state,{config=null,context=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest');
-  return {readOnly:true,achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+  return {readOnly:true,festival:festivalView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
     gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
@@ -158,5 +185,6 @@ export function formatDailyChecklist(view) {
   return ['每日任务：'+known(c.completed)+'/'+known(c.total)+' 完成，'+known(c.eligible)+' 项达到领奖门槛',
     '成就：'+known(view.achievements.counts.eligible)+' 项达到门槛；普通免费点金剩余 '+known(view.freeGold.remaining),
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
-    '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',view.note].join('\n');
+    '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',
+    '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',view.note].join('\n');
 }

@@ -259,6 +259,43 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
   scope: 'CONTINUOUS_CONNECTION_MONTH_CARD_ROWS_ONLY_NO_ACTIVE_OR_DAY', realGame: 'REAL_UNVERIFIED',
 });
 
+// W17 observations reuse the existing connection/sequence contract. They never
+// establish claim eligibility, a game day, or an independent post-write reread.
+const liveFestivalActivities = new WeakMap();
+function resetFestivalActivities(client, reason) {
+  const previous=liveFestivalActivities.get(client);
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null});
+}
+function invalidateFestivalActivities(client, reason) {
+  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;}
+}
+function festivalContextCurrent(client,state) {
+  return vipCurrentContext(client,state)&&['playerId','worldId'].every(k=>!vipOwn(client.factContext,k)||vipIdentity(vipValue(client.factContext,k))===state.identity?.[k]);
+}
+function seedFestivalActivities(client,body,socket) {
+  const state=liveFestivalActivities.get(client),player=vipValue(body,'playerInfo');
+  const playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
+  if(!state||state.invalid||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateFestivalActivities(client,'FESTIVAL_LOGIN_IDENTITY_UNKNOWN');return;}
+  state.identity={playerId,worldId};state.seeded=true;state.reason='FESTIVAL_PUSH_NOT_OBSERVED';
+}
+function updateFestivalActivities(client,body,seq,receivedAt) {
+  const state=liveFestivalActivities.get(client);
+  if(!state||state.invalid)return;
+  if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'FESTIVAL_CONNECTION_OR_IDENTITY_CHANGED');return;}
+  const rows=vipValue(body,'festivalActivities');
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Array.isArray(rows)||Object.getPrototypeOf(rows)!==Array.prototype||rows.length>10000||Reflect.ownKeys(rows).length!==rows.length+1||!Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))){invalidateFestivalActivities(client,'FESTIVAL_PUSH_STRUCTURE_OR_SEQUENCE_UNKNOWN');return;}
+  try{state.snapshot={seq,observedAt:new Date(receivedAt).toISOString(),activities:structuredClone(rows)};state.reason=null;}catch{invalidateFestivalActivities(client,'FESTIVAL_PUSH_NOT_COPYABLE');}
+}
+export function readFestivalActivitySnapshot(client,expected=null) {
+  const state=liveFestivalActivities.get(client);
+  if(state&&!festivalContextCurrent(client,state))invalidateFestivalActivities(client,'FESTIVAL_CONTEXT_UNKNOWN_OR_CHANGED');
+  else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidateFestivalActivities(client,'FESTIVAL_CONNECTION_NOT_CURRENT');
+  const common={readOnly:true,executable:false,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',complete:false,independentRereadAvailable:false};
+  if(!state||state.invalid||!state.seeded||!state.snapshot||expected&&['accountId','generation','connectionId'].some(k=>vipValue(expected,k)!==state.context[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.reason??'FESTIVAL_CONTEXT_OR_PUSH_UNKNOWN',activities:null,observedAt:null,seq:null};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...state.context,...state.identity,...structuredClone(state.snapshot)};
+}
+export const FESTIVAL_ACTIVITY_OBSERVATION_EVIDENCE=Object.freeze({protocolSha256:LIVE_VIP_LEVEL_EVIDENCE.protocolSha256,source:'SCAllActivity.festivalActivities / DispFestivalActivity / DispSubActivity.dailyActive / DailyActiveDetail.checkInId',scope:'Transport observation only; no eligibility, game day, independent claim reread or automatic execution',realGame:'REAL_UNVERIFIED'});
+
 export class GameClient extends EventEmitter {
   constructor({ url = DEFAULT_GATEWAY, protocol, login = null, WebSocketImpl = globalThis.WebSocket, assertTransport = () => {}, accountId = null, generation = 0, gameClock = null } = {}) {
     super();
@@ -268,6 +305,8 @@ export class GameClient extends EventEmitter {
     livePlayerLevels.set(this, { owner: { accountId, generation } });
     resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
     resetPlayerLevel(this, 'PLAYER_NOT_LOGGED_IN');
+    liveFestivalActivities.set(this,{owner:{accountId,generation}});
+    resetFestivalActivities(this,'FESTIVAL_NOT_LOGGED_IN');
     liveMonthCards.set(this, { owner: { accountId, generation } });
     resetMonthCards(this, 'MONTH_CARD_NOT_LOGGED_IN');
     this.gameClock = gameClock ?? (typeof accountId === 'string' && accountId ? trustedGameClock({ accountId, generation }) : { reset() {}, markPing() {}, observePong() {}, read: () => ({ status: 'UNKNOWN', reliable: false, reason: 'CONTEXT_UNKNOWN' }) });
@@ -345,6 +384,7 @@ export class GameClient extends EventEmitter {
     this.gameClock.reset();
     resetVipLevel(this, 'VIP_LOGIN_PENDING');
     resetPlayerLevel(this, 'PLAYER_LOGIN_PENDING');
+    resetFestivalActivities(this,'FESTIVAL_LOGIN_PENDING');
     resetMonthCards(this, 'MONTH_CARD_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
@@ -359,6 +399,7 @@ export class GameClient extends EventEmitter {
       this.socket = socket;
       liveVipLevels.get(this).socket = socket;
       livePlayerLevels.get(this).socket = socket;
+      liveFestivalActivities.get(this).socket = socket;
       liveMonthCards.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
       const current = () => this.loginAttempt === attempt && this.socket === socket;
@@ -401,6 +442,7 @@ export class GameClient extends EventEmitter {
           this.loginResponse = body;
           seedVipLevel(this, body, socket);
           seedPlayerLevel(this, body, socket);
+          seedFestivalActivities(this,body,socket);
           seedMonthCards(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
           socket.onclose = (closed) => { if (this.socket === socket) this.onClose(closed); };
@@ -435,6 +477,7 @@ export class GameClient extends EventEmitter {
   finishConnection(state, error, reason = state.toLowerCase()) {
     resetVipLevel(this, 'VIP_CONNECTION_ENDED');
     resetPlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
+    resetFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
     resetMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
     this.gameClock.reset();
@@ -713,6 +756,7 @@ export class GameClient extends EventEmitter {
     } catch (error) {
       invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_DECODE_FAILED');
+      invalidateFestivalActivities(this,'FESTIVAL_STREAM_DECODE_FAILED');
       invalidateMonthCards(this, 'MONTH_CARD_STREAM_DECODE_FAILED', true);
       this.emit('error', new Error(`decode failed: ${error.message}`));
       return;
@@ -726,11 +770,13 @@ export class GameClient extends EventEmitter {
     if (name === 'ResendFailed' || name === 'SCChannelExpired') {
       invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
       invalidatePlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
+      invalidateFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
       invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
     }
     if (name === 'SCServerTimeChanged') this.gameClock.reset();
     if (name === 'SCVipUpdate') updateVipLevel(this, body, seq, receivedAt);
     if (name === 'SCPlayerExpUpdate') updatePlayerLevel(this, body, seq, receivedAt);
+    if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });
@@ -776,6 +822,7 @@ export class GameClient extends EventEmitter {
         } else {
           invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_SEQUENCE_GAP');
+          invalidateFestivalActivities(this,'FESTIVAL_STREAM_SEQUENCE_GAP');
           invalidateMonthCards(this, 'MONTH_CARD_STREAM_SEQUENCE_GAP', true);
           this.sendNack(this.recvSeqNo);
           this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });

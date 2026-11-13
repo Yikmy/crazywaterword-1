@@ -1,4 +1,5 @@
 import { normalize } from './worlds.mjs';
+import { readFestivalActivitySnapshot } from './client.mjs';
 import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
 import { pirateSweepView, observePirateVipLevel } from './pirate-sweep.mjs';
@@ -134,6 +135,7 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
     }));
     const sessionFacts = {
       vipLevel: observePirateVipLevel(client, quotaContext),
+      festivalActivities: toSnapshotJson(readFestivalActivitySnapshot(client,quotaContext)),
       monthCards: observePirateMonthCards(client, quotaContext),
       pirateClock: observePirateQuotaClock(client, quotaContext),
       pirateReadStartClock, pirateReadEndClock,

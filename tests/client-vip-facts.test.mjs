@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -265,4 +265,42 @@ for(const fault of ['missing','negative','zero-sequence','gap','decode','context
 });
 test('player event cursors are bounded, not forgeable, and isolated across reconnect and stale sockets',async t=>{
  const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(playerLogin(1)),old=readPlayerLevelEvent(f.client),handler=socket.onmessage;assert.equal(readPlayerLevelEvent({readPlayerLevelEvent:()=>old}).reliable,false);for(let seq=1;seq<=201;seq++)socket.receive('SCPlayerExpUpdate',{level:seq},seq);assert.equal(readPlayerLevelEvent(f.client,{cursor:1}).reliable,false);assert.equal(readPlayerLevelEvent(f.client,{cursor:2}).event.playerLevel,2);f.client.stop();assert.equal(readPlayerLevelEvent(f.client).reliable,false);await f.ready(playerLogin(2));const fresh=readPlayerLevelEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);assert.equal(fresh.cursor,0);handler({data:codec.encode('SCPlayerExpUpdate',1,{level:99})});assert.equal(readPlayerLevelEvent(f.client).playerLevel,2);
+});
+
+const festivalRecord=(extra={})=>({activityId:'9007199254740993',festival:1,type:'合成季节活动',season:1,startTime:800,openTime:900,closeTime:1900,endTime:2000,subActivity:[{subActivityType:11,openTime:900,closeTime:1900,dailyActive:{checkInId:[1],activeScore:0,claimedRewardId:0,checkRuby:'9007199254740993'}}],...extra});
+test('accepted festival pushes are private exact-ID observations independent of missing VIP or player level',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');const socket=await f.ready({result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:9}});
+ assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');f.client.emit('message',{name:'SCAllActivity',seq:1,body:{festivalActivities:[festivalRecord()]}});assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');
+ socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()]},1);const observed=readFestivalActivitySnapshot(f.client);
+ assert.equal(observed.status,'OBSERVED');assert.equal(observed.seq,1);assert.equal(observed.playerId,'9007199254740993');assert.equal(observed.worldId,'9');assert.equal(observed.accountId,'vip-account');assert.equal(observed.connectionId,'vip-connection');
+ assert.equal(observed.complete,false);assert.equal(observed.independentRereadAvailable,false);assert.equal(observed.executable,false);assert.equal(observed.scope,'ACCEPTED_STREAM_OBSERVATION_ONLY');
+ assert.equal(observed.activities[0].activityId.low,1);observed.activities[0].subActivity[0].dailyActive.checkInId.push(99);assert.deepEqual(readFestivalActivitySnapshot(f.client).activities[0].subActivity[0].dailyActive.checkInId,[1]);
+ f.client.loginResponse.playerInfo.playerId='2';assert.equal(readFestivalActivitySnapshot(f.client).playerId,'9007199254740993');assert.equal(readFestivalActivitySnapshot({factContext:f.client.factContext}).status,'UNKNOWN');
+ socket.receive('ClaimActivityDailyCheckInRewardResponse',{checkId:[1,2],reward:{asset:[]}},2);assert.deepEqual(readFestivalActivitySnapshot(f.client).activities[0].subActivity[0].dailyActive.checkInId,[1]);
+ socket.receive('SCAllActivity',{festivalActivities:[]},3);assert.deepEqual(readFestivalActivitySnapshot(f.client).activities,[]);assert.equal(readFestivalActivitySnapshot(f.client).seq,3);
+});
+for(const mode of['duplicate','gap','decode','zero-seq','role','world','account','generation','connection','socket','stop'])test('festival observations respect existing stream isolation: '+mode,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()]},1);
+ if(mode==='duplicate'){socket.receive('SCAllActivity',{festivalActivities:[festivalRecord({type:'unaccepted'})]},1);assert.equal(readFestivalActivitySnapshot(f.client).activities[0].type,'合成季节活动');return;}
+ if(mode==='gap'){socket.receive('SCAllActivity',{festivalActivities:[]},3);socket.receive('SCAllActivity',{festivalActivities:[]},2);}
+ else if(mode==='decode')f.client.onMessage(new Uint8Array([255]));
+ else if(mode==='zero-seq')socket.receive('SCAllActivity',{festivalActivities:[]},0);
+ else if(mode==='role')f.client.factContext.playerId='2';
+ else if(mode==='world')f.client.factContext.worldId='18';
+ else if(mode==='account')f.client.factContext.accountId='B';
+ else if(mode==='generation')f.client.factContext.generation++;
+ else if(mode==='connection')f.client.factContext.connectionId='replacement';
+ else if(mode==='socket')f.client.socket={};
+ else f.client.stop();
+ const result=readFestivalActivitySnapshot(f.client);assert.equal(result.status,'UNKNOWN');assert.equal(result.activities,null);assert.equal(result.executable,false);
+});
+test('festival observations do not survive reconnect or accept old socket callbacks',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),oldMessage=socket.onmessage;socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()]},MAX_SEQ);assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');socket.receive('SCAllActivity',{festivalActivities:[]},1);assert.equal(readFestivalActivitySnapshot(f.client).seq,1);
+ f.client.stop();await f.ready();assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');oldMessage({data:codec.encode('SCAllActivity',2,{festivalActivities:[festivalRecord()]})});assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');
+});
+test('original collector snapshots only same-collection-context festival observations and sends the original 48 reads',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()]},1);const reads=[];f.client.request=async name=>{reads.push(name);return {};};
+ const snap=await collectState(f.client,protocol);assert.equal(reads.length,48);assert.equal(snap.sessionFacts.festivalActivities.status,'OBSERVED');assert.equal(snap.sessionFacts.festivalActivities.activities[0].activityId,'9007199254740993');
+ const view=dailyChecklist(snap);assert.equal(view.festival.rows[0].checkInRecord.checkRuby,'9007199254740993');assert.deepEqual(view.festival.rows[0].checkInRecord.checkInId,[1]);assert.equal(view.festival.rows[0].eligible,null);assert.equal(view.festival.rows[0].executable,false);
+ f.client.request=async()=>{f.client.factContext.connectionId='changed-during-collection';return {};};const stale=await collectState(f.client,protocol);assert.equal(stale.sessionFacts.festivalActivities.status,'UNKNOWN');assert.equal(dailyChecklist(stale).festival.rows.length,0);assert.equal(reads.length,48);
 });

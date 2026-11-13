@@ -584,3 +584,12 @@ test('chip task HTTP blocks exact final-task transition and period changes befor
   await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');assert.equal(app.requests.some(r=>r.name==='WeekChipGotTaskRequest'),false);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+test('original dailies HTTP exposes only cached seasonal observations per account without creating any connection or write',async()=>{
+ const app=await harness();try{
+  const session=app.ready('A');session.connectionId='synthetic-push';session.player={playerId:'1',worldId:17};session.snapshot={ok:{},failed:{},sessionFacts:{festivalActivities:{status:'OBSERVED',reliable:true,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',accountId:'A',generation:1,connectionId:'synthetic-push',playerId:'1',worldId:'17',seq:1,observedAt:'2026-11-14T01:00:00.000Z',activities:[{activityId:'9007199254740993',festival:1,type:'合成活动',season:1,startTime:800,openTime:900,closeTime:1900,endTime:2000,subActivity:[{subActivityType:11,dailyActive:{checkInId:[1],activeScore:0,claimedRewardId:0,checkRuby:'9007199254740993'}}]}]}}};
+  const response=await app.call('/api/dailies');assert.equal(response.status,200);assert.equal(response.data.accountId,'A');const a=response.data.checklist.festival;assert.equal(a.status,'OBSERVED');assert.equal(a.rows[0].activityId,'9007199254740993');assert.deepEqual(a.rows[0].checkInRecord.checkInId,[1]);assert.equal(a.rows[0].checkInRecord.checkRuby,'9007199254740993');assert.equal(a.rows[0].eligible,null);assert.equal(a.rows[0].executable,false);assert.equal(a.complete,false);assert.match(response.data.text,/当前领取资格未知/);
+  for(const [object,key,value]of[[session,'generation',2],[session,'connectionId','other'],[session.player,'playerId','2'],[session.player,'worldId',18]]){const old=object[key];object[key]=value;const changed=(await app.call('/api/dailies')).data.checklist.festival;assert.equal(changed.status,'UNKNOWN');assert.deepEqual(changed.rows,[]);object[key]=old;}
+  app.ready('B');const other=await app.call('/api/dailies',{id:'B'});assert.equal(other.data.checklist.festival.status,'UNKNOWN');assert.deepEqual(other.data.checklist.festival.rows,[]);
+  assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal((await app.call('/api/dailies/run',{body:{confirm:true}})).data.code,'READ_ONLY_ROUTE');
+ }finally{await app.close();}
+});

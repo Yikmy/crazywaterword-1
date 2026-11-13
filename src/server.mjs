@@ -585,7 +585,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   async function dailies(session, account) {
     const config = loadConfigSafe();
-    const checklist = dailyChecklist(session.snapshot, { config });
+    const checklist = dailyChecklist(session.snapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
     const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true };
     // Partial caches still expose each independently observed checklist section.
     if (!["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"].every(name => Object.hasOwn(session.snapshot?.ok ?? {}, name))) {

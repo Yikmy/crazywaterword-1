@@ -1912,6 +1912,16 @@ function renderDailyChecklist(data) {
       row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):'未知','未知'
     ])));box.appendChild(el('p','dim',view.vip.note));
   }
+  if(view.festival){
+    const activity=view.festival;box.appendChild(el('h3','','季节活动 · 最近推送观察'));
+    box.appendChild(el('p','dim','来源 '+activity.source.source+' · '+activity.source.status+' · '+(activity.source.observedAt||'时间未知')+' · 序列 '+known(activity.source.seq)));
+    box.appendChild(table(['活动 ID / 类型 / 赛季','服务器窗口（秒，原值）','签到记录 checkInId','活跃 / 已报奖励 ID / checkRuby','观察状态','当前领取资格'],activity.rows.map(row=>[
+      known(row.activityId)+' / '+known(row.type)+' / '+known(row.season),
+      'start '+known(row.startTime)+'；open '+known(row.openTime)+'；close '+known(row.closeTime)+'；end '+known(row.endTime),
+      row.checkInRecord.checkInId===null?'未知':row.checkInRecord.checkInId.length?row.checkInRecord.checkInId.join('、'):'服务器报告空列表',
+      known(row.checkInRecord.activeScore)+' / '+known(row.checkInRecord.claimedRewardId)+' / '+known(row.checkInRecord.checkRuby),row.status+(row.reason?'：'+row.reason:''),'未知：签到资格及独立复读缺证'
+    ])));box.appendChild(el('p','dim',activity.note));
+  }
   const source=view.sources;
   $('dailies-view').textContent=(data.stale?'缓存已过期；':'')+'每日任务来源 '+source.daily.status+' / '+(source.daily.observedAt||'采集时间未知')+'；赠礼来源 '+source.gift.status+' / '+(source.gift.observedAt||'采集时间未知')+String.fromCharCode(10)+view.note;
 }
