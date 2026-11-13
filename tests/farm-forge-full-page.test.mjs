@@ -799,3 +799,55 @@ test('unified generated declaration compiles with the original Registry and keep
  h.respond('/api/workflows/prepare',{accountId:'A',...result});await pending;
  assert.equal(h.node('wf-id').value,'business-form');assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h).length,1);
 });
+
+
+function unifiedCandidateButton(h,spec,actionId=spec.actionId) {
+ return descendants(h.node('gp-'+spec.module+'-candidates')).find(n=>n.dataset.unifiedCandidate===actionId);
+}
+test('professional candidates populate Loop world steps with exact parameters and no reads, authorization or budget expansion',async()=>{
+ for(const spec of [cases.find(s=>s.module==='mail'&&s.actionType==='CLAIM'),cases.find(s=>s.module==='pet'),cases.find(s=>s.actionType==='FRAGMENT-EXCHANGE'),pirateCase,cases.find(s=>s.module==='free-gold'),cases.find(s=>s.module==='farm'&&s.actionType==='PLANT')]){
+  const h=await loaded(spec),before=h.requests.length,button=unifiedCandidateButton(h,spec);assert.ok(button);assert.equal(button.disabled,false);button.click();
+  const draft=unifiedDraft(h);assert.equal(draft.entry,'loop');assert.deepEqual(draft.world,[{module:spec.module,parameters:spec.parameters,selection:{actionId:spec.actionId}}]);assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});
+  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.ok(h.node('wf-unified-steps').textContent.includes(spec.actionId));assert.match(h.node('gp-'+spec.module+'-hint').textContent,/已加入 Loop/);
+  const modules={[spec.module]:{id:spec.module,survey(){throw Error('local import cannot survey')},view(){},plan(){},verify(){}}},compiled=compileUnifiedExecution(draft,{modules});
+  const action=compiled.graph.nodes.find(n=>n.type==='ACTION');assert.deepEqual(action.parameters,spec.parameters);assert.deepEqual(action.selection,{actionId:spec.actionId});
+ }
+});
+test('candidate imports preserve existing phases, metadata, exact world selections and cumulative budget',async()=>{
+ const spec=cases.find(s=>s.module==='pet'),h=await loaded(spec);
+ const draft={entry:'loop',id:'preserved',name:'原工作流',rounds:2,everyMs:700,tasks:[{kind:'main',taskId:7}],dailies:[{taskId:1006}],world:[{module:'formation',parameters:{presetId:2},selection:'formation-exact'}],budget:{resources:[{id:'鱼肠线',num:24}],quotas:[{id:'quota-one',num:1}],uids:[{type:'pet-job',id:'9007199254740995'}]}};
+ unifiedLoad(h,draft);unifiedCandidateButton(h,spec).click();const next=unifiedDraft(h);
+ assert.deepEqual({...next,world:draft.world},draft);assert.deepEqual(next.world,[...draft.world,{module:'pet',parameters:spec.parameters,selection:{actionId:spec.actionId}}]);assert.equal(writes(h).length,0);
+ unifiedStep(h,'world:1','-1').click();assert.equal(unifiedDraft(h).world[0].module,'pet');unifiedStep(h,'world:0','0').click();assert.deepEqual(unifiedDraft(h).world,draft.world);
+});
+test('import refuses malformed or non-Loop declarations and preserves existing contents',async()=>{
+ const spec=cases.find(s=>s.module==='free-gold'),h=await loaded(spec);
+ for(const source of ['{',JSON.stringify({entry:'tasks',tasks:[{kind:'main',taskId:1}],budget:{resources:[],quotas:[],uids:[]}}),JSON.stringify({entry:'dailies',dailies:[{taskId:1006}],budget:{resources:[],quotas:[],uids:[]}})]){
+  h.node('wf-unified-intent').value=source;unifiedCandidateButton(h,spec).click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-'+spec.module+'-hint').textContent,/加入声明失败/);
+ }
+ assert.equal(writes(h).length,0);
+});
+test('blocked candidates and candidates without explicit parameters cannot be imported by guessing the current textarea',async()=>{
+ const spec=cases.find(s=>s.module==='mail'&&s.actionType==='CLAIM'),h=await loaded(spec),blocked=unifiedCandidateButton(h,spec,spec.actionId+':blocked'),before=h.requests.length;
+ assert.equal(blocked.disabled,true);blocked.click();assert.equal(h.node('wf-unified-intent').value,'');
+ const loading=h.node('gp-mail-load').click();const response=data(spec);delete response.view.candidates[0].parameters;h.respond('/api/gameplay',response,{module:'mail'});await loading;
+ h.node('gp-mail-parameters').value=JSON.stringify(spec.parameters);const missing=unifiedCandidateButton(h,spec);assert.equal(missing.disabled,true);missing.click();assert.equal(h.node('wf-unified-intent').value,'');assert.match(h.node('gp-mail-candidates').textContent,/缺少明确业务参数/);assert.equal(h.requests.length,before+1);
+});
+test('stale professional import callbacks reject new cache versions, parameter edits and A-B-A changes',async()=>{
+ const spec=cases.find(s=>s.module==='pet'),h=await loaded(spec),old=unifiedCandidateButton(h,spec);
+ const reading=h.node('gp-pet-load').click();h.respond('/api/gameplay',data(spec),{module:'pet'});await reading;old.click();assert.equal(h.node('wf-unified-intent').value,'');
+ let button=unifiedCandidateButton(h,spec);h.node('gp-pet-parameters').value='{}';h.node('gp-pet-parameters').oninput();const before=h.requests.length;button.click();assert.equal(h.node('wf-unified-intent').value,'');
+ h.run("selectAccount('B');selectAccount('A')");old.click();button.click();assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.requests.length,before);
+});
+test('Workflow pending and running state lock existing candidate import controls until the original read completes',async()=>{
+ const spec=cases.find(s=>s.module==='free-gold'),h=await loaded(spec),button=unifiedCandidateButton(h,spec);
+ const reading=h.node('wf-load').click();assert.equal(button.disabled,true);button.click();assert.equal(h.node('wf-unified-intent').value,'');
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;assert.equal(button.disabled,true);button.click();assert.equal(h.node('wf-unified-intent').value,'');
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;assert.equal(button.disabled,false);button.click();assert.equal(unifiedDraft(h).world[0].module,'free-gold');assert.equal(writes(h).length,0);
+});
+test('candidate import respects world step limit and renders exact identities as text',async()=>{
+ const spec={...cases.find(s=>s.module==='free-gold'),actionId:'<img onerror=alert(1)>'},h=await loaded(spec);
+ unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:Array.from({length:48},(_,i)=>({module:'free-gold',parameters:{},selection:'known-'+i})),budget:{resources:[],quotas:[],uids:[]}});
+ const source=h.node('wf-unified-intent').value;unifiedCandidateButton(h,spec).click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-free-gold-hint').textContent,/最多48/);
+ unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],budget:{resources:[],quotas:[],uids:[]}});unifiedCandidateButton(h,spec).click();assert.ok(h.node('wf-unified-steps').textContent.includes(spec.actionId));assert.ok(descendants(h.node('wf-unified-steps')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
+});
