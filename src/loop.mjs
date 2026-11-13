@@ -137,7 +137,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
       if(phase==='tasks'){
-        if(['daily-gift','weekly-lottery-gift'].includes(row?.kind)){
+        if(['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift'].includes(row?.kind)){
           exact(row,['kind','packId']);if(row.packId!==(row.kind==='daily-gift'?'赠礼':'1000'))invalid('仅允许明确固定免费礼包');
           module='task-rewards';parameters={kind:row.kind,packId:row.packId};
         }else if(row?.kind==='daily-activity'){
@@ -152,7 +152,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
         }
       } else if(phase==='dailies'){
-        const activity=row?.kind==='daily-activity',gift=['daily-gift','weekly-lottery-gift'].includes(row?.kind);
+        const activity=row?.kind==='daily-activity',gift=['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift'].includes(row?.kind);
         exact(row,gift?['kind','packId','parameters','action']:activity?['kind','tierId','parameters','action']:['taskId','parameters','action']);
         if(gift){if(row.packId!==(row.kind==='daily-gift'?'赠礼':'1000')||row.action!=='claim')invalid('免费礼包须明确固定packId与action=claim');}
         else if(activity){

@@ -20,9 +20,11 @@ import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish());
 const parameters={kind:'daily',taskId:1001};
-function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null,gift=false,weekly=false}={}){
+function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null,gift=false,weekly=false,unique=false}={}){
  const state={wall:1000000,mono:100,daily:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false},{id:1002,progress:0,targetProgress:2,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[1],weeklyRewardClaimed:[],dailyResetTime:2000},stock:[{itemId:'unrelated',num:9}],resources:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
  state.week={activityTime:[{type:4,period:12,startTime:900,endTime:2000},{type:5,period:13,startTime:800,endTime:2100}]};
+ if(unique)state.week.activityTime[0]={type:7,period:20001,startTime:900,endTime:2000};
+ state.unique={gift:[{giftId:1001,gotTimes:1,charge:30}],floor:2,prizePos:[{prizeId:2,pos:1},{prizeId:0,pos:2}],selectId:1001,gotFree:false,gotFloor:1,buyTimes:0};
  state.weekly={gift:[{giftId:1000,gotTimes:0,charge:0},{giftId:1001,gotTimes:1,charge:30}],gotInfo:{times:7,gotStage:1}};
  state.gift={heroId:'马斯克',resetTime:1,boughtPack:[],drawnPack:[]};
  const clock=trustedGameClock({accountId:'synthetic-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
@@ -37,17 +39,18 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
    await state.onWrite?.();return codec?wire(r,receipt):clone(receipt);
   }
   state.reads.push(n);await state.onRead?.(n);
-  let value=n==='WeekInfoRequest'?state.week:n==='WeekLotteryInfoRequest'?state.weekly:n==='DailyGiftPackRequest'?state.gift:n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
+  let value=n==='WeekUniqueLotteryRequest'?state.unique:n==='WeekInfoRequest'?state.week:n==='WeekLotteryInfoRequest'?state.weekly:n==='DailyGiftPackRequest'?state.gift:n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  },
  async sendWatch(n,b,opts){
+  if(unique){assert.equal(n,'GotUniqueLotteryFreeRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.unique.gotFree=true;state.resources.find(r=>r.res===4).amount+=10;const coin=state.stock.find(r=>r.itemId==='周翻牌币');if(coin)coin.num++;else state.stock.push({itemId:'周翻牌币',num:1});}await state.onWrite?.();return {status:'UNKNOWN'};}
   if(weekly){assert.equal(n,'WeekLotteryFreePackRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.weekly.gift[0].gotTimes=1;state.resources.find(r=>r.res===4).amount+=10;const coin=state.stock.find(r=>r.itemId==='周转盘币');if(coin)coin.num++;else state.stock.push({itemId:'周转盘币',num:1});}await state.onWrite?.();return {status:'UNKNOWN'};}
   if(gift){assert.equal(n,'GotFreeDailyPackRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.gift.drawnPack.push('赠礼');state.resources.find(r=>r.res===4).amount+=10;}await state.onWrite?.();return {status:'UNKNOWN'};}
   assert.equal(n,'DrawDailyRewardRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});
   if(apply){const season=Number(BigInt(options.player.worldId)/1000000n%1000n),rows=actual.tables.DailyActivityRewardCfg.data,selected=Math.max(...rows.filter(r=>r.season<=season).map(r=>r.season)),row=rows.find(r=>r.season===selected&&r.id===b.index[0]);state.daily.dailyRewardClaimed.push(row.id);const [id,num]=row.reward,old=state.stock.find(i=>i.itemId===id);if(old)old.num+=num;else state.stock.push({itemId:id,num});}
   await state.onWrite?.();return {status:'UNKNOWN'};
  }};
- const options={config:{tables:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
+ const options={config:{tables:unique?{WeekUniquePackCfg:clone(actual.tables.WeekUniquePackCfg)}:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:unique?{kind:'weekly-unique-lottery-gift',packId:'1000'}:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
  return {state,client,options};
 }
 async function ready(input={},mutate){const f=fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
@@ -656,4 +659,107 @@ test('weekly late observation after cancellation is durable UNKNOWN; refusal mem
   const x=serviceFixture(t,{weekly:true,file:no.file});x.session.connectionId=x.client.factContext.connectionId='replacement-'+phase;const compiled=compileUnifiedExecution({entry:phase,[phase]:[{...x.options.parameters,...(phase==='dailies'?{action:'claim'}:{})}],budget:plan.budgetClaims},{modules:GAMEPLAY_MODULES});
   const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:x.service,claim:(_id,runId,options)=>x.service.claimWorkflow(x.session,runId,options),getSession:()=>x.session});t.after(()=>runner.stop());const run=await runner.start(x.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(x.state.writes.length,0);
  }
+});
+
+test('unique weekly free pack requires explicit gotFree and preserves every unrelated activity field',async()=>{
+ const f=await ready({unique:true});assert.ok(f.operation,JSON.stringify(f.row));assert.deepEqual(f.operation.target,{kind:'weekly-unique-lottery-gift',packId:'1000',type:7,period:20001,startTime:900,endTime:2000});
+ assert.deepEqual(f.state.reads,['WeekUniqueLotteryRequest','WeekInfoRequest','AllItemRequest','AllResourceRequest']);assert.deepEqual(f.operation.action,{request:'GotUniqueLotteryFreeRequest',response:null,body:{}});assert.deepEqual(f.operation.rewards,[{id:'周翻牌币',num:1},{id:'RUBY',num:10}]);
+ assert.equal(f.operation.budgetClaims.uids[0].type,'free-weekly-unique-lottery-gift');
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'SUCCESS',result.error);assert.deepEqual(f.state.writes,[{name:'GotUniqueLotteryFreeRequest',body:{}}]);assert.equal(f.state.unique.gotFree,true);
+ const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(after.stock.get('周翻牌币'),1);assert.equal(after.stock.get('RUBY'),60);assert.equal(viewTaskRewards(after,f.options).candidates[0].blockedReason,'WEEKLY_GIFT_ALREADY_CLAIMED');
+});
+test('unique weekly public contract and D6 bind fixed free pack and exact config',async()=>{
+ const p={kind:'weekly-unique-lottery-gift',packId:'1000'},{validateFunctionParameters}=await import('../src/function-contracts.mjs');assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,p),p);
+ for(const bad of[{kind:p.kind},{...p,packId:1000},{...p,packId:'1001'},{...p,packId:'赠礼'},{...p,taskId:1},{...p,tierId:1}])assert.throws(()=>validateTaskRewardsParameters(bad),{code:'INVALID_PARAMETERS'});
+ const a={request:'GotUniqueLotteryFreeRequest',body:{},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));
+ for(const body of[null,undefined,[],{packId:1000},{buy:false}])assert.throws(()=>assertPaymentAllowed({...a,body}));
+ for(const costs of[null,undefined,Array(1),[{id:'RUBY',num:1}],[{id:'GOLD',num:1}]])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+ const f=await ready({unique:true}),v=taskRewardsDependencyVersions(f.options);assert.deepEqual(Object.keys(v.tables),['WeekUniquePackCfg']);const cfg=clone(f.options.config);cfg.tables.WeekLotteryPackCfg={revision:1};assert.deepEqual(taskRewardsDependencyVersions({...f.options,config:cfg}),v);cfg.tables.WeekUniquePackCfg.revision=1;assert.notDeepEqual(taskRewardsDependencyVersions({...f.options,config:cfg}),v);
+});
+for(const [label,mutate]of[
+ ['missing gotFree',f=>delete f.state.unique.gotFree],
+ ['non-boolean gotFree',f=>f.state.unique.gotFree=0],
+ ['already claimed',f=>f.state.unique.gotFree=true],
+ ['ambiguous free gift record',f=>f.state.unique.gift.push({giftId:1000,gotTimes:0,charge:0})],
+ ['missing floor',f=>delete f.state.unique.floor],
+ ['missing selection',f=>delete f.state.unique.selectId],
+ ['missing floor claims',f=>delete f.state.unique.gotFloor],
+ ['missing buyTimes',f=>delete f.state.unique.buyTimes],
+ ['missing positions',f=>delete f.state.unique.prizePos],
+ ['missing position prize',f=>delete f.state.unique.prizePos[0].prizeId],
+ ['duplicate positions',f=>f.state.unique.prizePos.push(clone(f.state.unique.prizePos[0]))],
+ ['missing gift charge',f=>delete f.state.unique.gift[0].charge],
+ ['duplicate gift',f=>f.state.unique.gift.push(clone(f.state.unique.gift[0]))],
+ ['normal event does not substitute',f=>f.state.week.activityTime[0].type=4],
+ ['duplicate unique event',f=>f.state.week.activityTime.push(clone(f.state.week.activityTime[0]))],
+ ['future event',f=>f.state.week.activityTime[0].startTime=1001],
+ ['expired event',f=>f.state.week.activityTime[0].endTime=1000],
+ ['missing clock',f=>f.client.gameClock=null],
+ ['missing RUBY',f=>f.state.resources=f.state.resources.filter(r=>r.res!==4)],
+ ['coin overflow',f=>f.state.stock.push({itemId:'周翻牌币',num:Number.MAX_SAFE_INTEGER})],
+ ['missing config',f=>delete f.options.config.tables.WeekUniquePackCfg],
+ ['paid config',f=>f.options.config.tables.WeekUniquePackCfg.data[0].price=1],
+ ['wrong coin',f=>f.options.config.tables.WeekUniquePackCfg.data[0].reward[0][0]='周转盘币'],
+ ['guild reward',f=>f.options.config.tables.WeekUniquePackCfg.data[0].guildPack=['礼包',1]],
+ ['read failure',f=>f.state.overrides.WeekUniqueLotteryRequest=Error('synthetic unavailable')],
+])test('unique weekly qualification fails closed: '+label,async()=>{const f=await ready({unique:true,codec:false},mutate);assert.equal(f.operation,undefined);assert.equal(f.state.writes.length,0);});
+for(const [label,mutate]of[
+ ['gotFree absent',f=>delete f.state.unique.gotFree],
+ ['not claimed',f=>f.state.unique.gotFree=false],
+ ['gift changed',f=>f.state.unique.gift[0].gotTimes++],
+ ['floor changed',f=>f.state.unique.floor++],
+ ['selection changed',f=>f.state.unique.selectId++],
+ ['claimed floor changed',f=>f.state.unique.gotFloor++],
+ ['purchase count changed',f=>f.state.unique.buyTimes++],
+ ['prize changed',f=>f.state.unique.prizePos[0].prizeId++],
+ ['new prize',f=>f.state.unique.prizePos.push({prizeId:3,pos:3})],
+ ['period changed',f=>f.state.week.activityTime[0].period++],
+ ['unrelated event changed',f=>f.state.week.activityTime[1].period++],
+ ['coin missing',f=>f.state.stock.pop()],
+ ['RUBY missing',f=>f.state.resources.find(r=>r.res===4).amount=50],
+ ['other inventory changed',f=>f.state.stock[0].num++],
+ ['event expired',f=>f.state.mono+=1000000],
+ ['config changed',f=>f.options.config.tables.WeekUniquePackCfg.revision=1],
+])test('unique weekly uncertain settlement stays UNKNOWN: '+label,async()=>{
+ const f=await ready({unique:true});await f.client.sendWatch('GotUniqueLotteryFreeRequest',{});mutate(f);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,false);
+});
+test('unique weekly fresh authority, protocol and exact canonical contract cannot be forged',async()=>{
+ const f=await ready({unique:true});await f.client.sendWatch('GotUniqueLotteryFreeRequest',{});const after=await surveyTaskRewards(f.client,protocol,f.options);
+ assert.equal(verifyTaskReward(f.operation,f.facts,after,{}).confirmed,false);assert.equal(verifyTaskReward(f.operation,clone(f.facts),after,null).confirmed,false);
+ for(const change of[o=>o.target.type=4,o=>o.action.request='WeekLotteryFreePackRequest',o=>o.action.body.packId=1000,o=>o.expectedState.daily.gift=[],o=>o.budgetClaims.uids=[],o=>o.rewards[0].id='周转盘币']){const o=clone(f.operation);change(o);assert.equal(verifyTaskReward(o,f.facts,after,null).confirmed,false);}
+ for(const change of[f=>f.facts.sourceFacts.week.provenance.sourceAt=Date.now()-30001,f=>f.client.factContext.accountId='B',f=>f.client.factContext.generation++,f=>f.client.factContext.connectionId='replacement',f=>f.options.player.playerId='2',f=>f.options.player.worldId='18']){
+  const x=await ready({unique:true});change(x);assert.equal(planTaskRewards(x.facts,{...x.options,selections:[x.operation.actionId]}).actions.length,0);assert.equal(x.state.writes.length,0);
+ }
+ const x=fixture({unique:true}),p={...protocol};delete p.GotUniqueLotteryFreeRequest;assert.equal(viewTaskRewards(await surveyTaskRewards(x.client,p,x.options),x.options).candidates[0].blockedReason,'PROTOCOL_UNAVAILABLE');
+});
+for(const apply of[true,false])test('unique weekly original Service and three-entry history '+(apply?'settle and block duplicate':'stop UNKNOWN across restart'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{unique:true,apply}),read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),compiled=compileUnifiedExecution({entry:'loop',tasks:[f.options.parameters],dailies:[{...f.options.parameters,action:'claim'}],rounds:2,budget:read.view.candidates[0].budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(()=>runner.stop());let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const {record}=await f.run(run.plan);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN',record.stopReason);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(record.runBudget.reserved.uids,read.view.candidates[0].budgetClaims.uids);
+ if(!apply){const next=serviceFixture(t,{unique:true,file:f.file});next.state.week.activityTime[0].period++;await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+test('unique weekly original Service blocks persist failure, stale authority and parent UID before dispatch',async t=>{
+ for(const mode of['disk','cancel','parent','config','expired']){
+  const f=serviceFixture(t,{unique:true});if(mode==='parent'){f.service.claimWorkflow(f.session,'unique-parent',{limits:{resources:[],quotas:[],uids:[]}});await assert.rejects(f.plan());continue;}
+  const p=await f.plan();if(mode==='config'){f.options.config.tables.WeekUniquePackCfg.revision=1;assert.throws(()=>f.authorize(p));continue;}const permit=f.authorize(p);
+  if(mode==='cancel')f.session.abort.abort();else if(mode==='expired')f.state.onDispatch=()=>{f.state.mono+=1000000;};else{const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}
+  try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0,mode);
+ }
+});
+test('unique weekly cancellation late observation and shared refusal use the original durable memory',async t=>{
+ const f=serviceFixture(t,{unique:true}),p=await f.plan();let release;f.state.onWrite=()=>new Promise(r=>release=r);f.service.execute(f.session,f.authorize(p));for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();await f.service.settle(f.session.id);assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');
+ const next=serviceFixture(t,{unique:true,file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),no=serviceFixture(t,{unique:true,apply:false});no.state.onWrite=()=>{throw Object.assign(Error('synthetic refused'),{code:'REJECTED'});};const plan=await no.plan();assert.equal((await no.run(plan)).record.finalStatus,'REJECTED');
+ for(const phase of['tasks','dailies']){const x=serviceFixture(t,{unique:true,file:no.file});x.session.connectionId=x.client.factContext.connectionId='replacement-'+phase;const compiled=compileUnifiedExecution({entry:phase,[phase]:[{...x.options.parameters,...(phase==='dailies'?{action:'claim'}:{})}],budget:plan.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:x.service,claim:(_id,runId,options)=>x.service.claimWorkflow(x.session,runId,options),getSession:()=>x.session});t.after(()=>runner.stop());const run=await runner.start(x.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(x.state.writes.length,0);}
+});
+
+test('weekly variants never reuse another variant facts or manufacture authority from empty data',async()=>{
+ for(const unique of[true,false]){
+  const f=await ready(unique?{unique:true}:{weekly:true}),parameters={kind:unique?'weekly-lottery-gift':'weekly-unique-lottery-gift',packId:'1000'};
+  assert.equal(planTaskRewards(f.facts,{...f.options,parameters,selections:[f.operation.actionId]}).actions.length,0);
+  assert.equal(viewTaskRewards({}, {...f.options,parameters}).candidates[0].executable,false);assert.equal(f.state.writes.length,0);
+ }
+});
+test('normal weekly refusal identity retains the committed 93bd81f contract across unique-pack extension',async()=>{
+ const f=await ready({weekly:true}),prior=clone(f.operation);prior.costSource='Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
+ assert.deepEqual(taskRewardsModule.rejectionIdentity(f.operation),taskRewardsModule.rejectionIdentity(prior));
 });

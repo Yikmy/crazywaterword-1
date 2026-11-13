@@ -70,6 +70,7 @@ const pirateCase={module:'pirate-sweep',actionId:'pirate-sweep:synthetic-exact',
  quota:{dayKey:pirateDay,used:2,total:13,remaining:11,reason:null},quotaBreakdown:{base:10,vip:1,monthCards:2},targets:[pirateTarget,{...pirateTarget,uid:18,level:4,levelRelation:'FIRST_KILL_REQUIRED'}],
 }};
 const cases = [
+  {module:'task-rewards',actionId:'task-rewards:weekly-unique-lottery-gift:synthetic',actionType:'CLAIM',parameters:{kind:'weekly-unique-lottery-gift',packId:'1000'},costs:[],facts:{daily:{activityTime:[{type:7,period:20001,startTime:900,endTime:2000}],gift:[],gotFree:false}},blockedReason:'WEEKLY_GIFT_ALREADY_CLAIMED'},
   {module:'task-rewards',actionId:'task-rewards:weekly-lottery-gift:synthetic',actionType:'CLAIM',parameters:{kind:'weekly-lottery-gift',packId:'1000'},costs:[],facts:{daily:{activityTime:[{type:4,period:12,startTime:900,endTime:2000}],gift:[{giftId:1000,gotTimes:0,charge:0}],gotInfo:{times:0,gotStage:0}}},blockedReason:'WEEKLY_GIFT_ALREADY_CLAIMED'},
   {module:'task-rewards',actionId:'task-rewards:daily-gift:synthetic',actionType:'CLAIM',parameters:{kind:'daily-gift',packId:'赠礼'},costs:[],facts:{daily:{heroId:'马斯克',resetMarker:1,boughtPack:[],drawnPack:[]}},blockedReason:'DAILY_GIFT_ALREADY_CLAIMED'},
   {module:'material-packs',actionId:'material-packs:synthetic-exact',actionType:'EXCHANGE',parameters:{packId:'原料自选包',itemId:'木材',num:2},target:{packId:'原料自选包',itemId:'木材'},costs:[{id:'原料自选包',num:2}],facts:{season:1,packs:[{packId:'原料自选包',have:5,targets:[{itemId:'木材',perPack:1,requiredSeason:1,have:0}]}]},blockedReason:'MATERIAL_PACK_SHORTAGE'},
@@ -2099,4 +2100,16 @@ test('weekly lottery unified form builds fixed Tasks and Dailies aliases with no
  unifiedAdd(h,'tasks','weekly-lottery-gift','');assert.equal(h.node('wf-unified-target').disabled,true);unifiedAdd(h,'dailies','weekly-lottery-gift','');assert.equal(h.node('wf-unified-target').disabled,true);
  assert.deepEqual(unifiedDraft(h).tasks,[{kind:'weekly-lottery-gift',packId:'1000'}]);assert.deepEqual(unifiedDraft(h).dailies,[{kind:'weekly-lottery-gift',packId:'1000',action:'claim'}]);assert.match(h.node('wf-unified-target-label').textContent,/1000/);
  assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('unique weekly page prepares exact free pack and displays explicit gotFree and type7 window',async()=>{
+ const spec=cases.find(s=>s.parameters.kind==='weekly-unique-lottery-gift'),h=await loaded(spec),controls=descendants(h.node('gp-task-rewards-facts')),kind=controls.find(n=>n.dataset.dailyRewardKind),input=controls.find(n=>n.dataset.dailyRewardId),prepare=controls.find(n=>n.dataset.dailyRewardPrepare);
+ kind.value='weekly-unique-lottery-gift';input.value='';const before=h.requests.length;prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),{kind:'weekly-unique-lottery-gift',packId:'1000'});assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
+ const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'weekly-unique-lottery-gift',packId:'1000'}});h.respond('/api/gameplay/survey',data(spec));await survey;assert.match(h.node('gp-task-rewards-facts').textContent,/周翻牌免费礼包 · 已领 false/);assert.match(h.node('gp-task-rewards-facts').textContent,/活动期数 20001/);assert.match(h.node('gp-task-rewards-facts').textContent,/900 至 2000/);
+ h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('unique weekly unified form creates fixed aliases without choosing a card or spending currency',async()=>{
+ const h=await unifiedForm('loop');unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'tasks','weekly-unique-lottery-gift','');assert.equal(h.node('wf-unified-target').disabled,true);unifiedAdd(h,'dailies','weekly-unique-lottery-gift','');assert.equal(h.node('wf-unified-target').disabled,true);
+ assert.deepEqual(unifiedDraft(h).tasks,[{kind:'weekly-unique-lottery-gift',packId:'1000'}]);assert.deepEqual(unifiedDraft(h).dailies,[{kind:'weekly-unique-lottery-gift',packId:'1000',action:'claim'}]);assert.match(h.node('wf-unified-target-label').textContent,/周翻牌/);assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });

@@ -14,8 +14,10 @@ const uint=v=>Number.isInteger(v)&&v>=0&&v<=2147483647,positive=v=>uint(v)&&v>0;
 const text=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const sources={daily:'DailyTaskInfoResponse',items:'AllItemResponse',resources:'AllResourceResponse'},configNames=['DailyTaskCfg'],liveFacts=new WeakMap();
-const configNamesFor=p=>p?.kind==='weekly-lottery-gift'?['WeekLotteryPackCfg']:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
-const sourcesFor=p=>p?.kind==='weekly-lottery-gift'?{daily:'WeekLotteryInfoResponse',week:'WeekInfoResponse',items:sources.items,resources:sources.resources}:p?.kind==='daily-gift'?{daily:'DailyGiftPackResponse',items:sources.items,resources:sources.resources}:sources;
+const weeklyKinds=['weekly-lottery-gift','weekly-unique-lottery-gift'];
+const weekSpec=p=>p?.kind==='weekly-unique-lottery-gift'?{type:7,table:'WeekUniquePackCfg',info:'WeekUniqueLotteryResponse',request:'GotUniqueLotteryFreeRequest',coin:'周翻牌币',label:'周翻牌',unique:true}:{type:4,table:'WeekLotteryPackCfg',info:'WeekLotteryInfoResponse',request:'WeekLotteryFreePackRequest',coin:'周转盘币',label:'周转盘',unique:false};
+const configNamesFor=p=>weeklyKinds.includes(p?.kind)?[weekSpec(p).table]:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
+const sourcesFor=p=>weeklyKinds.includes(p?.kind)?{daily:weekSpec(p).info,week:'WeekInfoResponse',items:sources.items,resources:sources.resources}:p?.kind==='daily-gift'?{daily:'DailyGiftPackResponse',items:sources.items,resources:sources.resources}:sources;
 const costSource='Fixed v76 DailyTaskItem._gotReward/_buildExpReward and DailyTaskModel.increaseActivity: exact task id, configured EXP and typed activity delta to both daily and weekly counters';
 export const DAILY_TASK_REWARD_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js DailyTaskItem.ts / DailyTaskModel.ts / DailyTaskPanel.ts',itemByte:1642263,itemSha256:'322c2df607970618ba59f1f29f53a86cfa219c292c89870604eeb4bdce2bbd65',modelByte:1646749,modelSha256:'8cd26d52987707fbf81ff6f5513728f6bcccbcf604ee54c1fd59965acb868075',semantics:'dailyResetTime is server seconds; activity response is an increment for both daily and weekly; EXP from DailyTaskCfg.exp',realGame:'REAL_UNVERIFIED'});
 function roleId(v) {
@@ -45,7 +47,7 @@ function parseDaily(raw){
  return {resetTime:raw.dailyResetTime,dailyActivity:raw.dailyActivity,weeklyActivity:raw.weeklyActivity,...claims,tasks:tasks.sort((a,b)=>a.taskId-b.taskId)};
 }
 const stockState=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
-const parseFor=(inputs,p)=>p?.kind==='weekly-lottery-gift'?parseWeekly(inputs?.daily,inputs?.week):p?.kind==='daily-gift'?parseGift(inputs?.daily):parseDaily(inputs?.daily);
+const parseFor=(inputs,p)=>weeklyKinds.includes(p?.kind)?parseWeekly(inputs?.daily,inputs?.week,p):p?.kind==='daily-gift'?parseGift(inputs?.daily):parseDaily(inputs?.daily);
 const snapshot=(inputs,context,p)=>{const daily=parseFor(inputs,p),i=parseOperationInventory(inputs?.items,inputs?.resources);return daily&&i.stockReliable?{context,daily,inventory:stockState(i.stock)}:null;};
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout=15000}={}){
@@ -70,16 +72,16 @@ function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.paramete
  const reset=f?.daily?.resetTime??null,identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:'daily:'+reset+':'+taskId}]};
  return {module:moduleId,capabilityId:'C503',actionId:moduleId+':daily:'+reset+':'+taskId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset},parameters:p,identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'日常任务 '+taskId+' 奖励',rewards:def?[{id:'EXP',num:def.exp}]:null,activityGain:def?.point??null,progress:task?.progress??null,requiredProgress:task?.targetProgress??null,...(blockedReason===null?{action:{request,response,body:{id:taskId}}}:{})};
 }
-const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (kind==='weekly-lottery-gift'?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
-export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),row.parameters.kind==='weekly-lottery-gift'?'仅领取服务器明确未领的1000号免费周转盘礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
+const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
+export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
 export function planDailyTaskReward(f,{parameters,selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){const row=viewDailyTaskReward(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 export function verifyDailyTaskReward(operation,before,after,result){const no=reason=>({confirmed:false,reason});
- if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence)||(before.parameters?.kind==='weekly-lottery-gift'?(!currentWeek(before)||!currentWeek(after)):before.parameters?.kind!=='daily-gift'&&(!currentPeriod(before)||!currentPeriod(after))))return no('日常任务前后身份、周期、配置或完整库存不可靠');
+ if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence)||(weeklyKinds.includes(before.parameters?.kind)?(!currentWeek(before)||!currentWeek(after)):before.parameters?.kind!=='daily-gift'&&(!currentPeriod(before)||!currentPeriod(after))))return no('日常任务前后身份、周期、配置或完整库存不可靠');
  const canonical=candidateFor(before,{config:before.configEvidence,moduleConfig:{enabled:true},parameters:before.parameters});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards','activityGain'].some(k=>!same(operation?.[k],canonical[k])))return no('日常领取合同与写前明确任务不一致');
- if(canonical.parameters.kind==='weekly-lottery-gift'){
+ if(weeklyKinds.includes(canonical.parameters.kind)){
   if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周转盘礼包的同活动期数、唯一领取计次和完整库存净入未同时确认');
-  return {confirmed:true,afterState:copy(after.state),reason:'独立复读确认同可信活动窗口内仅1000号礼包gotTimes由0变1、charge不变及配置奖励精确净入，其他活动、礼包和转盘进度不变'};
+  return {confirmed:true,afterState:copy(after.state),reason:canonical.parameters.kind==='weekly-unique-lottery-gift'?'独立复读确认同可信type7活动窗口内仅gotFree由false变true及配置奖励精确净入，其他活动/礼包/翻牌状态不变':'独立复读确认同可信活动窗口内仅1000号礼包gotTimes由0变1、charge不变及配置奖励精确净入，其他活动、礼包和转盘进度不变'};
  }
  if(canonical.parameters.kind==='daily-gift'){
   if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('免费赠礼的原样标记、英雄、唯一领取状态和完整库存净入未同时确认');
@@ -150,34 +152,43 @@ function giftCandidate(f,{config,moduleConfig={enabled:false}}={}){
  return {module:moduleId,capabilityId:'C513',actionId:moduleId+':daily-gift:'+identity,actionType:'CLAIM',target:{...p,heroId:f?.daily?.heroId??null,resetMarker:f?.daily?.resetMarker??null,season:def?.season??null,configuredSeason:def?.configuredSeason??null},parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:'free-daily-gift',id:uid}]},executable:blockedReason===null,blockedReason,label:'免费日赠礼',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:'GotFreeDailyPackRequest',response:null,body:{packId:'赠礼'}}}:{})};
 }
 
-export const WEEKLY_LOTTERY_GIFT_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js WeekModel.ts / WeekLotteryPackItem.ts / WeekLotteryPop.ts / ActivityWeekUtil.ts',packItemByte:7384451,packItemSha256:'d04eb947a7fd1c970cfead55184cab0fd424fa22aee0243eee7a42ee21432cf4',semantics:'ACT_LOTTERY=4; startTime <= server seconds < endTime; unique zero-price WeekLotteryPackCfg pack1000; empty WeekLotteryFreePackRequest; no absent gift default',realGame:'REAL_UNVERIFIED'});
-function parseWeekly(raw,week){
- if(!own(week,'activityTime')||!dense(week.activityTime)||!own(raw,'gift')||!dense(raw.gift)||!own(raw,'gotInfo')||!['times','gotStage'].every(k=>own(raw.gotInfo,k)&&uint(raw.gotInfo[k])))return null;
+export const WEEKLY_LOTTERY_GIFT_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js WeekModel.ts / WeekLotteryPackItem.ts / WeekLotteryPop.ts / ActivityWeekUtil.ts',packItemByte:7384451,packItemSha256:'d04eb947a7fd1c970cfead55184cab0fd424fa22aee0243eee7a42ee21432cf4',semantics:'ACT_LOTTERY=4; startTime <= server seconds < endTime; unique zero-price WeekLotteryPackCfg pack1000; empty WeekLotteryFreePackRequest; no absent gift default; ACT_UNIQUE_LOTTERY=7 uses WeekUniquePackCfg1000 and GotUniqueLotteryFreeRequest with explicit gotFree=false, only gotFree=true afterward and no gift-list mutation',realGame:'REAL_UNVERIFIED'});
+function parseWeekly(raw,week,p){
+ if(!own(week,'activityTime')||!dense(week.activityTime)||!own(raw,'gift')||!dense(raw.gift))return null;
  const activityTime=week.activityTime.map(r=>['type','period','startTime','endTime'].every(k=>own(r,k)&&positive(r[k]))&&r.startTime<r.endTime?{type:r.type,period:r.period,startTime:r.startTime,endTime:r.endTime}:null);
  const gift=raw.gift.map(r=>own(r,'giftId')&&positive(r.giftId)&&['gotTimes','charge'].every(k=>own(r,k)&&uint(r[k]))?{giftId:r.giftId,gotTimes:r.gotTimes,charge:r.charge}:null);
  if(activityTime.some(r=>!r)||gift.some(r=>!r)||new Set(activityTime.map(r=>r.type)).size!==activityTime.length||new Set(gift.map(r=>r.giftId)).size!==gift.length)return null;
- return {activityTime:activityTime.sort((a,b)=>a.type-b.type),gift:gift.sort((a,b)=>a.giftId-b.giftId),gotInfo:{times:raw.gotInfo.times,gotStage:raw.gotInfo.gotStage}};
+ const common={activityTime:activityTime.sort((a,b)=>a.type-b.type),gift:gift.sort((a,b)=>a.giftId-b.giftId)};
+ if(weekSpec(p).unique){
+  if(!['floor','selectId','gotFloor','buyTimes'].every(k=>own(raw,k)&&uint(raw[k]))||!own(raw,'gotFree')||typeof raw.gotFree!=='boolean'||!own(raw,'prizePos')||!dense(raw.prizePos))return null;
+  const prizePos=raw.prizePos.map(r=>['prizeId','pos'].every(k=>own(r,k)&&uint(r[k]))?{prizeId:r.prizeId,pos:r.pos}:null);
+  if(prizePos.some(r=>!r)||new Set(prizePos.map(r=>r.pos)).size!==prizePos.length)return null;
+  return {...common,floor:raw.floor,selectId:raw.selectId,gotFloor:raw.gotFloor,buyTimes:raw.buyTimes,gotFree:raw.gotFree,prizePos:prizePos.sort((a,b)=>a.pos-b.pos)};
+ }
+ if(!own(raw,'gotInfo')||!['times','gotStage'].every(k=>own(raw.gotInfo,k)&&uint(raw.gotInfo[k])))return null;
+ return {...common,gotInfo:{times:raw.gotInfo.times,gotStage:raw.gotInfo.gotStage}};
 }
 function currentWeek(f){
- const activity=f?.daily?.activityTime?.find(r=>r.type===4),live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
+ const activity=f?.daily?.activityTime?.find(r=>r.type===weekSpec(f?.parameters).type),live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
  return activity&&clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs&&[f.startClock,f.endClock,clock].every(c=>c.earliestMs>=activity.startTime*1000&&c.latestMs<activity.endTime*1000)?activity:null;
 }
 function weeklyDefinition(f,config){
- if(!same(f?.configEvidence?.tables?.WeekLotteryPackCfg,config?.tables?.WeekLotteryPackCfg))return null;
- const rows=f?.configEvidence?.tables?.WeekLotteryPackCfg?.data;
+ const spec=weekSpec(f?.parameters);
+ if(!same(f?.configEvidence?.tables?.[spec.table],config?.tables?.[spec.table]))return null;
+ const rows=f?.configEvidence?.tables?.[spec.table]?.data;
  if(!dense(rows)||!rows.length||rows.some(r=>!own(r,'packId')||!positive(r.packId)||!own(r,'price')||!uint(r.price))||new Set(rows.map(r=>r.packId)).size!==rows.length)return null;
  const free=rows.filter(r=>r.price===0);if(free.length!==1||free[0].packId!==1000)return null;const r=free[0];
- if(!own(r,'limitedTimes')||r.limitedTimes!==1||!own(r,'guildPack')||!dense(r.guildPack)||r.guildPack.length||!own(r,'reward')||!dense(r.reward)||r.reward.length!==2||r.reward.some(v=>!dense(v)||v.length!==2||!['周转盘币','RUBY'].includes(v[0])||!positive(v[1]))||new Set(r.reward.map(v=>v[0])).size!==2)return null;
+ if(!own(r,'limitedTimes')||r.limitedTimes!==1||!own(r,'guildPack')||!dense(r.guildPack)||r.guildPack.length||!own(r,'reward')||!dense(r.reward)||r.reward.length!==2||r.reward.some(v=>!dense(v)||v.length!==2||![spec.coin,'RUBY'].includes(v[0])||!positive(v[1]))||new Set(r.reward.map(v=>v[0])).size!==2)return null;
  return {rewards:r.reward.map(([id,num])=>({id,num}))};
 }
-function weeklyCandidate(f,{config,moduleConfig={enabled:false}}={}){
- const p={kind:'weekly-lottery-gift',packId:'1000'},valid=authority(f),def=weeklyDefinition(f,config),activity=currentWeek(f),gift=f?.daily?.gift?.find(r=>r.giftId===1000),beforeState=copy(f?.state??null);let expectedState=null;
- if(valid&&def&&gift&&f.stock.has('RUBY')){
+function weeklyCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
+ const p=copy(parameters),spec=weekSpec(p),valid=authority(f)&&same(p,f.parameters),def=weeklyDefinition(f,config),activity=currentWeek(f),gift=f?.daily?.gift?.find(r=>r.giftId===1000),beforeState=copy(f?.state??null);let expectedState=null;
+ if(valid&&def&&(spec.unique?!gift:Boolean(gift))&&f.stock.has('RUBY')){
   const next=copy(beforeState),stock=new Map(f.stock);let safe=true;
   for(const r of def.rewards){const total=(stock.get(r.id)??0)+r.num;if(!Number.isSafeInteger(total))safe=false;stock.set(r.id,total);}
-  if(safe){next.inventory=stockState(stock);next.daily.gift.find(r=>r.giftId===1000).gotTimes=1;expectedState=next;}
+  if(safe){next.inventory=stockState(stock);if(spec.unique)next.daily.gotFree=true;else next.daily.gift.find(r=>r.giftId===1000).gotTimes=1;expectedState=next;}
  }
- const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_GIFT_AUTHORITY_UNKNOWN':!def?'WEEKLY_GIFT_CONFIG_UNKNOWN':!gift?'WEEKLY_GIFT_ENTITLEMENT_UNKNOWN':gift.gotTimes!==0?'WEEKLY_GIFT_ALREADY_CLAIMED':gift.charge!==0?'WEEKLY_GIFT_CHARGE_UNKNOWN':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('WeekLotteryFreePackRequest')?'PROTOCOL_UNAVAILABLE':null;
- const target={...p,type:4,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence}),source='Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
- return {module:moduleId,capabilityId:'C513',actionId:moduleId+':weekly-lottery-gift:'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:'free-weekly-lottery-gift',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:'周转盘免费礼包 1000',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:'WeekLotteryFreePackRequest',response:null,body:{}}}:{})};
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_GIFT_AUTHORITY_UNKNOWN':!def?'WEEKLY_GIFT_CONFIG_UNKNOWN':(spec.unique?Boolean(gift):!gift)?'WEEKLY_GIFT_ENTITLEMENT_UNKNOWN':(spec.unique?f.daily.gotFree:gift.gotTimes!==0)?'WEEKLY_GIFT_ALREADY_CLAIMED':!spec.unique&&gift.charge!==0?'WEEKLY_GIFT_CHARGE_UNKNOWN':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes(spec.request)?'PROTOCOL_UNAVAILABLE':null;
+ const target={...p,type:spec.type,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence}),source=spec.unique?'Fixed v76 WeekLotteryPackItem GotUniqueLotteryFreeRequest and WeekUniquePackCfg1000: zero price, limitedTimes1, empty guildPack; trusted WeekInfo activity7 window and explicit gotFree=false with no conflicting gift1000 record':'Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
+ return {module:moduleId,capabilityId:'C513',actionId:moduleId+':'+p.kind+':'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:spec.unique?'free-weekly-unique-lottery-gift':'free-weekly-lottery-gift',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:spec.label+'免费礼包 1000',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:spec.request,response:null,body:{}}}:{})};
 }
