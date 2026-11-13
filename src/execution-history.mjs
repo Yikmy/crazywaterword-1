@@ -28,6 +28,7 @@ export function runHasUnresolvedWrites(run) {
 // Account keys never become filenames. Original outcomes stay immutable during reconciliation.
 export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets = () => [], assertWriter = () => {} } = {}) {
   const live = new Set(), anchor=file+'.anchor';
+  const liveKey = run => JSON.stringify([run.accountId,run.runId]);
   let observed=false,anchorObserved=false;
   const anchorValue={version:1,kind:'EXECUTION_HISTORY_EXISTENCE',basename:path.basename(file)};
   function anchored(){
@@ -75,7 +76,7 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
   }
   function list(accountId) {
     const raw = read();
-    return (Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId] : []).map(run => live.has(run.runId) ? structuredClone(run) : recover(run));
+    return (Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId] : []).map(run => live.has(liveKey(run)) ? structuredClone(run) : recover(run));
   }
   function write(raw) {
     assertWriter();
@@ -100,7 +101,7 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     if (previous?.actions.some(action => action.reconciliations?.length)) throw fail('已有复核事件的历史不可覆盖；必须追加证据');
     const next = entries.filter(entry => entry.runId !== run.runId); next.unshift(safe);
     Object.defineProperty(raw.accounts, run.accountId, { value: next, enumerable: true, configurable: true, writable: true });
-    write(raw); live.add(run.runId); return structuredClone(safe);
+    write(raw); live.add(liveKey(safe)); return structuredClone(safe);
   }
   function appendReconciliation(accountId, runId, actionId, event) {
     assertWriter();

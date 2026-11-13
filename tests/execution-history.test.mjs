@@ -225,3 +225,21 @@ test('interrupted standalone Stage with an already verified defeat recovers only
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).accounts.A[0].finalStatus, 'EXECUTING');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+for(const otherAccount of ['B','__proto__'])test('legacy same runId in '+otherAccount+' never keeps another account interrupted history live',()=>{
+ const {dir,file}=fixture();try{
+  const interrupted=run('A','EXECUTING');interrupted.runId='legacy-shared-run';interrupted.actions[0].requestStatus='DISPATCHING';interrupted.actions[0].dispatched=true;interrupted.actions[0].unresolvedWrite=true;interrupted.resourceBudget=[{id:'wood',num:8}];
+  fs.writeFileSync(file,JSON.stringify({version:1,accounts:{A:[interrupted]}}));const store=createExecutionHistory({file}),current=run(otherAccount,'EXECUTING');current.runId=interrupted.runId;store.put(current);
+  const bytes=fs.readFileSync(file,'utf8'),recovered=store.list('A')[0];assert.equal(recovered.finalStatus,'UNKNOWN');assert.equal(recovered.recovered,true);assert.equal(recovered.resumable,false);assert.equal(recovered.actions[0].requestStatus,'UNKNOWN');assert.equal(recovered.actions[0].result,'UNKNOWN');assert.deepEqual(recovered.resourceBudget,interrupted.resourceBudget);assert.equal(store.unresolved('A'),true);
+  assert.equal(store.list(otherAccount)[0].finalStatus,'EXECUTING');assert.equal(store.list(otherAccount)[0].recovered,undefined);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+  const restarted=createExecutionHistory({file});assert.equal(restarted.list('A')[0].finalStatus,'UNKNOWN');assert.equal(restarted.list(otherAccount)[0].finalStatus,'UNKNOWN');assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('same legacy runId cannot borrow another account live ownership after all of its own actions were confirmed',()=>{
+ const {dir,file}=fixture();try{
+  const interrupted=run('A','EXECUTING');interrupted.runId='legacy-shared-run';Object.assign(interrupted.actions[0],{requestStatus:'SUCCESS',result:'SUCCESS',verification:{status:'CONFIRMED'}});interrupted.resourceBudget=[{id:'wood',num:8}];
+  fs.writeFileSync(file,JSON.stringify({version:1,accounts:{A:[interrupted]}}));const store=createExecutionHistory({file}),other=run('B','EXECUTING');other.runId=interrupted.runId;store.put(other);const bytes=fs.readFileSync(file,'utf8'),restored=store.list('A')[0];
+  assert.equal(restored.finalStatus,'CANCELLED');assert.equal(restored.recoveryDisposition,'RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS');assert.equal(restored.resumable,false);assert.deepEqual(restored.actions,interrupted.actions);assert.deepEqual(restored.resourceBudget,interrupted.resourceBudget);assert.equal(store.unresolved('A'),false);assert.equal(store.list('B')[0].finalStatus,'EXECUTING');assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

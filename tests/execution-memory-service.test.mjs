@@ -299,3 +299,14 @@ test('missing legacy correlation never borrows new run metadata for a filtered m
   assert.equal(f.service.executionMemory('A').pendingHistoryProjection.length,1);await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.existsSync(f.memoryFile),false);
  }finally{await f.cleanup();}
 });
+
+test('shared memory projects interrupted legacy UNKNOWN despite another account owning the same runId',async()=>{
+ const f=fixture();try{
+  const {run}=await seedIncompleteRefusal(f,(run,row)=>{run.finalStatus='EXECUTING';row.requestStatus='DISPATCHING';row.result='EXECUTING';row.dispatched=true;row.unresolvedWrite=true;});run.resourceBudget=[{id:'wood',num:8}];f.history.put(run);
+  const owned=createExecutionHistory({file:f.historyFile}),other=structuredClone(run);other.accountId='B';other.executionContext.accountId='B';owned.put(other);
+  const service=createOperationService({history:owned,memory:f.memory}),bytes=fs.readFileSync(f.historyFile,'utf8'),shown=service.executionMemory('A',{runId:run.runId});
+  assert.equal(shown.events.length,0);assert.equal(shown.pendingHistoryProjection.length,1);assert.equal(shown.pendingHistoryProjection[0].status,'UNKNOWN');assert.equal(shown.retryAllowed,false);assert.equal(shown.resumable,false);
+  assert.equal(owned.list('A')[0].finalStatus,'UNKNOWN');assert.equal(owned.unresolved('A'),true);assert.deepEqual(owned.list('A')[0].resourceBudget,[{id:'wood',num:8}]);assert.equal(owned.list('B')[0].finalStatus,'EXECUTING');assert.equal(service.executionMemory('B').pendingHistoryProjection.length,0);
+  assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.existsSync(f.memoryFile),false);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
+ }finally{await f.cleanup();}
+});
