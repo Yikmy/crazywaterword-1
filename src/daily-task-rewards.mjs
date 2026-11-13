@@ -1,7 +1,7 @@
 // W16 / BIZ-D18 / BIZ-D19 sub-contract of the existing task-rewards Function.
 import { createHash } from 'node:crypto';
 import { parseOperationInventory } from './hero-operations.mjs';
-import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -14,9 +14,9 @@ const uint=v=>Number.isInteger(v)&&v>=0&&v<=2147483647,positive=v=>uint(v)&&v>0;
 const text=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const sources={daily:'DailyTaskInfoResponse',items:'AllItemResponse',resources:'AllResourceResponse'},configNames=['DailyTaskCfg'],liveFacts=new WeakMap();
-const weeklyKinds=['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'];
-const weekSpec=p=>p?.kind==='weekly-unique-lottery-gift'?{type:7,table:'WeekUniquePackCfg',info:'WeekUniqueLotteryResponse',request:'GotUniqueLotteryFreeRequest',coin:'周翻牌币',label:'周翻牌',unique:true}:p?.kind==='weekly-chip-gift'?{type:6,table:'WeekChipPackCfg',info:'WeekChipInfoResponse',request:'WeekChipGotFreeRequest',coin:'白芯片宝箱',label:'周芯片',unique:false,chip:true}:{type:4,table:'WeekLotteryPackCfg',info:'WeekLotteryInfoResponse',request:'WeekLotteryFreePackRequest',coin:'周转盘币',label:'周转盘',unique:false};
-const configNamesFor=p=>weeklyKinds.includes(p?.kind)?[weekSpec(p).table]:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
+const weeklyKinds=['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'];
+const weekSpec=p=>p?.kind==='weekly-unique-lottery-gift'?{type:7,table:'WeekUniquePackCfg',info:'WeekUniqueLotteryResponse',request:'GotUniqueLotteryFreeRequest',coin:'周翻牌币',label:'周翻牌',unique:true}:['weekly-chip-gift','weekly-chip-task'].includes(p?.kind)?{type:6,table:'WeekChipPackCfg',info:'WeekChipInfoResponse',request:'WeekChipGotFreeRequest',coin:'白芯片宝箱',label:'周芯片',unique:false,chip:true}:{type:4,table:'WeekLotteryPackCfg',info:'WeekLotteryInfoResponse',request:'WeekLotteryFreePackRequest',coin:'周转盘币',label:'周转盘',unique:false};
+const configNamesFor=p=>p?.kind==='weekly-chip-task'?['WeekChipPointsCfg','WeekChipPeriodCfg','ItemCfg']:weeklyKinds.includes(p?.kind)?[weekSpec(p).table]:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
 const sourcesFor=p=>weeklyKinds.includes(p?.kind)?{daily:weekSpec(p).info,week:'WeekInfoResponse',items:sources.items,resources:sources.resources}:p?.kind==='daily-gift'?{daily:'DailyGiftPackResponse',items:sources.items,resources:sources.resources}:sources;
 const costSource='Fixed v76 DailyTaskItem._gotReward/_buildExpReward and DailyTaskModel.increaseActivity: exact task id, configured EXP and typed activity delta to both daily and weekly counters';
 export const DAILY_TASK_REWARD_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js DailyTaskItem.ts / DailyTaskModel.ts / DailyTaskPanel.ts',itemByte:1642263,itemSha256:'322c2df607970618ba59f1f29f53a86cfa219c292c89870604eeb4bdce2bbd65',modelByte:1646749,modelSha256:'8cd26d52987707fbf81ff6f5513728f6bcccbcf604ee54c1fd59965acb868075',semantics:'dailyResetTime is server seconds; activity response is an increment for both daily and weekly; EXP from DailyTaskCfg.exp',realGame:'REAL_UNVERIFIED'});
@@ -72,13 +72,17 @@ function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.paramete
  const reset=f?.daily?.resetTime??null,identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:'daily:'+reset+':'+taskId}]};
  return {module:moduleId,capabilityId:'C503',actionId:moduleId+':daily:'+reset+':'+taskId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset},parameters:p,identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'日常任务 '+taskId+' 奖励',rewards:def?[{id:'EXP',num:def.exp}]:null,activityGain:def?.point??null,progress:task?.progress??null,requiredProgress:task?.targetProgress??null,...(blockedReason===null?{action:{request,response,body:{id:taskId}}}:{})};
 }
-const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
-export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
+const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (kind==='weekly-chip-task'?chipTaskCandidate:weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
+export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
 export function planDailyTaskReward(f,{parameters,selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){const row=viewDailyTaskReward(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 export function verifyDailyTaskReward(operation,before,after,result){const no=reason=>({confirmed:false,reason});
  if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence)||(weeklyKinds.includes(before.parameters?.kind)?(!currentWeek(before)||!currentWeek(after)):before.parameters?.kind!=='daily-gift'&&(!currentPeriod(before)||!currentPeriod(after))))return no('日常任务前后身份、周期、配置或完整库存不可靠');
  const canonical=candidateFor(before,{config:before.configEvidence,moduleConfig:{enabled:true},parameters:before.parameters});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards','activityGain'].some(k=>!same(operation?.[k],canonical[k])))return no('日常领取合同与写前明确任务不一致');
+ if(canonical.parameters.kind==='weekly-chip-task'){
+  if(!chipTaskReceipt(result,canonical)||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周芯片任务同轮次回执、唯一已领ID新增及完整库存净入未同时确认');
+  return {confirmed:true,afterState:copy(after.state),reason:'精确round/taskId请求，typed轮次与完整已领列表/奖励包和独立复读共同确认；积分/礼包/其他活动不变，不打开所得宝箱'};
+ }
  if(weeklyKinds.includes(canonical.parameters.kind)){
   if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周转盘礼包的同活动期数、唯一领取计次和完整库存净入未同时确认');
   return {confirmed:true,afterState:copy(after.state),reason:canonical.parameters.kind==='weekly-chip-gift'?'独立复读确认同可信type6活动窗口内仅1000号礼包paidTimes由0变1及配置宝箱数量精确净入，其他活动/礼包/积分/轮次/已领任务不变；不打开宝箱':canonical.parameters.kind==='weekly-unique-lottery-gift'?'独立复读确认同可信type7活动窗口内仅gotFree由false变true及配置奖励精确净入，其他活动/礼包/翻牌状态不变':'独立复读确认同可信活动窗口内仅1000号礼包gotTimes由0变1、charge不变及配置奖励精确净入，其他活动、礼包和转盘进度不变'};
@@ -194,4 +198,48 @@ function weeklyCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.pa
  const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_GIFT_AUTHORITY_UNKNOWN':!def?'WEEKLY_GIFT_CONFIG_UNKNOWN':(spec.unique?Boolean(gift):!gift)?'WEEKLY_GIFT_ENTITLEMENT_UNKNOWN':(spec.unique?f.daily.gotFree:gift[spec.chip?'paidTimes':'gotTimes']!==0)?'WEEKLY_GIFT_ALREADY_CLAIMED':!spec.unique&&!spec.chip&&gift.charge!==0?'WEEKLY_GIFT_CHARGE_UNKNOWN':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes(spec.request)?'PROTOCOL_UNAVAILABLE':null;
  const target={...p,type:spec.type,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence}),source=spec.chip?'Fixed v76 WeekChipPack WeekChipGotFreeRequest and WeekChipPackCfg1000: zero price, buyLimit1, empty guildPack; trusted WeekInfo activity6 window and explicit WeekChipGift paidTimes0; grant configured held box count, never open boxes':spec.unique?'Fixed v76 WeekLotteryPackItem GotUniqueLotteryFreeRequest and WeekUniquePackCfg1000: zero price, limitedTimes1, empty guildPack; trusted WeekInfo activity7 window and explicit gotFree=false with no conflicting gift1000 record':'Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
  return {module:moduleId,capabilityId:'C513',actionId:moduleId+':'+p.kind+':'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:spec.chip?'free-weekly-chip-gift':spec.unique?'free-weekly-unique-lottery-gift':'free-weekly-lottery-gift',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:spec.label+'免费礼包 1000',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:spec.request,response:null,body:{}}}:{})};
+}
+
+// C516/W17: exact chip task and round. The final unclaimed task is held until
+// the server's round transition has an independently recoverable contract.
+export const WEEKLY_CHIP_TASK_EVIDENCE=Object.freeze({source:'Fixed v76 WeekChipTask.ts / WeekChip.ts / ActivityWeekUtil.ts',byte:7353073,sha256:'5306147a2a46bc09ce658e92e6be10e331dce080435b6b7e5adc30c3b8d32844',semantics:'WeekChipGotTaskRequest round/taskId; cumulative score minus highest amount*(round-1); typed round, full gotTaskId and DisplayAssetPackage; held inventory only',realGame:'REAL_UNVERIFIED'});
+function chipTaskDefinition(f,config){
+ if(!same(configNamesFor(f?.parameters).map(n=>f?.configEvidence?.tables?.[n]??null),configNamesFor(f?.parameters).map(n=>config?.tables?.[n]??null)))return null;
+ const tables=f?.configEvidence?.tables,rows=tables?.WeekChipPointsCfg?.data,periods=tables?.WeekChipPeriodCfg?.data,items=tables?.ItemCfg?.data,activity=f?.daily?.activityTime?.find(r=>r.type===6);
+ if(!dense(rows)||!rows.length||!dense(periods)||!dense(items)||!activity||periods.some(r=>!own(r,'periodId')||!positive(r.periodId))||new Set(periods.map(r=>r.periodId)).size!==periods.length)return null;
+ const period=periods.find(r=>r.periodId===activity.period);if(!period||!own(period,'round')||!positive(period.round))return null;
+ let lastId=0,lastAmount=0;const definitions=[];
+ for(const r of rows){
+  if(!own(r,'rwdId')||!positive(r.rwdId)||r.rwdId<=lastId||!own(r,'amount')||!positive(r.amount)||r.amount<=lastAmount||!own(r,'reward')||!dense(r.reward)||!r.reward.length)return null;
+  const rewards=[];
+  for(const pair of r.reward){
+   if(!dense(pair)||pair.length!==2||!text(pair[0])||!positive(pair[1]))return null;
+   const [id,num]=pair,matches=items.filter(x=>own(x,'id')&&x.id===id);
+   if(!Object.values(RESOURCE_NAMES).includes(id)&&(matches.length!==1||!own(matches[0],'type')||!['通用','芯片宝箱','专武经验'].includes(matches[0].type)))return null;
+   rewards.push({id,num});
+  }
+  if(new Set(rewards.map(r=>r.id)).size!==rewards.length)return null;
+  definitions.push({taskId:r.rwdId,amount:r.amount,rewards});lastId=r.rwdId;lastAmount=r.amount;
+ }
+ const row=definitions.find(r=>r.taskId===f.parameters.taskId);
+ return row?{...row,ids:definitions.map(r=>r.taskId),roundAmount:lastAmount,maxRound:period.round}:null;
+}
+function chipTaskCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
+ const p=copy(parameters),valid=authority(f)&&same(p,f.parameters),def=chipTaskDefinition(f,config),activity=currentWeek(f),beforeState=copy(f?.state??null),claimed=f?.daily?.gotTaskId;
+ const known=def&&claimed?.every(id=>def.ids.includes(id)),roundKnown=def&&positive(f?.daily?.round)&&f.daily.round===p.round&&p.round<=def.maxRound;
+ const progress=roundKnown?f.daily.score-def.roundAmount*(p.round-1):null;let expectedState=null;
+ if(valid&&known&&roundKnown){
+  const next=copy(beforeState),stock=new Map(f.stock);let safe=true;
+  for(const {id,num}of def.rewards){const start=stock.get(id);if(Object.values(RESOURCE_NAMES).includes(id)&&start===undefined)safe=false;const total=(start??0)+num;if(!Number.isSafeInteger(total))safe=false;stock.set(id,total);}
+  if(safe){next.inventory=stockState(stock);next.daily.gotTaskId=[...claimed,p.taskId].sort((a,b)=>a-b);expectedState=next;}
+ }
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_CHIP_TASK_AUTHORITY_UNKNOWN':!def||!known?'WEEKLY_CHIP_TASK_CONFIG_UNKNOWN':!roundKnown?'WEEKLY_CHIP_TASK_ROUND_UNKNOWN':claimed.includes(p.taskId)?'WEEKLY_CHIP_TASK_ALREADY_CLAIMED':!Number.isSafeInteger(progress)||progress<def.amount?'WEEKLY_CHIP_TASK_INCOMPLETE':claimed.length===def.ids.length-1?'WEEKLY_CHIP_ROUND_TRANSITION_UNVERIFIED':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!['WeekChipGotTaskRequest','WeekChipGotTaskResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const target={...p,type:6,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence});
+ return {module:moduleId,capabilityId:'C516',actionId:moduleId+':weekly-chip-task:'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 WeekChipTask exact round/taskId; WeekChipPointsCfg and matching WeekChipPeriodCfg; score minus full prior-round maxima; no round-transition inference',budgetClaims:{resources:[],quotas:[],uids:[{type:'weekly-chip-task-reward',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:'周芯片第'+p.round+'轮任务 '+p.taskId,rewards:copy(def?.rewards??null),activityGain:0,progress,requiredProgress:def?.amount??null,...(blockedReason===null?{action:{request:'WeekChipGotTaskRequest',response:'WeekChipGotTaskResponse',body:{round:p.round,taskId:p.taskId}}}:{})};
+}
+function chipTaskReceipt(raw,op){
+ if(!own(raw,'round')||raw.round!==op.parameters.round||!own(raw,'gotTaskId')||!dense(raw.gotTaskId)||raw.gotTaskId.some(v=>!positive(v))||new Set(raw.gotTaskId).size!==raw.gotTaskId.length||!same([...raw.gotTaskId].sort((a,b)=>a-b),op.expectedState.daily.gotTaskId)||!own(raw,'reward')||!own(raw.reward,'asset')||!dense(raw.reward.asset))return false;
+ const rows=[];
+ for(const a of raw.reward.asset){const num=own(a,'num')?safeResourceQuantity(a.num):null;if(!own(a,'type')||a.type!==0||!own(a,'id')||!text(a.id)||num===null||num<=0)return false;rows.push({id:a.id,num});}
+ return same(rows,op.rewards);
 }

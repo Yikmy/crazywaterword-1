@@ -9,7 +9,7 @@ import { taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewT
 import { DAILY_TASK_REWARD_EVIDENCE } from '../src/daily-task-rewards.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
-import { createRunBudgetContext } from '../src/resource-ledger.mjs';
+import { RESOURCE_NAMES,createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { assertPaymentAllowed,ACTIONS } from '../src/actions.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { createOperationService } from '../src/operation-service.mjs';
@@ -56,7 +56,7 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
  const options={config:{tables:chip?{WeekChipPackCfg:clone(actual.tables.WeekChipPackCfg)}:unique?{WeekUniquePackCfg:clone(actual.tables.WeekUniquePackCfg)}:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:chip?{kind:'weekly-chip-gift',packId:'1000'}:unique?{kind:'weekly-unique-lottery-gift',packId:'1000'}:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
  return {state,client,options};
 }
-async function ready(input={},mutate){const f=fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
+async function ready(input={},mutate){const f=input.chipTask?chipTaskFixture(input):fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
 const budget=f=>{const scope={accountId:'synthetic-A',generation:3,connectionId:'offline-daily',runId:'run'},limits=f.operation.budgetClaims;return {ledger:null,runBudget:createRunBudgetContext({scope,limits}),scope,limits,batchId:'batch'};};
 async function settled(f,mutate){const reply=await f.client.request('DrawDailyTaskRewardRequest',{id:1001},'DrawDailyTaskRewardResponse',1000,{mutate:true});mutate?.(f);return {reply,after:await surveyTaskRewards(f.client,protocol,f.options)};}
 
@@ -181,7 +181,7 @@ test('shared executor freshly samples and holds UNKNOWN on absent settlement or 
 
 function serviceFixture(t,{file=null,...input}={}){
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-daily-reward-')):null;file??=path.join(dir,'history.json');
- const durable=createExecutionHistory({file}),history={...durable,put(row){return durable.put(row);}},f=fixture(input);
+ const durable=createExecutionHistory({file}),history={...durable,put(row){return durable.put(row);}},f=input.chipTask?chipTaskFixture(input):fixture(input);
  const session={id:'synthetic-A',client:f.client,player:f.options.player,generation:3,connectionId:'offline-daily',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:f.options.moduleConfig})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  f.state.onDispatch=()=>{f.state.saved=clone(durable.list(session.id)[0]);};
@@ -850,4 +850,91 @@ test('three weekly free contracts preserve previous source identities and never 
  for(const f of rows)for(const other of rows)if(f!==other){assert.equal(planTaskRewards(f.facts,{...f.options,parameters:other.options.parameters,selections:[f.operation.actionId]}).actions.length,0);assert.equal(viewTaskRewards({},other.options).candidates[0].executable,false);}
  const oldUnique=clone(rows[1].operation);oldUnique.costSource='Fixed v76 WeekLotteryPackItem GotUniqueLotteryFreeRequest and WeekUniquePackCfg1000: zero price, limitedTimes1, empty guildPack; trusted WeekInfo activity7 window and explicit gotFree=false with no conflicting gift1000 record';assert.deepEqual(taskRewardsModule.rejectionIdentity(oldUnique),taskRewardsModule.rejectionIdentity(rows[1].operation));
  const f=rows[2];await f.client.sendWatch('WeekChipGotFreeRequest',{});const after=await surveyTaskRewards(f.client,protocol,f.options);for(const change of[o=>o.target.type=4,o=>o.action.body.giftId=1000,o=>o.expectedState.daily.score++,o=>o.budgetClaims.uids=[],o=>o.rewards[0].num=11]){const o=clone(f.operation);change(o);assert.equal(verifyTaskReward(o,f.facts,after,null).confirmed,false);}assert.equal(verifyTaskReward(f.operation,f.facts,after,{}).confirmed,false);
+});
+
+function chipTaskFixture(input={}){
+ const f=fixture({...input,chip:true}),{state,client,options}=f;state.week.activityTime[0].period=3001;state.chip.score=2000;state.chip.gotTaskId=[];
+ options.parameters={kind:'weekly-chip-task',round:1,taskId:1};options.config={tables:Object.fromEntries(['WeekChipPointsCfg','WeekChipPeriodCfg','ItemCfg'].map(n=>[n,clone(actual.tables[n])]))};
+ const request=client.request.bind(client);
+ client.request=async(n,b,r,timeout,opts)=>{
+  if(n!=='WeekChipGotTaskRequest')return request(n,b,r,timeout,opts);
+  if(input.codec!==false)wire(n,b);assert.equal(opts?.mutate,true);state.onDispatch?.();opts.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});
+  const rewards=actual.tables.WeekChipPointsCfg.data.find(row=>row.rwdId===b.taskId).reward,claimed=[...state.chip.gotTaskId,b.taskId].sort((a,b)=>a-b);
+  const receipt={round:b.round,gotTaskId:claimed,reward:{asset:rewards.map(([id,num])=>({type:0,id,num}))}};
+  if(input.apply!==false){state.chip.gotTaskId=claimed;for(const [id,num]of rewards){const resource=Object.entries(RESOURCE_NAMES).find(([,name])=>name===id)?.[0];if(resource)state.resources.find(row=>String(row.res)===resource).amount+=num;else{const item=state.stock.find(row=>row.itemId===id);if(item)item.num+=num;else state.stock.push({itemId:id,num});}}}
+  await state.onWrite?.();const reply=Object.hasOwn(state,'chipReceipt')?state.chipReceipt:receipt;
+  return input.codec===false||reply===null?clone(reply):wire(r,reply);
+ };
+ return f;
+}
+
+test('exact weekly chip task request settles configured held rewards through existing Function and executor',async()=>{
+ const f=await ready({chipTask:true});assert.ok(f.operation,JSON.stringify(f.row));assert.deepEqual(f.operation.action,{request:'WeekChipGotTaskRequest',response:'WeekChipGotTaskResponse',body:{round:1,taskId:1}});assert.equal(f.operation.target.type,6);assert.equal(f.operation.target.period,3001);assert.equal(f.operation.budgetClaims.uids[0].type,'weekly-chip-task-reward');assert.equal(f.operation.progress,2000);
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'SUCCESS',result.error);assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.chip.gotTaskId,[1]);assert.equal(f.state.stock.find(row=>row.itemId==='绿芯片宝箱').num,10);assert.equal(f.state.stock.find(row=>row.itemId==='高级专武材料').num,10);
+});
+for(const round of [1,2,5])test('chip task uses cumulative score after '+round+' explicitly numbered rounds without consuming score',async()=>{
+ const f=await ready({chipTask:true},f=>{f.options.parameters.round=round;f.state.chip.round=round;f.state.chip.score=8000*(round-1)+1000;});assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.progress,1000);
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'SUCCESS',result.error);assert.equal(f.state.chip.score,8000*(round-1)+1000);
+});
+
+test('chip task paired parameters, schema, dependency versions and D6 remain exact and explicit',async()=>{
+ const f=await ready({chipTask:true}),{validateFunctionParameters}=await import('../src/function-contracts.mjs');assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,f.options.parameters),f.options.parameters);
+ for(const p of [{kind:'weekly-chip-task',taskId:1},{kind:'weekly-chip-task',round:1},{kind:'weekly-chip-task',round:0,taskId:1},{kind:'weekly-chip-task',round:'1',taskId:1},{kind:'weekly-chip-task',round:1,taskId:1,packId:'1000'},{kind:'daily',round:1,taskId:1001},{kind:'weekly-chip-gift',packId:'1000',round:1}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
+ const a={request:'WeekChipGotTaskRequest',body:{round:1,taskId:1},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));for(const body of [{},{round:1},{round:1,taskId:0},{round:'1',taskId:1},{round:1,taskId:1,buy:true}])assert.throws(()=>assertPaymentAllowed({...a,body}));for(const costs of [undefined,null,[{id:'RUBY',num:1}],[{id:'GOLD',num:1}],Array(1)])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+ assert.deepEqual(Object.keys(taskRewardsDependencyVersions(f.options).tables),['WeekChipPointsCfg','WeekChipPeriodCfg','ItemCfg']);
+});
+for(const [label,mutate]of [
+ ['missing round',f=>delete f.state.chip.round],['round zero',f=>f.state.chip.round=0],['round mismatch',f=>f.options.parameters.round=2],['round beyond limit',f=>{f.options.parameters.round=6;f.state.chip.round=6;}],
+ ['missing score',f=>delete f.state.chip.score],['insufficient score',f=>f.state.chip.score=999],['second round insufficient cumulative score',f=>{f.options.parameters.round=2;f.state.chip.round=2;}],
+ ['missing claimed list',f=>delete f.state.chip.gotTaskId],['unknown prior task',f=>f.state.chip.gotTaskId=[99]],['duplicate prior task',f=>f.state.chip.gotTaskId=[2,2]],['already claimed',f=>f.state.chip.gotTaskId=[1]],
+ ['unknown period',f=>f.state.week.activityTime[0].period=999],['missing period config',f=>delete f.options.config.tables.WeekChipPeriodCfg],['duplicate period',f=>f.options.config.tables.WeekChipPeriodCfg.data.push(clone(f.options.config.tables.WeekChipPeriodCfg.data[0]))],
+ ['missing reward config',f=>delete f.options.config.tables.WeekChipPointsCfg],['duplicate reward task',f=>f.options.config.tables.WeekChipPointsCfg.data.push(clone(f.options.config.tables.WeekChipPointsCfg.data[0]))],['invalid amount',f=>f.options.config.tables.WeekChipPointsCfg.data[0].amount=0],
+ ['unknown reward',f=>f.options.config.tables.WeekChipPointsCfg.data[0].reward=[['unknown-reward',1]]],['missing item config',f=>delete f.options.config.tables.ItemCfg],['missing GOLD balance',f=>f.state.resources=f.state.resources.filter(r=>r.res!==3)],
+ ['expired activity',f=>f.state.week.activityTime[0].endTime=1000],['activity not started',f=>f.state.week.activityTime[0].startTime=1001],['untrusted clock',f=>f.client.gameClock={read:()=>({status:'UNKNOWN'})}],['read failure',f=>f.state.overrides.WeekChipInfoRequest=Error('synthetic unavailable')],
+ ['final unclaimed task transition',f=>{f.state.chip.gotTaskId=[2,3,4,5,6];f.state.chip.score=8000;}],
+])test('chip task blocks without exact authority: '+label,async()=>{const f=await ready({chipTask:true,codec:label!=='missing claimed list'},mutate);assert.equal(f.operation,undefined,JSON.stringify(f.row));assert.equal(f.state.writes.length,0);if(label==='final unclaimed task transition')assert.equal(f.row.blockedReason,'WEEKLY_CHIP_ROUND_TRANSITION_UNVERIFIED');});
+
+for(const [label,mutate]of [
+ ['no net income',f=>{f.state.stock=f.state.stock.filter(r=>!['绿芯片宝箱','高级专武材料'].includes(r.itemId));f.state.resources.find(r=>r.res===3).amount-=15000;}],
+ ['extra stock',f=>f.state.stock[0].num++],['extra score',f=>f.state.chip.score++],['gift changed',f=>f.state.chip.gifts[0].paidTimes=1],['wrong task',f=>f.state.chip.gotTaskId=[2]],['extra task',f=>f.state.chip.gotTaskId=[1,2]],['round changed',f=>f.state.chip.round++],['period changed',f=>f.state.week.activityTime[0].period++],['config changed',f=>f.options.config.tables.WeekChipPointsCfg.revision=1],
+])test('chip task independent settlement rejects '+label,async()=>{const f=await ready({chipTask:true});const reply=await f.client.request('WeekChipGotTaskRequest',{round:1,taskId:1},'WeekChipGotTaskResponse',1000,{mutate:true});mutate(f);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,reply).confirmed,false);});
+
+for(const reply of [null,{}, {round:1,gotTaskId:[1]}, {round:2,gotTaskId:[1],reward:{asset:[]}}, {round:1,gotTaskId:[],reward:{asset:[]}}])test('chip task typed receipt is required: '+JSON.stringify(reply),async()=>{const f=await ready({chipTask:true,codec:false});await f.client.request('WeekChipGotTaskRequest',{round:1,taskId:1},'WeekChipGotTaskResponse',1000,{mutate:true});const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,reply).confirmed,false);});
+
+for(const apply of [true,false])test('chip task shared Service persists exact intent, budget and '+(apply?'confirmed income':'restart UNKNOWN without replay'),async t=>{
+ const f=serviceFixture(t,{chipTask:true,apply}),p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.deepEqual(f.state.saved.actions[0].parameters,{kind:'weekly-chip-task',round:1,taskId:1});assert.equal(f.state.saved.runBudget.reserved.uids[0].type,'weekly-chip-task-reward');
+ if(!apply){const next=serviceFixture(t,{chipTask:true,file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);assert.equal(next.durable.unresolved(next.session.id),true);}
+});
+
+test('chip task unified compiler refuses missing identity, cross-kind fields and implicit Dailies actions',async()=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs');
+ for(const phase of['tasks','dailies'])for(const row of[{kind:'weekly-chip-task',taskId:1},{kind:'weekly-chip-task',round:1},{kind:'weekly-chip-task',round:1,taskId:0},{kind:'weekly-chip-task',round:2147483648,taskId:1},{kind:'weekly-chip-task',round:1,taskId:1,packId:'1000'},{kind:'weekly-chip-task',round:1,taskId:1,parameters:{}}])assert.throws(()=>compileUnifiedExecution({entry:phase,[phase]:[{...row,...(phase==='dailies'?{action:'claim'}:{})}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ for(const action of[undefined,'perform'])assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[{kind:'weekly-chip-task',round:1,taskId:1,...(action?{action}:{})}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});
+test('chip task Service preserves parent budget, durable intent failure and cancellation/late UNKNOWN safety',async t=>{
+ for(const mode of['parent','disk','cancel','late']){
+  const f=serviceFixture(t,{chipTask:true});if(mode==='parent'){f.service.claimWorkflow(f.session,'chip-task-parent',{limits:{resources:[],quotas:[],uids:[]}});await assert.rejects(f.plan());assert.equal(f.state.writes.length,0);continue;}
+  const p=await f.plan(),permit=f.authorize(p);let release;
+  if(mode==='disk'){const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}else if(mode==='cancel')f.session.abort.abort();else f.state.onWrite=()=>new Promise(r=>release=r);
+  try{f.service.execute(f.session,permit);if(mode==='late'){for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();}await f.service.settle(f.session.id);}catch{}
+  assert.equal(f.state.writes.length,mode==='late'?1:0);if(mode==='late'){assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');const next=serviceFixture(t,{chipTask:true,file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+ }
+});
+test('chip task rejection memory is shared by Tasks/Dailies after reconnect and Service restart',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{chipTask:true,apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic refused'),{code:'REJECTED'});};const p=await f.plan();assert.equal((await f.run(p)).record.finalStatus,'REJECTED');
+ for(const phase of['tasks','dailies']){const x=serviceFixture(t,{chipTask:true,file:f.file});x.session.connectionId=x.client.factContext.connectionId='replacement-'+phase;const compiled=compileUnifiedExecution({entry:phase,[phase]:[{...x.options.parameters,...(phase==='dailies'?{action:'claim'}:{})}],budget:p.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:x.service,claim:(_id,runId,options)=>x.service.claimWorkflow(x.session,runId,options),getSession:()=>x.session});t.after(()=>runner.stop());const run=await runner.start(x.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(x.state.writes.length,0);}
+});
+test('chip task facts cannot authorize another role/world/connection/generation or unavailable protocol',async()=>{
+ for(const mutate of[f=>f.client.factContext.accountId='B',f=>f.client.factContext.generation++,f=>f.client.factContext.connectionId='new',f=>f.options.player.playerId='2',f=>f.options.player.worldId='18',f=>f.options.config.tables.WeekChipPointsCfg.revision=1]){const f=await ready({chipTask:true});mutate(f);assert.equal(planTaskRewards(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);}
+ const f=await ready({chipTask:true});f.state.onDispatch=()=>{f.state.mono+=1000000;};assert.equal((await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)})).dispatched,false);assert.equal(f.state.writes.length,0);
+ for(const name of['WeekChipGotTaskRequest','WeekChipGotTaskResponse']){const x=chipTaskFixture(),p={...protocol};delete p[name];assert.equal(viewTaskRewards(await surveyTaskRewards(x.client,p,x.options),x.options).candidates[0].blockedReason,'PROTOCOL_UNAVAILABLE');}
+});
+for(const [label,mutate]of [
+ ['wrong reward id',r=>r.reward.asset[0].id='白芯片宝箱'],['wrong reward amount',r=>r.reward.asset[0].num=11],['wrong reward type',r=>r.reward.asset[0].type=1],['duplicate reward',r=>r.reward.asset.push(clone(r.reward.asset[0]))],['missing reward',r=>r.reward.asset.pop()],['duplicate claimed task',r=>r.gotTaskId.push(1)],['unknown claimed task',r=>r.gotTaskId.push(99)],
+])test('chip task exact postread cannot hide a conflicting typed receipt: '+label,async()=>{
+ const f=await ready({chipTask:true,codec:false}),reply=await f.client.request('WeekChipGotTaskRequest',{round:1,taskId:1},'WeekChipGotTaskResponse',1000,{mutate:true});mutate(reply);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,reply).confirmed,false);
+});
+test('chip task exact receipt and reread never confirm a tampered original operation',async()=>{
+ const f=await ready({chipTask:true}),reply=await f.client.request('WeekChipGotTaskRequest',{round:1,taskId:1},'WeekChipGotTaskResponse',1000,{mutate:true}),after=await surveyTaskRewards(f.client,protocol,f.options);
+ for(const mutate of[o=>o.target.round=2,o=>o.action.body.taskId=2,o=>o.rewards[0].num++,o=>o.expectedState.daily.score++,o=>o.budgetClaims.uids=[]]){const o=clone(f.operation);mutate(o);assert.equal(verifyTaskReward(o,f.facts,after,reply).confirmed,false);}
 });

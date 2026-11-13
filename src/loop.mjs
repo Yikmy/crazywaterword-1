@@ -136,6 +136,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
+      if(['tasks','dailies'].includes(phase)&&row?.kind==='weekly-chip-task'){
+        exact(row,phase==='tasks'?['kind','round','taskId']:['kind','round','taskId','action']);
+        if(!['round','taskId'].every(k=>Number.isSafeInteger(row[k])&&row[k]>=1&&row[k]<=2147483647)||phase==='dailies'&&row.action!=='claim')invalid('周芯片任务须明确当前轮次、任务ID及日常action=claim');
+        steps.push({phase,index,module:'task-rewards',parameters:{kind:row.kind,round:row.round,taskId:row.taskId},selection});continue;
+      }
       if(phase==='tasks'){
         if(['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(row?.kind)){
           exact(row,['kind','packId']);if(row.packId!==(row.kind==='daily-gift'?'赠礼':'1000'))invalid('仅允许明确固定免费礼包');

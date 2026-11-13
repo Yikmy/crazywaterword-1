@@ -2126,3 +2126,22 @@ test('chip weekly unified form uses the existing fixed-pack claim aliases withou
  unifiedAdd(h,'tasks','weekly-chip-gift','');assert.equal(h.node('wf-unified-target').disabled,true);unifiedAdd(h,'dailies','weekly-chip-gift','');assert.equal(h.node('wf-unified-target').disabled,true);
  assert.deepEqual(unifiedDraft(h).tasks,[{kind:'weekly-chip-gift',packId:'1000'}]);assert.deepEqual(unifiedDraft(h).dailies,[{kind:'weekly-chip-gift',packId:'1000',action:'claim'}]);assert.match(h.node('wf-unified-target-label').textContent,/周芯片/);assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+const chipTaskPageSpec={module:'task-rewards',actionId:'task-rewards:weekly-chip-task:synthetic',actionType:'CLAIM',parameters:{kind:'weekly-chip-task',round:2,taskId:1},target:{kind:'weekly-chip-task',round:2,taskId:1},costs:[],facts:{daily:{activityTime:[{type:6,period:3001,startTime:900,endTime:2000}],gift:[{giftId:1000,paidTimes:0}],round:2,score:9000,gotTaskId:[2]}},blockedReason:'WEEKLY_CHIP_ROUND_TRANSITION_UNVERIFIED'};
+test('chip task page requires explicit round and task, displays exact activity and invalidates old callbacks',async()=>{
+ const h=await loaded(chipTaskPageSpec),controls=descendants(h.node('gp-task-rewards-facts')),kind=controls.find(n=>n.dataset.dailyRewardKind),input=controls.find(n=>n.dataset.dailyRewardId),round=controls.find(n=>n.dataset.chipTaskRound),prepare=controls.find(n=>n.dataset.dailyRewardPrepare),before=h.requests.length;
+ assert.ok(round);kind.value='weekly-chip-task';input.value='1';round.value='';prepare.click();assert.match(h.node('gp-task-rewards-hint').textContent,/当前轮次/);assert.equal(h.requests.length,before);
+ round.value='2';input.value='0';prepare.click();assert.equal(h.requests.length,before);input.value='1';prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),{kind:'weekly-chip-task',round:2,taskId:1});assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
+ const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'weekly-chip-task',round:2,taskId:1}});h.respond('/api/gameplay/survey',data(chipTaskPageSpec));await survey;
+ assert.match(h.node('gp-task-rewards-facts').textContent,/当前轮次 2.*累计积分 9000.*已领任务 2.*活动期数 3001.*900 至 2000/);assert.match(h.node('gp-task-rewards-facts').textContent,/最后一项换轮/);
+ h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('chip task unified form separates activity round from Loop rounds and preserves exact claim aliases',async()=>{
+ const h=await unifiedForm('loop');unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],rounds:3,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'tasks','weekly-chip-task','1');assert.match(h.node('wf-unified-form-hint').textContent,/周芯片当前轮次/);assert.deepEqual(unifiedDraft(h).tasks,[]);assert.equal(h.node('wf-unified-chip-round').disabled,false);
+ h.node('wf-unified-chip-round').value='2';unifiedAdd(h,'tasks','weekly-chip-task','1');unifiedAdd(h,'dailies','weekly-chip-task','1');
+ const draft=unifiedDraft(h);assert.deepEqual(draft.tasks,[{kind:'weekly-chip-task',round:2,taskId:1}]);assert.deepEqual(draft.dailies,[{kind:'weekly-chip-task',round:2,taskId:1,action:'claim'}]);assert.equal(draft.rounds,3);
+ const compiled=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES});assert.equal(compiled.blocked.length,0);for(const node of compiled.graph.nodes.filter(n=>n.type==='ACTION'))assert.deepEqual(node.parameters,{kind:'weekly-chip-task',round:2,taskId:1});
+ unifiedAdd(h,'tasks','weekly-chip-gift','');assert.equal(h.node('wf-unified-chip-round').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run("selectAccount('B')");assert.equal(h.node('wf-unified-chip-round').value,'');
+});
