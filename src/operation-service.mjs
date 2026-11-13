@@ -1,3 +1,4 @@
+import { validateWorkflow } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
 import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -280,14 +281,37 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       throw error('工作流运行期限已到，旧计划与授权不可续用', 'RUN_BUDGET_CLOSED');
     }
   }
-  function claimWorkflow(session, runId, { limits = null, expiresAt = null } = {}) {
+  function claimWorkflow(session, runId, { limits = null, expiresAt = null, graph = null } = {}) {
     if (expiresAt !== null && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= clock() || limits === null)) throw error('工作流运行期限必须有效且具有明确累计预算', 'INVALID_INPUT', 400);
+    let contract=null;if(graph!==null){const validated=validateWorkflow(graph,{modules}).workflow;if(!validated.runPolicy||operationDigest(validated.budget)!==operationDigest(normalizeBudgetClaims(limits))||expiresAt===null||Date.parse(expiresAt)>clock()+validated.runPolicy.maxDurationMs)throw error('运行图与明确父预算/期限不一致','INVALID_INPUT',400);const identity=executionContext(session);if([identity.playerId,identity.worldId].every(value=>typeof value==='string'&&value.trim()===value&&value.length>0||Number.isSafeInteger(value)&&value>=0))contract={accountId:session.id,runId,workflowId:validated.id,graphHash:operationDigest(validated),executionContext:identity,graph:validated,dependencies:workflowDependencyVersion(session,validated),expiresAt};}
     const release = acquire(session, 'operations:WORKFLOW_CLAIM'); release(); const owner={generation:session.generation,client:session.client}; workflowOwners.set(session,owner); session.workflowOwner=runId; session.busy='workflow:'+runId;
     const scope = parentScope(session, runId);
-    try { workflowBudgets.set(session.id, { runId, scope, expiresAt, limits: limits === null ? null : normalizeBudgetClaims(limits), context: limits === null ? null : createRunBudgetContext({ scope, limits }) }); } catch (cause) { session.workflowOwner=null; session.busy=null; throw cause; }
+    try { workflowBudgets.set(session.id, { runId, scope, expiresAt, contract, actionPlans:0, generation:session.generation, client:session.client, limits: limits === null ? null : normalizeBudgetClaims(limits), context: limits === null ? null : createRunBudgetContext({ scope, limits }) }); } catch (cause) { session.workflowOwner=null; session.busy=null; throw cause; }
     const heldBudget=workflowBudgets.get(session.id);
     return () => { heldBudget.context?.close('STOPPED'); if(workflowOwners.get(session)!==owner || session.generation!==owner.generation || session.client!==owner.client || session.workflowOwner!==runId)return; workflowOwners.delete(session); if(plans.get(session.id)?.workflowId===runId)plans.delete(session.id); session.workflowOwner=null; if(session.busy==='workflow:'+runId)session.busy=null; };
   }
+function workflowDependencyVersion(session,graph){return {configHash:operationDigest(getConfig()),rulesHash:operationDigest(loadRules(session.id).config),productionHash:operationDigest(loadProduction(session.id).config),moduleConfigs:Object.fromEntries([...new Set(graph.nodes.filter(node=>node.type==='ACTION').map(node=>node.module))].map(id=>[id,clone(moduleSettings.get(session.id,id).config)]))};}
+function assertWorkflowApprovalScope(session,parent,checkDependencies=true){
+ if(!parent?.contract||workflowBudgets.get(session.id)!==parent||session.workflowOwner!==parent.runId)throw error('有限运行授权归属已失效','AUTHORIZATION_REQUIRED',403);
+ current(session,parent.generation,parent.client);assertWorkflowDeadline(session,parent.runId);parent.context.assertScope(parentScope(session,parent.runId));
+ if(operationDigest(executionContext(session))!==operationDigest(parent.contract.executionContext)||checkDependencies&&operationDigest(workflowDependencyVersion(session,parent.contract.graph))!==operationDigest(parent.contract.dependencies))throw error('运行授权的角色、世界、连接或业务配置版本已变化','STALE_PLAN');
+}
+function workflowAuthorizationOffer(session,runId){const parent=workflowBudgets.get(session.id);return parent?.runId===runId&&parent.context?.snapshot().state==='ACTIVE'&&parent.contract?clone(parent.contract):null;}
+async function authorizeWorkflow(session,payload,persist){
+ exact(payload,['offer','batchId','planHash','confirm']);const parent=workflowBudgets.get(session.id),entry=lookup(session,payload);
+ if(payload.confirm!==true||!payload.offer||typeof payload.offer!=='object'||!parent?.contract||entry.workflowId!==parent.runId||payload.planHash!==entry.public.planHash||operationDigest(payload.offer)!==operationDigest(parent.contract)||typeof persist!=='function')throw error('必须明确确认本账号当前整图策略、期限、身份与累计预算','AUTHORIZATION_REQUIRED',403);
+ assertWorkflowApprovalScope(session,parent);
+ if(parent.approval||entry.permit||entry.consumed||runs.get(session.id)?.running)throw error('有限运行授权已处理或当前批次已有授权/执行','PERMIT_USED');
+ const audit={scope:clone(parent.contract),approvedAt:now(),resumable:false};parent.approval={audit,active:false,batches:new Set()};
+ try{await persist(clone(audit));assertWorkflowApprovalScope(session,parent);if(entry.permit||entry.consumed)throw error('等待持久化时当前批次已经变化','STALE_PLAN');parent.approval.active=true;return clone(audit);}
+ catch(cause){parent.approval.active=false;parent.context.close('STOPPED');throw cause;}
+}
+function authorizeWorkflowPlan(session,payload){
+ exact(payload,['runId','nodeId','batchId','planHash']);const parent=workflowBudgets.get(session.id),entry=lookup(session,payload);assertWorkflowApprovalScope(session,parent);
+ if(!parent.approval?.active||parent.runId!==payload.runId||entry.public.workflowNodeId!==payload.nodeId||entry.workflowId!==parent.runId||payload.planHash!==entry.public.planHash||parent.approval.batches.has(payload.batchId))throw error('当前计划不在已持久化的有限运行授权中','AUTHORIZATION_REQUIRED',403);
+ const permit=authorize(session,{batchId:entry.public.batchId,planHash:entry.public.planHash,approvedActionIds:entry.public.actions.map(action=>action.actionId),resourceBudget:entry.public.resourceBudget,confirm:true});
+ entry.permit.workflowRunAuthorization={runId:parent.runId,graphHash:parent.contract.graphHash,approvedAt:parent.approval.audit.approvedAt};parent.approval.batches.add(payload.batchId);return permit;
+}
   function bindWorkflowNode(session,runId,context) {
     exact(context,['workflowId','nodeId']);
     if(session.workflowOwner!==runId||['workflowId','nodeId'].some(key=>typeof context[key]!=='string'||!context[key]||context[key].length>100))throw error('工作流节点上下文无效','INVALID_INPUT',400);
@@ -303,6 +327,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     if ((!adapter && !['orders', 'city', 'combined'].includes(module)) || (!adapter && Object.hasOwn(payload,'parameters')) || !['Manual', 'Hybrid', 'Automatic'].includes(mode)
       || !Array.isArray(selections) || !selections.length || selections.length > 100 || selections.some(id => typeof id !== 'string' || !id || id.length > 300)
       || new Set(selections).size !== selections.length || (mode === 'Manual' && selections.length !== 1)) throw error('模块、模式或操作选择无效；Manual 每次只允许一条', 'INVALID_INPUT', 400);
+    const parentWorkflow=workflowId?workflowBudgets.get(session.id):null;let strategy=null;
+    if(parentWorkflow?.contract){assertWorkflowApprovalScope(session,parentWorkflow,Boolean(parentWorkflow.approval));strategy=parentWorkflow.contract.graph.nodes.find(node=>node.id===workflowContext?.nodeId&&node.type==='ACTION');if(!strategy||strategy.module!==module||mode!=='Manual'||operationDigest(strategy.parameters??{})!==operationDigest(normalizedParameters)||strategy.selection?.unique!==true&&selections[0]!==(typeof strategy.selection==='string'?strategy.selection:strategy.selection?.actionId))throw error('计划超出当前整图明确策略','AUTHORIZATION_REQUIRED',403);if(parentWorkflow.actionPlans>=parentWorkflow.contract.graph.runPolicy.maxActions)throw error('运行累计动作计划已到上限','WORKFLOW_LIMIT');parentWorkflow.actionPlans++;}
     const release = acquire(session, 'operations:PLAN', workflowId);
     const generation = session.generation, client = session.client, contextHash=operationDigest(executionContext(session));
     try {
@@ -315,6 +341,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       current(session, generation, client);
       if((session.workflowOwner??null)!==workflowId || operationDigest(executionContext(session))!==contextHash)throw error('工作流或账号角色/世界身份已变化', 'CANCELLED');
       if (facts.stockReliable !== true || !(facts.stock instanceof Map)) throw error('库存来源不可靠，禁止计划');
+      if(strategy?.selection?.unique===true){const view=adapter.view(facts,options),executable=(view.candidates??[]).filter(row=>row.executable===true);if(executable.length!==1||executable[0].actionId!==selections[0])throw error('新鲜计划调查已不满足唯一可执行候选策略','STALE_PLAN');}
       // Both modules share this exact planning ledger. Execution starts a separate conservative ledger.
       const ledger = new ResourceLedger(facts.stock), operations = [];
       if (adapter) {
@@ -387,9 +414,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     exact(payload, ['batchId', 'permitId']);
     const entry = lookup(session, payload);
     if (entry.consumed || !entry.permit || entry.permit.id !== payload.permitId) throw error('缺少当前批次单次授权', 'AUTHORIZATION_REQUIRED', 403);
+    const runAuthorization=entry.permit.workflowRunAuthorization??null;if(runAuthorization){const parent=workflowBudgets.get(session.id);assertWorkflowApprovalScope(session,parent);if(!parent.approval?.active||runAuthorization.runId!==parent.runId||runAuthorization.graphHash!==parent.contract.graphHash)throw error('有限运行授权已撤销','AUTHORIZATION_REQUIRED',403);}
     const release = acquire(session, 'operations:EXECUTING', entry.workflowId);
     const record = { ...(entry.public.workflowDefinitionId?{workflowDefinitionId:entry.public.workflowDefinitionId,workflowNodeId:entry.public.workflowNodeId}:{}), parentRunId: entry.workflowId ?? null, workflowId: entry.workflowId ?? null, executionContext: executionContext(session), runId: randomUUID(), accountId: session.id, module: entry.public.module, mode: entry.public.mode, startedAt: now(), finishedAt: null,
-      authorizationSummary: { batchId: entry.public.batchId, planHash: entry.public.planHash, approvedAt: entry.permit.approvedAt, actionIds: entry.public.actions.map(action => action.actionId), resourceBudget: entry.public.resourceBudget },
+      authorizationSummary: { ...(runAuthorization?{workflowRunAuthorization:clone(runAuthorization)}:{}), batchId: entry.public.batchId, planHash: entry.public.planHash, approvedAt: entry.permit.approvedAt, actionIds: entry.public.actions.map(action => action.actionId), resourceBudget: entry.public.resourceBudget },
       planSummary: entry.public, resourceBudget: entry.public.resourceBudget,
       actions: entry.operations.map(action => ({ ...publicAction(action), ...(modules[action.module] && !modules[action.module].execute ? { dispatchEvidence: { version: 1, contract: RECOVERY_DISPATCH_CONTRACT, state: 'NOT_DISPATCHED' } } : {}), resourceReservation: action.costs, requestStatus: 'NOT_DISPATCHED', result: 'NOT_EXECUTED', afterState: null, timestamp: null })),
       finalStatus: 'EXECUTING', stopReason: null };
@@ -405,6 +433,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       current(session, generation, client);
       if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化','NOT_EXECUTED');
       if(entry.workflowId)assertWorkflowDeadline(session,entry.workflowId);
+      if(runAuthorization)assertWorkflowApprovalScope(session,workflowBudgets.get(session.id));
       budget.runBudget.assertScope(parentScope(session,entry.workflowId??record.runId));
       if(activeMemoryOperation)assertMemoryAction(session,activeMemoryOperation,entry.memoryFacts.get(activeMemoryOperation.actionId));
       if(entry.dependencyHash){ lookup(session,{batchId:entry.public.batchId}); return; }
@@ -532,7 +561,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },

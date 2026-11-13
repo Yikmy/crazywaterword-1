@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { toSnapshotJson } from './game.mjs';
 import { redact } from './security.mjs';
 import { normalizeBudgetClaims } from './resource-ledger.mjs';
@@ -13,6 +13,7 @@ const ACTIVE = new Set(['STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION']
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype,null].includes(Object.getPrototypeOf(value));
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const copy = value => structuredClone(value);
+const workflowJsonDigest = value => createHash('sha256').update(JSON.stringify(value,(_key,item)=>plain(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item)).digest('hex');
 const fail = (message, code = 'WORKFLOW_INVALID') => Object.assign(new Error(message), { code, statusCode: 400 });
 const forbidden = new Set(['__proto__','prototype','constructor','request','body','costs','permit','permitid','authorization','authorizationheader','credentials','credential','password','token','sign','login','loginframehex','wsurl','url','javascript','script','code','eval']);
 export const WORKFLOW_CONDITION_FIELDS = Object.freeze({ sources:Object.freeze(['survey','run']), operators:Object.freeze(['EQ','NE','GT','GTE','LT','LTE','EXISTS']), maxDepth:8, forbidden:Object.freeze([...forbidden]) });
@@ -57,6 +58,16 @@ function validateRunPolicy(value) {
  exact(value,['maxDurationMs','maxActions','modules'],'运行边界');
  if(!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>WORKFLOW_LIMITS.runDurationMs||!Number.isSafeInteger(value.maxActions)||value.maxActions<0||value.maxActions>WORKFLOW_LIMITS.actionPlans||!Array.isArray(value.modules)||value.modules.length>WORKFLOW_LIMITS.nodes||value.modules.some(id=>!text(id)||id.trim()!==id||id.length>100)||new Set(value.modules).size!==value.modules.length)throw fail('运行期限、动作计划上限或明确玩法范围无效');
  return copy(value);
+}
+function validateAuthorizationAudit(run,modules){
+ if(run.runAuthorization===undefined)return;
+ const audit=run.runAuthorization;exact(audit,['scope','approvedAt','resumable'],'有限运行授权审计');const scope=audit.scope;exact(scope,['accountId','runId','workflowId','graphHash','executionContext','graph','dependencies','expiresAt'],'有限运行授权范围');
+ if(audit.resumable!==false||!text(audit.approvedAt)||!Number.isFinite(Date.parse(audit.approvedAt))||scope.accountId!==run.accountId||scope.runId!==run.runId||scope.workflowId!==run.workflowId||scope.expiresAt!==run.expiresAt||Date.parse(audit.approvedAt)>=Date.parse(scope.expiresAt))throw fail('运行授权审计身份或期限无效');
+ const graph=validateWorkflow(scope.graph,{modules}).workflow,hash=workflowJsonDigest;
+ if(!graph.runPolicy||graph.id!==scope.workflowId||hash(graph)!==scope.graphHash||hash(graph.runPolicy)!==hash(run.runPolicy))throw fail('授权图、边界或摘要不一致');
+ const started=Date.parse(run.startedAt),expires=Date.parse(scope.expiresAt),approved=Date.parse(audit.approvedAt);if(!Number.isFinite(started)||!Number.isFinite(expires)||expires<=started||expires-started>graph.runPolicy.maxDurationMs||approved<started)throw fail('授权期限超出原运行边界');
+ const identity=scope.executionContext;exact(identity,['accountId','playerId','worldId','generation','connectionId'],'授权账号身份');if(identity.accountId!==run.accountId||!Number.isSafeInteger(identity.generation)||identity.generation<0||!text(identity.connectionId)||[identity.playerId,identity.worldId].some(value=>!(typeof value==='string'&&value.trim()===value&&value.length>0||Number.isSafeInteger(value)&&value>=0)))throw fail('授权角色、世界或连接身份缺失');
+ const dependencies=scope.dependencies;exact(dependencies,['configHash','rulesHash','productionHash','moduleConfigs'],'授权配置版本');if(['configHash','rulesHash','productionHash'].some(key=>typeof dependencies[key]!=='string'||!/^[a-f0-9]{64}$/.test(dependencies[key]))||!plain(dependencies.moduleConfigs)||graph.nodes.some(node=>node.type==='ACTION'&&!Object.hasOwn(dependencies.moduleConfigs,node.module)))throw fail('授权业务配置版本缺失');
 }
 export function validateWorkflow(input, options = {}) {
   exact(input, ['version','id','name','nodes','edges','budget','preparation','runPolicy'], '工作流');
@@ -140,9 +151,9 @@ function confirmedRun(run, plan, accountId) {
 }
 export function createWorkflowRunner({ operations, getSession, modules, isCurrent, signal, clock = Date.now, claim = () => true, release = () => {}, onUpdate = () => {} } = {}) {
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
-  let context = null, task = null, starting = false, resuming = false, finishing = false;
+  let context = null, task = null, starting = false, resuming = false, finishing = false, authorizing = false;
   const now = () => new Date(clock()).toISOString();
-  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(context.graph.runPolicy?{runPolicy:context.graph.runPolicy,expiresAt:context.expiresAt,actionPlans:context.actionPlans}:{}), ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
+  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), ...(context.authorizationOffer?{authorizationOffer:context.authorizationOffer}:{}),...(context.runAuthorization?{runAuthorization:context.runAuthorization}:{}), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(context.graph.runPolicy?{runPolicy:context.graph.runPolicy,expiresAt:context.expiresAt,actionPlans:context.actionPlans}:{}), ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
   // Capture both owners: the Console session and the existing client's live
   // connection facts. Reusing a client must never inherit an old workflow.
   const connectionScope = session => [session.id, session.connectionId, session.client?.factContext?.accountId, session.client?.factContext?.generation, session.client?.factContext?.connectionId];
@@ -208,7 +219,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
           }
           if (!plain(plan) || !text(plan.batchId) || plan.accountId !== ctx.accountId || !Array.isArray(plan.actions) || plan.actions.length !== 1 || !text(plan.actions[0].actionId)) throw fail('操作服务未返回可单次确认的账号计划', 'WORKFLOW_UNKNOWN');
           if (plan.actions[0].actionId !== selectedId || plan.module && plan.module !== node.module) throw fail('计划与工作流精确操作选择不一致', 'WORKFLOW_UNKNOWN');
-          ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION', {actionId:selectedId,batchId:plan.batchId,...(plan.planHash?{planHash:plan.planHash}:{})}); break;
+          ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION', {actionId:selectedId,batchId:plan.batchId,...(plan.planHash?{planHash:plan.planHash}:{})});if(ctx.runAuthorization){if(await executeAuthorizedBatch(ctx))continue;} break;
         }
         if (node.type === 'WAIT') { ctx.status = 'WAITING'; await trace(ctx, node, 'WAIT_STARTED', {durationMs:node.durationMs}); current(ctx); let timer; try { await cancelled(ctx, new Promise(resolve => { timer = setTimeout(resolve, node.durationMs); })); } finally { clearTimeout(timer); } ctx.status = 'RUNNING'; current(ctx); await trace(ctx, node, 'WAITED', {durationMs:node.durationMs}); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'BRANCH') { if (!['PASS','FAIL'].includes(ctx.lastResult)) throw fail('分支缺少已验证的条件结果', 'WORKFLOW_UNKNOWN'); await trace(ctx, node, ctx.lastResult); ctx.nodeId = next(ctx, ctx.lastResult); continue; }
@@ -228,7 +239,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     return getStatus();
   }
   async function start(accountId, graph) {
-    if (starting || finishing || context && ACTIVE.has(context.status)) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
+    if (starting || resuming || authorizing || finishing || context && ACTIVE.has(context.status)) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
     if (!text(accountId)) throw fail('工作流必须绑定精确账号 ID');
     const validated = validateWorkflow(graph, { modules }); starting = true;
     try {
@@ -237,20 +248,13 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       if(ctx.graph.runPolicy){ctx.expiresAt=new Date(clock()+ctx.graph.runPolicy.maxDurationMs).toISOString();ctx.actionPlans=0;}
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.sessionSignal?.addEventListener('abort', ctx.externalAbort, { once: true });
       if(ctx.graph.runPolicy){ctx.deadlineTimer=setTimeout(()=>{if(context!==ctx||!ACTIVE.has(ctx.status))return;ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';ctx.cancel.abort();if(ctx.status==='AWAITING_AUTHORIZATION')task=finish(ctx,'STOPPED',ctx.limitReason).then(getStatus);},ctx.graph.runPolicy.maxDurationMs);}
-      try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null,...(ctx.graph.runPolicy?{expiresAt:ctx.expiresAt}:{})}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
+      try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null,...(ctx.graph.runPolicy?{expiresAt:ctx.expiresAt,graph:ctx.graph}:{})}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx);ctx.authorizationOffer=operations.workflowAuthorizationOffer?.(session,ctx.runId)??null; await onUpdate(getStatus()); current(ctx); }
       catch (error) { await finish(ctx, ctx.limitReason || error.code === 'WORKFLOW_LIMIT' ? 'STOPPED' : error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', ctx.limitReason ?? error.message); throw error; }
       task = advance(ctx); return await task;
     } finally { starting = false; }
   }
   function stop() { if (!context || !ACTIVE.has(context.status)) return getStatus(); const ctx = context; ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '用户已停止工作流；不会消费或继承计划授权').then(getStatus); return getStatus(); }
-  async function resume(...args) {
-    if (args.length) throw fail('resume 不接受外部运行结果或授权');
-    if (resuming) throw fail('工作流正在核对当前批次结果', 'WORKFLOW_BUSY');
-    const ctx = context;
-    if (!ctx || ctx.status !== 'AWAITING_AUTHORIZATION' || !ctx.waitingPlan) throw fail('工作流当前没有等待用户执行的计划');
-    resuming = true;
-    try {
-      current(ctx);
+  async function confirmBatch(ctx) {
       const result = await cancelled(ctx, Promise.resolve().then(() => operations.history(ctx.accountId)));
       current(ctx);
       const runs = Array.isArray(result?.runs) ? result.runs : [];
@@ -258,7 +262,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       if (!matches.length || matches.length === 1 && !matches[0].finishedAt && ['EXECUTING','VERIFY','RESOURCE_PREFLIGHT'].includes(matches[0].finalStatus)) {
         ctx.reason = '当前批次尚无已完成执行历史；继续等待用户授权与执行';
         await onUpdate(getStatus());
-        return getStatus();
+        return false;
       }
       const refused = matches.length === 1 ? matches[0] : null;
       if (refused?.finalStatus === 'REJECTED' && text(refused.finishedAt) &&
@@ -268,14 +272,37 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
           refused.actions[0].requestStatus === 'REJECTED' && refused.actions[0].unresolvedWrite === false) {
         ctx.lastRun = copy(refused);
         await finish(ctx, 'FAILED', '当前批次确定拒绝；共享拒绝记忆保留，停止后续执行');
-        return getStatus();
+        return false;
       }
       if (matches.length !== 1 || !confirmedRun(matches[0], ctx.waitingPlan, ctx.accountId)) {
         await finish(ctx, 'UNKNOWN', '当前同批次执行未同时满足 SUCCESS 与 CONFIRMED，停止工作流');
-        return getStatus();
+        return false;
       }
       ctx.lastRun = copy(matches[0]); ctx.waitingPlan = null; ctx.status = 'RUNNING'; ctx.reason = null;
-      ctx.nodeId = next(ctx); await onUpdate(getStatus()); current(ctx); task = advance(ctx); return await task;
+      ctx.nodeId = next(ctx); await onUpdate(getStatus()); current(ctx); return true;
+  }
+function executeAuthorizedBatch(ctx){
+ return (async()=>{current(ctx);ctx.status='RUNNING';ctx.reason='按本次有限运行授权生成原单次许可并核验';await onUpdate(getStatus());current(ctx);
+ const plan=ctx.waitingPlan,permit=operations.authorizeWorkflowPlan(ctx.session,{runId:ctx.runId,nodeId:ctx.nodeId,batchId:plan.batchId,planHash:plan.planHash});current(ctx);operations.execute(ctx.session,permit);await cancelled(ctx,operations.settle(ctx.accountId));current(ctx);
+ if(await confirmBatch(ctx))return true;if(ctx.status==='AWAITING_AUTHORIZATION'||ctx.status==='RUNNING')await finish(ctx,'UNKNOWN','执行已结束但缺少当前批次完整确认历史；有限运行停止且不重放');return false;})();
+}
+function authorizeRun(payload){
+ const ctx=context;if(starting||resuming||authorizing||finishing||!ctx||ctx.status!=='AWAITING_AUTHORIZATION'||!ctx.waitingPlan||ctx.runAuthorization||!ctx.authorizationOffer||typeof operations.authorizeWorkflow!=='function')throw fail('当前没有可明确授权的有限运行范围','AUTHORIZATION_REQUIRED');
+ exact(payload,['offer','batchId','planHash','confirm'],'有限运行确认');current(ctx);
+ if(payload.confirm!==true||!plain(payload.offer)||workflowJsonDigest(payload.offer)!==workflowJsonDigest(ctx.authorizationOffer)||payload.batchId!==ctx.waitingPlan.batchId||payload.planHash!==ctx.waitingPlan.planHash)throw fail('授权批次与当前暂停计划不一致','AUTHORIZATION_REQUIRED');
+ authorizing=true;ctx.status='RUNNING';
+ task=(async()=>{try{current(ctx);await operations.authorizeWorkflow(ctx.session,payload,async audit=>{current(ctx);ctx.runAuthorization=copy(audit);await onUpdate(getStatus());current(ctx);});current(ctx);authorizing=false;if(await executeAuthorizedBatch(ctx))return await advance(ctx);return getStatus();}
+ catch(error){await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':'FAILED',ctx.limitReason??error.message);return getStatus();}finally{authorizing=false;}})();return task;
+}
+  async function resume(...args) {
+    if (args.length) throw fail('resume 不接受外部运行结果或授权');
+    if (resuming) throw fail('工作流正在核对当前批次结果', 'WORKFLOW_BUSY');
+    const ctx = context;
+    if (!ctx || ctx.status !== 'AWAITING_AUTHORIZATION' || !ctx.waitingPlan) throw fail('工作流当前没有等待用户执行的计划');
+    resuming = true;
+    try {
+      current(ctx);
+      if(await confirmBatch(ctx)){task=advance(ctx);return await task;}return getStatus();
     } catch (error) {
       await finish(ctx, ctx.limitReason || error.code === 'WORKFLOW_LIMIT' ? 'STOPPED' : error.code === 'CANCELLED' ? 'CANCELLED' : 'UNKNOWN', ctx.limitReason ?? (error.code === 'WORKFLOW_LIMIT' ? error.message : '无法确认或持久化当前批次执行历史，工作流已停止'));
       return getStatus();
@@ -285,7 +312,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     if (!context?.claimed) return null;
     try { current(context); return context.runId; } catch { return null; }
   }
-  return { start, getStatus, getLiveRunId, stop, resume, settle: async () => { if (task) await task; return getStatus(); } };
+  return { start, getStatus, getLiveRunId, stop, resume, authorizeRun, settle: async () => { if (task) await task; return getStatus(); } };
 }
 
 const historyId = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && value.trim() === value;
@@ -361,7 +388,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
         verificationStatus: row.verification?.status ?? null, needsReconciliation: actionNeedsReconciliation(run, row),
         reconciliationStatus: Array.isArray(row.reconciliations) ? row.reconciliations.at(-1)?.status ?? null : null })) });
   }
-  return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.runPolicy?{runPolicy:validateRunPolicy(workflowRun.runPolicy),expiresAt:workflowRun.expiresAt,actionPlans:workflowRun.actionPlans}:{}), ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
+  return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.runAuthorization?{runAuthorization:copy(workflowRun.runAuthorization)}:{}), ...(workflowRun.runPolicy?{runPolicy:validateRunPolicy(workflowRun.runPolicy),expiresAt:workflowRun.expiresAt,actionPlans:workflowRun.actionPlans}:{}), ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
     waits: trace.filter(row=>row?.type==='WAIT').map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
@@ -377,7 +404,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
         || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
-    try { if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
+    try { validateAuthorizationAudit(run,modules);if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
     if (run.trace === undefined) return true;
     if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
@@ -428,8 +455,9 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }
   function save(accountId, graph) { const validated = validateWorkflow(graph, { modules }).workflow, raw = read(), account = entry(raw, accountId); account.workflows = [validated, ...account.workflows.filter(existing => existing.id !== validated.id)]; write(raw); return copy(validated); }
   function record(accountId, run) {
-    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans'];
+    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans','runAuthorization'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
+    validateAuthorizationAudit({...run,accountId},modules);
     if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');}
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;

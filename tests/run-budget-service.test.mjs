@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createOperationService } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
 import { createModuleSettings } from '../src/gameplay-settings.mjs';
-import { createWorkflowRunner } from '../src/workflow.mjs';
+import { createWorkflowRunner, createWorkflowStore } from '../src/workflow.mjs';
 import { CORE_OPERATION_MODULES, ordersModule } from '../src/core-operation-adapters.mjs';
 
 const rules = { version: 1, enabled: true, rules: [] };
@@ -71,7 +71,7 @@ function fixture({ stock = 60, apply = true, connection = true, clock = Date.now
     await Promise.all([...new Set(['A', 'B'])].map(id => service.settle(id)));
     assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir())); fs.rmSync(dir, { recursive: true, force: true });
   }
-  return { service, session, history: durable, journal, reads, writes, clients, makeSession, claim, plan, authorize, execute, attemptAnother, cleanup, state(target = session) { return clients.get(target.client); }, setFailPut(predicate) { failPut = predicate; }, setWriterAllowed(value) { writerAllowed = value; } };
+  return { service, session, moduleSettings, history: durable, journal, reads, writes, clients, makeSession, claim, plan, authorize, execute, attemptAnother, cleanup, state(target = session) { return clients.get(target.client); }, setFailPut(predicate) { failPut = predicate; }, setWriterAllowed(value) { writerAllowed = value; } };
 }
 
 test('Workflow previews and authorization bind a finite scope/limits identity without debiting the parent', async () => {
@@ -276,4 +276,94 @@ test('deadline while a child awaits verification retains ownership and UNKNOWN r
   const permit=f.authorize(f.session,status.plan);f.service.execute(f.session,permit);await Promise.race([verifying,f.service.settle('A').then(()=>{throw Error('Synthetic child finished before verification gate: '+JSON.stringify(f.service.status('A')));})]);time=Date.parse(status.expiresAt);const stopping=runner.resume();await new Promise(r=>setImmediate(r));assert.equal(runner.getStatus().status,'STOPPED');assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(f.session.workflowOwner,status.runId);await assert.rejects(runner.start('A',graph),{code:'WORKFLOW_BUSY'});
   allowRead();await stopping;await runner.settle();assert.equal(f.writes.length,1);assert.notEqual(f.service.status('A').finalStatus,'SUCCESS');assert.equal(f.session.workflowOwner,null);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.throws(()=>f.authorize(f.session,status.plan));
  }finally{allowRead?.();runner?.stop();await runner?.settle();await f.cleanup();}
+});
+
+async function boundedServiceWorkflow({apply=true,limit=80,maxActions=2,onUpdate=()=>{},...options}={}){
+ const f=fixture({stock:1000,apply,...options}),store=createWorkflowStore({file:path.join(path.dirname(f.history.storagePath),'workflows.json'),modules:CORE_OPERATION_MODULES}),updates=[];
+ const facts=await ordersModule.survey(f.session.client,protocol,{config,player:f.session.player}),rows=ordersModule.view(facts,{config,rules,moduleConfig:{enabled:true},parameters:{}}).candidates;
+ const graph={version:1,id:'explicit-run-orders',name:'Explicit finite order strategy',budget:claims(limit),runPolicy:{maxDurationMs:10000,maxActions,modules:['orders']},nodes:[{id:'s',type:'START'},{id:'a1',type:'ACTION',module:'orders',parameters:{},selection:rows[0].actionId},{id:'v1',type:'VERIFY',module:'orders'},{id:'a2',type:'ACTION',module:'orders',parameters:{},selection:rows[1].actionId},{id:'v2',type:'VERIFY',module:'orders'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a1'},{from:'a1',to:'v1'},{from:'v1',to:'a2'},{from:'a2',to:'v2'},{from:'v2',to:'z'}]};
+ const runner=createWorkflowRunner({operations:f.service,modules:CORE_OPERATION_MODULES,getSession:()=>f.session,clock:options.clock??Date.now,claim:(_id,runId,opts)=>f.service.claimWorkflow(f.session,runId,opts),onUpdate:async state=>{updates.push(structuredClone(state));await onUpdate(state);store.record('A',state);}});
+ const status=await runner.start('A',graph);return{...f,runner,workflowStore:store,updates,graph,status,payload:{offer:status.authorizationOffer,batchId:status.plan.batchId,planHash:status.plan.planHash,confirm:true},async cleanup(){runner.stop();await runner.settle();await f.cleanup();}};
+}
+for(const apply of [true,false])test('explicit finite run confirmation reuses original Service permits and authoritative history '+apply,async()=>{
+ const f=await boundedServiceWorkflow({apply});try{
+  assert.equal(f.status.status,'AWAITING_AUTHORIZATION');assert.equal(f.writes.length,0);assert.equal(f.status.runAuthorization,undefined);assert.deepEqual(f.status.authorizationOffer.graph,f.graph);assert.equal(f.status.authorizationOffer.executionContext.playerId,f.session.player.playerId);
+  const result=await f.runner.authorizeRun(f.payload);assert.equal(result.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.writes.length,apply?2:1);assert.equal(f.session.workflowOwner,null);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(amount(f.service.workflowBudget('A').reserved.resources),apply?80:40);
+  const approved=f.updates.find(row=>row.runAuthorization);assert.ok(approved);for(const write of f.writes){assert.deepEqual(write.durableBeforeWrite.authorizationSummary.workflowRunAuthorization,{runId:f.status.runId,graphHash:f.status.authorizationOffer.graphHash,approvedAt:approved.runAuthorization.approvedAt});}
+  const saved=f.workflowStore.history('A',{runId:f.status.runId})[0];assert.deepEqual(saved.runAuthorization.scope,f.status.authorizationOffer);assert.equal(saved.resumable,false);await assert.rejects(Promise.resolve().then(()=>f.runner.authorizeRun(f.payload)));assert.equal(f.writes.length,apply?2:1);
+ }finally{await f.cleanup();}
+});
+for(const options of [{limit:60},{maxActions:1}])test('finite run never expands its original resource or action cap '+JSON.stringify(options),async()=>{
+ const f=await boundedServiceWorkflow(options);try{const result=await f.runner.authorizeRun(f.payload);assert.notEqual(result.status,'COMPLETED');assert.equal(f.writes.length,1);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(result.runAuthorization.resumable,false);}finally{await f.cleanup();}
+});
+test('wrong finite scope, identity, graph, deadline, budget or confirmation cannot mint an existing child permit',async()=>{
+ const f=await boundedServiceWorkflow();try{
+  for(const change of [p=>p.confirm=false,p=>delete p.offer,p=>p.extra=true,p=>p.offer.accountId='B',p=>p.offer.runId='other',p=>p.offer.executionContext.worldId=2,p=>p.offer.executionContext.connectionId='other',p=>p.offer.graph.nodes[1].selection='other',p=>p.offer.graph.budget=claims(800),p=>p.offer.graph.runPolicy.maxActions=20,p=>p.offer.expiresAt='2099-01-01T00:00:00Z',p=>p.planHash='wrong']){const payload=structuredClone(f.payload);change(payload);await assert.rejects(f.service.authorizeWorkflow(f.session,payload,()=>{}));assert.equal(f.writes.length,0);}
+  assert.equal(f.runner.getStatus().status,'AWAITING_AUTHORIZATION');assert.equal((await f.runner.authorizeRun(f.payload)).status,'COMPLETED');assert.equal(f.writes.length,2);
+ }finally{await f.cleanup();}
+});
+test('run authorization persistence failure creates zero writes and closes the original budget',async()=>{
+ const f=await boundedServiceWorkflow({onUpdate:state=>{if(state.runAuthorization)throw Error('synthetic approval persistence failure');}});try{const result=await f.runner.authorizeRun(f.payload);assert.equal(result.status,'FAILED');assert.equal(f.writes.length,0);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(f.workflowStore.history('A')[0].runAuthorization,undefined);assert.throws(()=>f.authorize(f.session,f.status.plan));}finally{await f.cleanup();}
+});
+
+for(const fault of ['stop','expiry','player','world','generation','connection','client','factContext','writer','module-config'])test('pending durable run approval becomes unusable after '+fault,async()=>{
+ let time=Date.now(),release,entered;const blocked=new Promise(r=>release=r),waiting=new Promise(r=>entered=r);
+ const f=await boundedServiceWorkflow({clock:()=>time,onUpdate:async state=>{if(state.runAuthorization&&!state.finishedAt){entered();await blocked;}}});let task;
+ try{task=f.runner.authorizeRun(f.payload);await waiting;assert.equal(f.writes.length,0);
+ const child={runId:f.status.runId,nodeId:'a1',batchId:f.status.plan.batchId,planHash:f.status.plan.planHash};assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,child));
+ switch(fault){case 'stop':f.runner.stop();break;case 'expiry':time=Date.parse(f.status.expiresAt);break;case 'player':f.session.player.playerId='other';break;case 'world':f.session.player.worldId=2;break;case 'generation':f.session.generation++;break;case 'connection':f.session.connectionId='other';break;case 'client':f.session.client=f.makeSession('B').client;break;case 'factContext':f.session.client.factContext={accountId:'B',generation:1,connectionId:'other'};break;case 'writer':f.setWriterAllowed(false);break;case 'module-config':f.moduleSettings.save('A','orders',{enabled:false});break;}
+ release();const result=await task;assert.notEqual(result.status,'COMPLETED');assert.equal(f.writes.length,0);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(amount(f.service.workflowBudget('A').reserved.resources),0);assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,child));
+ }finally{release();await task;await f.cleanup();}
+});
+
+test('run grant never permits an unapproved, foreign, duplicate or substituted child plan',async()=>{
+ const f=await boundedServiceWorkflow();try{
+ const child={runId:f.status.runId,nodeId:'a1',batchId:f.status.plan.batchId,planHash:f.status.plan.planHash};assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,child));
+ await f.service.authorizeWorkflow(f.session,f.payload,audit=>f.workflowStore.record('A',{...f.status,runAuthorization:audit}));
+ for(const extra of [{runId:'foreign'},{nodeId:'a2'},{planHash:'wrong'},{batchId:'foreign'}])assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,{...child,...extra}));
+ for(const payload of [{module:'orders',mode:'Manual',selections:[f.graph.nodes[3].selection],parameters:{}},{module:'orders',mode:'Manual',selections:[f.graph.nodes[1].selection],parameters:{extra:true}},{module:'orders',mode:'Automatic',selections:[f.graph.nodes[1].selection],parameters:{}}])await assert.rejects(f.service.plan(f.session,payload,{workflowId:f.status.runId}));
+ const permit=f.service.authorizeWorkflowPlan(f.session,child);assert.ok(permit.permitId);assert.throws(()=>f.service.authorizeWorkflowPlan(f.session,child));assert.equal(f.writes.length,0);
+ f.runner.stop();await f.runner.settle();assert.throws(()=>f.service.execute(f.session,permit));assert.equal(f.writes.length,0);
+ }finally{await f.cleanup();}
+});
+
+test('a changed business configuration after a dispatched child stops all subsequent run actions',async()=>{
+ const f=await boundedServiceWorkflow();try{f.state().beforeWrite=()=>f.moduleSettings.save('A','orders',{enabled:false});const result=await f.runner.authorizeRun(f.payload);assert.notEqual(result.status,'COMPLETED');assert.equal(f.writes.length,1);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),40);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(f.history.list('A').length,1);await assert.rejects(Promise.resolve().then(()=>f.runner.authorizeRun(f.payload)));assert.equal(f.writes.length,1);}finally{await f.cleanup();}
+});
+
+for(const apply of [true,false])test('run authorization audit survives restart read-only and cannot restore Service permission '+apply,async()=>{
+ const f=await boundedServiceWorkflow({apply});try{const result=await f.runner.authorizeRun(f.payload),file=path.join(path.dirname(f.history.storagePath),'workflows.json'),bytes=fs.readFileSync(file,'utf8');
+ const store=createWorkflowStore({file,modules:CORE_OPERATION_MODULES}),saved=store.history('A',{runId:f.status.runId})[0];assert.deepEqual(saved.runAuthorization,result.runAuthorization);assert.equal(saved.status,apply?'COMPLETED':'UNKNOWN');assert.equal(saved.resumable,false);assert.equal(store.history('B').length,0);
+ const restarted=createOperationService({protocol,getConfig:()=>config,loadRules:()=>({config:rules}),loadProduction:()=>({config:production}),history:createExecutionHistory({file:f.history.storagePath}),modules:CORE_OPERATION_MODULES,moduleSettings:f.moduleSettings});
+ assert.equal(restarted.workflowAuthorizationOffer(f.session,f.status.runId),null);await assert.rejects(restarted.authorizeWorkflow(f.session,f.payload,()=>assert.fail('old approval must not persist')));assert.throws(()=>restarted.authorizeWorkflowPlan(f.session,{runId:f.status.runId,nodeId:'a1',batchId:f.status.plan.batchId,planHash:f.status.plan.planHash}));
+ if(!apply){assert.throws(()=>restarted.claimWorkflow(f.session,'uncertain-connection',{limits:claims(80)}),{code:'RESPONSE_UNCERTAIN'});const fresh=f.makeSession();assert.throws(()=>restarted.claimWorkflow(fresh,'new-run',{limits:claims(80)}),{code:'RECOVERY_UNCERTAIN'});}
+ assert.equal(f.writes.length,apply?2:1);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{await f.cleanup();}
+});
+
+test('invalid or substituted persisted run authorization is rejected while original bytes remain intact',async()=>{
+ const f=await boundedServiceWorkflow();try{const result=await f.runner.authorizeRun(f.payload),file=path.join(path.dirname(f.history.storagePath),'workflows.json'),bytes=fs.readFileSync(file,'utf8');
+ for(const change of [r=>r.runAuthorization.resumable=true,r=>r.runAuthorization.scope.graphHash='0'.repeat(64),r=>r.runAuthorization.scope.executionContext.accountId='B',r=>r.runAuthorization.scope.executionContext.worldId=null,r=>r.runAuthorization.scope.expiresAt='2099-01-01T00:00:00Z',r=>r.runAuthorization.approvedAt=r.expiresAt,r=>delete r.runAuthorization.scope.dependencies.moduleConfigs.orders,r=>{r.workflowId='substituted';r.runAuthorization.scope.workflowId='substituted';},r=>{r.expiresAt=new Date(Date.parse(r.startedAt)+r.runPolicy.maxDurationMs+1).toISOString();r.runAuthorization.scope.expiresAt=r.expiresAt;},r=>r.runAuthorization.approvedAt=new Date(Date.parse(r.startedAt)-1).toISOString()]){
+ const bad=structuredClone(result);change(bad);assert.throws(()=>f.workflowStore.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ const raw=JSON.parse(bytes);raw.accounts.A.history[0]=Object.fromEntries(Object.entries(bad).filter(([key])=>!['authorizationOffer','running','plan','lastRun'].includes(key)));fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');const restarted=createWorkflowStore({file,modules:CORE_OPERATION_MODULES});assert.throws(()=>restarted.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.throws(()=>restarted.save('A',f.graph));assert.equal(fs.readFileSync(file,'utf8'),damaged);fs.writeFileSync(file,bytes);
+ }
+ }finally{await f.cleanup();}
+});
+
+test('a finite unique strategy must still have exactly one executable candidate in the plan fresh read',async()=>{
+ const f=fixture({stock:1000});let release;try{
+ f.state().raw.workerOrder=[order(0)];const view=await f.service.surveyModule(f.session,'orders'),selected=view.view.candidates[0].actionId;
+ const graph={version:1,id:'unique-run',name:'Unique bounded order',budget:claims(40),runPolicy:{maxDurationMs:10000,maxActions:2,modules:['orders']},nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'orders',parameters:{},selection:{unique:true}},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};
+ release=f.service.claimWorkflow(f.session,'unique-run',{graph,limits:claims(40),expiresAt:new Date(Date.now()+9000).toISOString()});f.service.bindWorkflowNode(f.session,'unique-run',{workflowId:graph.id,nodeId:'a'});f.state().raw.workerOrder.push(order(1));
+ await assert.rejects(f.service.plan(f.session,{module:'orders',mode:'Manual',parameters:{},selections:[selected]},{workflowId:'unique-run'}),{code:'STALE_PLAN'});assert.equal(f.writes.length,0);
+ f.state().raw.workerOrder=[order(0)];const planned=await f.service.plan(f.session,{module:'orders',mode:'Manual',parameters:{},selections:[selected]},{workflowId:'unique-run'});assert.equal(planned.actions[0].actionId,selected);assert.equal(f.writes.length,0);
+ }finally{release?.();await f.cleanup();}
+});
+
+test('finite graph and parent claims cannot authorize RUBY or inherit a different budget or deadline',async()=>{
+ const f=fixture();try{
+ const graph={version:1,id:'invalid-contract',name:'Invalid run',budget:claims(40),runPolicy:{maxDurationMs:1000,maxActions:0,modules:[]},nodes:[{id:'s',type:'START'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'z'}]};
+ for(const opts of [{limits:claims(400),expiresAt:new Date(Date.now()+500).toISOString()},{limits:claims(40),expiresAt:new Date(Date.now()+5000).toISOString()},{limits:{resources:[{id:'RUBY',num:1}],quotas:[],uids:[]},expiresAt:new Date(Date.now()+500).toISOString(),graph:{...graph,budget:{resources:[{id:'RUBY',num:1}],quotas:[],uids:[]}}}])assert.throws(()=>f.service.claimWorkflow(f.session,'invalid-contract',{graph,...opts}));
+ assert.equal(f.session.workflowOwner,null);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
+ }finally{await f.cleanup();}
 });
