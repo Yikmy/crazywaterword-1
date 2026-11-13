@@ -52,7 +52,8 @@ export function resourceCosts(entries) {
 const budgetError = (message, code = 'RUN_BUDGET_INVALID') => Object.assign(new Error(message), { code });
 const plainBudgetObject = value => value && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
-const budgetId = value => typeof value === 'string' && value.length > 0 && value.length <= 300 && value === value.trim();
+export const RUN_BUDGET_LIMITS = Object.freeze({ idLength: 300 });
+const budgetId = value => typeof value === 'string' && value.length > 0 && value.length <= RUN_BUDGET_LIMITS.idLength && value === value.trim();
 const childBudgets = new WeakMap(), runBudgets = new WeakMap();
 const uidKey = value => JSON.stringify([value.type, value.id]);
 const amountMap = entries => new Map(entries.map(({ id, num }) => [id, num]));

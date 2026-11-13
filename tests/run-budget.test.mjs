@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ResourceLedger, createRunBudgetContext, normalizeBudgetClaims, validateResources } from '../src/resource-ledger.mjs';
+import { RUN_BUDGET_LIMITS, ResourceLedger, createRunBudgetContext, normalizeBudgetClaims, validateResources } from '../src/resource-ledger.mjs';
 const scope = () => ({ accountId: 'account-a', runId: 'run-a', generation: 2, connectionId: 'connection-a' });
 const claims = (resources = [], quotas = [], uids = []) => ({ resources, quotas, uids });
 const resource = (id, num) => ({ id, num });
@@ -202,4 +202,9 @@ test('bound child freezes original mutable Long quantities and copies all author
   assert.equal(ledger.available('wood'), 1); assert.equal(ledger.reserve([['wood', 2]]), false);
   assert.equal(ledger.reserve([['wood', 1]]), true); assert.equal(context.snapshot().limits.resources[0].num, 5);
   assert.equal(context.snapshot().scope.accountId, 'account-a');
+});
+test('shared budget identity length metadata stays frozen at the existing three-hundred-character contract',()=>{
+ assert.equal(RUN_BUDGET_LIMITS.idLength,300);assert.equal(Object.isFrozen(RUN_BUDGET_LIMITS),true);const id='x'.repeat(300);
+ assert.deepEqual(normalizeBudgetClaims(claims([resource(id,1)],[resource(id,1)],[uid(id,id)])),claims([resource(id,1)],[resource(id,1)],[uid(id,id)]));
+ for(const input of [claims([resource(id+'x',1)]),claims([],[resource(id+'x',1)]),claims([],[],[uid('mail',id+'x')]),claims([],[],[uid(id+'x','7')])])assert.throws(()=>normalizeBudgetClaims(input),{code:'RUN_BUDGET_INVALID'});
 });

@@ -1,3 +1,4 @@
+import { RUN_BUDGET_LIMITS, normalizeBudgetClaims } from '../src/resource-ledger.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { WORKFLOW_CONDITION_FIELDS, validateWorkflow, evaluateWorkflowCondition } from '../src/workflow.mjs';
 import { compileUnifiedExecution } from '../src/loop.mjs';
@@ -1261,4 +1262,19 @@ test('retained candidate load and selection callbacks cannot probe or select in 
  const h=await parameterPage('free-gold'),load=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business'),reading=load.click();await tick();h.respond('/api/gameplay/survey',data(cases.find(s=>s.module==='free-gold')));await reading;
  const select=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowSelection==='business'),newLoad=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business'),graph=conditionGraph(h);graph.nodes.find(n=>n.id==='business').parameters={replacement:true};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();
  const source=h.node('wf-json').value,requests=h.requests.length;load.click();newLoad.click();select.value=cases.find(s=>s.module==='free-gold').actionId;select.onchange();assert.equal(h.node('wf-json').value,source);assert.equal(h.requests.length,requests);assert.equal(writes(h,'/api/operations/plan').length,0);
+});
+
+test('unified budget form uses the exact existing shared identity bound for resources, quotas and UID pairs',async()=>{
+ const h=await unifiedForm(),id='A'.repeat(RUN_BUDGET_LIMITS.idLength),type='T'.repeat(RUN_BUDGET_LIMITS.idLength),requests=h.requests.length;
+ unifiedBudget(h,'resources',id,'3');unifiedBudget(h,'quotas',id,'1');unifiedBudget(h,'uids',id,'',type);
+ const draft=unifiedDraft(h).budget;assert.deepEqual(normalizeBudgetClaims(draft),draft);
+ for(const [kind,value,num,uidType]of [['resources',id+'x','1',''],['quotas',id+'x','1',''],['uids',id+'x','','mail'],['uids','7','',type+'x']]){
+  const source=h.node('wf-unified-intent').value;unifiedBudget(h,kind,value,num,uidType);assert.equal(h.node('wf-unified-intent').value,source,kind);
+ }
+ assert.equal(h.requests.length,requests);
+});
+
+test('unified budget text identities retain exact characters and original backend trimming restrictions',async()=>{
+ const h=await unifiedForm(),id='界'.repeat(RUN_BUDGET_LIMITS.idLength),requests=h.requests.length;unifiedBudget(h,'resources',id,'1');assert.equal(unifiedDraft(h).budget.resources[0].id,id);assert.equal(normalizeBudgetClaims(unifiedDraft(h).budget).resources[0].id,id);
+ for(const value of [' '+id,id+' ',id+'界']){const source=h.node('wf-unified-intent').value;unifiedBudget(h,'quotas',value,'1');assert.equal(h.node('wf-unified-intent').value,source);}assert.equal(h.requests.length,requests);
 });
