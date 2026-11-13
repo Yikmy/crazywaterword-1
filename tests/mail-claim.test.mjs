@@ -197,3 +197,30 @@ test('mail READ intent persistence failure and missing parent UID send zero requ
 test('mail READ missing or null attachments never imply authoritative emptiness or throw',async t=>{
  for(const value of [null,undefined]){const f=fixture(t,{action:'read'});f.state.onResponse=(name,response)=>{if(name==='EmailBoxRequest'){if(value===undefined)delete response.email[0].attachment;else response.email[0].attachment=value;}return response;};const facts=await f.survey();assert.equal(mail.viewMail(facts,f.options()).candidates[0].executable,false);assert.equal(f.plan(facts).actions.length,0);assert.equal(f.state.writes.length,0);}
 });
+
+function reconnectMail(f){f.session.generation=f.client.factContext.generation=2;f.session.connectionId=f.client.factContext.connectionId='replacement-mail';}
+async function replanMail(f,service=f.service){const p=f.options().parameters,read=await service.surveyModule(f.session,'mail',p),c=read.view.candidates.find(r=>r.executable);assert.ok(c,JSON.stringify(read.view));return service.plan(f.session,{module:'mail',mode:'Manual',parameters:p,selections:[c.actionId]});}
+for(const action of ['claim','read'])test('W19 mail '+action+' refusal survives reconnect and Service restart',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED',action});const {record}=await f.execute(await f.displayed());assert.equal(record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8'),memoryBytes=fs.readFileSync(f.file+'.memory.json','utf8');
+ reconnectMail(f);await assert.rejects(replanMail(f),{code:'REJECTION_MEMORY_ACTIVE'});await assert.rejects(replanMail(f,f.newService()),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(fs.readFileSync(f.file+'.memory.json','utf8'),memoryBytes);
+});
+for(const changed of ['player','world'])test('W19 mail '+changed+' is isolated and returning to original role keeps refusal',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});await f.execute(await f.displayed());reconnectMail(f);const next=f.newService();
+ f.session.player[changed==='player'?'playerId':'worldId']=changed==='player'?'18':'10';assert.equal((await replanMail(f,next)).actions.length,1);f.session.player={playerId:'17',worldId:'9'};await assert.rejects(replanMail(f,next),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);
+});
+for(const missing of ['executionContext','expectedState','budgetClaims'])test('W19 mail refusal missing original '+missing+' cannot clear by reconnect',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});await f.execute(await f.displayed());const store=createExecutionHistory({file:f.file}),record=store.list(account)[0];if(missing==='executionContext')delete record.executionContext;else delete record.actions[0][missing];store.put(record);reconnectMail(f);await assert.rejects(replanMail(f,f.newService()),{code:missing==='executionContext'?'MEMORY_EVENT_CONFLICT':'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);
+});
+
+for(const action of ['claim','read'])test('W19 mail '+action+' refusal learned after authorization prevents a second dispatch',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED',action});const first=await f.displayed(),next=f.newService(),p=await replanMail(f,next),permit=next.authorize(f.session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});await f.execute(first);
+ next.execute(f.session,permit);await next.settle(account);const r=createExecutionHistory({file:f.file}).list(account).find(r=>r.planSummary?.batchId===p.batchId);assert.equal(r.finalStatus,'NOT_EXECUTED');assert.equal(r.actions[0].dispatched,false);assert.equal(f.state.writes.length,1);
+});
+for(const action of ['claim','read'])test('W19 mail '+action+' unified Loop retains shared refusal through each round',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED',action});await f.execute(await f.displayed());reconnectMail(f);
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),g=compileUnifiedExecution({entry:'loop',world:[{module:'mail',parameters:f.options().parameters}],rounds:2,budget:claims},{modules:GAMEPLAY_MODULES}).graph,runner=f.runner(),r=await runner.start(account,g);
+ assert.equal(r.status,'COMPLETED');assert.equal(r.trace.filter(row=>row.result==='BLOCKED_REJECTION_MEMORY').length,2);assert.equal(r.plan,null);assert.equal(f.state.writes.length,1);assert.equal(f.service.executionMemory(account).events.length,1);
+});
+test('W19 mail changed explicit business state allows a fresh plan and retains original refusal',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});await f.execute(await f.displayed());reconnectMail(f);f.row.status=2;assert.equal((await replanMail(f,f.newService())).actions.length,1);assert.equal(f.state.writes.length,1);assert.equal(f.service.executionMemory(account).events.length,1);
+});

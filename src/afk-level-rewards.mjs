@@ -5,7 +5,7 @@ import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId = 'afk-level-rewards', scope = { kind: 'ACCOUNT' };
 const copy = value => structuredClone(value), same = (a,b) => stableBusinessValue(a) === stableBusinessValue(b);
@@ -125,4 +125,4 @@ export function verifyAfkLevelReward(operation,before,after,result) {
  return {confirmed:true,afterState:copy(after.state),reason:'专用回执与独立复读同时确认单档等级奖励及完整库存净入'};
 }
 export function afkLevelRewardsDependencyVersions({config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {return {moduleConfig:validateAfkLevelRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const afkLevelRewardsModule=Object.freeze({id:moduleId,label:'挂机等级奖励',capabilities:Object.freeze(['BIZ-R10']),defaultConfig:AFK_LEVEL_REWARDS_DEFAULT_CONFIG,validateConfig:validateAfkLevelRewardsConfig,validateParameters:validateAfkLevelRewardsParameters,survey:surveyAfkLevelRewards,view:viewAfkLevelRewards,plan:planAfkLevelRewards,verify:verifyAfkLevelReward,dependencyVersions:afkLevelRewardsDependencyVersions});
+export const afkLevelRewardsModule=Object.freeze({id:moduleId,label:'挂机等级奖励',capabilities:Object.freeze(['BIZ-R10']),defaultConfig:AFK_LEVEL_REWARDS_DEFAULT_CONFIG,validateConfig:validateAfkLevelRewardsConfig,validateParameters:validateAfkLevelRewardsParameters,survey:surveyAfkLevelRewards,view:viewAfkLevelRewards,plan:planAfkLevelRewards,verify:verifyAfkLevelReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:afkLevelRewardsDependencyVersions});

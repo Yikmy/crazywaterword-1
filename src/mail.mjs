@@ -6,7 +6,7 @@ import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, safeResourceQuantity, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId='mail',maxPage=2147483647;
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -165,4 +165,10 @@ export function verifyMailClaim(op,b,a){
  return {confirmed:true,reason:op.actionType==='READ'?'独立邮件页确认同一空附件邮件已读，完整库存不变；未领取或删除其他邮件':'独立邮件页确认同一邮件已读已领且附件不变，完整库存确认精确附件净入；未领取其他邮件',afterState:copy(y.target)};
 }
 export const mailModule=Object.freeze({id:moduleId,label:'邮件',capabilities:Object.freeze(['C511']),defaultConfig:MAIL_DEFAULT_CONFIG,validateConfig:validateMailConfig,
- validateParameters:validateMailParameters,survey:surveyMail,view:viewMail,plan:planMail,verify:verifyMailClaim,dependencyVersions:mailDependencyVersions});
+ validateParameters:validateMailParameters,survey:surveyMail,view:viewMail,plan:planMail,verify:verifyMailClaim,
+ // The exact mail contract and original History role remain authoritative;
+ // reconnecting cannot turn a definite refusal into a new business observation.
+ rejectionIdentity(operation,{context}={}) {
+  if(!operation?.beforeState||!operation.expectedState||!context)return null;
+  return businessRejectionIdentity({...operation,beforeState:{...operation.beforeState,context},expectedState:{...operation.expectedState,context}});
+ },dependencyVersions:mailDependencyVersions});

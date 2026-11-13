@@ -117,3 +117,37 @@ test('canonical verification rejects tampered request, expected income and reser
 test('wrong receipt after actual effect remains UNKNOWN with reserved entity in durable history',async t=>{
  const f=serviceFixture(t);f.state.receipt={rewardedLevel:5,reward:{asset:[{type:0,id:'抽卡券',num:2}]}};const {record}=await f.run(await f.makePlan());assert.equal(f.state.afk.rewardedLevel,2);assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].unresolvedWrite,true);assert.deepEqual(record.runBudget.reserved.uids,[{type:'afk-level-reward',id:'2'}]);assert.equal(f.state.writes.length,1);
 });
+
+function refuseAfk(f){f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite AFK refusal'),{code:'REJECTED'});};}
+function reconnectAfk(f){f.session.generation=f.client.factContext.generation=4;f.session.connectionId=f.client.factContext.connectionId='replacement-afk';}
+test('W19 AFK refusal survives reconnect and restart without rewriting original evidence',async t=>{
+ const f=serviceFixture(t,{apply:false});refuseAfk(f);const {record}=await f.run(await f.makePlan());assert.equal(record.finalStatus,'REJECTED');
+ const memoryFile=f.file+'.memory.json',historyBytes=fs.readFileSync(f.file,'utf8'),memoryBytes=fs.readFileSync(memoryFile,'utf8');
+ reconnectAfk(f);await assert.rejects(f.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});
+ const next=serviceFixture(t,{file:f.file});reconnectAfk(next);await assert.rejects(next.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});
+ assert.equal(f.state.writes.length,1);assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),historyBytes);assert.equal(fs.readFileSync(memoryFile,'utf8'),memoryBytes);
+});
+for(const changed of ['inventory','player','world'])test('W19 AFK new '+changed+' permits fresh planning while original role refusal remains',async t=>{
+ const f=serviceFixture(t,{apply:false});refuseAfk(f);await f.run(await f.makePlan());const next=serviceFixture(t,{file:f.file});reconnectAfk(next);
+ if(changed==='inventory')next.state.stock.set('抽卡券',8);if(changed==='player')next.session.player.playerId='9007199254740994';if(changed==='world')next.session.player.worldId='18';
+ assert.equal((await next.makePlan()).actions.length,1);assert.equal(next.state.writes.length,0);
+ if(changed==='player'||changed==='world'){next.session.player={playerId:'9007199254740993',worldId:'17'};await assert.rejects(next.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});}
+ assert.equal(next.service.executionMemory(next.session.id).events.length,1);
+});
+for(const missing of ['expectedState','budgetClaims'])test('W19 AFK legacy refusal missing '+missing+' stays blocked',async t=>{
+ const f=serviceFixture(t,{apply:false});refuseAfk(f);await f.run(await f.makePlan());const saved=f.durable.list(f.session.id)[0];delete saved.actions[0][missing];f.durable.put(saved);
+ const next=serviceFixture(t,{file:f.file});reconnectAfk(next);next.state.stock.set('抽卡券',8);await assert.rejects(next.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+test('W19 AFK UNKNOWN cannot expire on reconnect or changed business facts',async t=>{
+ const f=serviceFixture(t,{apply:false});await f.run(await f.makePlan());const bytes=fs.readFileSync(f.file,'utf8');const next=serviceFixture(t,{file:f.file});reconnectAfk(next);next.state.stock.set('抽卡券',8);await assert.rejects(next.makePlan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+
+test('W19 AFK rejection learned after authorization stops before any second dispatch',async t=>{
+ const f=serviceFixture(t,{apply:false});refuseAfk(f);const next=serviceFixture(t,{file:f.file});reconnectAfk(next);const p=await next.makePlan(),permit=next.authorize(p);await f.run(await f.makePlan());
+ next.service.execute(next.session,permit);await next.service.settle(next.session.id);assert.equal(next.state.writes.length,0);const r=next.durable.list(next.session.id).find(r=>r.planSummary?.batchId===p.batchId);assert.equal(r.finalStatus,'NOT_EXECUTED');assert.equal(r.actions[0].dispatched,false);
+});
+test('W19 AFK unified Loop skips remembered refusal without authorization or retry',async t=>{
+ const f=serviceFixture(t,{apply:false});refuseAfk(f);await f.run(await f.makePlan());const next=serviceFixture(t,{file:f.file});reconnectAfk(next);
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),g=compileUnifiedExecution({entry:'loop',world:[{module:'afk-level-rewards',parameters}],rounds:2,budget:{resources:[],quotas:[],uids:[{type:'afk-level-reward',id:'2'}]}},{modules:GAMEPLAY_MODULES}).graph;
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:next.service,claim:(_id,runId,o)=>next.service.claimWorkflow(next.session,runId,o),getSession:()=>next.session});t.after(()=>runner.stop());const r=await runner.start(next.session.id,g);assert.equal(r.status,'COMPLETED');assert.equal(r.trace.filter(row=>row.result==='BLOCKED_REJECTION_MEMORY').length,2);assert.equal(r.plan,null);assert.equal(next.state.writes.length,0);assert.equal(next.service.executionMemory(next.session.id).events.length,1);
+});
