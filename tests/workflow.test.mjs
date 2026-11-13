@@ -181,3 +181,33 @@ test('lost workflow evidence stops unified Loop before its next plan',async t=>{
  const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>{released++;},operations:{history:()=>({runs:[]}),surveyModule:async()=>{surveyed++;fs.unlinkSync(file);return {accountId:'A',module:'fixture',view:{candidates:[]}};},plan:async()=>{planned++;}},onUpdate:status=>store.record('A',status)});
  const result=await runner.start('A',uniqueGraph(2));assert.equal(result.status,'FAILED');assert.equal(planned,0);assert.equal(surveyed,1);assert.equal(released,1);assert.equal(fs.existsSync(file),false);
 });
+
+for(const change of ['session-connection','client-connection','client-account','client-generation','account','disconnected','abort-replaced'])test('workflow authorization pause is fenced after '+change+' changes on the same client',async()=>{
+ const f=fixture();f.session.connectionId='first';f.session.client.connected=true;f.session.client.factContext={accountId:f.session.id,generation:1,connectionId:'first'};
+ await f.runner.start(f.session.id,graph());f.runs.push(f.success());
+ if(change==='session-connection')f.session.connectionId='second';
+ if(change==='client-connection')f.session.client.factContext.connectionId='second';
+ if(change==='client-account')f.session.client.factContext.accountId='other';
+ if(change==='client-generation')f.session.client.factContext.generation=2;
+ if(change==='account')f.session.id='other';
+ if(change==='disconnected')f.session.client.connected=false;
+ if(change==='abort-replaced')f.session.abort=new AbortController();
+ assert.equal(f.runner.getLiveRunId(),null);
+ const stopped=await f.runner.resume();assert.equal(stopped.status,'CANCELLED');assert.equal(stopped.plan,null);
+ assert.equal(stopped.trace.some(row=>row.type==='VERIFY'),false);assert.equal(f.calls.filter(row=>row[0]==='plan').length,1);assert.equal(f.released(),1);
+});
+
+test('late unique survey from a replaced same-client connection cannot create a plan',async()=>{
+ let resolveSurvey,planned=0;const pending=new Promise(resolve=>resolveSurvey=resolve);
+ const f=fixture({surveyModule:()=>pending,plan:async()=>{planned++;}});f.session.connectionId='first';
+ const starting=f.runner.start(f.session.id,uniqueGraph());await new Promise(resolve=>setImmediate(resolve));
+ f.session.connectionId='second';resolveSurvey({accountId:f.session.id,module:'fixture',view:{candidates:[{actionId:'one',executable:true}]}});
+ assert.equal((await starting).status,'CANCELLED');assert.equal(planned,0);assert.equal(f.released(),1);
+});
+
+test('connection replacement during History read cannot consume an old completed batch',async()=>{
+ let resolveHistory;const pending=new Promise(resolve=>resolveHistory=resolve);const f=fixture({history:()=>pending});f.session.connectionId='first';
+ await f.runner.start(f.session.id,graph());const resuming=f.runner.resume();await new Promise(resolve=>setImmediate(resolve));
+ f.session.connectionId='second';resolveHistory({runs:[f.success()]});
+ const state=await resuming;assert.equal(state.status,'CANCELLED');assert.equal(state.trace.some(row=>row.type==='VERIFY'),false);assert.equal(state.plan,null);assert.equal(f.released(),1);
+});
