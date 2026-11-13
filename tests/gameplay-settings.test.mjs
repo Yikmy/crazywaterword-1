@@ -52,3 +52,11 @@ test('shared naval rule metadata retains the original exact type and 100-rule bo
  for(const [type,kind]of Object.entries(NAVAL_RULE_CONTRACT.types)){const value=kind==='text'?'exact-key':kind==='boolean'?false:0;assert.deepEqual(check([{id:'x',type,value}]).rules,[{id:'x',type,value}]);}
  const rules=Array.from({length:100},(_,i)=>({id:'r'+i,type:'freshTarget',value:0}));assert.equal(check(rules).rules.length,100);assert.throws(()=>check([...rules,{id:'overflow',type:'freshTarget',value:0}]));
 });
+
+
+test('shared numeric predicate preserves the existing server scalar configuration bounds',async()=>{
+ const {moduleConfigNumberValid,validateModuleConfig}=await import('../src/gameplay-settings.mjs');
+ for(const [key,values]of [['petrolReserve',[0,1,1e9,0.5,-1,1e9+1,NaN,Infinity,'1',null]],['minimumDurabilityRatio',[0,0.1,1,1.1]],['maxFleets',[0,1,2,1.5]],['scenarioId',[0,1,2.5]],['maxActionsPerPlan',[0,1,100]],['minimumRevenue',[0,1,1e9]]]){
+  for(const value of values){const valid=moduleConfigNumberValid(value,'config.'+key);if(valid)assert.equal(validateModuleConfig({[key]:value},{[key]:1})[key],value);else assert.throws(()=>validateModuleConfig({[key]:value},{[key]:1}));}
+ }
+});

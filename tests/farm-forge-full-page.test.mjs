@@ -1652,3 +1652,49 @@ test('naval config edits expire old rule drafts and pending or UNKNOWN never sav
  const h=await navalEditorPage();navalRuleAdd(h,'old','minPetrol','1');const old=navalRuleButton(h,'apply');h.node('gp-naval-config').value=JSON.stringify({...navalEditorData().config,rules:[{id:'new',type:'targetState',value:2}]});h.node('gp-naval-config').oninput();old.click();assert.equal(navalRuleField(h,0,'id').value,'new');assert.equal(JSON.parse(h.node('gp-naval-config').value).rules[0].id,'new');
  const data=navalEditorData();data.status={running:false,blocked:true,state:'UNKNOWN'};const read=h.node('gp-naval-load').click();h.respond('/api/gameplay',data,{module:'naval'});await read;assert.equal(navalRuleButton(h,'apply').disabled,true);navalRuleButton(h,'apply').click();assert.equal(writes(h).length,0);
 });
+
+
+function numberConfigData(id){return {accountId:'A',module:id,csrfToken:'synthetic-csrf-A',config:structuredClone(GAMEPLAY_MODULES[id].defaultConfig),view:{candidates:[],blocked:[]},status:{blocked:false,running:false},functions:[]};}
+async function numberConfigPage(id,data=numberConfigData(id)){const h=await boot(),read=h.node('gp-'+id+'-load').click();h.respond('/api/gameplay',data,{module:id});await read;return h;}
+const numberConfigNodes=(h,id)=>descendants(h.node('gp-'+id+'-config-fields'));
+const numberConfigField=(h,id,key)=>numberConfigNodes(h,id).find(n=>n.dataset.configNumber===key);
+const numberConfigApply=(h,id)=>numberConfigNodes(h,id).find(n=>n.dataset.configNumbersApply===id);
+function numberConfigEdit(h,id,values){for(const [key,value]of Object.entries(values)){const field=numberConfigField(h,id,key);assert.ok(field,'missing '+id+':'+key);field.value=value;field.oninput();}}
+
+for(const [id,values]of [
+ ['fleet',{repairBelowDurabilityRatio:'0.5',maximumRepairPetrolPerPlan:'1000',minimumDurabilityRatio:'1',petrolReserve:'0',scenarioId:'2'}],
+ ['treasure',{maxFleets:'2',minimumDurabilityRatio:'0.75',petrolReserve:'300'}],
+ ['museum',{maxActionsPerPlan:'2',maximumSpeedItems:'0',minimumRevenue:'1'}],
+ ['alliance',{maxDailyHelps:'0',maxActionsPerPlan:'2'}]
+])test(id+' numeric configuration uses explicit draft values and the existing account save API without executing',async()=>{
+ const h=await numberConfigPage(id),before=h.node('gp-'+id+'-config').value,requests=h.requests.length;numberConfigEdit(h,id,values);assert.equal(h.node('gp-'+id+'-config').value,before);numberConfigApply(h,id).click();const config=JSON.parse(h.node('gp-'+id+'-config').value);for(const [key,value]of Object.entries(values))assert.equal(config[key],Number(value));assert.deepEqual(GAMEPLAY_MODULES[id].validateConfig(config),config);assert.equal(h.requests.length,requests);assert.equal(h.node('gp-'+id+'-plan').disabled,true);assert.match(h.node('gp-'+id+'-hint').textContent,/保存后重新探测/);
+ const saving=h.node('gp-'+id+'-config-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:id,config});const data=numberConfigData(id);data.config=config;h.respond('/api/gameplay/config',data);await saving;assert.deepEqual(JSON.parse(h.node('gp-'+id+'-config').value),config);assert.deepEqual(writes(h).map(r=>new URL(r.url,'http://localhost').pathname),['/api/gameplay/config']);
+});
+
+for(const [key,value]of [['maxFleets','0'],['maxFleets','1.5'],['maxFleets',''],['maxFleets','1e0'],['maxFleets',' 1'],['petrolReserve','1000000001'],['petrolReserve','NaN'],['minimumDurabilityRatio','0'],['minimumDurabilityRatio','1.1'],['minimumDurabilityRatio','-0.1']])test('numeric config rejects '+key+'='+JSON.stringify(value)+' atomically using the existing scalar contract',async()=>{
+ const h=await numberConfigPage('treasure'),before=h.node('gp-treasure-config').value;numberConfigEdit(h,'treasure',{petrolReserve:'25',[key]:value});numberConfigApply(h,'treasure').click();assert.equal(h.node('gp-treasure-config').value,before);assert.match(h.node('gp-treasure-hint').textContent,/数值未应用/);assert.equal(writes(h).length,0);
+});
+
+test('numeric config draft discard and ordinary refresh keep edits scoped to the original source',async()=>{
+ const h=await numberConfigPage('fleet'),apply=numberConfigApply(h,'fleet'),field=numberConfigField(h,'fleet','petrolReserve');numberConfigEdit(h,'fleet',{petrolReserve:'123'});let reading=h.node('gp-fleet-load').click();assert.equal(apply.disabled,true);h.respond('/api/gameplay',numberConfigData('fleet'),{module:'fleet'});await reading;assert.equal(numberConfigField(h,'fleet','petrolReserve').value,'123');field.value='999';field.oninput();apply.click();assert.equal(JSON.parse(h.node('gp-fleet-config').value).petrolReserve,0);numberConfigApply(h,'fleet').click();assert.equal(JSON.parse(h.node('gp-fleet-config').value).petrolReserve,123);
+ numberConfigEdit(h,'fleet',{petrolReserve:'45'});numberConfigNodes(h,'fleet').find(n=>n.dataset.configNumbersDiscard==='fleet').click();assert.equal(numberConfigField(h,'fleet','petrolReserve').value,'123');assert.equal(writes(h).length,0);
+});
+
+test('advanced config changes expire old numeric and boolean callbacks while retaining untouched lists and rejecting unknown fields on the original adapter',async()=>{
+ const h=await numberConfigPage('alliance'),oldApply=numberConfigApply(h,'alliance'),oldBoolean=numberConfigNodes(h,'alliance').find(n=>n.type==='checkbox');const config={...numberConfigData('alliance').config,memberIds:['9007199254740995'],stockItemIds:['木材'],stockReserveQuantities:[7],unknown:'keep-for-rejection'};h.node('gp-alliance-config').value=JSON.stringify(config);h.node('gp-alliance-config').oninput();oldBoolean.checked=true;oldBoolean.onchange();oldApply.click();numberConfigEdit(h,'alliance',{maxDailyHelps:'4'});numberConfigApply(h,'alliance').click();const actual=JSON.parse(h.node('gp-alliance-config').value);assert.deepEqual(actual,{...config,maxDailyHelps:4});assert.throws(()=>GAMEPLAY_MODULES.alliance.validateConfig(actual));assert.equal(writes(h).length,0);
+});
+
+test('numeric controls and stale booleans lock for running and UNKNOWN and cannot cross account generations',async()=>{
+ const h=await numberConfigPage('treasure'),apply=numberConfigApply(h,'treasure'),input=numberConfigField(h,'treasure','maxFleets'),boolean=numberConfigNodes(h,'treasure').find(n=>n.type==='checkbox');numberConfigEdit(h,'treasure',{maxFleets:'2'});
+ for(const status of [{blocked:true,running:false,state:'UNKNOWN'},{blocked:false,running:true}]){const data=numberConfigData('treasure');data.status=status;const reading=h.node('gp-treasure-load').click();h.respond('/api/gameplay',data,{module:'treasure'});await reading;assert.equal(numberConfigApply(h,'treasure').disabled,true);numberConfigApply(h,'treasure').click();assert.ok(numberConfigNodes(h,'treasure').filter(n=>n.type==='checkbox').every(n=>n.disabled));}
+ const late=h.node('gp-treasure-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',numberConfigData('treasure'),{module:'treasure'});await late;apply.click();input.value='9';input.oninput();boolean.checked=true;boolean.onchange();assert.equal(h.node('gp-treasure-config').value,'{}');assert.equal(h.node('gp-treasure-config-fields').textContent,'');assert.equal(writes(h).length,0);
+});
+
+test('numeric form never treats basic scalar validation as domain qualification or a saved budget',async()=>{
+ const h=await numberConfigPage('treasure');numberConfigEdit(h,'treasure',{maxFleets:'11'});numberConfigApply(h,'treasure').click();const config=JSON.parse(h.node('gp-treasure-config').value);assert.throws(()=>GAMEPLAY_MODULES.treasure.validateConfig(config),{code:'INVALID_INPUT'});const saving=h.node('gp-treasure-config-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:'treasure',config});h.respond('/api/gameplay/config',{error:'寻宝规则无效',code:'INVALID_INPUT'},{ok:false});await saving;assert.match(h.node('gp-treasure-hint').textContent,/操作停止/);assert.equal(JSON.parse(h.node('gp-treasure-config').value).maxFleets,11);assert.equal(h.node('gp-treasure-plan').disabled,true);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+
+test('numeric drafts survive ordinary boolean edits while replaced boolean callbacks cannot overwrite the new draft',async()=>{
+ const h=await numberConfigPage('treasure');numberConfigEdit(h,'treasure',{maxFleets:'3',petrolReserve:'45'});const boolean=numberConfigNodes(h,'treasure').find(n=>n.type==='checkbox');boolean.checked=true;boolean.onchange();assert.equal(numberConfigField(h,'treasure','maxFleets').value,'3');assert.equal(numberConfigField(h,'treasure','petrolReserve').value,'45');boolean.checked=false;boolean.onchange();assert.equal(JSON.parse(h.node('gp-treasure-config').value).enabled,true);numberConfigApply(h,'treasure').click();assert.equal(JSON.parse(h.node('gp-treasure-config').value).maxFleets,3);assert.equal(JSON.parse(h.node('gp-treasure-config').value).petrolReserve,45);assert.equal(writes(h).length,0);
+});

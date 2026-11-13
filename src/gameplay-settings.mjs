@@ -5,11 +5,17 @@ import { DATA_DIR } from './accounts.mjs';
 
 export const NAVAL_RULE_CONTRACT = Object.freeze({ maxRules:100, types:Object.freeze({ targetId:'text', targetState:'integer', fleetState:'integer', minDurability:'integer', minPetrol:'integer', sameGuild:'boolean', freshTarget:'integer' }) });
 
+export function moduleConfigNumberValid(input, label) {
+  return Number.isFinite(input) && input >= 0 && input <= 1e9
+    && (!label.endsWith('DurabilityRatio') || input > 0 && input <= 1)
+    && (!['maxFleets','scenarioId','maxActionsPerPlan','minimumRevenue'].some(key => label.endsWith('.' + key)) || Number.isSafeInteger(input) && input >= 1);
+}
+
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 export function validateModuleConfig(value, defaults) {
   function check(input, model, label) {
     if (typeof model === 'boolean') { if (typeof input !== 'boolean') throw new Error(label + ' 必须为布尔值'); return input; }
-    if (typeof model === 'number') { if (!Number.isFinite(input) || input < 0 || input > 1e9 || label.endsWith('DurabilityRatio') && (input <= 0 || input > 1) || ['maxFleets','scenarioId','maxActionsPerPlan','minimumRevenue'].some(k=>label.endsWith('.'+k)) && (!Number.isSafeInteger(input) || input < 1)) throw new Error(label + ' 数值无效'); return input; }
+    if (typeof model === 'number') { if (!moduleConfigNumberValid(input, label)) throw new Error(label + ' 数值无效'); return input; }
     if (typeof model === 'string') { if (typeof input !== 'string' || input.length > 1000) throw new Error(label + ' 字符串无效'); return input; }
     if (model === null) { if (input !== null && typeof input !== 'string' && !Number.isSafeInteger(input)) throw new Error(label + ' 标识无效'); return input; }
     if (Array.isArray(model) && label === 'config.rules') {
