@@ -48,8 +48,8 @@ test('workflow scope is internal and onUpdate records before an authorization pa
  const plan={batchId:'scope-batch',planHash:'scope-hash',accountId:session.id,module:'fixture',actions:[{actionId:'operation-1'}]};
  const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(...args)=>{calls.push(['survey',args]);return {}},plan:async(...args)=>{calls.push(['plan',args]);return plan},history:()=>({runs:[]})},claim:()=>true,onUpdate:async state=>{updates.push(state)}});
  const result=await runner.start(session.id,graph());assert.equal(result.status,'AWAITING_AUTHORIZATION');
- const runId=result.runId;assert.deepEqual(calls[0][1][3],{workflowId:runId});assert.deepEqual(calls[1][1][2],{workflowId:runId});
- assert.equal(updates[0].status,'STARTING');assert.equal(updates.at(-1).status,'AWAITING_AUTHORIZATION');assert.equal(updates.at(-1).plan.batchId,'scope-batch');runner.stop();await runner.settle();
+ const runId=result.runId,signal=calls[0][1][3].signal;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);assert.notEqual(signal,session.abort.signal);assert.deepEqual(calls[0][1][3],{workflowId:runId,signal});assert.deepEqual(calls[1][1][2],{workflowId:runId});
+ assert.equal(updates[0].status,'STARTING');assert.equal(updates.at(-1).status,'AWAITING_AUTHORIZATION');assert.equal(updates.at(-1).plan.batchId,'scope-batch');runner.stop();await runner.settle();assert.equal(signal.aborted,true);assert.equal(session.abort.signal.aborted,false);
 });
 test('persistence failure stops before the next node and releases the claim',async()=>{
  const session={id:'persist-account',generation:1,client:{},abort:new AbortController()};let planned=0,released=0;
@@ -679,4 +679,28 @@ test('daily reset event rule accepts no inferred clock, eligibility, level, tran
  const valid={kind:'DAILY_TASK_RESET'};assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:valid}),{modules}).valid,true);
  for(const extra of [{level:0},{dailyResetTime:1000},{timeZone:'Asia/Shanghai'},{boundaryHour:0},{eligible:true},{request:'SCDailyTaskReset'},{retry:true},{allowPaid:true},{budget:[]}])assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:{...valid,...extra}}),{modules}),{code:'WORKFLOW_INVALID'});
  assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:valid,schedule:onceSchedule(1050)}),{modules}),{code:'WORKFLOW_INVALID'});
+});
+
+for(const entry of ['tasks','loop'])test('unified '+entry+' mail enumeration uses only the original bounded SURVEY nodes',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),input={entry,tasks:[{kind:'mail-enumeration',maxPages:3}],budget:{resources:[],quotas:[],uids:[]},...(entry==='loop'?{rounds:2,everyMs:10}:{})},before=structuredClone(input);
+ const result=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES}),surveys=result.graph.nodes.filter(row=>row.type==='SURVEY');
+ assert.deepEqual(input,before);assert.deepEqual(result.blocked,[]);assert.equal(surveys.length,entry==='loop'?2:1);assert.equal(result.graph.nodes.some(row=>row.type==='ACTION'),false);
+ for(const node of surveys){assert.equal(node.module,'mail');assert.deepEqual(node.parameters,{action:'enumerate',maxPages:3});assert.equal(Object.hasOwn(node,'selection'),false);}
+ assert.equal(simulateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
+});
+test('unified mail enumeration requires an explicit page bound and rejects claim, transport or budget overrides',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),input={entry:'tasks',tasks:[{kind:'mail-enumeration',maxPages:2}],budget:{resources:[],quotas:[],uids:[]}};
+ for(const change of [r=>delete r.maxPages,r=>r.maxPages=0,r=>r.maxPages=101,r=>r.maxPages='2',r=>r.maxPages=1.5,r=>r.pageNo=1,r=>r.emailId='1',r=>r.action='claim',r=>r.selection={unique:true},r=>r.parameters={action:'claim'},r=>r.request='QuickGotReadEmailRequest',r=>r.budget={}]){
+  const row=structuredClone(input.tasks[0]);change(row);assert.throws(()=>compileUnifiedExecution({...input,tasks:[row]},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ }
+ assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:input.tasks,budget:input.budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ const mixed=compileUnifiedExecution({...input,tasks:[...input.tasks,{kind:'mail',pageNo:0,emailId:'1',action:'claim'}]},{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(mixed.graph.nodes.map(row=>row.type),['START','SURVEY','ACTION','STOP']);assert.deepEqual(mixed.graph.nodes[2].parameters,{pageNo:0,emailId:'1',action:'claim'});
+});
+
+test('unique ACTION candidate survey receives the same Workflow cancellation fence before planning',async()=>{
+ const session={id:'unique-cancel',generation:1,client:{connected:true},abort:new AbortController()};let signal,entered,planned=0;const waiting=new Promise(resolve=>entered=resolve);
+ const g=graph();g.nodes=g.nodes.filter(n=>n.id!=='q');g.nodes.find(n=>n.id==='a').selection={unique:true};g.edges=g.edges.filter(e=>e.from!=='q'&&e.to!=='q');g.edges.push({from:'s',to:'a'});
+ const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>true,operations:{async surveyModule(_session,_module,_parameters,options){signal=options.signal;entered();return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(Error('cancelled'),{code:'CANCELLED'})),{once:true}));},plan(){planned++;throw Error('must not plan');},history:()=>({runs:[]})}});
+ const running=runner.start(session.id,g);await waiting;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);runner.stop();assert.equal((await running).status,'CANCELLED');assert.equal(signal.aborted,true);assert.equal(session.abort.signal.aborted,false);assert.equal(planned,0);
 });

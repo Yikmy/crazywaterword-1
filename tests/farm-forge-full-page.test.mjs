@@ -2282,3 +2282,32 @@ test('runtime asset recovery record displays fixed offline commands without enab
  const h=await boot(),task=h.node('assets-read').onclick();h.respond('/api/assets/readiness',{...assetUiReport,recoveryArchive:{path:'work/runtime-assets.cwassets.gz',sha256:'b'.repeat(64),size:1901461,status:'RETAINED_RECORD_ONLY'}});await task;
  const text=h.node('assets-readiness').textContent;assert.match(text,/work\/runtime-assets[.]cwassets[.]gz/);assert.match(text,/b{64}/);assert.match(text,/assets verify/);assert.match(text,/assets restore/);assert.match(text,/仅补缺失文件/);assert.match(text,/ASSET_SOURCE_UNKNOWN/);assert.match(text,/记录不证明文件当前存在/);assert.equal(writes(h).length,0);
 });
+
+for(const entry of ['tasks','loop'])test('unified '+entry+' mailbox enumeration form preserves explicit bounds without mail writes',async()=>{
+ const h=await unifiedForm(entry),before=h.requests.length;
+ unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'tasks','mail-enumeration','1');unifiedAdd(h,'tasks','mail-enumeration','100');
+ assert.deepEqual(unifiedDraft(h).tasks,[{kind:'mail-enumeration',maxPages:1},{kind:'mail-enumeration',maxPages:100}]);assert.match(h.node('wf-unified-target-label').textContent,/页数上限/);
+ assert.equal(h.node('wf-unified-mail-page').disabled,true);assert.match(h.node('wf-unified-steps').textContent,/只读SURVEY.*不自动标已读、领取附件/);
+ assert.deepEqual(unifiedDraft(h).budget,{resources:[],quotas:[],uids:[]});assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const old=descendants(h.node('wf-unified-steps')).find(n=>n.dataset?.unifiedStep);h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-unified-intent').value;old.click();assert.equal(h.node('wf-unified-intent').value,source);
+});
+
+test('unified mailbox enumeration form rejects ambiguous limits and excludes Dailies',async()=>{
+ const h=await unifiedForm('loop');
+ for(const limit of ['','0','-1','1.5','1e2','101',' 2','2 ','<img src=x>']){
+  const before=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','mail-enumeration',limit);assert.equal(h.node('wf-unified-intent').value,before);
+ }
+ h.node('wf-unified-phase').value='dailies';h.node('wf-unified-phase').onchange();assert.equal(h.node('wf-unified-kind').children.some(n=>n.value==='mail-enumeration'),false);
+ assert.equal(writes(h,'/api/workflows/prepare').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('mailbox Workflow history renders partial and legacy coverage safely and ignores late account replies',async()=>{
+ const h=await boot(),loading=h.node('wf-load').click();await tick();
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'mail-history',workflowId:'mail-flow',status:'COMPLETED'}]});await loading;
+ const history={accountId:'A',workflowRunId:'mail-history',workflowDefinitionId:'mail-flow',status:'COMPLETED',readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[],surveys:[{nodeId:'<img src=x onerror=alert(1)>',module:'mail',timestamp:null,mailbox:{maxPages:2,readPages:2,observedMails:20,totalReported:31,status:'PARTIAL',allPagesComplete:false,atomicSnapshot:false,reason:'MAIL_PAGE_LIMIT_REACHED'}},{nodeId:'legacy',module:'mail',timestamp:null}]};
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',history);await reading;
+ const box=h.node('wf-history-detail');assert.match(box.textContent,/PARTIAL.*页数上限 2.*已读页数 2.*观察邮件 20.*报告总数 31.*MAIL_PAGE_LIMIT_REACHED/);assert.match(box.textContent,/不证明原子快照或领取资格/);assert.match(box.textContent,/legacy.*原历史未保留覆盖摘要.*不能据流程结束推断完整观察/);assert.ok(box.textContent.includes('<img src=x onerror=alert(1)>'));assert.equal(descendants(box).some(n=>String(n.tagName).toLowerCase()==='img'),false);
+ const late=h.node('wf-history-read').click();await tick();h.run("selectAccount('B')");h.respond('/api/workflows/history',history);await late;assert.equal(h.node('wf-history-detail').textContent,'');
+ assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});

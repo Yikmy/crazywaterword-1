@@ -66,3 +66,25 @@ test('recreated Console does not restore mail enumeration, connect, authorize or
  let app=await harness();try{const s=app.ready('A');s.mailPage=mailboxResponse(11);await app.call('/api/gameplay?module=mail');const result=await app.call('/api/gameplay/survey',{body:{module:'mail',parameters:{action:'enumerate',maxPages:2}}});assert.equal(result.data.view.mailbox.allPagesComplete,true);}finally{await app.close();}
  app=await harness();try{const result=await app.call('/api/gameplay?module=mail');assert.equal(result.data.view,null);assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});}finally{await app.close();}
 });
+
+test('HTTP compiled Tasks and Loop mailbox surveys persist exact coverage and reopen without replay',async()=>{
+ let app=await harness();const runs=[];
+ try{
+ const intent=entry=>({entry,tasks:[{kind:'mail-enumeration',maxPages:2}],budget:{resources:[],quotas:[],uids:[]}});
+ assert.equal((await app.call('/api/workflows/prepare',{body:intent('tasks')})).status,403);assert.equal(app.reads.length,0);
+ await app.call('/api/workflows');const session=app.ready('A');session.mailPage=mailboxResponse(11);
+ for(const entry of ['tasks','loop']){
+  const prepared=await app.call('/api/workflows/prepare',{body:intent(entry)});assert.equal(prepared.status,200);assert.equal(prepared.data.graph.nodes.filter(n=>n.type==='SURVEY').length,1);assert.equal(prepared.data.graph.nodes.some(n=>n.type==='ACTION'),false);
+  const before=app.reads.length,started=await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});assert.equal(started.status,200);
+  let current;for(let i=0;i<100;i++){current=await app.call('/api/workflows');if(current.data.status.status==='COMPLETED')break;await new Promise(resolve=>setTimeout(resolve,5));}
+  assert.equal(current.data.status.status,'COMPLETED');const runId=current.data.status.runId;runs.push(runId);
+  assert.equal(app.reads.length,before+2);const history=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(history.status,200);assert.equal(history.data.surveys[0].mailbox.status,'COMPLETE');assert.equal(history.data.surveys[0].mailbox.readPages,2);assert.equal(history.data.nodes.length,0);assert.equal(history.data.resumable,false);assert.doesNotMatch(history.text,/private-content|private-sender|mail page|emailId/);
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+ }
+ assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
+ }finally{await app.close();}
+ app=await harness();try{
+  for(const runId of runs){const history=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(history.status,200);assert.equal(history.data.surveys[0].mailbox.observedMails,11);assert.equal(history.data.readOnly,true);assert.equal(history.data.resumable,false);}
+  assert.equal((await app.call('/api/workflows')).data.status.status,'IDLE');assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
+ }finally{await app.close();}
+});

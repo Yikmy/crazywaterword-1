@@ -278,14 +278,21 @@ function repeatAfterStop(ctx,node){
         const node = ctx.graph.nodes.find(entry => entry.id === ctx.nodeId);
         if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); current(ctx); if(await repeatAfterStop(ctx,node))continue;await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) || ctx.graph.preparation?.blocked.length ? '工作流到达 STOP；含未执行的阻塞节点或编译未纳入步骤，详情见运行历史' : '工作流到达 STOP'); break; }
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
-        if (node.type === 'SURVEY') { ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx); ctx.surveyModule = node.module; await trace(ctx, node, 'SURVEYED'); ctx.nodeId = next(ctx); continue; }
+        if (node.type === 'SURVEY') {
+          ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId, signal: ctx.cancel.signal }));
+          current(ctx); ctx.surveyModule = node.module;
+          const mailbox=node.module==='mail'&&node.parameters?.action==='enumerate'?ctx.survey?.view?.mailbox:null;
+          const observation=mailbox?mailboxHistory({...Object.fromEntries(['maxPages','readPages','totalReported','status','allPagesComplete','atomicSnapshot','reason'].map(key=>[key,mailbox[key]])),observedMails:mailbox.emails.length}):null;
+          await trace(ctx, node, 'SURVEYED',observation?{mailbox:observation}:{});
+          ctx.nodeId = next(ctx); continue;
+        }
         if (node.type === 'ACTION') {
           if(ctx.graph.runPolicy&&ctx.actionPlans>=ctx.graph.runPolicy.maxActions)throw fail('累计动作计划已到声明上限','WORKFLOW_LIMIT');
           ctx.lastPlan = null; ctx.lastRun = null; ctx.lastActionModule = null;
           operations.bindWorkflowNode?.(ctx.session,ctx.runId,{workflowId:ctx.graph.id,nodeId:node.id,...(ctx.graph.runPolicy?.maxRounds!==undefined?{round:ctx.round}:{})});
           let selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;
           if (node.selection?.unique === true) {
-            const surveyed = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx);
+            const surveyed = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId, signal: ctx.cancel.signal })); current(ctx);
             if (surveyed?.accountId !== ctx.accountId || surveyed.module !== node.module || !Array.isArray(surveyed.view?.candidates)) throw fail('唯一候选缺少同账号同模块调查', 'WORKFLOW_UNKNOWN');
             ctx.survey = surveyed; ctx.surveyModule = node.module;
             const candidates = surveyed.view.candidates.filter(row => row.executable === true);
@@ -428,6 +435,19 @@ const ids = (rows, pick) => {
   return values.every(historyId) && new Set(values).size === values.length ? values : null;
 };
 const TRACE_EVIDENCE_FIELDS = ['module','actionId','batchId','planHash'];
+function mailboxHistory(value) {
+ exact(value,['maxPages','readPages','observedMails','totalReported','status','allPagesComplete','atomicSnapshot','reason'],'邮箱观察历史');
+ const count=n=>Number.isSafeInteger(n)&&n>=0;
+ const reasons=['MAIL_CONTEXT_UNKNOWN','MAIL_PROTOCOL_UNAVAILABLE','MAIL_PAGE_READ_FAILED','MAIL_LIST_OR_ID_UNKNOWN','MAIL_TOTAL_UNKNOWN','MAIL_TOTAL_CHANGED','MAIL_PAGE_SIZE_MISMATCH','MAIL_CROSS_PAGE_DUPLICATE_ID','MAIL_ENUMERATION_COUNT_MISMATCH','MAIL_PAGE_LIMIT_REACHED'];
+ if(!Number.isInteger(value.maxPages)||value.maxPages<1||value.maxPages>100||!count(value.readPages)||value.readPages>value.maxPages||
+    !count(value.observedMails)||value.observedMails>1000000||value.totalReported!==null&&(!count(value.totalReported)||value.totalReported>2147483647)||
+    !['COMPLETE','PARTIAL','UNKNOWN'].includes(value.status)||value.atomicSnapshot!==false||
+    value.allPagesComplete!==(value.status==='COMPLETE')||
+    (value.status==='COMPLETE'?(value.reason!==null||value.totalReported===null||value.observedMails!==value.totalReported||value.readPages!==Math.max(1,Math.ceil(value.totalReported/10))):
+      !reasons.includes(value.reason)||value.status==='UNKNOWN'&&(value.readPages!==0||value.observedMails!==0)||value.status==='PARTIAL'&&value.readPages===0))throw fail('邮箱观察历史缺少精确有界覆盖');
+ return copy(value);
+}
+
 function traceEvidence(row) {
   const evidence={};
   for(const key of TRACE_EVIDENCE_FIELDS)if(row[key]!==undefined){
@@ -438,6 +458,7 @@ function traceEvidence(row) {
     if(!Array.isArray(row.blockedReasons)||row.blockedReasons.length>50||row.blockedReasons.some(reason=>!historyId(reason)))throw fail('工作流阻塞原因无效');
     evidence.blockedReasons=[...row.blockedReasons];
   }
+  if(row.mailbox!==undefined){if(row.type!=='SURVEY'||row.module!=='mail'||row.result!=='SURVEYED')throw fail('邮箱观察摘要仅属于原mail SURVEY');evidence.mailbox=mailboxHistory(row.mailbox);}
   if(row.round!==undefined){if(!Number.isSafeInteger(row.round)||row.round<1||row.round>WORKFLOW_LIMITS.rounds)throw fail('历史轮次无效');evidence.round=row.round;}
   if(row.durationMs!==undefined){
     if(!(row.type==='WAIT'&&['WAIT_STARTED','WAITED'].includes(row.result)||row.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result))||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('等待历史时长无效');
@@ -523,6 +544,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
     waits: trace.filter(row=>row?.type==='WAIT'||row?.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result)).map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
+    surveys: trace.filter(row=>row?.type==='SURVEY'&&row.result==='SURVEYED').map(row=>({nodeId:row.nodeId,timestamp:row.timestamp??null,...traceEvidence(row)})),
     nodes: [...nodes.values()] };
 }
 

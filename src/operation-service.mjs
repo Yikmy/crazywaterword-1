@@ -206,11 +206,13 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: safe });
   }
-  async function surveyModule(session, id, parameters = {}, { workflowId = null } = {}) {
+  async function surveyModule(session, id, parameters = {}, { workflowId = null, signal = null } = {}) {
     const adapter = adapterFor(id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
     const release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
-    try { const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: session.abort.signal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
-      const facts = await adapter.survey(client, protocol, options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
+    try { const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
+      assertExecutionActive(client,{signal:surveySignal});
+      const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
+      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
   async function surveyAntiqueAttributes(session,payload={}) {

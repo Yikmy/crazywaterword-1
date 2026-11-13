@@ -368,3 +368,20 @@ test('restarted Console rejects a missing established Workflow file before new u
   assert.equal(fs.existsSync(workflowFile),false);assert.equal(fs.readFileSync(workflowFile+'.anchor','utf8'),anchor);
  }finally{await fresh?.close();fs.writeFileSync(workflowFile,bytes);}
 });
+
+test('mailbox observation history validates exact coverage, rejects forged summaries and retains legacy surveys',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),scratch=fs.mkdtempSync(path.join(os.tmpdir(),'cw-mail-audit-')),file=path.join(scratch,'workflow.json');
+ try{
+ const store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),base={runId:'mail-audit',workflowId:'mail-graph',status:'COMPLETED',trace:[{nodeId:'read',type:'SURVEY',result:'SURVEYED',module:'mail',mailbox:{maxPages:2,readPages:2,observedMails:11,totalReported:11,status:'COMPLETE',allPagesComplete:true,atomicSnapshot:false,reason:null}}]};
+ store.record('A',base);const bytes=fs.readFileSync(file,'utf8');
+ for(const patch of [{maxPages:0},{maxPages:101},{maxPages:'2'},{readPages:3},{readPages:1},{observedMails:10},{totalReported:null},{totalReported:2147483648},{status:'SUCCESS'},{allPagesComplete:false},{atomicSnapshot:true},{reason:'MAIL_PAGE_LIMIT_REACHED'},{emailId:'100'},{subject:'private-content'},{status:'UNKNOWN',allPagesComplete:false,readPages:0,observedMails:1,reason:'MAIL_PAGE_READ_FAILED'},{status:'PARTIAL',allPagesComplete:false,readPages:0,reason:'MAIL_PAGE_LIMIT_REACHED'},{status:'PARTIAL',allPagesComplete:false,reason:'INVENTED_REASON'}]){
+  const bad=structuredClone(base);Object.assign(bad.trace[0].mailbox,patch);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }
+ for(const patch of [{type:'ACTION'},{module:'formation'},{result:'FAILED'}]){const bad=structuredClone(base);Object.assign(bad.trace[0],patch);assert.throws(()=>store.record('A',bad));}
+ const legacy=structuredClone(base);legacy.runId='legacy-mail';delete legacy.trace[0].mailbox;store.record('A',legacy);
+ const restarted=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),saved=restarted.history('A'),history=projectWorkflowExecutionHistory('A',saved.find(r=>r.runId==='legacy-mail'),[]);
+ assert.equal(history.surveys[0].mailbox,undefined);assert.equal(history.nodes.length,0);assert.deepEqual(restarted.history('B'),[]);
+ const raw=JSON.parse(fs.readFileSync(file,'utf8'));raw.accounts.A.history.find(r=>r.runId==='mail-audit').trace[0].mailbox.atomicSnapshot=true;fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');
+ assert.throws(()=>createWorkflowStore({file,modules:GAMEPLAY_MODULES}).history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
+ }finally{fs.rmSync(scratch,{recursive:true,force:true});}
+});

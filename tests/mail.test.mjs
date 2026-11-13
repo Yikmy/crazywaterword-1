@@ -140,3 +140,48 @@ test('registered Service and original Workflow SURVEY enumerate without new hist
  const graph={version:1,id:'mail-enumeration',name:'Mail enumeration',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'mail',parameters},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'z'}]};assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);
  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());assert.equal((await runner.start(f.session.id,graph)).status,'COMPLETED');assert.equal(f.reads.length,4);assert.equal(f.writes.length,0);assert.equal(f.session.busy,null);
 });
+
+test('compiled mailbox Workflow stop cancels the shared Service before a late page can continue',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs');
+ const f=serviceFixture();let release,entered;const waiting=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ f.state.onRead=async()=>{const pageNo=f.reads.at(-1).pageNo;f.state.raw={total:31,email:Array.from({length:10},(_,i)=>email({emailId:String(100+pageNo*10+i)}))};if(pageNo===1){entered();await gate;}};
+ const graph=compileUnifiedExecution({entry:'tasks',tasks:[{kind:'mail-enumeration',maxPages:4},{kind:'mail-enumeration',maxPages:4}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}).graph;
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});
+ t.after(async()=>{release();runner.stop();await runner.settle();});
+ const running=runner.start(f.session.id,graph);await waiting;runner.stop();assert.equal((await running).status,'CANCELLED');
+ assert.equal(f.session.abort.signal.aborted,false);release();await new Promise(resolve=>setTimeout(resolve,40));
+ assert.deepEqual(f.reads,[{pageNo:0},{pageNo:1}]);assert.equal(f.writes.length,0);assert.equal(f.service.moduleView(f.session.id,'mail').view,null);assert.equal(f.session.busy,null);assert.equal(f.session.workflowOwner,null);
+});
+
+for(const [label,total,maxPages,expected,reason] of [['complete',11,2,'COMPLETE',null],['partial',31,2,'PARTIAL','MAIL_PAGE_LIMIT_REACHED'],['unknown',11,2,'UNKNOWN','MAIL_PAGE_READ_FAILED']])test('compiled mailbox '+label+' persists only bounded observation summary across restart',async t=>{
+ const fs=await import('node:fs'),os=await import('node:os'),path=await import('node:path');
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),{createWorkflowStore,projectWorkflowExecutionHistory}=await import('../src/workflow.mjs');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-mail-workflow-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'workflow.json'),store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),f=serviceFixture();
+ f.state.onRead=()=>{if(label==='unknown')throw Error('private-read-error');const pageNo=f.reads.at(-1).pageNo;f.state.raw={total,email:Array.from({length:Math.min(10,total-pageNo*10)},(_,i)=>email({emailId:String(100+pageNo*10+i)}))};};
+ const graph=compileUnifiedExecution({entry:label==='partial'?'loop':'tasks',tasks:[{kind:'mail-enumeration',maxPages}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}).graph;store.save(f.session.id,graph);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session,onUpdate:state=>store.record(f.session.id,state)});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ const result=await runner.start(f.session.id,graph);assert.equal(result.status,'COMPLETED');
+ const bytes=fs.readFileSync(file,'utf8'),restarted=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),saved=restarted.history(f.session.id)[0],history=projectWorkflowExecutionHistory(f.session.id,saved,[]);
+ assert.equal(history.surveys.length,1);assert.equal(history.nodes.length,0);assert.equal(history.resumable,false);
+ assert.deepEqual(history.surveys[0].mailbox,{maxPages,readPages:label==='unknown'?0:2,totalReported:label==='unknown'?null:total,status:expected,allPagesComplete:label==='complete',atomicSnapshot:false,reason,observedMails:label==='unknown'?0:label==='partial'?20:11});
+ assert.deepEqual(restarted.history('other'),[]);assert.throws(()=>projectWorkflowExecutionHistory('other',saved,[]));assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ assert.doesNotMatch(bytes,/private-content|private-sender|private-read-error|9007199254740995|合成邮件/);
+ assert.equal(f.reads.length,label==='unknown'?1:2);assert.equal(f.writes.length,0);assert.equal(f.session.busy,null);
+});
+
+for(const [label,change]of [['account',f=>f.client.factContext.accountId='other'],['role',f=>f.session.player.playerId='44'],['world',f=>f.session.player.worldId='44'],['connection',f=>{f.client.factContext.connectionId='new';f.session.connectionId='new';}],['generation',f=>{f.client.factContext.generation++;f.session.generation++;}]])test('compiled mailbox shared chain discards late '+label+' page and preserves prior cache',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture();
+ await f.service.surveyModule(f.session,'mail',{pageNo:7});const prior=f.service.moduleView(f.session.id,'mail').view;
+ f.state.onRead=()=>{const pageNo=f.reads.at(-1).pageNo;f.state.raw={total:31,email:Array.from({length:10},(_,i)=>email({emailId:String(100+pageNo*10+i)}))};if(pageNo===1)change(f);};
+ const graph=compileUnifiedExecution({entry:'tasks',tasks:[{kind:'mail-enumeration',maxPages:4}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}).graph;
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(async()=>{runner.stop();await runner.settle();});
+ const result=await runner.start(f.session.id,graph);assert.equal(result.status,'CANCELLED');assert.deepEqual(f.reads,[{pageNo:7},{pageNo:0},{pageNo:1}]);
+ assert.deepEqual(f.service.moduleView(f.session.id,'mail').view,prior);assert.equal(result.trace.some(row=>row.result==='SURVEYED'),false);assert.equal(f.writes.length,0);
+});
+
+test('shared mailbox survey respects already cancelled caller and session signals without a read',async()=>{
+ for(const source of ['caller','session']){const f=serviceFixture(),abort=new AbortController();if(source==='session')f.session.abort.abort();else abort.abort();
+ await assert.rejects(f.service.surveyModule(f.session,'mail',{action:'enumerate',maxPages:2},{signal:abort.signal}),{code:'CANCELLED'});assert.equal(f.reads.length,0);assert.equal(f.writes.length,0);assert.equal(f.session.busy,null);}
+});

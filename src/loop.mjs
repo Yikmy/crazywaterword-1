@@ -145,6 +145,12 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateAfkLevelRewardsParameters({level:row.level});}catch{invalid('Tasks挂机等级奖励须明确正int32等级');}
         steps.push({phase,index,module:'afk-level-rewards',parameters,selection});continue;
       }
+      if(phase==='tasks'&&row?.kind==='mail-enumeration'){
+        exact(row,['kind','maxPages']);
+        if(!Object.hasOwn(row,'maxPages'))invalid('邮箱枚举须明确1至100页的上限');
+        try{parameters=validateMailParameters({action:'enumerate',maxPages:row.maxPages});}catch{invalid('邮箱枚举须明确1至100页的上限');}
+        steps.push({type:'SURVEY',phase,index,module:'mail',parameters});continue;
+      }
       if(phase==='tasks'&&row?.kind==='mail'){
         exact(row,['kind','pageNo','emailId','action']);
         if(!['claim','read'].includes(row.action))invalid('Tasks邮件仅支持明确单封claim/read');
@@ -200,7 +206,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
   const add=node=>{edges.push({from:nodes.at(-1).id,to:node.id});nodes.push(node);};
   for(let round=1;round<=rounds;round++){
     if(round>1&&everyMs)add({id:'wait-'+round,type:'WAIT',durationMs:everyMs});
-    for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,selection:step.selection});
+    for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:step.type??'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,...(step.type==='SURVEY'?{}:{selection:step.selection})});
   }
   add({id:'stop',type:'STOP'});
   const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget,...(Object.hasOwn(input,'runPolicy')?{runPolicy:input.runPolicy}:{}),preparation:{entry:input.entry,blocked:structuredClone(blocked)}};
