@@ -6,7 +6,7 @@ import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId = 'task-rewards', scope = { kind: 'ACCOUNT' };
 const copy = value => structuredClone(value), same = (a,b) => stableBusinessValue(a) === stableBusinessValue(b);
@@ -182,4 +182,4 @@ export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_
   return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))};
 }
 export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,
-  validateConfig:validateTaskRewardsConfig,validateParameters:validateTaskRewardsParameters,survey:surveyTaskRewards,view:viewTaskRewards,plan:planTaskRewards,verify:verifyTaskReward,dependencyVersions:taskRewardsDependencyVersions});
+  validateConfig:validateTaskRewardsConfig,validateParameters:validateTaskRewardsParameters,survey:surveyTaskRewards,view:viewTaskRewards,plan:planTaskRewards,verify:verifyTaskReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:taskRewardsDependencyVersions});

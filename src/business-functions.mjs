@@ -5,6 +5,20 @@ import { isUndispatchedTransportError } from './client.mjs';
 
 export const stableBusinessValue = value => JSON.stringify(value, (_key, entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
   ? Object.fromEntries(Object.keys(entry).sort().map(key => [key, entry[key]])) : entry);
+// Opt-in domain projection for refusal comparison only. Execution identities,
+// authorization, UNKNOWN reconciliation and immutable v1 events stay untouched.
+export function businessRejectionIdentity(operation) {
+  if (!operation || ['beforeState','expectedState','parameters','costs','costSource','budgetClaims'].some(key => !Object.hasOwn(operation,key) || operation[key] === null || operation[key] === undefined)) return null;
+  const state = operation.beforeState, context = state?.context;
+  if (!context || ['accountId','playerId','worldId','generation','connectionId'].some(key => !Object.hasOwn(context,key) || context[key] === null || context[key] === undefined)) return null;
+  const project = value => {
+    const result = structuredClone(value);
+    if (result?.context) { delete result.context.generation; delete result.context.connectionId; }
+    return result;
+  };
+  return { beforeState: project(state), expectedState: project(operation.expectedState), parameters: operation.parameters,
+    costs: operation.costs, costSource: operation.costSource, budgetClaims: operation.budgetClaims };
+}
 const equal = (a, b) => stableBusinessValue(a) === stableBusinessValue(b);
 const publicState = facts => facts?.state ?? facts?.current ?? null;
 export const BUSINESS_EXECUTION_STAGES = Object.freeze(['SURVEY', 'RESOURCE_PREFLIGHT', 'DISPATCH_INTENT', 'DISPATCHED', 'RESPONSE', 'OBSERVATION_ENDED', 'VERIFY', 'VERIFIED']);

@@ -150,3 +150,17 @@ test('free gold requires its exact configured module level and live explicit pla
  const f=await ready();f.options.player.level=2;assert.equal(planFreeGold(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);
  const changed=clone(f.options.config);changed.tables.ModuleOpenCfg.revision=2;assert.notDeepEqual(freeGoldDependencyVersions({...f.options,config:changed}),freeGoldDependencyVersions(f.options));
 });
+
+for(const change of ['connection','generation'])test('definite refusal remains active after '+change+' replacement with the same business facts',async t=>{
+ const f=serviceFixture(t,{apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};
+ const {record}=await f.run(await f.plan());assert.equal(record.finalStatus,'REJECTED');assert.equal(f.state.writes.length,1);
+ const memoryBefore=fs.readFileSync(f.file+'.memory.json','utf8'),historyBefore=fs.readFileSync(f.file,'utf8');
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='new-offline-connection';
+ if(change==='generation') {
+  next.session.generation=next.client.factContext.generation=4;
+  const clock=trustedGameClock({accountId:next.session.id,generation:4,wallNow:()=>next.state.wall,monotonicNow:()=>next.state.mono});
+  clock.markPing(next.state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:next.state.wall,serverTimestamp:next.state.wall}));next.client.gameClock=clock;
+ }
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+ assert.equal(fs.readFileSync(next.file+'.memory.json','utf8'),memoryBefore);assert.equal(fs.readFileSync(next.file,'utf8'),historyBefore);
+});

@@ -6,7 +6,7 @@ import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId='free-recruit',scope={kind:'ACCOUNT'},request='RecruitStartRequest',response='RecruitStartResponse';
 const copy=v=>structuredClone(v),same=(a,b)=>stableBusinessValue(a)===stableBusinessValue(b);
@@ -151,4 +151,4 @@ export function verifyFreeRecruit(operation,before,after,result) {
  return {confirmed:true,afterState:copy(after.state),reason:'单次免费回执与独立新冷却、英雄/完整库存净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received}};
 }
 export function freeRecruitDependencyVersions({config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeRecruitConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const freeRecruitModule=Object.freeze({id:moduleId,label:'普通免费英雄招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,dependencyVersions:freeRecruitDependencyVersions});
+export const freeRecruitModule=Object.freeze({id:moduleId,label:'普通免费英雄招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});

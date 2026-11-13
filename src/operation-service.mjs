@@ -114,6 +114,17 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     if(snapshot.unknown.length)throw error('原始UNKNOWN尚未由执行历史复核','RECOVERY_UNCERTAIN');
     if(!snapshot.events.some(event=>event.status==='REJECTED'&&event.module===operation.module&&event.actionType===operation.actionType))return;
     const query={module:operation.module,actionType:operation.actionType,target:operation.target,identity:operation.identity??operation.beforeState};
+    const rejectionIdentity=modules[operation.module]?.rejectionIdentity;
+    if(typeof rejectionIdentity==='function') {
+      const key=executionMemoryKey(query),fresh=rejectionIdentity(operation);
+      for(const event of snapshot.events.filter(event=>event.status==='REJECTED'&&event.key===key)) {
+        // Compare original History business facts, never mutate or reinterpret the
+        // event digest. An absent/mismatched origin cannot prove a changed fact.
+        const original=snapshot.entries.find(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId)?.actions.find(row=>row.actionId===event.actionId);
+        const prior=original&&event.historyOrigin.status==='REJECTED'?rejectionIdentity(original):null;
+        if(fresh==null||prior==null||operationDigest(toSnapshotJson(fresh))===operationDigest(toSnapshotJson(prior)))throw error('该目标的确定拒绝仍有效；连接或世代变化不构成业务事实变化','REJECTION_MEMORY_ACTIVE');
+      }
+    }
     const evaluated=decisionMemory.evaluate(session.id,query,{generation:session.generation,identityFact,maxFactAgeMs:300000}),rejection=evaluated.rejection??evaluated;
     if(rejection.blocked)throw error('该目标的确定拒绝仍有效，须权威新身份后重新规划','REJECTION_MEMORY_ACTIVE');
   }

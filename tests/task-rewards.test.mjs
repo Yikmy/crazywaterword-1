@@ -211,3 +211,55 @@ test('registered Achievement Workflow pauses for the exact existing Service batc
  assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
  let result=await runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.equal((await runner.resume()).status,'AWAITING_AUTHORIZATION');const plan=result.plan;await f.run(plan);result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.state.writes.length,1);const record=f.durable.list(f.session.id)[0];assert.equal(record.workflowId,result.runId);assert.equal(record.workflowNodeId,'a');assert.equal(record.workflowDefinitionId,graph.id);
 });
+for(const selectedParameters of [parameters,{kind:'branch',taskId:8001},{kind:'achievement',taskId:1001}])test(selectedParameters.kind+' refusal survives a new connection and generation without rewriting v1 events',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED',selectedParameters});await f.run(await f.plan());
+ const memoryFile=f.file+'.memory.json',before=fs.readFileSync(memoryFile,'utf8'),historyBefore=fs.readFileSync(f.file,'utf8');
+ const restarted=serviceFixture(t,{file:f.file,selectedParameters});restarted.session.connectionId=restarted.client.factContext.connectionId='new-offline-connection';restarted.session.generation=restarted.client.factContext.generation=4;
+ await assert.rejects(restarted.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(restarted.state.writes.length,0);
+ assert.equal(fs.readFileSync(memoryFile,'utf8'),before);assert.equal(fs.readFileSync(f.file,'utf8'),historyBefore);
+});
+for(const changed of ['progress','config','player','world'])test('fresh task '+changed+' changes permit a new plan while retaining the original refusal',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'});await f.run(await f.plan());
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='new-offline-connection';
+ if(changed==='progress')next.state.tasks.task.progress++;
+ if(changed==='config')next.config.tables.MainTaskCfg.data.find(row=>row.taskId===1).reward[0][1]++;
+ if(changed==='player')next.session.player.playerId='9007199254740994';
+ if(changed==='world')next.session.player.worldId='18';
+ const planned=await next.plan();assert.equal(planned.actions.length,1);assert.equal(next.state.writes.length,0);assert.equal(next.service.executionMemory(next.session.id).events.length,1);
+ if(changed==='player'||changed==='world'){next.session.player=player();await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});}
+});
+
+test('a reconnected task UNKNOWN stays blocked and the original history and budget remain intact',async t=>{
+ const f=serviceFixture(t,{apply:false});await f.run(await f.plan());const original=fs.readFileSync(f.file,'utf8');
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';
+ next.session.generation=next.client.factContext.generation=4;next.state.tasks.task.progress++;
+ await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),original);
+});
+
+test('an orphan refusal cannot be cleared by a new task connection or business observation',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'});await f.run(await f.plan());
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';next.state.tasks.task.progress++;
+ fs.writeFileSync(f.file,JSON.stringify({version:1,accounts:{}}));
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+test('a refusal recorded after a different connection authorized a task still stops before dispatch',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'});
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';
+ const planned=await next.plan(),permit=next.authorize(planned);
+ await f.run(await f.plan());
+ next.service.execute(next.session,permit);await next.service.settle(next.session.id);
+ assert.equal(next.state.writes.length,0);assert.equal(next.durable.list(next.session.id).find(row=>row.planSummary?.batchId===planned.batchId).finalStatus,'NOT_EXECUTED');
+});
+for(const missing of ['expectedState','parameters','budgetClaims'])test('legacy refusal lacking '+missing+' cannot be unlocked by reconnecting',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'});await f.run(await f.plan());
+ const saved=f.durable.list(f.session.id)[0];delete saved.actions[0][missing];f.durable.put(saved);
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';next.state.tasks.task.progress++;
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+
+test('mismatched original identity cannot supply business facts to unlock refusal',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'});await f.run(await f.plan());
+ const saved=f.durable.list(f.session.id)[0];saved.actions[0].identity='different-original';f.durable.put(saved);
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';next.state.tasks.task.progress++;
+ await assert.rejects(next.plan(),{code:'MEMORY_EVENT_CONFLICT'});assert.equal(next.state.writes.length,0);
+});

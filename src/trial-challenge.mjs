@@ -6,7 +6,7 @@ import { ResourceLedger, safeResourceQuantity, resourceCosts } from './resource-
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId='trial-challenge',scope={kind:'ACCOUNT'},request='TrialRaidChallengeRequest',response='TrialRaidChallengeResponse';
 const copy=v=>structuredClone(v),same=(a,b)=>stableBusinessValue(a)===stableBusinessValue(b);
@@ -132,4 +132,4 @@ export function verifyTrialChallenge(operation,before,after,result) {
  return {confirmed:true,afterState:copy(after.state),reason:'精确关卡回执、独立首通进度与配置奖励净入共同确认',responseEvidence:{raidId:1,stageId:canonical.target.stageId,rewards}};
 }
 export function trialChallengeDependencyVersions({config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {return {moduleConfig:validateTrialChallengeConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const trialChallengeModule=Object.freeze({id:moduleId,label:'英雄经验试炼首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,dependencyVersions:trialChallengeDependencyVersions});
+export const trialChallengeModule=Object.freeze({id:moduleId,label:'英雄经验试炼首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:businessRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});

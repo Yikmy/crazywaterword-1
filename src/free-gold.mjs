@@ -6,7 +6,7 @@ import { ResourceLedger } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId='free-gold',scope={kind:'ACCOUNT'},request='ClickGoldRequest',response='ClickGoldResponse';
 const copy=v=>structuredClone(v),same=(a,b)=>stableBusinessValue(a)===stableBusinessValue(b);
@@ -134,4 +134,4 @@ export function verifyFreeGold(operation,before,after,result) {
  return {confirmed:true,afterState:copy(after.state),reason:'单次免费 typed GOLD 回执与同周期计次、完整库存净入共同确认',responseEvidence:{gold:receipt.gold,resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes,usedAfter:after.gold.freeTimes}};
 }
 export function freeGoldDependencyVersions({config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeGoldConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const freeGoldModule=Object.freeze({id:moduleId,label:'普通免费点金',capabilities:Object.freeze(['BIZ-D06']),defaultConfig:FREE_GOLD_DEFAULT_CONFIG,validateConfig:validateFreeGoldConfig,validateParameters:validateFreeGoldParameters,survey:surveyFreeGold,view:viewFreeGold,plan:planFreeGold,verify:verifyFreeGold,dependencyVersions:freeGoldDependencyVersions});
+export const freeGoldModule=Object.freeze({id:moduleId,label:'普通免费点金',capabilities:Object.freeze(['BIZ-D06']),defaultConfig:FREE_GOLD_DEFAULT_CONFIG,validateConfig:validateFreeGoldConfig,validateParameters:validateFreeGoldParameters,survey:surveyFreeGold,view:viewFreeGold,plan:planFreeGold,verify:verifyFreeGold,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeGoldDependencyVersions});

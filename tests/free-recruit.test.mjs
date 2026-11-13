@@ -180,3 +180,17 @@ test('dependencies bind only actual recruitment tables',()=>{
  const f=fixture(),before=freeRecruitDependencyVersions(f.options),unrelated=clone(f.options.config);unrelated.tables.Unrelated={data:[]};assert.deepEqual(freeRecruitDependencyVersions({...f.options,config:unrelated}),before);
  for(const name of['ModuleOpenCfg','HeroCfg','ItemCfg']){const changed=clone(f.options.config);changed.tables[name].revision=2;assert.notDeepEqual(freeRecruitDependencyVersions({...f.options,config:changed}),before);}
 });
+
+for(const change of ['connection','generation'])test('definite refusal remains active after '+change+' replacement with the same business facts',async t=>{
+ const f=serviceFixture(t,{apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};
+ const {record}=await f.run(await f.plan());assert.equal(record.finalStatus,'REJECTED');assert.equal(f.state.writes.length,1);
+ const memoryBefore=fs.readFileSync(f.file+'.memory.json','utf8'),historyBefore=fs.readFileSync(f.file,'utf8');
+ const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='new-offline-connection';
+ if(change==='generation') {
+  next.session.generation=next.client.factContext.generation=4;
+  const clock=trustedGameClock({accountId:next.session.id,generation:4,wallNow:()=>next.state.wall,monotonicNow:()=>next.state.mono});
+  clock.markPing(next.state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:next.state.wall,serverTimestamp:next.state.wall}));next.client.gameClock=clock;
+ }
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+ assert.equal(fs.readFileSync(next.file+'.memory.json','utf8'),memoryBefore);assert.equal(fs.readFileSync(next.file,'utf8'),historyBefore);
+});
