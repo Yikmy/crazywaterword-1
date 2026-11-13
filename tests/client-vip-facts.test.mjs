@@ -332,3 +332,13 @@ test('daily reset cursors are bounded and old sockets cannot recover a new conne
  for(let seq=1;seq<=201;seq++)socket.receive('SCDailyTaskReset',{dailyResetTime:1000+seq},seq);assert.equal(readDailyResetEvent(f.client,{cursor:1}).reliable,false);assert.equal(readDailyResetEvent(f.client,{cursor:2}).event.dailyResetTime,1002);
  f.client.stop();assert.equal(readDailyResetEvent(f.client).reliable,false);await f.ready(login());const fresh=readDailyResetEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);assert.equal(fresh.cursor,0);handler({data:codec.encode('SCDailyTaskReset',1,{dailyResetTime:9999})});assert.equal(readDailyResetEvent(f.client).cursor,0);
 });
+
+for(const [name,body]of[['SCDailyTaskUpdate',{task:{id:1001}}],['SCDailyWeeklyReset',{}]])
+test('daily cache revisions follow accepted '+name+' without adding reset triggers',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login()),baseline=readDailyResetEvent(f.client),before=socket.sent.length;
+ assert.equal(baseline.cacheRevision,0);f.client.emit('message',{name,body,seq:1});assert.equal(readDailyResetEvent(f.client).cacheRevision,0);
+ socket.receive(name,body,1);const updated=readDailyResetEvent(f.client);assert.equal(updated.cacheRevision,1);assert.equal(updated.cursor,0);assert.equal(updated.event,null);assert.equal(updated.streamId,baseline.streamId);
+ updated.cacheRevision=999;assert.equal(readDailyResetEvent(f.client).cacheRevision,1);socket.receive(name,body,1);assert.equal(readDailyResetEvent(f.client).cacheRevision,1);assert.equal(socket.sent.length,before);
+ socket.receive('SCDailyTaskReset',{dailyResetTime:1000},2);assert.equal(readDailyResetEvent(f.client).cursor,1);assert.equal(readDailyResetEvent(f.client).cacheRevision,1);
+ socket.receive(name,body,4);assert.equal(readDailyResetEvent(f.client).reliable,false);
+});

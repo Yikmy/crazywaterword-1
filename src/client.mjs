@@ -153,7 +153,7 @@ function seedDailyResets(client,body,socket) {
  const state=liveDailyResets.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
  if(state?.invalid)return;
  if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateDailyResets(client,'DAILY_RESET_LOGIN_OR_CONTEXT_UNKNOWN');return;}
- Object.assign(state,{seeded:true,reason:null,identity:{playerId,worldId},streamId:randomUUID(),cursor:0,events:[]});
+ Object.assign(state,{seeded:true,reason:null,identity:{playerId,worldId},streamId:randomUUID(),cursor:0,events:[],cacheRevision:0});
 }
 function observeDailyReset(client,body,seq,receivedAt) {
  const state=liveDailyResets.get(client);if(!state||state.invalid)return;
@@ -164,6 +164,11 @@ function observeDailyReset(client,body,seq,receivedAt) {
  if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidateDailyResets(client,'DAILY_RESET_CURSOR_EXHAUSTED');return;}
  const cursor=++state.cursor;state.marker=marker;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,dailyResetTime:marker,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();
 }
+function observeDailyCacheChange(client,seq) {
+ const state=liveDailyResets.get(client);if(!state||state.invalid)return;
+ if(!state.seeded||!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)||!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isSafeInteger(state.cacheRevision)||state.cacheRevision>=Number.MAX_SAFE_INTEGER){invalidateDailyResets(client,'DAILY_CACHE_CONTINUITY_UNKNOWN');return;}
+ state.cacheRevision++;
+}
 export function readDailyResetEvent(client,{cursor}={}) {
  const state=liveDailyResets.get(client);
  if(state&&!vipCurrentContext(client,state))invalidateDailyResets(client,'DAILY_RESET_CONTEXT_UNKNOWN_OR_CHANGED');
@@ -171,9 +176,9 @@ export function readDailyResetEvent(client,{cursor}={}) {
  if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'DAILY_RESET_LOGIN_BASELINE_UNKNOWN'};
  const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);
  if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'DAILY_RESET_EVENT_CURSOR_UNAVAILABLE'};
- return {status:'CURRENT',reliable:true,source:'SCDailyTaskReset.dailyResetTime',...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};
+ return {status:'CURRENT',reliable:true,source:'SCDailyTaskReset.dailyResetTime',cacheRevision:state.cacheRevision,...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};
 }
-export const DAILY_RESET_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'DailyTaskModel._onSCDailyTaskReset',modelByteOffset:1646732,modelSha256:'62d10875084e6a9698ece98c5b6c3f078797599f0dacf1e175c8983b77ec8f79',scope:'Accepted explicit reset push only; not game-day timezone, claim eligibility, reward receipt or implicit authorization',realGame:'REAL_UNVERIFIED'});
+export const DAILY_RESET_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'DailyTaskModel._onSCDailyTaskReset',modelByteOffset:1646732,modelSha256:'62d10875084e6a9698ece98c5b6c3f078797599f0dacf1e175c8983b77ec8f79',cacheInvalidationSources:Object.freeze(['SCDailyTaskUpdate','SCDailyWeeklyReset']),scope:'Accepted explicit reset push only; not game-day timezone, claim eligibility, reward receipt or implicit authorization',realGame:'REAL_UNVERIFIED'});
 
 // Full replacement MonthCardResponse snapshots are separate from VIP-level facts.
 const liveMonthCards = new WeakMap(), monthCardQueries = new WeakMap();
@@ -822,6 +827,7 @@ export class GameClient extends EventEmitter {
     if (name === 'SCVipUpdate') updateVipLevel(this, body, seq, receivedAt);
     if (name === 'SCPlayerExpUpdate') updatePlayerLevel(this, body, seq, receivedAt);
     if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
+    if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
     if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);

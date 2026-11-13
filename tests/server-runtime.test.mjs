@@ -313,12 +313,12 @@ test('daily reset during collection cannot publish the raced daily source as fre
   assert.equal(daily.stale,true);assert.equal(daily.checklist.sources.daily.status,'UNKNOWN');assert.equal(app.sessions.get('account-A').snapshotStale,true);assert.equal(app.collects,1);
  }finally{gate.resolve(dailyRuntimeSnapshot());await app.close();}
 });
-test('forged daily events and weekly pushes cannot invalidate or renew daily cache authority',async()=>{
+test('forged daily events and unrelated pushes cannot invalidate or renew daily cache authority',async()=>{
  const app=await dailyRuntimeHarness();try{
   const socket=await app.login();await app.refresh();const client=app.clients[0];
   client.readDailyResetEvent=()=>({reliable:true,cursor:99,event:{seq:1,dailyResetTime:1780086400}});
   client.emit('message',{name:'SCDailyTaskReset',seq:1,body:{dailyResetTime:1780086400}});
-  socket.receive('SCDailyWeeklyReset',{},1);
+  socket.receive('SCPlayerExpUpdate',{level:1},1);
   assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');
   socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},2);app.observation.marker=1780086400;await app.refresh();
   socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},3);
@@ -354,4 +354,26 @@ test('daily reset remains account isolated and old connections cannot renew the 
   assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');
   await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');assert.equal(app.clients.length,3);
  }finally{await app.close();}
+});
+
+for(const [name,body]of[
+ ['SCDailyTaskUpdate',{task:{id:1001,progress:2,targetProgress:2,rewardClaimed:false}}],
+ ['SCDailyWeeklyReset',{}]
+])test('daily cache invalidates on accepted '+name+' without turning it into a scheduled reset',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  const socket=await app.login();await app.refresh();const raw=JSON.stringify(app.sessions.get('account-A').snapshot),sent=app.sent.length;
+  app.clients[0].emit('message',{name,body,seq:1});
+  assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');
+  socket.receive(name,body,1);
+  const after=(await app.call('/api/dailies')).data;assert.equal(after.checklist.sources.daily.status,'UNKNOWN');assert.equal(after.stale,true);assert.equal(after.checklist.gift.status,'ELIGIBLE');
+  assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),raw);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+  await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE');
+  socket.receive(name,body,1);assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'AVAILABLE','duplicate frame was not accepted');
+ }finally{await app.close();}
+});
+for(const [name,body]of[['SCDailyTaskUpdate',{task:{id:1001}}],['SCDailyWeeklyReset',{}]])
+test('daily source remains unknown when '+name+' races collection',async()=>{
+ const gate=deferred(),app=await dailyRuntimeHarness({collect:()=>gate.promise});
+ try{const socket=await app.login(),refresh=app.refresh();await until(()=>app.collects===1);socket.receive(name,body,1);gate.resolve(dailyRuntimeSnapshot());assert.equal((await refresh).status,200);assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');}
+ finally{gate.resolve(dailyRuntimeSnapshot());await app.close();}
 });

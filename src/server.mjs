@@ -244,7 +244,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     on('frame', ({ dir, name, seq, bytes }) => { if (current()) trace(session, (dir === 'out' ? '->' : '<-') + ' [' + name + '] seq=' + seq + ' ' + bytes.byteLength + 'B'); });
     on('message', ({ seq, name, body }) => { if (!current()) return;
       if(name==='SCPlayerExpUpdate'){const fact=readPlayerLevelEvent(instance);if(fact.reliable&&fact.accountId===session.id&&fact.generation===session.generation&&fact.connectionId===session.connectionId&&fact.playerId===String(session.player?.playerId)&&fact.worldId===String(session.player?.worldId)&&fact.event?.seq===seq&&session.player.level!==fact.playerLevel){session.player={...session.player,level:fact.playerLevel};session.snapshotStale=true;}}
-      if(name==='SCDailyTaskReset' && dailySnapshotInvalid(session))session.snapshotStale=true;
+      if(['SCDailyTaskReset','SCDailyTaskUpdate','SCDailyWeeklyReset'].includes(name) && dailySnapshotInvalid(session))session.snapshotStale=true;
       trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
     on('pong', ({ latencyMs, offsetMs }) => { if (current()) trace(session, 'pong ' + latencyMs + 'ms offset=' + offsetMs + 'ms'); });
     on('warn', (message) => { if (current()) emit(session, 'warn', message); });
@@ -329,7 +329,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const baseline=session.snapshotDailyReset;
     if(!baseline)return false;
     const fact=currentDailyReset(session);
-    if(!fact || fact.streamId!==baseline.streamId || fact.cursor!==baseline.cursor)return true;
+    if(!fact || fact.streamId!==baseline.streamId || fact.cursor!==baseline.cursor || fact.cacheRevision!==baseline.cacheRevision)return true;
     const body=(Object.hasOwn(session.snapshot??{},'raw')?session.snapshot.raw:session.snapshot?.ok)?.DailyTaskInfoRequest;
     return fact.event!==null && body?.dailyResetTime!==fact.event.dailyResetTime;
   }
@@ -352,7 +352,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       assertCurrent(session, generation, instance);
       session.snapshot = result;
       session.snapshotAt = new Date().toISOString();
-      session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null} : null;
+      session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null,cacheRevision:resetBefore?.cacheRevision??null} : null;
       session.snapshotStale = dailySnapshotInvalid(session);
       return overview(session, account);
     }).finally(() => {
@@ -607,7 +607,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   async function dailies(session, account) {
     const config = loadConfigSafe();
     const dailyInvalid=dailySnapshotInvalid(session);
-    const dailyUnavailable='每日任务重置来源已变化或不可确认，请重新采集';
+    const dailyUnavailable='每日任务来源已变化或不可确认，请重新采集';
     const dailySnapshot=dailyInvalid ? {...session.snapshot,failed:{...session.snapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : session.snapshot;
     const checklist = dailyChecklist(dailySnapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
     const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid };
