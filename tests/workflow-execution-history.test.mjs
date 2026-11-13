@@ -352,3 +352,19 @@ for(const kind of ['VIP_LEVEL_CHANGED','PLAYER_LEVEL_CHANGED'])test('approved bu
  await f.request('/api/workflows/stop?account=A',{headers,body:{}});assert.equal(client.listenerCount('message'),0);socket.receive(kind==='PLAYER_LEVEL_CHANGED'?'SCPlayerExpUpdate':'SCVipUpdate',kind==='PLAYER_LEVEL_CHANGED'?{level:3,exp:'1'}:{vipLevel:3},1);assert.deepEqual(f.sent,[]);assert.equal((await restarted.request('/api/workflows?account=A')).data.status.status,'IDLE');
  }finally{await f.request('/api/workflows/stop?account=A',{headers,body:{}});}
 });
+
+test('restarted Console rejects a missing established Workflow file before new unified execution',async()=>{
+ const prior=fixture('anchor-prior-console');let fresh;
+ const graph={version:1,id:'anchor-restart',name:'Anchor restart',nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'formation',parameters:{presetId:2},selection:{unique:true}},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};
+ prior.workflowStore.save('A',graph);prior.workflowStore.record('B',{runId:'anchor-unknown',workflowId:graph.id,status:'UNKNOWN'});
+ const bytes=fs.readFileSync(workflowFile,'utf8'),anchor=fs.readFileSync(workflowFile+'.anchor','utf8');await prior.close();fs.unlinkSync(workflowFile);
+ try{
+  fresh=fixture('anchor-fresh-console');const session=fresh.ready();
+  const bootstrap=await fresh.request('/api/gameplay?account=A&module=formation');assert.equal(bootstrap.status,200);const headers={'x-cw-csrf':bootstrap.data.csrfToken};
+  for(const route of ['/api/workflows?account=A','/api/workflows?account=B',historyUrl('B','anchor-unknown')])assert.equal((await fresh.request(route)).data.code,'WORKFLOW_STORE_UNAVAILABLE');
+  const save=await fresh.request('/api/workflows/save?account=A',{headers,body:{graph}});assert.equal(save.data.code,'WORKFLOW_STORE_UNAVAILABLE');
+  const start=await fresh.request('/api/workflows/start?account=A',{headers,body:{graph}});assert.equal(start.data.code,'WORKFLOW_STORE_UNAVAILABLE');
+  assert.equal(session.busy,null);assert.equal(session.workflowOwner,null);assert.deepEqual(fresh.sent,[]);assert.deepEqual(fresh.history.list('A'),[]);
+  assert.equal(fs.existsSync(workflowFile),false);assert.equal(fs.readFileSync(workflowFile+'.anchor','utf8'),anchor);
+ }finally{await fresh?.close();fs.writeFileSync(workflowFile,bytes);}
+});

@@ -523,7 +523,29 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   if (!text(file) || !path.isAbsolute(file)) throw fail('工作流存储必须使用显式绝对路径');
   const unavailable = () => fail('工作流存储损坏或不可读；原证据已保留', 'WORKFLOW_STORE_UNAVAILABLE');
   const maxBytes = 8 * 1024 * 1024;
-  let knownStore = false;
+  let knownStore = false, anchorObserved = false;
+  const anchor=file+'.anchor',anchorValue={version:1,kind:'WORKFLOW_HISTORY_EXISTENCE',basename:path.basename(file)};
+  function anchored() {
+    let stat;
+    try { stat=fileSystem.lstatSync(anchor); }
+    catch(cause) { if(cause.code==='ENOENT'&&!anchorObserved)return false;throw unavailable(); }
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.size>1024)throw unavailable();
+    try {
+      const value=JSON.parse(fileSystem.readFileSync(anchor,'utf8'));
+      if(!plain(value)||Object.keys(value).length!==3||Object.keys(anchorValue).some(key=>value[key]!==anchorValue[key]))throw unavailable();
+      anchorObserved=true;return true;
+    } catch { throw unavailable(); }
+  }
+  function ensureAnchor() {
+    if(anchored())return;
+    assertWriter();let fd;
+    try {
+      fd=fileSystem.openSync(anchor,'wx',0o600);
+      fileSystem.writeFileSync(fd,JSON.stringify(anchorValue)+'\n','utf8');
+      fileSystem.fsyncSync(fd);anchorObserved=true;
+    } catch(cause) { if(cause.code==='EEXIST'&&anchored())return;throw cause; }
+    finally { if(fd!==undefined)fileSystem.closeSync(fd); }
+  }
   const statuses = new Set(['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED']);
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
@@ -534,14 +556,15 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
       && (row.timestamp === undefined || text(row.timestamp)) && Boolean(traceEvidence(row))); } catch { return false; }
   }
-  function read() {
+  function read(allowInitialMissing = false) {
     try {
       let stat;
       try { stat = fileSystem.lstatSync(file); } catch (error) {
-        if (error.code === 'ENOENT' && !knownStore) return { version: 1, accounts: Object.create(null) };
+        if (error.code === 'ENOENT' && !knownStore && (!anchored() || allowInitialMissing)) return { version: 1, accounts: Object.create(null) };
         throw unavailable();
       }
       knownStore = true;
+      anchored();
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) throw unavailable();
       const source = fileSystem.readFileSync(file, 'utf8');
       if (Buffer.byteLength(source, 'utf8') > maxBytes) throw unavailable();
@@ -561,13 +584,18 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
     try {
       const serialized = JSON.stringify(raw, null, 2) + '\n';
       if (Buffer.byteLength(serialized, 'utf8') > maxBytes) throw unavailable();
+      read();
+      const initialStore = !knownStore;
       fileSystem.mkdirSync(path.dirname(file), { recursive: true });
+      ensureAnchor();
       const fd = fileSystem.openSync(temporary, 'wx', 0o600);
       try { fileSystem.writeFileSync(fd, serialized, 'utf8'); fileSystem.fsyncSync(fd); } finally { fileSystem.closeSync(fd); }
       assertWriter();
       // Recheck the original path after flushing: a lost store must never be
       // silently replaced with a new history while its owner is still running.
-      read();
+      // Only this in-flight first write may see its own anchor before the store.
+      // A fresh Store must reject an anchor without its historical file.
+      read(initialStore);
       fileSystem.renameSync(temporary, file);
       knownStore = true;
     } catch (error) {
