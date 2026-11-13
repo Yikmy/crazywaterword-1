@@ -42,6 +42,20 @@ test('original refusal projection gap is scoped to its account and exposed by re
  }finally{await app.close();}
 });
 
+test('memory HTTP filters projected events and both pending History forms with original run and workflow links only',async()=>{
+ const app=harness();try{
+  const {createExecutionHistory}=await import('../src/execution-history.mjs'),file=path.join(dir,'execution-history.json'),history=createExecutionHistory({file});
+  const base={accountId:'A',module:'fixture',workflowId:'filter-workflow',workflowNodeId:'filter-node',executionContext:{generation:1},planSummary:{batchId:'filter-batch'},finalStatus:'REJECTED',actions:[{module:'fixture',actionId:'filter-action',actionType:'SAVE',target:{id:'filtered'},identity:{revision:1},requestStatus:'REJECTED',result:'REJECTED',unresolvedWrite:false}]};
+  history.put({...structuredClone(base),runId:'filter-gap'});const complete={...structuredClone(base),runId:'filter-complete'};complete.actions[0].dispatched=true;history.put(complete);
+  const bytes=fs.readFileSync(file,'utf8'),memory=fs.readFileSync(memoryFile,'utf8');
+  for(const [query,ids]of [['runId=filter-gap',['filter-gap']],['runId=filter-complete',['filter-complete']],['workflowId=filter-workflow',['filter-complete','filter-gap']],['nodeId=filter-node',['filter-complete','filter-gap']],['batchId=filter-batch',['filter-complete','filter-gap']],['actionId=filter-action',['filter-complete','filter-gap']],['runId=missing',[]],['workflowId=missing',[]],['nodeId=missing',[]],['batchId=missing',[]],['actionId=missing',[]],['runId=filter-gap&nodeId=missing',[]],['runId=filter-gap&status=UNKNOWN',[]],['runId=filter-gap&module=fixture',['filter-gap']]]){
+   const result=await app.request('/api/operations/memory?account=A&'+query);assert.equal(result.status,200,query);assert.deepEqual(result.data.pendingHistoryProjection.map(row=>row.runId).sort(),ids.slice().sort(),query);assert.deepEqual(result.data.events,[]);assert.equal(result.data.resumable,false);assert.equal(result.data.retryAllowed,false);
+  }
+  const projected=await app.request('/api/operations/memory?account=A&runId=audit-run');assert.equal(projected.data.events.length,1);assert.deepEqual(projected.data.pendingHistoryProjection,[]);
+  assert.equal((await app.request('/api/operations/memory?account=B&workflowId=filter-workflow')).data.pendingHistoryProjection.length,0);
+  assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(fs.readFileSync(memoryFile,'utf8'),memory);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.sessions.size,0);
+ }finally{await app.close();}
+});
 test('memory HTTP interface admits only local readonly GET and never accepts memory writes, proofs or expiry policies',async()=>{
  const app=harness();try{for(const headers of [{origin:'https://attacker.invalid'},{host:'attacker.invalid'},{'sec-fetch-site':'cross-site'}])assert.equal((await app.request(undefined,{headers})).status,403);for(const url of ['/api/operations/memory','/api/operations/memory/record','/api/operations/memory/clear','/api/operations/memory/proof'])assert.equal((await app.request(url+'?account=A',{method:'POST'})).status,403);for(const filter of ['proof=forged','policy=COOLDOWN','__proto__=x','runId=a&runId=b','runId='])assert.equal((await app.request('/api/operations/memory?account=A&'+filter)).status,400);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});}finally{await app.close();assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}
 });

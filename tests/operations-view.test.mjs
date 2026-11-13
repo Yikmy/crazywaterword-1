@@ -658,3 +658,36 @@ test('new exact-history query wins over an older query within the same account',
  h.respond('/api/operations/history','A',{accountId:'A',runs:[{runId:'old-run',module:'foreign-old'}]});await old;
  assert.match(h.node('ops-history').textContent,/new-run/);assert.doesNotMatch(h.node('ops-history').textContent,/old-run|foreign-old/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
 });
+
+test('full PAGE exact memory run filter uses a readonly encoded query for events and original projection gaps',async()=>{
+ const h=await boot(),runId='operation/?x=1&编号',before=h.requests.length;h.node('ops-memory-run-id').value=runId;h.node('ops-memory-run-id').oninput();
+ assert.match(PAGE,/id="ops-memory-run-id" type="text" maxlength="512"/);assert.match(h.node('ops-memory-hint').textContent,/筛选已更改/);
+ const pending=h.node('ops-memory-load').onclick(),request=h.pending('/api/operations/memory','A');
+ assert.deepEqual([...new URL(request.url,'http://local').searchParams],[['runId',runId],['account','A']]);assert.equal(request.options.method,undefined);assert.equal(request.options.body,undefined);
+ h.respond('/api/operations/memory','A',memoryFixture('A',{events:[memoryEvent({runId})],pendingHistoryProjection:[{runId,status:'REJECTED',projectable:false}]}));await pending;
+ assert.match(memoryText(h),/编号/);assert.equal(h.node('ops-memory-hint').textContent,'');assert.equal(h.requests.length,before+1);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE invalid memory run filters never fall back to an unfiltered GET',async()=>{
+ const h=await boot();for(const runId of [' leading','trailing ','x'.repeat(513)]){
+  h.node('ops-memory-run-id').value=runId;h.node('ops-memory-run-id').oninput();const count=h.requests.length;await h.node('ops-memory-load').onclick();assert.equal(h.requests.length,count);assert.match(h.node('ops-memory-hint').textContent,/精确操作运行 ID/);assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');
+ }
+});
+
+for(const field of ['events','pendingHistoryProjection'])test('full PAGE filtered memory rejects a mismatched '+field+' run without exposing unrelated evidence',async()=>{
+ const h=await boot();h.node('ops-memory-run-id').value='expected';h.node('ops-memory-run-id').oninput();const pending=h.node('ops-memory-load').onclick();
+ const row=field==='events'?memoryEvent({runId:'other',reason:'unrelated-evidence'}):{runId:'other',reason:'unrelated-evidence'};
+ h.respond('/api/operations/memory','A',memoryFixture('A',{[field]:[row]}));await pending;assert.match(h.node('ops-memory-hint').textContent,/运行不匹配/);assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');assert.doesNotMatch(memoryText(h),/unrelated-evidence/);
+});
+
+test('full PAGE memory filter edits retire delayed success and errors while a newer exact run stays current',async()=>{
+ const h=await boot(),requests=[];
+ for(const runId of ['old-success','old-error','current-run']){
+  h.node('ops-memory-run-id').value=runId;h.node('ops-memory-run-id').oninput();const promise=h.node('ops-memory-load').onclick(),request=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);requests.push({promise,request});
+ }
+ settleMemoryRequest(requests[2].request,memoryFixture('A',{events:[memoryEvent({runId:'current-run',eventId:'current-evidence'})]}));await requests[2].promise;const shown=memoryText(h),count=h.requests.length;
+ settleMemoryRequest(requests[0].request,memoryFixture('A',{events:[memoryEvent({runId:'old-success',eventId:'late-evidence'})]}));await requests[0].promise;
+ settleMemoryRequest(requests[1].request,{error:'late-filter-error'},false);await requests[1].promise;assert.equal(memoryText(h),shown);assert.match(shown,/current-evidence/);assert.equal(h.requests.length,count);
+ h.node('ops-memory-run-id').value='edited';h.node('ops-memory-run-id').oninput();assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');
+ h.run("selectAccount('B')");assert.equal(h.node('ops-memory-run-id').value,'');await loadMemory(h,memoryFixture('B'));assert.deepEqual([...new URL(h.requests.at(-1).url,'http://local').searchParams],[['account','B']]);
+});

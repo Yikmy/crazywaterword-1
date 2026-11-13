@@ -151,6 +151,7 @@ test('Dailies UNKNOWN stops Loop and remains blocked after restart',async()=>{
  const paused=await runner.start('A',compileUnifiedExecution(unifiedIntent('loop','free-gold',2),{modules:f.service.modules}).graph);
  await f.execute(paused.plan);assert.equal((await runner.resume()).status,'UNKNOWN');assert.equal(f.writes.length,1);
  restarted=fixture({moduleId:'free-gold',file:f.historyFile});restarted.rows.delete('two');next=unifiedRunner(restarted);
+ const filtered=restarted.service.executionMemory('A',{runId:'not-the-unknown-run'});assert.deepEqual(filtered.events,[]);assert.deepEqual(filtered.pendingHistoryProjection,[]);
  await assert.rejects(next.start('A',compileUnifiedExecution(unifiedIntent('dailies','free-gold'),{modules:restarted.service.modules}).graph));
  assert.equal(restarted.writes.length,0);assert.equal(restarted.service.executionMemory('A').events[0].status,'UNKNOWN');
  }finally{runner?.stop();next?.stop();await runner?.settle();await next?.settle();await restarted?.cleanup();await f.cleanup();}
@@ -261,6 +262,7 @@ for(const entry of['tasks','dailies','loop'])test('unified '+entry+' retains inc
  const moduleId=entry==='dailies'?'free-gold':'task-rewards',f=fixture({moduleId});let runner;
  try{
   f.rows.delete('two');await seedIncompleteRefusal(f,(_run,row)=>delete row.dispatched);const bytes=fs.readFileSync(f.historyFile,'utf8');
+  assert.deepEqual(f.service.executionMemory('A',{runId:'not-the-refused-run'}).pendingHistoryProjection,[]);
   runner=unifiedRunner(f);const state=await runner.start('A',compileUnifiedExecution(unifiedIntent(entry,moduleId),{modules:f.service.modules}).graph);
   assert.equal(state.status,'COMPLETED');assert.ok(state.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(state.plan,null);assert.equal(f.writes.length,0);assert.equal(f.store.list('A').length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);
  }finally{runner?.stop();await runner?.settle();await f.cleanup();}
@@ -271,5 +273,29 @@ for(const moduleId of['formation','production'])test('registered '+moduleId+' re
   const seeded=await seedIncompleteRefusal(f,(run,row)=>{delete row.dispatched;if(moduleId==='production'){run.module='city';row.module='city';}});
   if(moduleId==='production')assert.equal(seeded.row.actionType,'startProduce');
   const bytes=fs.readFileSync(f.historyFile,'utf8');await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,0);assert.equal(f.store.list('A').length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);
+ }finally{await f.cleanup();}
+});
+
+test('readonly memory filters include pending and incomplete original History with exact original correlation only',async()=>{
+ const f=fixture();try{
+  const {run}=await seedIncompleteRefusal(f,(run,row)=>{run.workflowId='workflow-gap';run.workflowNodeId='node-gap';row.capabilityId='cw.gap';delete row.dispatched;});
+  const other=structuredClone(run);other.runId='pending-complete';other.workflowId='workflow-complete';other.workflowNodeId='node-complete';other.planSummary.batchId='complete-batch';other.actions[0].actionId='complete-action';other.actions[0].capabilityId='cw.complete';other.actions[0].dispatched=true;f.history.put(other);
+  const historyBytes=fs.readFileSync(f.historyFile,'utf8'),audit=f.service.executionMemory('A');assert.equal(audit.events.length,0);assert.equal(audit.pendingHistoryProjection.length,2);
+  for(const [key,value,expected] of [['runId',run.runId,run.runId],['workflowId','workflow-gap',run.runId],['nodeId','node-gap',run.runId],['batchId','legacy-batch',run.runId],['actionId','one',run.runId],['module','fixture',null],['status','REJECTED',null],['runId',other.runId,other.runId],['workflowId','workflow-complete',other.runId],['nodeId','node-complete',other.runId],['batchId','complete-batch',other.runId],['actionId','complete-action',other.runId]]){
+   const shown=f.service.executionMemory('A',{[key]:value});assert.equal(shown.pendingHistoryProjection.length,expected?1:2,key);
+   if(expected)assert.equal(shown.pendingHistoryProjection[0].runId,expected);
+   assert.deepEqual(shown.events,[]);assert.equal(shown.retryAllowed,false);
+  }
+  for(const key of ['runId','workflowId','nodeId','batchId','actionId','module','status'])assert.deepEqual(f.service.executionMemory('A',{[key]:'missing'}).pendingHistoryProjection,[],key);
+  assert.equal(f.service.executionMemory('A',{runId:run.runId,nodeId:'node-complete'}).pendingHistoryProjection.length,0);
+  assert.deepEqual(f.service.executionMemory('B').pendingHistoryProjection,[]);assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.equal(fs.existsSync(f.memoryFile),false);assert.equal(f.writes.length,0);
+ }finally{await f.cleanup();}
+});
+
+test('missing legacy correlation never borrows new run metadata for a filtered memory audit',async()=>{
+ const f=fixture();try{
+  await seedIncompleteRefusal(f,(_run,row)=>delete row.dispatched);const bytes=fs.readFileSync(f.historyFile,'utf8');
+  for(const filters of [{workflowId:'new-workflow'},{nodeId:'new-node'},{runId:'legacy-incomplete-refusal',workflowId:'new-workflow'}])assert.deepEqual(f.service.executionMemory('A',filters).pendingHistoryProjection,[]);
+  assert.equal(f.service.executionMemory('A').pendingHistoryProjection.length,1);await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.existsSync(f.memoryFile),false);
  }finally{await f.cleanup();}
 });

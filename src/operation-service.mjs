@@ -86,7 +86,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const known=value=>typeof value==='string'&&value.length>0&&value===value.trim()?value:null;
     const module=known(row.module??run.module),actionType=known(row.actionType);let targetKey=null;
     if(module&&actionType&&row.target)try{targetKey=executionMemoryKey({module,actionType,target:row.target});}catch{}
-    return {runId:run.runId,batchId:run.planSummary?.batchId??run.authorizationSummary?.batchId??null,actionId:row.actionId??null,status:'REJECTED',module,actionType,targetKey,projectable:false,reason:'REJECTION_HISTORY_INCOMPLETE_OR_CONFLICTING'};
+    return {runId:run.runId,batchId:run.planSummary?.batchId??run.authorizationSummary?.batchId??null,actionId:row.actionId??null,status:'REJECTED',module,workflowId:known(run.workflowId),nodeId:known(run.workflowNodeId),actionType,targetKey,projectable:false,reason:'REJECTION_HISTORY_INCOMPLETE_OR_CONFLICTING'};
   }
   function memoryOrigin(event,entries) {
     const matches=entries.filter(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId)
@@ -102,7 +102,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     if(!decisionMemory)return {available:false,events:[],entries,pending:[],gaps:[],unknown:[],coverage:'CUSTOM_NON_FILE_HISTORY_WITHOUT_MEMORY'};
     if(synchronize)for(const run of entries)for(const row of run.actions){const input=memoryInput(run,row);if(input)decisionMemory.record(accountId,input);}
     const events=decisionMemory.list(accountId),pending=[],gaps=entries.flatMap(run=>run.actions.map(row=>rejectionHistoryGap(run,row)).filter(Boolean));
-    for(const run of entries)for(const row of run.actions){const input=memoryInput(run,row);if(input&&!events.some(event=>event.runId===input.runId&&event.batchId===input.batchId&&event.actionId===input.actionId&&event.status===input.status))pending.push({runId:run.runId,batchId:input.batchId,actionId:row.actionId,status:input.status});}
+    for(const run of entries)for(const row of run.actions){const input=memoryInput(run,row);if(input&&!events.some(event=>event.runId===input.runId&&event.batchId===input.batchId&&event.actionId===input.actionId&&event.status===input.status))pending.push({runId:run.runId,module:input.module,workflowId:input.workflowId,nodeId:input.nodeId,batchId:input.batchId,actionId:row.actionId,status:input.status});}
     const projected=events.map(event=>({...event,historyOrigin:memoryOrigin(event,entries)}));
     return {available:true,entries,events:projected,pending,gaps,unknown:projected.filter(event=>event.status==='UNKNOWN'&&!event.historyOrigin.resolved),coverage:'UNTIL_IDENTITY_CHANGE_AND_UNKNOWN_AUDIT'};
   }
@@ -154,8 +154,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   function executionMemory(accountId,filters={}) {
     exact(filters,['module','runId','workflowId','nodeId','batchId','actionId','status']);
     if(Object.values(filters).some(value=>typeof value!=='string'||!value||value!==value.trim()||value.length>512))throw error('记忆筛选无效','INVALID_INPUT',400);
-    const snapshot=memorySnapshot(accountId);
-    return {accountId,available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(event=>Object.entries(filters).every(([key,value])=>event[key]===value)),pendingHistoryProjection:[...snapshot.pending,...snapshot.gaps],resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
+    const snapshot=memorySnapshot(accountId),matches=row=>Object.entries(filters).every(([key,value])=>row[key]===value);
+    return {accountId,available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(matches),pendingHistoryProjection:[...snapshot.pending,...snapshot.gaps].filter(matches),resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
   }
   function acquire(session, label, workflowId = null, { recoveryRead = false } = {}) {
     assertWriter();
