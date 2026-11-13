@@ -19,6 +19,12 @@ export function businessRejectionIdentity(operation) {
   return { beforeState: project(state), expectedState: project(operation.expectedState), parameters: operation.parameters,
     costs: operation.costs, costSource: operation.costSource, budgetClaims: operation.budgetClaims };
 }
+// Domains whose public beforeState has no role context reuse the original
+// ExecutionHistory context supplied by OperationService. Missing origin fails closed.
+export function businessRejectionIdentityFromHistory(operation,{context}={}) {
+  if(!operation?.beforeState||!operation.expectedState||!context)return null;
+  return businessRejectionIdentity({...operation,beforeState:{...operation.beforeState,context},expectedState:{...operation.expectedState,context}});
+}
 const equal = (a, b) => stableBusinessValue(a) === stableBusinessValue(b);
 const publicState = facts => facts?.state ?? facts?.current ?? null;
 export const BUSINESS_EXECUTION_STAGES = Object.freeze(['SURVEY', 'RESOURCE_PREFLIGHT', 'DISPATCH_INTENT', 'DISPATCHED', 'RESPONSE', 'OBSERVATION_ENDED', 'VERIFY', 'VERIFIED']);

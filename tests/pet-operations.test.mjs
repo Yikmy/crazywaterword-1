@@ -267,3 +267,14 @@ test('Pet HTTP reuses CSRF, strict exact parameters, cropped plans, permits and 
  assert.equal((await f.call('/api/operations/execute',{body:auth.data})).status,200);await f.service.settle(account);
  assert.equal((await f.call('/api/operations/history')).data.runs[0].finalStatus,'SUCCESS');assert.equal(f.state.writes[0].name,'PetFeedRequest');assert.deepEqual(f.counts(),{clients:0,collections:0});assert.equal(f.app.server.listening,false);
 });
+
+test('W19 Pet feed refusal survives reconnect, restart and role return without replay',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});assert.equal((await f.execute(await f.displayed())).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');f.session.generation=f.client.factContext.generation=2;f.session.connectionId=f.client.factContext.connectionId='replacement-pet';const next=f.newService();
+ const displayed=async()=>{const read=await next.surveyModule(f.session,'pet',parameters),c=read.view.candidates.find(r=>r.executable);assert.ok(c);return next.plan(f.session,{module:'pet',mode:'Manual',parameters,selections:[c.actionId]});};
+ await assert.rejects(displayed(),{code:'REJECTION_MEMORY_ACTIVE'});f.session.player.worldId='10';assert.equal((await displayed()).actions.length,1);f.session.player.worldId='9';await assert.rejects(displayed(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+
+for(const missing of ['expectedState','executionContext'])test('W19 Pet original '+missing+' missing keeps refusal blocked',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});await f.execute(await f.displayed());const store=createExecutionHistory({file:f.file}),r=store.list(account)[0];if(missing==='executionContext')delete r.executionContext;else delete r.actions[0][missing];store.put(r);f.session.generation=f.client.factContext.generation=2;f.session.connectionId=f.client.factContext.connectionId='replacement-pet';const next=f.newService();
+ const attempt=async()=>{const read=await next.surveyModule(f.session,'pet',parameters),c=read.view.candidates.find(r=>r.executable);assert.ok(c);return next.plan(f.session,{module:'pet',mode:'Manual',parameters,selections:[c.actionId]});};await assert.rejects(attempt(),{code:missing==='executionContext'?'MEMORY_EVENT_CONFLICT':'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);
+});

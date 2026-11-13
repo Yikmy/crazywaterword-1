@@ -100,3 +100,14 @@ async function exclusiveHarness({boundary=null}={}){
 }
 for(const boundary of ['encoding','frame','assertTransport'])test('C225 original hero facts expiring during '+boundary+' never reach the real socket',async()=>{const f=await exclusiveHarness({boundary});try{const result=await f.run();assert.equal(f.writes.length,0);assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(result.unresolvedWrite,false);assert.equal(f.heroes[0].exclusive.level,1);cleanTransport(f);assert.deepEqual(f.budget.runBudget.snapshot().reserved,f.operation.budgetClaims);}finally{f.restore();}});
 test('C225 original hero authority confirms real Codec/client upgrade without a named response',async()=>{const f=await exclusiveHarness();try{const result=await f.run();assert.equal(f.writes.length,1);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(result.dispatched,true);assert.equal(f.heroes[0].exclusive.level,2);cleanTransport(f);assert.deepEqual(f.budget.runBudget.snapshot().reserved,f.operation.budgetClaims);}finally{f.restore();}});
+
+test('W19 History rejection projection preserves business/role facts without mutating execution identity',async()=>{
+ const {businessRejectionIdentityFromHistory:project}=await import('../src/business-functions.mjs');
+ const op={identity:'original-dispatch-identity',beforeState:{level:1},expectedState:{level:2},parameters:{action:'level'},costs:[{id:'wood',num:3}],costSource:'authoritative exact rule',budgetClaims:{resources:[{id:'wood',num:3}],quotas:[],uids:[{type:'fixture',id:'9007199254740993'}]}};
+ const context={accountId:'A',playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'original'},before=structuredClone(op),original=project(op,{context});
+ assert.deepEqual(project(op,{context:{...context,generation:2,connectionId:'replacement'}}),original);assert.deepEqual(op,before);assert.equal(op.identity,'original-dispatch-identity');
+ for(const key of ['accountId','playerId','worldId'])assert.notDeepEqual(project(op,{context:{...context,[key]:key==='accountId'?'B':'18'}}),original);
+ for(const change of [v=>v.beforeState.level=2,v=>v.expectedState.level=3,v=>v.costs[0].num=4,v=>v.budgetClaims.uids[0].id='9007199254740994',v=>v.parameters.action='star',v=>v.costSource='another rule']){const next=structuredClone(op);change(next);assert.notDeepEqual(project(next,{context}),original);}
+ for(const key of ['beforeState','expectedState','parameters','costs','costSource','budgetClaims']){const next=structuredClone(op);delete next[key];assert.equal(project(next,{context}),null);}
+ assert.equal(project(op),null);for(const key of Object.keys(context)){const prior={...context};delete prior[key];assert.equal(project(op,{context:prior}),null);}
+});

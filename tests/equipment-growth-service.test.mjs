@@ -395,3 +395,13 @@ test('STAR HTTP preserves CSRF, exact cropped plan, explicit permit and account 
   f.session('account-B');assert.equal((await f.call('/api/operations/execute',{id:'account-B',body:auth.data})).status,409);assert.equal((await f.call('/api/operations/execute',{body:auth.data})).status,200);await f.service.settle(t.id);assert.equal((await f.call('/api/operations/history')).data.runs[0].finalStatus,'SUCCESS');assert.equal(t.synthetic.writes[0].name,'EquipStarUpRequest');assert.deepEqual(f.counts(),{clients:0,collections:0});assert.equal(f.app.server.listening,false);
  }finally{await f.cleanup();}
 });
+
+for(const mode of ['level','refine','star','put-on'])test('W19 equipment '+mode+' refusal survives restart, reconnect and returning to original role',async()=>{
+ const opts={apply:false,watchStatus:'REJECTED',refine:mode==='refine',star:mode==='star',putOn:mode==='put-on'},f=fixture(opts),a=f.session();let next;
+ const p=mode==='refine'?refineParameters():mode==='star'?starParameters():mode==='put-on'?putOnParameters():parameters();
+ try{assert.equal((await f.execute(a,await f.displayed(a,p))).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');
+ next=fixture({...opts,historyFile:f.file});const b=next.session();b.generation=b.client.factContext.generation=2;b.connectionId=b.client.factContext.connectionId='replacement-equipment';
+ await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId=1000002;assert.equal((await next.displayed(b,p)).actions.length,1);b.player.worldId=1000001;await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});
+ assert.equal(next.service.executionMemory(b.id).events.length,1);assert.equal(b.synthetic.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+ }finally{await next?.cleanup();await f.cleanup();}
+});

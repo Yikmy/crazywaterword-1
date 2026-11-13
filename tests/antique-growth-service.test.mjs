@@ -194,3 +194,10 @@ for (const actionName of ['activate', 'star']) {
     });
   }
 }
+
+for(const action of ['activate','star'])test('W19 antique '+action+' refusal survives reconnect and role return',async t=>{
+ const f=fixture(t,{action,effect:'none'}),service=f.newService(f.history),a=f.newSession();
+ a.client.sendWatch=async(name,body,options)=>{options.beforeDispatch?.();assert.equal(name,f.expectedRequest);assert.deepEqual(toSnapshotJson(wire(name,body)),f.expectedBody);a.writes.push({name,body});return {status:'REJECTED'};};
+ const p=await f.displayed(service,a),permit=service.authorize(a,f.permitPayload(p));service.execute(a,permit);await service.settle(account);assert.equal(f.newHistory().list(account)[0].finalStatus,'REJECTED');
+ const next=f.newService(),b=f.newSession(2);await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId='10';assert.equal((await f.displayed(next,b)).actions.length,1);b.player.worldId='9';await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.writes.length,0);assert.equal(next.executionMemory(account).events.length,1);
+});

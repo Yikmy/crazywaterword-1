@@ -1,7 +1,7 @@
 // PRO-007 controlled antique activation, growth, mastery and ordinary fragment exchange.
 import { createHash } from 'node:crypto';
 import { assertPaymentAllowed } from './actions.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
@@ -512,7 +512,7 @@ export function verifyAntiqueGrowth(operation, before, after, response) {
 export const antiqueGrowthModule = Object.freeze({
   id: moduleId, label: '藏品激活、成长与兑换', capabilities: Object.freeze(['PRO-007']), defaultConfig: ANTIQUE_GROWTH_DEFAULT_CONFIG,
   validateConfig: validateAntiqueGrowthConfig, validateParameters: validateAntiqueGrowthParameters,
-  survey: surveyAntiqueGrowth, view: viewAntiqueGrowth, plan: planAntiqueGrowth, verify: verifyAntiqueGrowth,
+  survey: surveyAntiqueGrowth, view: viewAntiqueGrowth, plan: planAntiqueGrowth, verify: verifyAntiqueGrowth, rejectionIdentity: businessRejectionIdentityFromHistory,
   dependencyVersions: antiqueGrowthDependencyVersions,
   dependencyKeys: Object.freeze(['moduleConfig', ...allTables.map(name => 'config.' + name)]),
 });

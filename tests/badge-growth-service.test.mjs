@@ -348,3 +348,10 @@ test('badge STAR and LEVEL reserve the same instance in one cumulative parent',a
   assert.deepEqual(service.workflowBudget(account).reserved.uids,uidClaim);
  }finally{release?.();}
 });
+
+for(const mode of ['level','star','put-on'])test('W19 badge '+mode+' refusal survives restart, reconnect and role return',async t=>{
+ const f=fixture(t,{effect:'none',star:mode==='star',putOn:mode==='put-on'}),service=f.newService(f.history),a=f.newSession();
+ if(mode==='put-on'){const send=a.client.sendWatch.bind(a.client);a.client.sendWatch=async(...args)=>{await send(...args);return {status:'REJECTED'};};}else a.onWrite=()=>{throw Object.assign(Error('synthetic definite badge refusal'),{code:'REJECTED'});};
+ const p=await f.displayed(service,a),permit=service.authorize(a,f.permitPayload(p));service.execute(a,permit);await service.settle(account);assert.equal(f.newHistory().list(account)[0].finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');
+ const next=f.newService(),b=f.newSession(2);await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId='10';assert.equal((await f.displayed(next,b)).actions.length,1);b.player.worldId='9';await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});

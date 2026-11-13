@@ -166,3 +166,11 @@ for(const spec of specs)test(spec.id+': failed durable entity reservation preven
  assert.equal(failed,true);assert.equal(session.writes.length,0);assert.notEqual(service.status(account).finalStatus,'SUCCESS');
  assert.deepEqual(session.synthetic,session.initial);assert.deepEqual([...session.stock],[...session.initialStock]);
 });
+
+for(const spec of specs)test('W19 antique '+spec.id+' refusal survives Service restart and connection change',async t=>{
+ const f=fixture(t,spec,'none'),service=f.newService(f.history),a=f.newSession();
+ const refused=(name,body,options)=>{options?.beforeDispatch?.();assert.equal(name,f.request);assert.deepEqual(toSnapshotJson(wire(name,body)),f.body);a.writes.push({name,body});};
+ a.client.sendWatch=async(name,body,options)=>{refused(name,body,options);return {status:'REJECTED'};};const read=a.client.request.bind(a.client);a.client.request=async(name,body,reply,timeout,options)=>{if(options?.mutate){refused(name,body,options);throw Object.assign(Error('synthetic definite antique refusal'),{code:'REJECTED'});}return read(name,body,reply,timeout,options);};
+ const p=await f.displayed(service,a),permit=service.authorize(a,f.payload(p));service.execute(a,permit);await service.settle(account);assert.equal(f.newHistory().list(account)[0].finalStatus,'REJECTED');const bytes=fs.readFileSync(f.history.storagePath,'utf8');
+ const next=f.newService(),b=f.newSession(2);await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId='10';assert.equal((await f.displayed(next,b)).actions.length,1);b.player.worldId='9';await assert.rejects(f.displayed(next,b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.writes.length,0);assert.equal(fs.readFileSync(f.history.storagePath,'utf8'),bytes);
+});

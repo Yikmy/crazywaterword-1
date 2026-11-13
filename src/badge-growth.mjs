@@ -1,7 +1,7 @@
 // C228/BIZ-R09: single badge level, explicit RED star, or idle wear to an empty slot.
 import { createHash } from 'node:crypto';
 import { assertPaymentAllowed } from './actions.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationHero, parseOperationInventory } from './hero-operations.mjs';
@@ -512,7 +512,7 @@ export function verifyBadgeGrowth(operation, before, after, responseBody) {
 export const badgeGrowthModule = Object.freeze({
   id: moduleId, label: '纹章成长与穿戴', capabilities: Object.freeze(['C228']), defaultConfig: BADGE_GROWTH_DEFAULT_CONFIG,
   validateConfig: validateBadgeGrowthConfig, validateParameters: validateBadgeGrowthParameters,
-  survey: surveyBadgeGrowth, view: viewBadgeGrowth, plan: planBadgeGrowth, verify: verifyBadgeGrowth,
+  survey: surveyBadgeGrowth, view: viewBadgeGrowth, plan: planBadgeGrowth, verify: verifyBadgeGrowth, rejectionIdentity: businessRejectionIdentityFromHistory,
   dependencyVersions: badgeGrowthDependencyVersions,
   dependencyKeys: Object.freeze(['moduleConfig', ...new Set([...tables, ...putOnTables, ...starTables].map(name => 'config.' + name))]),
 });
