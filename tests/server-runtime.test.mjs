@@ -12,6 +12,7 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-runtime-test-'));
 process.env.CW_DATA_DIR = sandbox;
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
+const {GameClient}=await import('../src/client.mjs'),{loadProtocol}=await import('../src/proto.mjs'),{createCodec}=await import('../src/codec.mjs');
 const token = 'synthetic-token-never-use-in-game';
 const sign = 'synthetic-sign-never-use-in-game';
 const frame = 'feedface1234567890abcdef';
@@ -41,10 +42,10 @@ class FakeClient extends EventEmitter {
   expire(state) { this.connected = false; this.state = state; this.emit('state', { state, detail: 'synthetic terminal condition' }); }
 }
 
-async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, collect = async () => snapshot() } = {}) {
+async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, clientFactory, protocol = {}, collect = async () => snapshot() } = {}) {
   saveStore({ version: 1, activeId: 'account-A', accounts: [credential('account-A'), credential('account-B')] });
   const clients = []; let collects = 0;
-  const app = createConsole({ ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { const client = new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
+  const app = createConsole({ ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol, tracePath: path.join(sandbox, 'trace.log'), clientFactory: (options) => { const client = clientFactory ? clientFactory(options) : new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
   await app.listen(); const port = app.server.address().port;
   function call(route, { method = 'GET', account = 'account-A', body } = {}) {
     const url = new URL(route, 'http://127.0.0.1:' + port); if (account) url.searchParams.set('account', account);
@@ -256,4 +257,10 @@ test('fixed offline asset HTTP reports exact missing or changed files without co
  assert.equal((await app.call('/api/assets/readiness',{method:'POST',body:{restore:true}})).status,403);assert.equal(fs.readFileSync(manifestFile,'utf8'),bytes);assert.equal(app.clients.length,0);assert.equal(app.collects,0);assert.equal(app.sessions.size,0);for(const secret of [token,sign,frame,assetRoot])assert.equal(report.text.includes(secret),false);
  fs.writeFileSync(manifestFile,'{bad');const invalid=await app.call('/api/assets/readiness');assert.equal(invalid.status,200);assert.equal(invalid.data.reason,'MANIFEST_INVALID_OR_UNREADABLE');assert.equal(invalid.text.includes(assetRoot),false);
  }finally{await app?.close();assert.equal(path.dirname(path.resolve(assetRoot)),path.resolve(os.tmpdir()));fs.rmSync(assetRoot,{recursive:true,force:true});}
+});
+
+test('trusted explicit player levels publish to the current Session before consumers and invalidate old snapshots only',async()=>{
+ const protocol=loadProtocol(),codec=createCodec(protocol),sockets=[];class Socket{constructor(){this.readyState=0;sockets.push(this);}send(){}close(){this.readyState=3;}open(){this.readyState=1;this.onopen();}receive(name,body,seq=0){this.onmessage?.({data:codec.encode(name,seq,body)});}}
+ const app=await harness({protocol,clientFactory:options=>new GameClient({...options,WebSocketImpl:Socket})});try{const connecting=app.connect();await until(()=>sockets.length===1);const socket=sockets[0];socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'17',worldId:'9',level:1,nickname:'synthetic-player'}});assert.equal((await connecting).status,200);const session=app.sessions.get('account-A'),client=app.clients[0];clearInterval(client.tickTimer);client.tickTimer=null;await app.refresh();assert.equal(session.snapshotStale,false);client.readPlayerLevelEvent=()=>({reliable:true,playerLevel:99});client.emit('message',{name:'SCPlayerExpUpdate',seq:1,body:{level:99}});assert.equal(session.player.level,1);assert.equal(session.snapshotStale,false);socket.receive('SCPlayerLevelGrade',{level:99,grade:1},1);assert.equal(session.player.level,1);let observed;client.on('message',message=>{if(message.name==='SCPlayerExpUpdate')observed=session.player.level;});socket.receive('SCPlayerExpUpdate',{level:3,exp:'9007199254740993'},2);assert.equal(observed,3);assert.equal(session.player.level,3);assert.equal(session.snapshotStale,true);assert.equal((await app.call('/api/overview')).data.player.level,3);assert.equal(app.collects,1);socket.receive('SCPlayerExpUpdate',{level:99},2);assert.equal(session.player.level,3);session.player.worldId='10';socket.receive('SCPlayerExpUpdate',{level:4},3);assert.equal(session.player.level,3);session.player.worldId='9';session.generation++;socket.receive('SCPlayerExpUpdate',{level:5},4);assert.equal(session.player.level,3);assert.equal(app.clients.length,1);assert.equal(app.collects,1);
+ }finally{await app.close();}
 });

@@ -558,3 +558,7 @@ for(const entry of ['tasks','dailies','loop'])test(entry+' keeps the original bu
 test('a forged public VIP reader or plain message source cannot arm an event workflow or obtain a claim',async()=>{
  const f=fixture();f.session.player={playerId:'17',worldId:1};f.session.connectionId='synthetic';f.session.client.readVipLevel=()=>({reliable:true,accountId:f.session.id,generation:1,connectionId:'synthetic',playerId:'17',worldId:'1',vipLevel:3});await assert.rejects(f.runner.start(f.session.id,boundedGraph(graph(),{eventTrigger:vipEventRule()})),{code:'WORKFLOW_EVENT_UNKNOWN'});assert.equal(f.calls.length,0);assert.equal(f.runner.getStatus().running,false);
 });
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' supports an explicit player level event through the existing compiler without changing the business DAG',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger={kind:'PLAYER_LEVEL_CHANGED',level:3};const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.edges,before.graph.edges);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.runPolicy,intent.runPolicy);assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+});

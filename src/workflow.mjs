@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { readVipLevelEvent } from './client.mjs';
+import { readVipLevelEvent, readPlayerLevelEvent } from './client.mjs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { toSnapshotJson } from './game.mjs';
@@ -77,26 +77,26 @@ export function workflowScheduledAt(schedule,startedAt){
  }
  throw fail('无法确定下一个明确上海日历时刻');
 }
-function validateWorkflowEventRule(rule){exact(rule,['kind','level'],'业务事件');if(rule.kind!=='VIP_LEVEL_CHANGED'||!Number.isInteger(rule.level)||rule.level<0||rule.level>2147483647)throw fail('事件仅支持VIP等级变为明确值；不接受传输或默认字段');}
+function validateWorkflowEventRule(rule){exact(rule,['kind','level'],'业务事件');if(!['VIP_LEVEL_CHANGED','PLAYER_LEVEL_CHANGED'].includes(rule.kind)||!Number.isInteger(rule.level)||rule.level<0||rule.level>2147483647)throw fail('事件仅支持明确VIP或角色等级变化；不接受传输或默认字段');}
 function validateEventCursor(value){exact(value,['streamId','cursor','playerId','worldId'],'业务事件基线');if(typeof value.streamId!=='string'||!/^[a-f0-9-]{36}$/.test(value.streamId)||!Number.isSafeInteger(value.cursor)||value.cursor<0||['playerId','worldId'].some(key=>typeof value[key]!=='string'||!value[key]||value[key].trim()!==value[key]))throw fail('业务事件游标或角色世界身份无效');}
-export function workflowVipEventCursor(session){
- const fact=readVipLevelEvent(session.client),identity=toSnapshotJson(session.player??{});
- if(!fact.reliable||fact.accountId!==session.id||fact.generation!==session.generation||fact.connectionId!==session.connectionId||fact.playerId!==String(identity.playerId)||fact.worldId!==String(identity.worldId))throw fail('VIP事件缺少当前登录、连续序列或精确账号角色世界连接来源','WORKFLOW_EVENT_UNKNOWN');
+export function workflowEventCursor(session,rule){
+ validateWorkflowEventRule(rule);const fact=(rule.kind==='PLAYER_LEVEL_CHANGED'?readPlayerLevelEvent:readVipLevelEvent)(session.client),identity=toSnapshotJson(session.player??{});
+ if(!fact.reliable||fact.accountId!==session.id||fact.generation!==session.generation||fact.connectionId!==session.connectionId||fact.playerId!==String(identity.playerId)||fact.worldId!==String(identity.worldId))throw fail('等级事件缺少当前登录、连续序列或精确账号角色世界连接来源','WORKFLOW_EVENT_UNKNOWN');
  const result={streamId:fact.streamId,cursor:fact.cursor,playerId:fact.playerId,worldId:fact.worldId};validateEventCursor(result);return result;
 }
-export function workflowVipEvent(session,baseline,rule,cursor){
- validateWorkflowEventRule(rule);validateEventCursor(baseline);const current=workflowVipEventCursor(session);
+export function workflowLevelEvent(session,baseline,rule,cursor){
+ validateWorkflowEventRule(rule);validateEventCursor(baseline);const current=workflowEventCursor(session,rule);
  if(current.streamId!==baseline.streamId||current.playerId!==baseline.playerId||current.worldId!==baseline.worldId||current.cursor<baseline.cursor)throw fail('事件连接流或游标基线已失效','WORKFLOW_EVENT_UNKNOWN');
  if(current.cursor===baseline.cursor)return null;
- const source=readVipLevelEvent(session.client,cursor===undefined?{}:{cursor});if(!source.reliable)throw fail('具体业务事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');const event=source.event;
- return event&&event.cursor>baseline.cursor&&event.previousLevel!==event.vipLevel&&event.vipLevel===rule.level?copy(event):null;
+ const source=(rule.kind==='PLAYER_LEVEL_CHANGED'?readPlayerLevelEvent:readVipLevelEvent)(session.client,cursor===undefined?{}:{cursor});if(!source.reliable)throw fail('具体业务事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');const event=source.event;
+ return event&&event.cursor>baseline.cursor&&event.previousLevel!==event.vipLevel&&event[rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel']===rule.level?copy(event):null;
 }
 function validateEventTriggerHistory(run){
  const rule=run.runPolicy?.eventTrigger,trigger=run.eventTrigger;if(rule===undefined){if(trigger!==undefined)throw fail('事件历史缺少原规则');return;}validateWorkflowEventRule(rule);
  exact(trigger,['state','baseline','armedAt','firedAt','observedAt','event'],'业务事件历史');validateEventCursor(trigger.baseline);if(!['PENDING','WAITING','FIRED'].includes(trigger.state))throw fail('业务事件状态无效');
  const stamp=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString()===value,start=Date.parse(run.startedAt),end=Date.parse(run.expiresAt);
  if(!Number.isFinite(start)||!Number.isFinite(end)||trigger.state==='PENDING'&&(trigger.armedAt!==null||trigger.event!==null||trigger.firedAt!==null||trigger.observedAt!==null)||trigger.state!=='PENDING'&&(!stamp(trigger.armedAt)||Date.parse(trigger.armedAt)<start)||trigger.state==='WAITING'&&(trigger.event!==null||trigger.observedAt!==null||trigger.firedAt!==null)||trigger.state!=='FIRED'&&((run.actionPlans??0)!==0||(run.trace?.length??0)!==0))throw fail('业务事件时间或写前状态不一致');
- if(trigger.state==='FIRED'){const event=trigger.event;exact(event,['eventId','streamId','cursor','seq','previousLevel','vipLevel','receivedAt'],'业务事件证据');if(event.streamId!==trigger.baseline.streamId||!Number.isSafeInteger(event.cursor)||event.cursor<=trigger.baseline.cursor||event.eventId!==event.streamId+':'+event.cursor||!Number.isInteger(event.seq)||event.seq<1||event.seq>2147483647||!Number.isInteger(event.previousLevel)||event.previousLevel<0||event.previousLevel>2147483647||event.vipLevel!==rule.level||event.previousLevel===event.vipLevel||!stamp(event.receivedAt)||!stamp(trigger.observedAt)||Date.parse(trigger.observedAt)<start||!stamp(trigger.firedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.observedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.armedAt)||Date.parse(trigger.firedAt)>=end)throw fail('业务事件身份、游标或时间证据不一致');}
+ if(trigger.state==='FIRED'){const event=trigger.event,levelKey=rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel';exact(event,['eventId','streamId','cursor','seq','previousLevel',levelKey,'receivedAt'],'业务事件证据');if(event.streamId!==trigger.baseline.streamId||!Number.isSafeInteger(event.cursor)||event.cursor<=trigger.baseline.cursor||event.eventId!==event.streamId+':'+event.cursor||!Number.isInteger(event.seq)||event.seq<1||event.seq>2147483647||!Number.isInteger(event.previousLevel)||event.previousLevel<0||event.previousLevel>2147483647||event[levelKey]!==rule.level||event.previousLevel===event[levelKey]||!stamp(event.receivedAt)||!stamp(trigger.observedAt)||Date.parse(trigger.observedAt)<start||!stamp(trigger.firedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.observedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.armedAt)||Date.parse(trigger.firedAt)>=end)throw fail('业务事件身份、游标或时间证据不一致');}
 }
 function validateRunPolicy(value) {
  exact(value,['maxDurationMs','maxActions','modules','maxRounds','roundIntervalMs','schedule','eventTrigger'],'运行边界');
@@ -225,7 +225,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   function current(ctx) {
     if(ctx.graph.runPolicy&&clock()>=Date.parse(ctx.expiresAt)){ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';throw fail(ctx.limitReason,'WORKFLOW_LIMIT');}
     if (ctx.cancel.signal.aborted || signal?.aborted || context !== ctx || ![...ACTIVE].includes(ctx.status) || ctx.session.abort?.signal?.aborted) throw fail('工作流已取消或账号会话失效', 'CANCELLED');
-    if(ctx.eventTrigger)workflowVipEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger);
+    if(ctx.eventTrigger)workflowLevelEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger);
     if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || ctx.client?.connected === false || ctx.session.abort?.signal !== ctx.sessionSignal || connectionScope(ctx.session).some((value,index) => value !== ctx.connectionScope[index]) || roleScope(ctx.session).some((value,index) => value !== ctx.roleScope[index]) || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话或连接已切换', 'CANCELLED');
   }
   async function relinquish(ctx) { if (!ctx.claimed) return; ctx.claimed = false; if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId); }
@@ -327,7 +327,7 @@ function repeatAfterStop(ctx,node){
       const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
       if(ctx.graph.runPolicy){ctx.expiresAt=new Date(Date.parse(ctx.startedAt)+ctx.graph.runPolicy.maxDurationMs).toISOString();ctx.actionPlans=0;if(ctx.graph.runPolicy.maxRounds!==undefined){ctx.round=1;ctx.completedRounds=0;}}
       if(ctx.graph.runPolicy?.schedule){const schedule=ctx.graph.runPolicy.schedule;ctx.trigger={state:'PENDING',armedAt:null,firedAt:null,missedAt:null};if(schedule.kind!=='ONCE'){const identity=toSnapshotJson(session.player??{});if(['playerId','worldId'].some(key=>!(typeof identity[key]==='string'&&identity[key].trim()===identity[key]&&identity[key].length>0||Number.isSafeInteger(identity[key])&&identity[key]>=0)))throw fail('日周触发必须绑定明确角色与世界');Object.assign(ctx.trigger,{scheduledAt:workflowScheduledAt(schedule,ctx.startedAt),playerId:String(identity.playerId),worldId:String(identity.worldId)});}}
-      if(ctx.graph.runPolicy?.eventTrigger)ctx.eventTrigger={state:'PENDING',baseline:workflowVipEventCursor(session),armedAt:null,firedAt:null,observedAt:null,event:null};
+      if(ctx.graph.runPolicy?.eventTrigger)ctx.eventTrigger={state:'PENDING',baseline:workflowEventCursor(session,ctx.graph.runPolicy.eventTrigger),armedAt:null,firedAt:null,observedAt:null,event:null};
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.sessionSignal?.addEventListener('abort', ctx.externalAbort, { once: true });
       if(ctx.graph.runPolicy){ctx.deadlineTimer=setTimeout(()=>{if(context!==ctx||!ACTIVE.has(ctx.status))return;ctx.limitReason='运行总时长已到限；停止后续节点，旧授权不继承';ctx.cancel.abort();if(ctx.status==='AWAITING_AUTHORIZATION')task=finish(ctx,'STOPPED',ctx.limitReason).then(getStatus);},ctx.graph.runPolicy.maxDurationMs);}
       if(ctx.trigger){const at=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at);if(at<=clock()){ctx.trigger.state='MISSED';ctx.trigger.missedAt=now();await finish(ctx,'STOPPED','明确触发时间已错过，按SKIP跳过且不补跑');return getStatus();}if(at>=Date.parse(ctx.expiresAt)){await finish(ctx,'STOPPED','明确触发时间不在本次有限运行期限内');return getStatus();}}
@@ -339,11 +339,11 @@ function repeatAfterStop(ctx,node){
     } finally { starting = false; }
   }
   function listenForEvent(ctx){
-    ctx.eventReady=new Promise(resolve=>ctx.wakeEvent=resolve);const changed=()=>{if(ctx.queuedEvent||ctx.eventError)return;try{current(ctx);const event=workflowVipEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger);if(event){ctx.queuedEvent={event,observedAt:now()};ctx.wakeEvent();}}catch(error){ctx.eventError=error;ctx.wakeEvent();}};
+    ctx.eventReady=new Promise(resolve=>ctx.wakeEvent=resolve);const changed=()=>{if(ctx.queuedEvent||ctx.eventError)return;try{current(ctx);const event=workflowLevelEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger);if(event){ctx.queuedEvent={event,observedAt:now()};ctx.wakeEvent();}}catch(error){ctx.eventError=error;ctx.wakeEvent();}};
     const names=['message','drop','error','state','close'];if(typeof ctx.client.on!=='function'||typeof ctx.client.off!=='function')throw fail('事件来源不支持现有连接订阅');for(const name of names)ctx.client.on(name,changed);ctx.eventCleanup=()=>{for(const name of names)ctx.client.off(name,changed);};
   }
   async function waitEventStart(ctx){
-    try{await cancelled(ctx,ctx.eventReady);current(ctx);if(ctx.eventError)throw ctx.eventError;if(ctx.authorizationTask)await cancelled(ctx,ctx.authorizationTask);current(ctx);const queued=ctx.queuedEvent;if(!queued||!workflowVipEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger,queued.event.cursor))throw fail('业务事件已失去独立可信来源','WORKFLOW_EVENT_UNKNOWN');Object.assign(ctx.eventTrigger,{state:'FIRED',event:queued.event,observedAt:queued.observedAt,firedAt:now()});ctx.status='RUNNING';await onUpdate(getStatus());current(ctx);if(typeof operations.activateWorkflowEvent!=='function')throw fail('事件未接入共享Service');operations.activateWorkflowEvent(ctx.session,ctx.runId,queued.event);ctx.eventCleanup?.();return await advance(ctx);}
+    try{await cancelled(ctx,ctx.eventReady);current(ctx);if(ctx.eventError)throw ctx.eventError;if(ctx.authorizationTask)await cancelled(ctx,ctx.authorizationTask);current(ctx);const queued=ctx.queuedEvent;if(!queued||!workflowLevelEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger,queued.event.cursor))throw fail('业务事件已失去独立可信来源','WORKFLOW_EVENT_UNKNOWN');Object.assign(ctx.eventTrigger,{state:'FIRED',event:queued.event,observedAt:queued.observedAt,firedAt:now()});ctx.status='RUNNING';await onUpdate(getStatus());current(ctx);if(typeof operations.activateWorkflowEvent!=='function')throw fail('事件未接入共享Service');operations.activateWorkflowEvent(ctx.session,ctx.runId,queued.event);ctx.eventCleanup?.();return await advance(ctx);}
     catch(error){if(ctx.authorizationTask){operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,ctx.limitReason?'STOPPED':'CANCELLED');await ctx.authorizationTask;}await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':error.code==='WORKFLOW_EVENT_UNKNOWN'?'UNKNOWN':'FAILED',ctx.limitReason??error.message);return getStatus();}
   }
   async function waitScheduledStart(ctx){

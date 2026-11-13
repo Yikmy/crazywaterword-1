@@ -130,6 +130,14 @@ export const LIVE_VIP_LEVEL_EVIDENCE = Object.freeze({
   scope: 'CONTINUOUS_CONNECTION_VIP_LEVEL_ONLY', realGame: 'REAL_UNVERIFIED',
 });
 
+// Player levels share existing connection/identity checks, independently of VIP completeness.
+const livePlayerLevels = new WeakMap();
+function resetPlayerLevel(client,reason){const previous=livePlayerLevels.get(client);livePlayerLevels.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,invalid:false,seeded:false,level:null,source:null,reason});}
+function invalidatePlayerLevel(client,reason){const state=livePlayerLevels.get(client);if(state){state.invalid=true;state.reason=reason;state.level=null;state.source=null;}}
+function seedPlayerLevel(client,body,socket){const state=livePlayerLevels.get(client);if(state?.invalid)return;if(!state||state.socket!==socket||!vipCurrentContext(client,state)){invalidatePlayerLevel(client,'PLAYER_CONTEXT_UNKNOWN_OR_CHANGED');return;}const player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId')),level=vipValue(player,'level');if(vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId||!vipLevel(level)){invalidatePlayerLevel(client,'PLAYER_LOGIN_LEVEL_OR_IDENTITY_UNKNOWN');return;}Object.assign(state,{identity:{playerId,worldId},level,source:'LoginResponse.playerInfo.level',reason:null,seeded:true,streamId:randomUUID(),cursor:0,events:[]});}
+function updatePlayerLevel(client,body,seq,receivedAt){const state=livePlayerLevels.get(client);if(!state||state.invalid)return;if(!state.seeded||!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)){invalidatePlayerLevel(client,'PLAYER_LOGIN_OR_CONTEXT_UNKNOWN');return;}const level=vipValue(body,'level');if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!vipLevel(level)){invalidatePlayerLevel(client,'PLAYER_UPDATE_LEVEL_OR_SEQUENCE_UNKNOWN');return;}if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidatePlayerLevel(client,'PLAYER_EVENT_CURSOR_EXHAUSTED');return;}const cursor=++state.cursor;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,previousLevel:state.level,playerLevel:level,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();state.level=level;state.source='SCPlayerExpUpdate';}
+export function readPlayerLevelEvent(client,{cursor}={}){const state=livePlayerLevels.get(client);if(state&&!vipCurrentContext(client,state))invalidatePlayerLevel(client,'PLAYER_CONTEXT_UNKNOWN_OR_CHANGED');else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidatePlayerLevel(client,'PLAYER_CONNECTION_NOT_CURRENT');if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'PLAYER_LOGIN_BASELINE_UNKNOWN'};const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'PLAYER_EVENT_CURSOR_UNAVAILABLE'};return {status:'CURRENT',reliable:true,playerLevel:state.level,source:state.source,reason:null,...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};}
+export const LIVE_PLAYER_LEVEL_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'ModelManager._onSCPlayerExpUpdate',policy:'Explicit login level then continuous SCPlayerExpUpdate.level; SCPlayerLevelGrade has no evidenced consumer and is excluded',realGame:'REAL_UNVERIFIED'});
 // Full replacement MonthCardResponse snapshots are separate from VIP-level facts.
 const liveMonthCards = new WeakMap(), monthCardQueries = new WeakMap();
 function resetMonthCards(client, reason) {
@@ -257,7 +265,9 @@ export class GameClient extends EventEmitter {
     this.assertTransport = assertTransport;
     this.factContext = { accountId, generation };
     liveVipLevels.set(this, { owner: { accountId, generation } });
+    livePlayerLevels.set(this, { owner: { accountId, generation } });
     resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
+    resetPlayerLevel(this, 'PLAYER_NOT_LOGGED_IN');
     liveMonthCards.set(this, { owner: { accountId, generation } });
     resetMonthCards(this, 'MONTH_CARD_NOT_LOGGED_IN');
     this.gameClock = gameClock ?? (typeof accountId === 'string' && accountId ? trustedGameClock({ accountId, generation }) : { reset() {}, markPing() {}, observePong() {}, read: () => ({ status: 'UNKNOWN', reliable: false, reason: 'CONTEXT_UNKNOWN' }) });
@@ -334,6 +344,7 @@ export class GameClient extends EventEmitter {
     this.stopping = false;
     this.gameClock.reset();
     resetVipLevel(this, 'VIP_LOGIN_PENDING');
+    resetPlayerLevel(this, 'PLAYER_LOGIN_PENDING');
     resetMonthCards(this, 'MONTH_CARD_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
     const promise = new Promise((resolve, reject) => Object.assign(attempt, { resolve, reject }));
@@ -347,6 +358,7 @@ export class GameClient extends EventEmitter {
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
       liveVipLevels.get(this).socket = socket;
+      livePlayerLevels.get(this).socket = socket;
       liveMonthCards.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
       const current = () => this.loginAttempt === attempt && this.socket === socket;
@@ -388,6 +400,7 @@ export class GameClient extends EventEmitter {
           this.lastResponseAt = Date.now();
           this.loginResponse = body;
           seedVipLevel(this, body, socket);
+          seedPlayerLevel(this, body, socket);
           seedMonthCards(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
           socket.onclose = (closed) => { if (this.socket === socket) this.onClose(closed); };
@@ -421,6 +434,7 @@ export class GameClient extends EventEmitter {
   // Every terminal path releases resources before publishing its final state.
   finishConnection(state, error, reason = state.toLowerCase()) {
     resetVipLevel(this, 'VIP_CONNECTION_ENDED');
+    resetPlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
     resetMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
     this.gameClock.reset();
@@ -698,6 +712,7 @@ export class GameClient extends EventEmitter {
       decoded = this.codec.decode(data);
     } catch (error) {
       invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
+      invalidatePlayerLevel(this, 'PLAYER_STREAM_DECODE_FAILED');
       invalidateMonthCards(this, 'MONTH_CARD_STREAM_DECODE_FAILED', true);
       this.emit('error', new Error(`decode failed: ${error.message}`));
       return;
@@ -710,10 +725,12 @@ export class GameClient extends EventEmitter {
     if (!this.handleSeqNo(seq, name)) return;
     if (name === 'ResendFailed' || name === 'SCChannelExpired') {
       invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
+      invalidatePlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
       invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
     }
     if (name === 'SCServerTimeChanged') this.gameClock.reset();
     if (name === 'SCVipUpdate') updateVipLevel(this, body, seq, receivedAt);
+    if (name === 'SCPlayerExpUpdate') updatePlayerLevel(this, body, seq, receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });
@@ -758,6 +775,7 @@ export class GameClient extends EventEmitter {
           this.emit('drop', { reason: 'duplicate', name, seq, recvSeqNo: this.recvSeqNo });
         } else {
           invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
+      invalidatePlayerLevel(this, 'PLAYER_STREAM_SEQUENCE_GAP');
           invalidateMonthCards(this, 'MONTH_CARD_STREAM_SEQUENCE_GAP', true);
           this.sendNack(this.recvSeqNo);
           this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });

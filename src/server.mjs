@@ -13,7 +13,7 @@ import { createStandaloneStageJournal, projectStageBattleHistory } from './stage
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { GameClient } from './client.mjs';
+import { readPlayerLevelEvent, GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -242,7 +242,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       emit(session, 'state', STATE_TEXT[state] ?? state, detail ? { detail } : undefined);
     });
     on('frame', ({ dir, name, seq, bytes }) => { if (current()) trace(session, (dir === 'out' ? '->' : '<-') + ' [' + name + '] seq=' + seq + ' ' + bytes.byteLength + 'B'); });
-    on('message', ({ seq, name, body }) => { if (current()) trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
+    on('message', ({ seq, name, body }) => { if (!current()) return;
+      if(name==='SCPlayerExpUpdate'){const fact=readPlayerLevelEvent(instance);if(fact.reliable&&fact.accountId===session.id&&fact.generation===session.generation&&fact.connectionId===session.connectionId&&fact.playerId===String(session.player?.playerId)&&fact.worldId===String(session.player?.worldId)&&fact.event?.seq===seq&&session.player.level!==fact.playerLevel){session.player={...session.player,level:fact.playerLevel};session.snapshotStale=true;}}
+      trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
     on('pong', ({ latencyMs, offsetMs }) => { if (current()) trace(session, 'pong ' + latencyMs + 'ms offset=' + offsetMs + 'ms'); });
     on('warn', (message) => { if (current()) emit(session, 'warn', message); });
     on('promptAmbiguous', () => { if (current()) emit(session, 'warn', '收到无法确定请求归属的服务端提示，未匹配到任何请求'); });
