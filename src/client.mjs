@@ -138,6 +138,43 @@ function seedPlayerLevel(client,body,socket){const state=livePlayerLevels.get(cl
 function updatePlayerLevel(client,body,seq,receivedAt){const state=livePlayerLevels.get(client);if(!state||state.invalid)return;if(!state.seeded||!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)){invalidatePlayerLevel(client,'PLAYER_LOGIN_OR_CONTEXT_UNKNOWN');return;}const level=vipValue(body,'level');if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!vipLevel(level)){invalidatePlayerLevel(client,'PLAYER_UPDATE_LEVEL_OR_SEQUENCE_UNKNOWN');return;}if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidatePlayerLevel(client,'PLAYER_EVENT_CURSOR_EXHAUSTED');return;}const cursor=++state.cursor;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,previousLevel:state.level,playerLevel:level,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();state.level=level;state.source='SCPlayerExpUpdate';}
 export function readPlayerLevelEvent(client,{cursor}={}){const state=livePlayerLevels.get(client);if(state&&!vipCurrentContext(client,state))invalidatePlayerLevel(client,'PLAYER_CONTEXT_UNKNOWN_OR_CHANGED');else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidatePlayerLevel(client,'PLAYER_CONNECTION_NOT_CURRENT');if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'PLAYER_LOGIN_BASELINE_UNKNOWN'};const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'PLAYER_EVENT_CURSOR_UNAVAILABLE'};return {status:'CURRENT',reliable:true,playerLevel:state.level,source:state.source,reason:null,...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};}
 export const LIVE_PLAYER_LEVEL_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'ModelManager._onSCPlayerExpUpdate',policy:'Explicit login level then continuous SCPlayerExpUpdate.level; SCPlayerLevelGrade has no evidenced consumer and is excluded',realGame:'REAL_UNVERIFIED'});
+
+// The client DailyTaskModel replaces daily state on this push. The marker is the
+// server's next reset value, not an inferred timezone, clock or claim period.
+const liveDailyResets = new WeakMap();
+function resetDailyResets(client, reason) {
+ const previous=liveDailyResets.get(client);
+ liveDailyResets.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,marker:null});
+}
+function invalidateDailyResets(client, reason) {
+ const state=liveDailyResets.get(client);if(state){state.invalid=true;state.reason=reason;}
+}
+function seedDailyResets(client,body,socket) {
+ const state=liveDailyResets.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
+ if(state?.invalid)return;
+ if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateDailyResets(client,'DAILY_RESET_LOGIN_OR_CONTEXT_UNKNOWN');return;}
+ Object.assign(state,{seeded:true,reason:null,identity:{playerId,worldId},streamId:randomUUID(),cursor:0,events:[]});
+}
+function observeDailyReset(client,body,seq,receivedAt) {
+ const state=liveDailyResets.get(client);if(!state||state.invalid)return;
+ const marker=vipValue(body,'dailyResetTime');
+ if(!state.seeded||!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)||!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isInteger(marker)||marker<1||marker>2147483647){invalidateDailyResets(client,'DAILY_RESET_SOURCE_OR_MARKER_UNKNOWN');return;}
+ if(state.marker!==null&&marker<state.marker){invalidateDailyResets(client,'DAILY_RESET_MARKER_ROLLBACK');return;}
+ if(marker===state.marker)return;
+ if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidateDailyResets(client,'DAILY_RESET_CURSOR_EXHAUSTED');return;}
+ const cursor=++state.cursor;state.marker=marker;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,dailyResetTime:marker,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();
+}
+export function readDailyResetEvent(client,{cursor}={}) {
+ const state=liveDailyResets.get(client);
+ if(state&&!vipCurrentContext(client,state))invalidateDailyResets(client,'DAILY_RESET_CONTEXT_UNKNOWN_OR_CHANGED');
+ else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidateDailyResets(client,'DAILY_RESET_CONNECTION_NOT_CURRENT');
+ if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'DAILY_RESET_LOGIN_BASELINE_UNKNOWN'};
+ const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);
+ if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'DAILY_RESET_EVENT_CURSOR_UNAVAILABLE'};
+ return {status:'CURRENT',reliable:true,source:'SCDailyTaskReset.dailyResetTime',...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};
+}
+export const DAILY_RESET_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'DailyTaskModel._onSCDailyTaskReset',modelByteOffset:1646732,modelSha256:'62d10875084e6a9698ece98c5b6c3f078797599f0dacf1e175c8983b77ec8f79',scope:'Accepted explicit reset push only; not game-day timezone, claim eligibility, reward receipt or implicit authorization',realGame:'REAL_UNVERIFIED'});
+
 // Full replacement MonthCardResponse snapshots are separate from VIP-level facts.
 const liveMonthCards = new WeakMap(), monthCardQueries = new WeakMap();
 function resetMonthCards(client, reason) {
@@ -303,8 +340,10 @@ export class GameClient extends EventEmitter {
     this.factContext = { accountId, generation };
     liveVipLevels.set(this, { owner: { accountId, generation } });
     livePlayerLevels.set(this, { owner: { accountId, generation } });
+    liveDailyResets.set(this,{owner:{accountId,generation}});
     resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
     resetPlayerLevel(this, 'PLAYER_NOT_LOGGED_IN');
+    resetDailyResets(this,'DAILY_RESET_NOT_LOGGED_IN');
     liveFestivalActivities.set(this,{owner:{accountId,generation}});
     resetFestivalActivities(this,'FESTIVAL_NOT_LOGGED_IN');
     liveMonthCards.set(this, { owner: { accountId, generation } });
@@ -384,6 +423,7 @@ export class GameClient extends EventEmitter {
     this.gameClock.reset();
     resetVipLevel(this, 'VIP_LOGIN_PENDING');
     resetPlayerLevel(this, 'PLAYER_LOGIN_PENDING');
+    resetDailyResets(this,'DAILY_RESET_LOGIN_PENDING');
     resetFestivalActivities(this,'FESTIVAL_LOGIN_PENDING');
     resetMonthCards(this, 'MONTH_CARD_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
@@ -399,6 +439,7 @@ export class GameClient extends EventEmitter {
       this.socket = socket;
       liveVipLevels.get(this).socket = socket;
       livePlayerLevels.get(this).socket = socket;
+      liveDailyResets.get(this).socket=socket;
       liveFestivalActivities.get(this).socket = socket;
       liveMonthCards.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
@@ -442,6 +483,7 @@ export class GameClient extends EventEmitter {
           this.loginResponse = body;
           seedVipLevel(this, body, socket);
           seedPlayerLevel(this, body, socket);
+          seedDailyResets(this,body,socket);
           seedFestivalActivities(this,body,socket);
           seedMonthCards(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
@@ -477,6 +519,7 @@ export class GameClient extends EventEmitter {
   finishConnection(state, error, reason = state.toLowerCase()) {
     resetVipLevel(this, 'VIP_CONNECTION_ENDED');
     resetPlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
+    resetDailyResets(this,'DAILY_RESET_CONNECTION_ENDED');
     resetFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
     resetMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
@@ -756,6 +799,7 @@ export class GameClient extends EventEmitter {
     } catch (error) {
       invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_DECODE_FAILED');
+      invalidateDailyResets(this,'DAILY_RESET_STREAM_DECODE_FAILED');
       invalidateFestivalActivities(this,'FESTIVAL_STREAM_DECODE_FAILED');
       invalidateMonthCards(this, 'MONTH_CARD_STREAM_DECODE_FAILED', true);
       this.emit('error', new Error(`decode failed: ${error.message}`));
@@ -770,12 +814,14 @@ export class GameClient extends EventEmitter {
     if (name === 'ResendFailed' || name === 'SCChannelExpired') {
       invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
       invalidatePlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
+      invalidateDailyResets(this,'DAILY_RESET_CONNECTION_ENDED');
       invalidateFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
       invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
     }
     if (name === 'SCServerTimeChanged') this.gameClock.reset();
     if (name === 'SCVipUpdate') updateVipLevel(this, body, seq, receivedAt);
     if (name === 'SCPlayerExpUpdate') updatePlayerLevel(this, body, seq, receivedAt);
+    if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
     if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
@@ -822,6 +868,7 @@ export class GameClient extends EventEmitter {
         } else {
           invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_SEQUENCE_GAP');
+          invalidateDailyResets(this,'DAILY_RESET_STREAM_SEQUENCE_GAP');
           invalidateFestivalActivities(this,'FESTIVAL_STREAM_SEQUENCE_GAP');
           invalidateMonthCards(this, 'MONTH_CARD_STREAM_SEQUENCE_GAP', true);
           this.sendNack(this.recvSeqNo);

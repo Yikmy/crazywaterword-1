@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -309,4 +309,26 @@ for(const kind of ['VIP_LEVEL_CHANGED','PLAYER_LEVEL_CHANGED'])for(const level o
  const {workflowEventCursor,workflowLevelEvent}=await import('../src/workflow.mjs'),f=fixture();t.after(()=>f.client.stop());const body=login(level);body.playerInfo.level=level;const socket=await f.ready(body),session={id:'vip-account',generation:3,connectionId:'vip-connection',client:f.client,player:{playerId:'9007199254740993',worldId:'9'}},rule={kind,level},baseline=workflowEventCursor(session,rule),name=kind==='PLAYER_LEVEL_CHANGED'?'SCPlayerExpUpdate':'SCVipUpdate',key=kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel',update=n=>kind==='PLAYER_LEVEL_CHANGED'?{level:n,exp:'10'}:{vipLevel:n};
  assert.equal(workflowLevelEvent(session,baseline,rule),null);socket.receive(name,update(level),1);assert.equal(workflowLevelEvent(session,baseline,rule),null);assert.equal(workflowLevelEvent(session,baseline,rule,1),null);socket.receive(name,update(level),1);assert.equal(workflowEventCursor(session,rule).cursor,1);
  const away=level===0?1:2;socket.receive(name,update(away),2);assert.equal(workflowLevelEvent(session,baseline,rule),null);socket.receive(name,update(level),3);const event=workflowLevelEvent(session,baseline,rule);assert.equal(event.cursor,3);assert.equal(event.previousLevel,away);assert.equal(event[key],level);assert.equal(workflowLevelEvent(session,baseline,rule,1),null);assert.equal(workflowLevelEvent(session,baseline,rule,2),null);assert.deepEqual(workflowLevelEvent(session,baseline,rule,3),event);
+});
+
+test('daily reset events seed exact login identity independently of absent VIP and player levels',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());assert.equal(readDailyResetEvent(f.client).reliable,false);const socket=await f.ready({result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:'9'}}),first=readDailyResetEvent(f.client);
+ assert.equal(first.reliable,true);assert.equal(first.cursor,0);assert.equal(first.event,null);assert.equal(f.client.readVipLevel().reliable,false);assert.equal(readPlayerLevelEvent(f.client).reliable,false);
+ f.client.readDailyResetEvent=()=>({reliable:true,event:{dailyResetTime:500}});f.client.emit('message',{name:'SCDailyTaskReset',seq:1,body:{dailyResetTime:500}});assert.equal(readDailyResetEvent(f.client).cursor,0);assert.equal(readDailyResetEvent({readDailyResetEvent:()=>first}).reliable,false);
+ socket.receive('SCDailyWeeklyReset',{},1);assert.equal(readDailyResetEvent(f.client).cursor,0);socket.receive('SCDailyTaskReset',{dailyResetTime:1000,dailyTask:[]},2);const fact=readDailyResetEvent(f.client);assert.equal(fact.event.dailyResetTime,1000);assert.equal(fact.event.seq,2);assert.equal(fact.cursor,1);assert.equal(fact.playerId,'9007199254740993');assert.equal(fact.worldId,'9');assert.equal(fact.event.eventId,fact.streamId+':1');
+ fact.event.dailyResetTime=4;assert.equal(readDailyResetEvent(f.client).event.dailyResetTime,1000);socket.receive('SCDailyTaskReset',{dailyResetTime:1000},2);socket.receive('SCDailyTaskReset',{dailyResetTime:1000},3);assert.equal(readDailyResetEvent(f.client).cursor,1);socket.receive('SCDailyTaskReset',{dailyResetTime:2000},4);assert.equal(readDailyResetEvent(f.client).cursor,2);assert.equal(readDailyResetEvent(f.client,{cursor:1}).event.dailyResetTime,1000);
+});
+for(const body of [{result:0,playerInfo:{worldId:'9'}},{result:0,playerInfo:{playerId:'17',worldId:'0'}},{playerInfo:{playerId:'17',worldId:'9'}}])test('daily reset login source requires explicit successful identity '+JSON.stringify(body),async t=>{
+ const f=fixture();t.after(()=>f.client.stop());await f.ready(body);assert.equal(readDailyResetEvent(f.client).reliable,false);
+});
+for(const fault of ['missing','zero','negative','zero-sequence','gap','decode','account','generation','connection','terminal','rollback'])test('daily reset source stops on '+fault,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login());socket.receive('SCDailyTaskReset',{dailyResetTime:1000},1);
+ if(['missing','zero','negative'].includes(fault))socket.receive('SCDailyTaskReset',fault==='missing'?{}:{dailyResetTime:fault==='zero'?0:-1},2);
+ if(fault==='zero-sequence')socket.receive('SCDailyTaskReset',{dailyResetTime:2000},0);if(fault==='gap')socket.receive('SCDailyTaskReset',{dailyResetTime:2000},3);if(fault==='decode')socket.onmessage({data:Buffer.from([0])});if(fault==='account')f.client.factContext.accountId='B';if(fault==='generation')f.client.factContext.generation++;if(fault==='connection')f.client.factContext.connectionId='changed';if(fault==='terminal')socket.receive('SCChannelExpired',{reason:'synthetic'},2);if(fault==='rollback')socket.receive('SCDailyTaskReset',{dailyResetTime:999},2);
+ assert.equal(readDailyResetEvent(f.client).reliable,false);socket.receive('SCDailyTaskReset',{dailyResetTime:2000},2);assert.equal(readDailyResetEvent(f.client).reliable,false);
+});
+test('daily reset cursors are bounded and old sockets cannot recover a new connection',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login()),old=readDailyResetEvent(f.client),handler=socket.onmessage;
+ for(let seq=1;seq<=201;seq++)socket.receive('SCDailyTaskReset',{dailyResetTime:1000+seq},seq);assert.equal(readDailyResetEvent(f.client,{cursor:1}).reliable,false);assert.equal(readDailyResetEvent(f.client,{cursor:2}).event.dailyResetTime,1002);
+ f.client.stop();assert.equal(readDailyResetEvent(f.client).reliable,false);await f.ready(login());const fresh=readDailyResetEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);assert.equal(fresh.cursor,0);handler({data:codec.encode('SCDailyTaskReset',1,{dailyResetTime:9999})});assert.equal(readDailyResetEvent(f.client).cursor,0);
 });

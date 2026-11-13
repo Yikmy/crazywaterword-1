@@ -671,3 +671,12 @@ test('unified AFK rewards never infer levels or compile interval income, upgrade
  for(const row of [{kind:'afk-level-reward'},{kind:'afk-level-reward',level:0},{kind:'afk-level-reward',level:'2'},{kind:'afk-level-reward',level:1.5},{kind:'afk-level-reward',level:2147483648},{kind:'afk-level-reward',level:2,action:'upgrade'},{kind:'afk-level-reward',level:2,useAdvCard:true},{kind:'afk-level-reward',level:2,parameters:{}},{kind:'afk-level-reward',level:2,request:'UpgradeAfkLevelRequest'}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[row],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
  const result=compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1004}],budget},{modules:GAMEPLAY_MODULES});assert.equal(result.graph,null);assert.equal(result.blocked[0].reason,'DAILY_ACTION_CONTRACT_UNVERIFIED');
 });
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' compiles explicit daily reset events without modifying the original business graph',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger={kind:'DAILY_TASK_RESET'};const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.edges,before.graph.edges);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.runPolicy,intent.runPolicy);assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+});
+test('daily reset event rule accepts no inferred clock, eligibility, level, transport, retry or automatic renewal',()=>{
+ const valid={kind:'DAILY_TASK_RESET'};assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:valid}),{modules}).valid,true);
+ for(const extra of [{level:0},{dailyResetTime:1000},{timeZone:'Asia/Shanghai'},{boundaryHour:0},{eligible:true},{request:'SCDailyTaskReset'},{retry:true},{allowPaid:true},{budget:[]}])assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:{...valid,...extra}}),{modules}),{code:'WORKFLOW_INVALID'});
+ assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:valid,schedule:onceSchedule(1050)}),{modules}),{code:'WORKFLOW_INVALID'});
+});
