@@ -109,3 +109,21 @@ export function assetRecoveryInstructions(manifest) {
       'Verify the expected SHA-256 and format with assetReadinessReport before loading protocol/config/map assets.',
       'If the source or digest is unavailable, keep the affected capability blocked; do not search account/token caches or fetch automatically.'] }));
 }
+
+/** Inspect only the preserved runtime manifest under an explicit installation root.
+ * Shared by CLI and the local read-only console; no caller-supplied paths, discovery or restore.
+ */
+export function runtimeAssetReadiness({root=path.resolve(import.meta.dirname,'..')}={}) {
+  const blocked=reason=>({status:'BLOCKED',ready:false,reason,assets:[],recovery:[]});
+  if(typeof root!=='string'||!path.isAbsolute(root))return blocked('MANIFEST_ROOT_INVALID');
+  try{
+    const directory=path.join(root,'docs'),file=path.join(directory,'RUNTIME_ASSETS.json');
+    if(fs.lstatSync(directory).isSymbolicLink()||fs.lstatSync(file).isSymbolicLink())return blocked('MANIFEST_LINK_NOT_ALLOWED');
+    const before=fs.statSync(file);
+    if(!before.isFile())return blocked('MANIFEST_NOT_FILE');
+    const bytes=fs.readFileSync(file),after=fs.statSync(file);
+    if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ino!==after.ino||bytes.length!==after.size)return blocked('MANIFEST_CHANGED_DURING_READ');
+    const manifest=JSON.parse(bytes.toString('utf8')),report=assetReadinessReport(manifest,{root});
+    return {...report,provenanceNote:reference(manifest.provenanceNote)?manifest.provenanceNote:null,recovery:assetRecoveryInstructions(manifest)};
+  }catch(error){return blocked(error?.code==='ENOENT'?'MANIFEST_MISSING':'MANIFEST_INVALID_OR_UNREADABLE');}
+}

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions } from '../src/asset-readiness.mjs';
+import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness } from '../src/asset-readiness.mjs';
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-asset-readiness-'));
@@ -137,4 +137,23 @@ test('capturing a missing asset retains the concrete missing-file reason during 
     assert.equal(manifest.assets[2].sha256, null);
     assert.equal(assetReadinessReport(manifest, { root: f.root }).assets[2].reason, 'ASSET_MISSING');
   } finally { f.cleanup(); }
+});
+
+test('fixed runtime manifest reports retained baselines without rewriting or discovering a missing map',()=>{
+ const f=fixture();try{const manifest=f.manifest();fs.mkdirSync(path.join(f.root,'docs'));const file=path.join(f.root,'docs','RUNTIME_ASSETS.json'),bytes=JSON.stringify({...manifest,provenanceNote:'Synthetic retained baseline; upstream version unknown'});fs.writeFileSync(file,bytes);
+ assert.equal(runtimeAssetReadiness({root:f.root}).ready,true);fs.unlinkSync(path.join(f.root,f.assets[2].path));const report=runtimeAssetReadiness({root:f.root});assert.equal(report.ready,false);assert.equal(report.assets[2].reason,'ASSET_MISSING');assert.equal(report.recovery[2].expectedSha256,manifest.assets[2].sha256);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(JSON.stringify(report).includes(f.root),false);
+ }finally{f.cleanup();}
+});
+test('missing invalid or unsupported runtime manifest gives a fixed blocked reason without raw errors',()=>{
+ const f=fixture();try{
+ assert.equal(runtimeAssetReadiness({root:'.'}).reason,'MANIFEST_ROOT_INVALID');assert.equal(runtimeAssetReadiness({root:f.root}).reason,'MANIFEST_MISSING');
+ fs.mkdirSync(path.join(f.root,'docs'));const file=path.join(f.root,'docs','RUNTIME_ASSETS.json');
+ for(const value of ['{secret-parser-input',JSON.stringify({schemaVersion:1,assets:[{id:'x',role:'config',path:'data/accounts.json'}]})]){fs.writeFileSync(file,value);const report=runtimeAssetReadiness({root:f.root});assert.equal(report.reason,'MANIFEST_INVALID_OR_UNREADABLE');assert.deepEqual(report.assets,[]);assert.equal(JSON.stringify(report).includes(f.root),false);assert.equal(JSON.stringify(report).includes('secret-parser-input'),false);}
+ fs.writeFileSync(file,JSON.stringify({schemaVersion:2}));assert.equal(runtimeAssetReadiness({root:f.root}).reason,'MANIFEST_VERSION_UNKNOWN');
+ }finally{f.cleanup();}
+});
+test('a manifest directory link is blocked without following retained files',()=>{
+ const f=fixture(),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cw-manifest-link-'));try{
+ fs.writeFileSync(path.join(outside,'RUNTIME_ASSETS.json'),JSON.stringify(f.manifest()));const linked=path.join(f.root,'docs');fs.symlinkSync(outside,linked,process.platform==='win32'?'junction':'dir');assert.equal(runtimeAssetReadiness({root:f.root}).reason,'MANIFEST_LINK_NOT_ALLOWED');fs.unlinkSync(linked);
+ }finally{f.cleanup();fs.rmSync(outside,{recursive:true,force:true});}
 });

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { runtimeAssetReadiness } from './asset-readiness.mjs';
 import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
 import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, projectWorkflowExecutionHistory, simulateWorkflow, validateWorkflow } from './workflow.mjs';
@@ -50,7 +51,7 @@ const STATE_TEXT = {
   EXPIRED: '登录已失效',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock, writerOwnership = createWriterOwnership(), operationOptions = {} } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, protocol: suppliedProtocol = null, clientFactory = (options) => new GameClient(options), collect = collectState, tracePath = TRACE_PATH, stageSideResolver = resolveMainlineChallengeSide, stageClock, writerOwnership = createWriterOwnership(), operationOptions = {}, assetRoot = path.resolve(import.meta.dirname, '..') } = {}) {
   const protocol = suppliedProtocol ?? loadProtocol();
   let closed = false;
   let closingPromise = null;
@@ -689,7 +690,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         'POST /api/accounts/active', 'POST /api/accounts/label', 'POST /api/accounts/remove',
         'POST /api/connect', 'POST /api/disconnect', 'POST /api/refresh', 'GET /api/overview',
         'GET /api/heroes', 'GET /api/dailies', 'GET /api/tasks', 'GET /api/world', 'GET /api/worlds',
-        'GET /api/loop', 'GET /api/snapshot/export', 'GET /api/data-explorer',
+        'GET /api/loop', 'GET /api/snapshot/export', 'GET /api/data-explorer', 'GET /api/assets/readiness',
         // Local settings/simulation only; game mutation stays blocked.
         'GET /api/order-rules', 'POST /api/order-rules', 'POST /api/order-rules/preview',
       ]);
@@ -703,6 +704,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
+      }
+      if (route === 'GET /api/assets/readiness') {
+        if ([...parsed.searchParams.keys()].some(key => key !== 'account') || parsed.searchParams.getAll('account').length > 1) { json({ error: '资产检查仅使用固定离线清单', code: 'INVALID_INPUT' }, 400); return; }
+        json(runtimeAssetReadiness({ root: assetRoot })); return;
       }
       if (req.method === 'POST') writerOwnership.assertOwned();
       if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute || extremeFormationRoute) {

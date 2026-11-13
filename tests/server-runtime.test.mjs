@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createAssetManifest } from '../src/asset-readiness.mjs';
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -40,10 +41,10 @@ class FakeClient extends EventEmitter {
   expire(state) { this.connected = false; this.state = state; this.emit('state', { state, detail: 'synthetic terminal condition' }); }
 }
 
-async function harness({ writerOwnership, connectGate, connectImpl, collect = async () => snapshot() } = {}) {
+async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, collect = async () => snapshot() } = {}) {
   saveStore({ version: 1, activeId: 'account-A', accounts: [credential('account-A'), credential('account-B')] });
   const clients = []; let collects = 0;
-  const app = createConsole({ ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { const client = new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
+  const app = createConsole({ ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { const client = new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
   await app.listen(); const port = app.server.address().port;
   function call(route, { method = 'GET', account = 'account-A', body } = {}) {
     const url = new URL(route, 'http://127.0.0.1:' + port); if (account) url.searchParams.set('account', account);
@@ -243,4 +244,16 @@ test('runtime HTTP server error cancels sessions but retains writer ownership un
     gate.resolve(); await closing;
     assert.equal(releases, 1); assert.equal(owned, false);
   } finally { gate.resolve(); await app.close(); }
+});
+
+test('fixed offline asset HTTP reports exact missing or changed files without connecting or accepting a path override',async()=>{
+ const assetRoot=fs.mkdtempSync(path.join(os.tmpdir(),'cw-runtime-assets-http-'));let app;try{
+ const relative='work/cdn/config_cn_pack.json',asset=path.join(assetRoot,relative);fs.mkdirSync(path.dirname(asset),{recursive:true});fs.writeFileSync(asset,JSON.stringify([[1,'ResourceCfg',{data:[]}]]));
+ const manifest=createAssetManifest({root:assetRoot,assets:[{id:'synthetic-config',role:'config',path:relative,source:'synthetic retained config'}]});fs.mkdirSync(path.join(assetRoot,'docs'));const manifestFile=path.join(assetRoot,'docs','RUNTIME_ASSETS.json'),bytes=JSON.stringify(manifest);fs.writeFileSync(manifestFile,bytes);
+ app=await harness({assetRoot});const report=await app.call('/api/assets/readiness',{account:null});assert.equal(report.status,200);assert.equal(report.data.ready,true);assert.equal(report.data.recovery[0].expectedSha256,manifest.assets[0].sha256);
+ fs.writeFileSync(asset,JSON.stringify([[1,'ResourceCfg',{data:[{id:'changed'}]}]]));assert.equal((await app.call('/api/assets/readiness')).data.assets[0].reason,'ASSET_HASH_MISMATCH');fs.unlinkSync(asset);assert.equal((await app.call('/api/assets/readiness')).data.assets[0].reason,'ASSET_MISSING');
+ for(const query of ['?root=C:/Users','?path=data/accounts.json','?manifest=other.json','?account=A&account=B'])assert.equal((await app.call('/api/assets/readiness'+query,{account:null})).status,400);
+ assert.equal((await app.call('/api/assets/readiness',{method:'POST',body:{restore:true}})).status,403);assert.equal(fs.readFileSync(manifestFile,'utf8'),bytes);assert.equal(app.clients.length,0);assert.equal(app.collects,0);assert.equal(app.sessions.size,0);for(const secret of [token,sign,frame,assetRoot])assert.equal(report.text.includes(secret),false);
+ fs.writeFileSync(manifestFile,'{bad');const invalid=await app.call('/api/assets/readiness');assert.equal(invalid.status,200);assert.equal(invalid.data.reason,'MANIFEST_INVALID_OR_UNREADABLE');assert.equal(invalid.text.includes(assetRoot),false);
+ }finally{await app?.close();assert.equal(path.dirname(path.resolve(assetRoot)),path.resolve(os.tmpdir()));fs.rmSync(assetRoot,{recursive:true,force:true});}
 });

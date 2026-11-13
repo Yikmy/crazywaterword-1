@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { assetReadinessReport, assetRecoveryInstructions } from './asset-readiness.mjs';
+import { runtimeAssetReadiness } from './asset-readiness.mjs';
 import { createWriterOwnership, rejectStandaloneGameWrite } from './writer-ownership.mjs';
 import { assertExecutionActive, executionDelay, executionOutcome, stopsExecution } from './execution.mjs';
 import { createCliOutput, loadCliStore, loadCliCredential, cliAccountSelector, isCliEntry } from './cli-safety.mjs';
@@ -776,8 +776,7 @@ export async function main() {
   if (mode === 'assets') {
     if (process.argv.length > 3) throw new Error('用法: node src/app.mjs assets（固定离线清单；不扫描缓存或下载）');
     const root = path.resolve(import.meta.dirname, '..');
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'docs/RUNTIME_ASSETS.json'), 'utf8'));
-    const result = { ...assetReadinessReport(manifest, { root }), provenanceNote: manifest.provenanceNote, recovery: assetRecoveryInstructions(manifest) };
+    const result = runtimeAssetReadiness({ root });
     cli.log(cli.json(result, null, 2)); return result;
   }
 

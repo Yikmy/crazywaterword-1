@@ -400,6 +400,11 @@ export const PAGE = `<!doctype html>
     <h2>账号</h2>
     <div id="accounts"></div>
 
+    <h2>运行资产与恢复</h2>
+    <p class="dim">检查本机保留的协议、配置和地图。来源不全或文件不匹配时显示具体缺口。</p>
+    <button id="assets-read" type="button">检查本地运行资产</button><span id="assets-hint" class="dim" aria-live="polite"></span>
+    <div id="assets-readiness"></div>
+
     <h2>凭证</h2>
     <div class="bar">
       <button id="cred-show">查看脱敏信息</button>
@@ -486,7 +491,7 @@ async function readView(view, path, render, hint, message) {
     if (hint) $(hint).textContent = '';
   } catch (error) {
     if (viewGuard.current(scope)) {
-      const details = { world: ['world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields'], heroes: ['hero-view', 'hero-table'], dailies: ['dailies-view', 'dailies-table'], tasks: ['tasks-view'], loop: ['loop-view'], worlds: ['worlds'] }[view] || [];
+      const details = { assets: ['assets-readiness'], world: ['world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields'], heroes: ['hero-view', 'hero-table'], dailies: ['dailies-view', 'dailies-table'], tasks: ['tasks-view'], loop: ['loop-view'], worlds: ['worlds'] }[view] || [];
       for (const id of details) clear($(id));
       if (details.length) $(details[0]).textContent = '查询失败：' + error.message;
       if (hint) $(hint).textContent = error.message;
@@ -543,6 +548,7 @@ function selectAccount(id) {
   resetOperations();
   resetGameplay();
   renderFishing(null);
+  clear($('assets-readiness'));$('assets-hint').textContent='';
   for (const id of ['who', 'res', 'items', 'hero-strip', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
   $('sync-info').textContent = '尚未采集，请先连接账号并刷新数据';
   $('cred-show').disabled = false;
@@ -1572,6 +1578,15 @@ $('explorer-export').onclick = () => {
     $('explorer-hint').textContent = '已导出当前筛选的脱敏 JSON';
   } catch (error) { if (scope && viewGuard.current(scope)) $('explorer-hint').textContent = '导出失败：' + error.message; }
 };
+function renderAssetReadiness(data){
+ const box=clear($('assets-readiness'));box.appendChild(el('p',data.ready?'ok':'warn',data.ready?'当前声明的本地文件与保留清单一致':'部分运行资产不可用，相关能力继续等待证据'));
+ if(data.reason)box.appendChild(el('p','warn','清单状态：'+data.reason));
+ if(data.provenanceNote)box.appendChild(el('p','dim',data.provenanceNote));
+ const roleNames={protocol:'协议',config:'配置',map:'地图'};
+ for(const row of data.assets||[]){const card=el('article');card.appendChild(el('h3','',roleNames[row.role]||row.role));for(const text of ['文件：'+row.path,'状态：'+row.status+(row.reason?' · '+row.reason:''),'保留哈希：'+(row.expectedSha256||'未知'),'当前哈希：'+(row.actualSha256||'未知')])card.appendChild(el('p','',text));const guide=data.recovery?.find(value=>value.id===row.id);card.appendChild(el('p','dim','保留来源：'+(guide?.source||'未知')));if(guide)for(const step of guide.steps||[])card.appendChild(el('p','dim',step));box.appendChild(card);}
+ box.appendChild(el('p','dim','缺失文件需从保留来源恢复后重新检查；不会自动下载或执行文件。本结果不代表玩法验收通过。'));
+}
+$('assets-read').onclick=()=>{clear($('assets-readiness'));return readView('assets','/api/assets/readiness',renderAssetReadiness,'assets-hint','正在检查本地文件…');};
 function renderAccounts() {
   const box = clear($('accounts'));
   if (!accounts.length) { box.appendChild(el('div', 'dim', '尚无本地账号记录；账号导入将在下一登录阶段开放。')); return; }
