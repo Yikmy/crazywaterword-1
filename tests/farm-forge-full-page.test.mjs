@@ -2169,3 +2169,36 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' professional form 
  const stale=h.node('wf-unified-add').onclick;h.run("selectAccount('B');selectAccount('A')");
  const source=h.node('wf-unified-intent').value;stale();assert.equal(h.node('wf-unified-intent').value,source);
 });
+for(const entry of ['dailies','loop'])test('unified '+entry+' museum form preserves exact team factor and separate daily claim without dispatch',async()=>{
+ const h=await unifiedForm(entry),before=h.requests.length;
+ unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ h.node('wf-unified-museum-heroes').value='A\nB\n9007199254740993';h.node('wf-unified-museum-factor').value='2';
+ unifiedAdd(h,'dailies','museum','1');
+ const parameters={stageId:1,heroIds:['A','B','9007199254740993'],factor:2};
+ assert.deepEqual(unifiedDraft(h).dailies,[{taskId:1016,action:'perform',parameters}]);
+ assert.equal(h.node('wf-unified-museum-heroes').disabled,false);assert.equal(h.node('wf-unified-museum-factor').disabled,false);
+ assert.match(h.node('wf-unified-target-label').textContent,/博物馆探险关卡/);
+ assert.match(h.node('wf-unified-steps').textContent,/9007199254740993/);
+ unifiedAdd(h,'dailies','daily','1016');assert.deepEqual(unifiedDraft(h).dailies[1],{taskId:1016,action:'claim'});
+ assert.equal(h.node('wf-unified-museum-heroes').disabled,true);assert.equal(h.node('wf-unified-museum-factor').disabled,true);
+ for(const heroes of ['','A\nA',' A','A ','A\n',Array.from({length:101},(_,i)=>String(i)).join('\n')]){
+  h.node('wf-unified-museum-heroes').value=heroes;const source=h.node('wf-unified-intent').value;
+  unifiedAdd(h,'dailies','museum','1');assert.equal(h.node('wf-unified-intent').value,source);
+ }
+ h.node('wf-unified-museum-heroes').value='A\nB';
+ for(const factor of ['','0','-1','1.5','1e2','2147483648']){
+  h.node('wf-unified-museum-factor').value=factor;const source=h.node('wf-unified-intent').value;
+  unifiedAdd(h,'dailies','museum','1');assert.equal(h.node('wf-unified-intent').value,source);
+ }
+ assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ h.run("selectAccount('B')");assert.equal(h.node('wf-unified-museum-heroes').value,'');assert.equal(h.node('wf-unified-museum-factor').value,'');
+});
+test('unified museum team identifiers remain text in the assembled page',async()=>{
+ const h=await unifiedForm('dailies'),before=h.requests.length;
+ unifiedLoad(h,{entry:'dailies',dailies:[],budget:{resources:[],quotas:[],uids:[]}});
+ h.node('wf-unified-museum-heroes').value='<img src=x onerror=alert(1)>';h.node('wf-unified-museum-factor').value='1';
+ unifiedAdd(h,'dailies','museum','1');
+ assert.match(h.node('wf-unified-steps').textContent,/<img src=x onerror=alert\(1\)>/);
+ assert.equal(descendants(h.node('wf-unified-steps')).some(n=>n.tagName.toLowerCase()==='img'),false);
+ assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+});

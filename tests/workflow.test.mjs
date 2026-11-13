@@ -579,3 +579,17 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' maps daily mainlin
  }
  assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1003,parameters:{request:'ChallengeStageRequest'}}]},{modules:registry}));
 });
+for(const entry of ['dailies','loop'])test('unified '+entry+' daily museum exploration uses domain exact selection without replacing its execution contract',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const {museumStartExploreSelection}=await import('../src/museum.mjs');
+ const parameters={stageId:1,heroIds:['A','B','C'],factor:1},registry={...unifiedRegistry,museum:GAMEPLAY_MODULES.museum};
+ const input={entry,dailies:[{taskId:1016,action:'perform',parameters}],budget:unifiedBudget,...(entry==='loop'?{rounds:2}:{})};
+ const result=compileUnifiedExecution(input,{modules:registry}),actions=result.graph.nodes.filter(n=>n.type==='ACTION');
+ assert.equal(result.blocked.length,0);assert.equal(actions.length,entry==='loop'?2:1);
+ for(const node of actions){assert.equal(node.module,'museum');assert.deepEqual(node.parameters,parameters);assert.deepEqual(node.selection,museumStartExploreSelection(parameters));}
+ assert.equal(simulateWorkflow(result.graph,{modules:registry}).requestsSent,0);
+ const claim=compileUnifiedExecution({entry,dailies:[{taskId:1016,action:'claim'}],budget:unifiedBudget},{modules:registry}).graph.nodes.find(n=>n.type==='ACTION');
+ assert.equal(claim.module,'task-rewards');assert.deepEqual(claim.parameters,{kind:'daily',taskId:1016});
+ for(const parameters of [{},{stageId:1,heroIds:[],factor:1},{stageId:1,heroIds:['A']},{stageId:1,heroIds:['A'],factor:1,payment:'FREE'}])
+  assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1016,parameters}]},{modules:registry}),{code:'WORKFLOW_INVALID'});
+});

@@ -84,3 +84,25 @@ test('museum item limits use minimum remaining time from latest clock bound',asy
  const f=working(await read(c));f.stages[0].expedition.endTime=now+1801;
  assert.equal(find(f,'speedExplore',{parameters:{stageId:1,useNum:2}}),undefined);assert.ok(find(f,'speedExplore',{parameters:{stageId:1,useNum:1}}));
 });
+
+test('daily exploration selection reuses the original exact candidate and cannot select other museum actions',async()=>{
+ const {museumStartExploreSelection}=await import('../src/museum.mjs'),f=await read(fake());
+ f.uncollectedRevenue=10;f.topPopularity=100;
+ const v=view(f),selection=museumStartExploreSelection(params);
+ assert.ok(v.candidates.length>1);const selected=planMuseum(f,{config,moduleConfig,parameters:params,selections:[selection.actionId]});
+ assert.equal(selected.actions.length,1);assert.equal(selected.actions[0].actionType,'startExplore');
+ assert.deepEqual(selected.actions[0].action.body,{stageId:1,heroIds:['A','B','C'],factor:1});
+ assert.equal(selection.actionId,find(f,'startExplore').actionId);
+ assert.throws(()=>planMuseum(working(f),{config,moduleConfig,parameters:params,selections:[selection.actionId]}));
+ const other={...params,heroIds:['A','B','D']};assert.notEqual(museumStartExploreSelection(other).actionId,selection.actionId);
+});
+test('daily exploration selection requires exact stage team and factor with no implicit targets or unrelated actions',async()=>{
+ const {museumStartExploreSelection}=await import('../src/museum.mjs');
+ for(const input of [undefined,{}, {heroIds:['A'],factor:1},{stageId:1,factor:1},{stageId:1,heroIds:['A']},
+  {...params,stageId:0},{...params,factor:0},{...params,heroIds:[]},{...params,heroIds:['A','A']},
+  {...params,heroIds:[' A']},{...params,heroIds:['A ']},{...params,heroIds:Array.from({length:101},(_,i)=>String(i))},
+  {...params,payment:'ITEM'},{...params,useNum:1},{...params,exhibitionId:1},{...params,request:'MuseumRewardRequest'}]){
+  assert.throws(()=>museumStartExploreSelection(input));
+ }
+ assert.deepEqual(museumStartExploreSelection({stageId:1,heroIds:['合法0英雄','9007199254740993'],factor:2}),{actionId:'museum:startExplore:'+encodeURIComponent(JSON.stringify({factor:2,heroIds:['合法0英雄','9007199254740993'],stageId:1}))});
+});

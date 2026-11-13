@@ -12,6 +12,7 @@ const text=s=>typeof s==='string'&&s.trim().length>0;
 const unique=(a,key)=>Array.isArray(a)&&new Set(a.map(key)).size===a.length;
 const stable=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
 const copy=v=>JSON.parse(JSON.stringify(v));
+const actionIdOf=(type,target)=>'museum:'+type+':'+encodeURIComponent(stable(target));
 const field=(o,k)=>o&&Object.hasOwn(o,k)?o[k]:undefined;
 const costsOf=v=>{try{return resourceCosts(v);}catch{return null;}};
 const validAssets=v=>Array.isArray(v)&&v.every(a=>text(a?.id)&&quantity(a.num)!==null);
@@ -40,6 +41,15 @@ function parametersOf(p={}){
 }
 function stageOf(s){const e=s?.expedition;return {stageId:quantity(field(s,'stageId')),progress:quantity(field(s,'progress')),expedition:e?{startTime:quantity(field(e,'startTime')),endTime:quantity(field(e,'endTime')),heroIds:Array.isArray(e.heroIds)?[...e.heroIds]:null,cost:Array.isArray(e.cost?.asset)?e.cost.asset.map(a=>({id:a?.id,num:quantity(field(a,'num'))})):null,conditionId:quantity(field(e,'conditionId')),factor:quantity(field(e,'factor'))}:null};}
 const stageValid=s=>s.stageId!==null&&s.stageId>0&&s.progress!==null&&(!s.expedition||(s.expedition.startTime!==null&&s.expedition.endTime!==null&&Array.isArray(s.expedition.heroIds)&&s.expedition.heroIds.every(text)&&unique(s.expedition.heroIds,id=>id)&&s.expedition.conditionId!==null&&s.expedition.factor!==null));
+// Pure selection for existing daily/Loop declarations; live eligibility,
+// costs and authorization remain owned by the original survey/plan/executor.
+export function museumStartExploreSelection(input) {
+  const p=parametersOf(input);
+  if(Object.keys(p).some(k=>!['stageId','heroIds','factor'].includes(k))||
+    p.stageId===undefined||p.factor===undefined||!Array.isArray(p.heroIds)||!p.heroIds.length||p.heroIds.length>100||
+    p.heroIds.some(id=>id!==id.trim()||id.length>200))throw Error('探险出发需要明确stageId、heroIds及factor，不能包含其他博物馆动作参数');
+  return {actionId:actionIdOf('startExplore',{stageId:p.stageId,heroIds:p.heroIds,factor:p.factor})};
+}
 export async function surveyMuseum(client,protocol,{player=null,signal,parameters={},moduleConfig={},timeout=8000}={}){
   parameters=parametersOf(parameters);validateMuseumConfig(moduleConfig);const notes=[],available=Object.keys(protocol??{});
   const get=async name=>{assertExecutionActive(client,{signal});const response=name.replace(/Request$/,'Response');if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': 协议不可用');return null;}try{return await awaitExecution(client.request(name,{},response,timeout),client,{signal});}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': UNKNOWN');return null;}};
@@ -98,7 +108,7 @@ function projectExplorationMaterials(f,config,parameters,display,moduleConfig){
 export function museumView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const time=gameTimeBounds(f),candidates=[],blocked=[],notes=[...(f.notes??[])];
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason}),enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
-  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:'museum:'+type+':'+encodeURIComponent(stable(target)),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
+  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:actionIdOf(type,target),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
   if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[],explorationMaterials:projectExplorationMaterials(f,config,parameters,[],moduleConfig)};
   if(parameters.payment==='PREMIUM')block('speedExplore','PREMIUM_BLOCKED');
   const busy=f.stagesReliable?f.stages.filter(s=>s.expedition?.endTime>0):null,busyHeroes=new Set(busy?.flatMap(s=>s.expedition.heroIds)??[]);

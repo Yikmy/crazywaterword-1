@@ -1,6 +1,7 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
 import { validateWorkflow } from './workflow.mjs';
+import { museumStartExploreSelection } from './museum.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorld } from './world.mjs';
@@ -168,9 +169,10 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确任务或档位ID，不接受驱动或协议参数');
           module='task-rewards';parameters=gift?{kind:row.kind,packId:row.packId}:activity?{kind:'daily-activity',tierId:row.tierId}:{kind:'daily',taskId:row.taskId};
         }else{
-          module=({1002:'free-recruit',1003:'stage',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep'})[row.taskId];
+          module=({1002:'free-recruit',1003:'stage',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep',1016:'museum'})[row.taskId];
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
+          if(module==='museum')try{selection=museumStartExploreSelection(parameters);}catch{invalid('日常1016仅支持明确关卡、英雄队伍及时间倍率的探险出发');}
           if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
         }
       } else {
