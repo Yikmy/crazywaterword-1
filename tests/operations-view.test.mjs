@@ -419,7 +419,7 @@ test('explicitly appending STILL_UNKNOWN keeps the original UNKNOWN, blocks new 
   const buttons = await showRecovery(h, 'STILL_UNKNOWN'); assert.equal(buttons.confirm.textContent, '保留未决并记录复核证据');
   const pending = buttons.confirm.onclick(), event = { eventId: 'still-unknown-event', status: 'STILL_UNKNOWN', timestamp: '2026-11-11T00:00:02.000Z', evidence: { reason: '权威状态不足以归因于原请求' } };
   assert.deepEqual(body(h.pending('/api/operations/recovery/confirm', 'A')), { previewId: 'readonly-preview-A', previewHash: 'readonly-preview-hash-A', confirm: true });
-  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', event, status: { running: false, finalStatus: 'UNKNOWN', blocked: true, stopReason: '原请求结果未决' } });
+  h.respond('/api/operations/recovery/confirm', 'A', { accountId: 'A', runId: 'unknown-run-A', actionId: 'save-one', event, status: { running: false, finalStatus: 'UNKNOWN', blocked: true, stopReason: '原请求结果未决' } });
   await tick(); h.respond('/api/operations/history', 'A', recoveryHistory('A', [event])); await pending;
   assert.match(h.node('ops-history').textContent, /UNKNOWN/); assert.match(h.node('ops-history').textContent, /still-unknown-event.*STILL_UNKNOWN/s); assert.match(h.node('ops-history').textContent, /权威状态不足以归因/);
   assert.match(h.node('ops-status').textContent, /UNKNOWN.*禁止自动重试/); assert.equal(h.node('ops-plan').disabled, true); assert.equal(h.node('ops-authorize-execute').disabled, true); assert.equal(h.node('ops-survey').disabled, true);
@@ -535,4 +535,86 @@ test('incomplete rejection audit retains scoped protection message and offers no
  assert.match(text,/缺少字段或存在冲突/);assert.match(text,/相关目标保持拒绝保护/);assert.match(text,/其他目标可独立重新规划/);assert.match(text,/legacy-gap/);
  assert.equal(descendants(h.node('ops-memory-pending')).filter(node=>node.tagName==='button').length,0);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
  h.run("selectAccount('B')");assert.doesNotMatch(memoryText(h),/legacy-gap/);
+});
+
+
+for(const returning of [false,true])test('recovery callbacks retained before account change cannot issue requests '+(returning?'after A-B-A':'on B'),async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const old=await showRecovery(h);
+ h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");await load(h,fixture('B'));await loadRecoveryHistory(h,recoveryHistory('B'));
+ if(returning){h.run("selectAccount('A');snapshot={connected:true,state:'READY'}");await load(h);await loadRecoveryHistory(h);}
+ const count=h.requests.length,current=h.node('ops-history').textContent;
+ old.preview.onclick();old.confirm.onclick();
+ assert.equal(h.requests.length,count);assert.equal(h.node('ops-history').textContent,current);
+});
+
+test('reloading history invalidates previous recovery callbacks before the new history arrives',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const old=await showRecovery(h);
+ const loading=h.node('ops-history-load').onclick(),count=h.requests.length;
+ old.preview.onclick();old.confirm.onclick();assert.equal(h.requests.length,count);
+ h.respond('/api/operations/history','A',recoveryHistory());await loading;
+ old.preview.onclick();old.confirm.onclick();assert.equal(h.requests.length,count);assert.equal(recoveryButtons(h).confirm.hidden,true);
+});
+
+test('history refresh while readonly recovery is pending discards its late result and confirmation',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const old=recoveryButtons(h),reading=old.preview.onclick();
+ const history=h.node('ops-history-load').onclick();h.respond('/api/operations/history','A',recoveryHistory());await history;
+ h.respond('/api/operations/recovery/preview','A',recoveryPreview());await reading;
+ const count=h.requests.length;old.confirm.onclick();assert.equal(h.requests.length,count);assert.equal(old.confirm.hidden,true);assert.equal(recoveryButtons(h).confirm.hidden,true);
+});
+
+test('recovery rejects mismatched or incomplete preview identities locally without confirming',async()=>{
+ const h=await boot();await load(h);
+ for(const change of [{accountId:'B'},{runId:'another-run'},{actionId:'another-action'},{previewId:''},{previewHash:''},{expiresAt:'bad-date'},{expiresAt:'2000-01-01T00:00:00Z'},{result:{status:'SUCCESS'}}]){
+  await loadRecoveryHistory(h);const buttons=recoveryButtons(h),pending=buttons.preview.onclick();
+  h.respond('/api/operations/recovery/preview','A',{...recoveryPreview(),...change});await pending;
+  assert.equal(buttons.confirm.hidden,true,JSON.stringify(change));const count=h.requests.length;
+  buttons.confirm.onclick();assert.equal(h.requests.length,count);assert.match(h.node('ops-history').textContent,/UNKNOWN/);
+ }
+ assert.equal(h.requests.some(r=>new URL(r.url,'http://localhost').pathname==='/api/operations/recovery/confirm'),false);
+});
+
+test('recovery preview cannot be double submitted and a failed fresh read clears the older confirmation',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const buttons=recoveryButtons(h),pending=buttons.preview.onclick(),count=h.requests.length;
+ buttons.preview.onclick();assert.equal(h.requests.length,count);
+ h.respond('/api/operations/recovery/preview','A',recoveryPreview());await pending;assert.equal(buttons.confirm.hidden,false);
+ const fresh=buttons.preview.onclick(),before=h.requests.length;buttons.confirm.onclick();assert.equal(h.requests.length,before);
+ h.respond('/api/operations/recovery/preview','A',{error:'fresh read failed'},false);await fresh;
+ buttons.confirm.onclick();assert.equal(h.requests.length,before);assert.equal(buttons.confirm.hidden,true);
+});
+
+test('recovery confirmation cannot be double submitted while the original append is pending',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const buttons=await showRecovery(h),pending=buttons.confirm.onclick(),count=h.requests.length;
+ buttons.confirm.onclick();buttons.preview.onclick();assert.equal(h.requests.length,count);
+ h.respond('/api/operations/recovery/confirm','A',{error:'preserve UNKNOWN'},false);await pending;
+ assert.equal(buttons.confirm.hidden,true);assert.match(h.node('ops-history').textContent,/UNKNOWN/);
+});
+
+
+test('a second recovery preview on another card invalidates confirmation of the first card',async()=>{
+ const h=await boot();await load(h);const data=recoveryHistory();data.runs.push({...structuredClone(data.runs[0]),runId:'second-unknown-run'});await loadRecoveryHistory(h,data);
+ const previews=descendants(h.node('ops-history')).filter(n=>n.tagName==='button'&&n.textContent==='只读复核预览');
+ const first=recoveryButtons(h),reading=previews[0].onclick();h.respond('/api/operations/recovery/preview','A',recoveryPreview());await reading;
+ const second=previews[1].onclick();h.respond('/api/operations/recovery/preview','A',{...recoveryPreview(),runId:'second-unknown-run',previewId:'second-preview',previewHash:'second-hash'});await second;
+ const count=h.requests.length;first.confirm.onclick();assert.equal(h.requests.length,count);assert.equal(first.confirm.hidden,true);
+});
+
+test('recovery confirmation checks the response identity before altering status or fetching history',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const buttons=await showRecovery(h),pending=buttons.confirm.onclick();
+ const count=h.requests.length;h.respond('/api/operations/recovery/confirm','A',{accountId:'A',runId:'unknown-run-B',actionId:'save-one',event:{status:'APPLIED'},status:{blocked:false,finalStatus:'SUCCESS'}});await pending;
+ assert.equal(h.requests.length,count);assert.match(h.node('ops-history').textContent,/身份不匹配/);assert.match(h.node('ops-history').textContent,/UNKNOWN/);assert.equal(buttons.confirm.hidden,true);
+});
+
+test('recovery confirmation expires locally without sending or replaying an unknown game request',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const buttons=await showRecovery(h),count=h.requests.length;
+ h.run('Date.now=()=>'+(Date.now()+120000));await buttons.confirm.onclick();
+ assert.equal(h.requests.length,count);assert.equal(buttons.confirm.hidden,true);assert.match(h.node('ops-history').textContent,/已过期/);assert.match(h.node('ops-history').textContent,/UNKNOWN/);
+});
+
+test('foreign or missing account identity in a history run has no recovery controls',async()=>{
+ const h=await boot();await load(h);
+ for(const id of ['B',undefined]){
+  const data=recoveryHistory();data.runs[0].accountId=id;await loadRecoveryHistory(h,data);
+  assert.equal(recoveryButtons(h).preview,undefined);assert.match(h.node('ops-history').textContent,/UNKNOWN/);
+ }
+ assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
 });

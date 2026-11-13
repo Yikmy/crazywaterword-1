@@ -1188,7 +1188,7 @@ $('production-select-recommended').onclick = () => {
   for (const row of operationRows()) if (row.actionType === 'startProduce' && row.executable !== false && recommended.has(row.actionId)) operationSelections.add(row.actionId);
   invalidateOperationPlan(); renderOperationCandidates(); renderOperationSelection(); $('ops-hint').textContent = '已选择本次推荐的具体生产操作，尚未授权；请生成批次预览。';
 };
-function renderOperationHistory(data) {
+function renderOperationHistory(data, historyScope = viewGuard.begin('operations-history')) {
   const box = clear($('ops-history')), report = clear($('ops-production-report'));
   const runs = data.runs || [];
   for (const run of runs) {
@@ -1202,29 +1202,44 @@ function renderOperationHistory(data) {
 
       const pending = action.unresolvedWrite === true || ['DISPATCHING','EXECUTING','VERIFY','UNKNOWN'].includes(action.requestStatus) || action.result === 'UNKNOWN';
       const latest = action.reconciliations?.at(-1);
-      if (pending && (!latest || latest.status === 'STILL_UNKNOWN')) {
+      if (pending && data.accountId === historyScope.account && run.accountId === historyScope.account && (!latest || latest.status === 'STILL_UNKNOWN')) {
         const previewButton = el('button', null, '只读复核预览'), resultBox = el('pre'), confirmButton = el('button', null, '确认追加复核证据');
-        confirmButton.hidden = true; let preview = null;
+        const live = () => viewGuard.current(historyScope);
+        confirmButton.hidden = true; let preview = null, previewScope = null, recoveryPending = false;
         previewButton.onclick = async () => {
-          const scope = viewGuard.begin('operations-recovery'); previewButton.disabled = true; confirmButton.hidden = true;
+          if (!live() || recoveryPending) return;
+          const scope = viewGuard.begin('operations-recovery', historyScope);
+          recoveryPending = true; preview = null; previewScope = null; previewButton.disabled = true; confirmButton.hidden = true; confirmButton.disabled = true;
           try {
-            preview = await operationMutation('/api/operations/recovery/preview', { runId: run.runId, actionId: action.actionId }, scope);
-            viewGuard.assert(scope); resultBox.textContent = JSON.stringify(preview.result, null, 2);
+            const value = await operationMutation('/api/operations/recovery/preview', { runId: run.runId, actionId: action.actionId }, scope);
+            viewGuard.assert(scope); if (!live()) return;
+            if (value.accountId !== historyScope.account || value.runId !== run.runId || value.actionId !== action.actionId
+              || typeof value.previewId !== 'string' || !value.previewId || typeof value.previewHash !== 'string' || !value.previewHash
+              || !Number.isFinite(Date.parse(value.expiresAt)) || Date.now() >= Date.parse(value.expiresAt)
+              || !['APPLIED','NOT_APPLIED','STILL_UNKNOWN'].includes(value.result?.status)) throw new Error('复核预览身份、结果或有效期不匹配，请重新读取；原 UNKNOWN 保留。');
+            preview = value; previewScope = scope; resultBox.textContent = JSON.stringify(value.result, null, 2);
             confirmButton.hidden = false; confirmButton.disabled = false;
-            confirmButton.textContent = preview.result.status === 'STILL_UNKNOWN' ? '保留未决并记录复核证据' : '确认追加复核证据';
-          } catch (error) { if (viewGuard.current(scope)) resultBox.textContent = error.message; }
-          finally { if (viewGuard.current(scope)) previewButton.disabled = false; }
+            confirmButton.textContent = value.result.status === 'STILL_UNKNOWN' ? '保留未决并记录复核证据' : '确认追加复核证据';
+          } catch (error) { if (viewGuard.current(scope) && live()) { preview = null; resultBox.textContent = error.message; } }
+          finally { if (live()) { recoveryPending = false; previewButton.disabled = false; } }
         };
         confirmButton.onclick = async () => {
-          if (!preview) return;
-          const scope = viewGuard.begin('operations-recovery'); confirmButton.disabled = true; previewButton.disabled = true;
+          if (!live() || recoveryPending || !preview || confirmButton.hidden) return;
+          const selected = preview; preview = null; confirmButton.hidden = true;
+          if (!viewGuard.current(previewScope)) { previewScope = null; resultBox.textContent = '复核预览已被其他复核取代，请重新预览。'; return; }
+          previewScope = null;
+          if (Date.now() >= Date.parse(selected.expiresAt)) { resultBox.textContent = '复核预览已过期，请重新预览；原 UNKNOWN 保留。'; return; }
+          const scope = viewGuard.begin('operations-recovery', historyScope);
+          recoveryPending = true; confirmButton.disabled = true; previewButton.disabled = true;
           try {
-            const result = await operationMutation('/api/operations/recovery/confirm', { previewId: preview.previewId, previewHash: preview.previewHash, confirm: true }, scope);
-            viewGuard.assert(scope); invalidateOperationPlan();
+            const result = await operationMutation('/api/operations/recovery/confirm', { previewId: selected.previewId, previewHash: selected.previewHash, confirm: true }, scope);
+            viewGuard.assert(scope); if (!live()) return;
+            if (result.accountId !== historyScope.account || result.runId !== run.runId || result.actionId !== action.actionId) throw new Error('复核确认身份不匹配，请重新读取原历史。');
+            invalidateOperationPlan();
             if (operationsData?.accountId === scope.account) renderOperations({ ...operationsData, status: result.status });
             await refreshOperationHistory();
-          } catch (error) { if (viewGuard.current(scope)) { resultBox.textContent = error.message; preview = null; confirmButton.hidden = true; } }
-          finally { if (viewGuard.current(scope)) previewButton.disabled = false; }
+          } catch (error) { if (viewGuard.current(scope) && live()) { resultBox.textContent = error.message; } }
+          finally { if (live()) { recoveryPending = false; previewButton.disabled = false; } }
         };
         actionBox.appendChild(previewButton); actionBox.appendChild(resultBox); actionBox.appendChild(confirmButton);
       }
@@ -1244,7 +1259,7 @@ function renderOperationHistory(data) {
 async function refreshOperationHistory() {
   if (!current) return;
   const scope = viewGuard.begin('operations-history'); $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
-  try { const data = await call('/api/operations/history', undefined, scope); if (data.accountId !== scope.account) throw new Error('历史账号不匹配'); renderOperationHistory(data); $('ops-history-hint').textContent = ''; }
+  try { const data = await call('/api/operations/history', undefined, scope); if (data.accountId !== scope.account) throw new Error('历史账号不匹配'); renderOperationHistory(data, scope); $('ops-history-hint').textContent = ''; }
   catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
 }
 $('ops-history-load').onclick = refreshOperationHistory;
