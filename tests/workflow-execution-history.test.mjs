@@ -304,5 +304,25 @@ for(const apply of [true,false])test('original history HTTP reopens a finite run
  const headers={'x-cw-csrf':(await f.request('/api/workflows?account=A')).data.csrfToken};assert.equal((await f.request('/api/workflows/start?account=A',{headers,body:{graph}})).status,200);const pending=(await waitStatus(f,'AWAITING_AUTHORIZATION')).status,payload={offer:pending.authorizationOffer,batchId:pending.plan.batchId,planHash:pending.plan.planHash,confirm:true};
  assert.equal((await f.request('/api/workflows/authorize-run?account=A',{headers,body:payload})).status,200);let final;for(let i=0;i<60;i++){final=(await f.request('/api/workflows?account=A')).data.status;if(!final.running)break;await new Promise(r=>setImmediate(r));}assert.equal(final.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.sent.filter(name=>name==='SaveFormationRequest').length,1);
  const bytes=[workflowFile,f.file].map(file=>fs.readFileSync(file,'utf8')),restarted=fixture('authorized-history-'+apply);t.after(()=>restarted.close());const result=await restarted.request(historyUrl('A',pending.runId));assert.equal(result.status,200);assert.deepEqual(result.data.runAuthorization.scope,pending.authorizationOffer);assert.equal(result.data.runAuthorization.resumable,false);assert.equal(result.data.readOnly,true);assert.equal(result.data.resumable,false);assert.equal(result.data.status,apply?'COMPLETED':'UNKNOWN');
+
+ const batch=result.data.nodes[0].batches[0];assert.deepEqual(batch.runAuthorizationLink,{status:'MATCHED',runId:pending.runId,graphHash:pending.authorizationOffer.graphHash,approvedAt:final.runAuthorization.approvedAt});assert.equal(batch.finalStatus,apply?'SUCCESS':'UNKNOWN');
+ const saved=f.workflowStore.history('A',{runId:pending.runId})[0],operation=f.history.list('A')[0];
+ for(const [label,expected,change] of [
+ ['missing child','MISSING',r=>delete r.authorizationSummary.workflowRunAuthorization],
+ ['wrong run','CONFLICT',r=>r.authorizationSummary.workflowRunAuthorization.runId='other'],
+ ['wrong graph','CONFLICT',r=>r.authorizationSummary.workflowRunAuthorization.graphHash='0'.repeat(64)],
+ ['wrong grant time','CONFLICT',r=>r.authorizationSummary.workflowRunAuthorization.approvedAt='2026-01-01T00:00:00Z'],
+ ['wrong world','CONFLICT',r=>r.executionContext.worldId=99],
+ ['missing identity','MISSING',r=>delete r.executionContext],
+ ['missing time','MISSING',r=>delete r.authorizationSummary.approvedAt],
+ ['before grant','CONFLICT',r=>r.authorizationSummary.approvedAt=new Date(Date.parse(saved.runAuthorization.approvedAt)-1).toISOString()],
+ ['expired start','CONFLICT',r=>r.startedAt=saved.expiresAt],
+ ['wrong parameters','CONFLICT',r=>r.planSummary.parameters.presetId=1],
+ ['wrong module config','CONFLICT',r=>r.planSummary.moduleConfig.enabled=false],
+ ['wrong budget','CONFLICT',r=>r.planSummary.runBudgetIdentity.limits.resources.push({id:'wood',num:1})],
+ ['missing contract','MISSING',r=>delete r.planSummary.runBudgetIdentity]
+ ])await t.test(label,()=>{const changed=structuredClone(operation);change(changed);const projected=projectWorkflowExecutionHistory('A',saved,[changed]);assert.equal(projected.nodes[0].batches[0].runAuthorizationLink.status,expected);assert.equal(projected.nodes[0].batches[0].finalStatus,operation.finalStatus);assert.equal(projected.nodes[0].batches[0].actions[0].result,operation.actions[0].result);assert.equal(projected.unlinkedOperationCount,0);assert.equal(projected.resumable,false);});
+ const noParent=structuredClone(saved);delete noParent.runAuthorization;assert.equal(projectWorkflowExecutionHistory('A',noParent,[operation]).nodes[0].batches[0].runAuthorizationLink.status,'MISSING');const manual=structuredClone(operation);delete manual.authorizationSummary.workflowRunAuthorization;assert.equal(projectWorkflowExecutionHistory('A',noParent,[manual]).nodes[0].batches[0].runAuthorizationLink.status,'BATCH_ONLY');
+ const wrongHash=structuredClone(operation);wrongHash.authorizationSummary.planHash='wrong';const excluded=projectWorkflowExecutionHistory('A',saved,[wrongHash]);assert.equal(excluded.nodes[0].batches.length,0);assert.equal(excluded.unlinkedOperationCount,1);
  assert.equal((await restarted.request(historyUrl('B',pending.runId))).status,404);assert.equal((await restarted.request('/api/workflows?account=A')).data.status.status,'IDLE');assert.equal(restarted.sessions.size,0);assert.deepEqual(restarted.sent,[]);assert.deepEqual([workflowFile,f.file].map(file=>fs.readFileSync(file,'utf8')),bytes);
 });

@@ -340,6 +340,26 @@ function traceEvidence(row) {
 }
 const sameIds = (left, right) => left && right && left.length === right.length && left.every((id, index) => id === right[index]);
 
+function workflowRunAuthorizationLink(workflowRun,run){
+ const audit=workflowRun.runAuthorization,marker=run.authorizationSummary?.workflowRunAuthorization;
+ const missing=reason=>({status:'MISSING',reason}),conflict=reason=>({status:'CONFLICT',reason});
+ if(!audit)return marker===undefined?{status:'BATCH_ONLY'}:missing('PARENT_SCOPE_UNAVAILABLE');
+ if(marker===undefined)return missing('CHILD_SCOPE_UNAVAILABLE');
+ const scope=audit.scope,expected={runId:workflowRun.runId,graphHash:scope.graphHash,approvedAt:audit.approvedAt};
+ if(!plain(marker)||workflowJsonDigest(marker)!==workflowJsonDigest(expected))return conflict('RUN_SCOPE_MISMATCH');
+ if(!plain(run.executionContext))return missing('CHILD_IDENTITY_UNAVAILABLE');
+ if(workflowJsonDigest(run.executionContext)!==workflowJsonDigest(scope.executionContext))return conflict('CHILD_IDENTITY_MISMATCH');
+ const childApproved=Date.parse(run.authorizationSummary.approvedAt),started=Date.parse(run.startedAt),approved=Date.parse(audit.approvedAt),expires=Date.parse(scope.expiresAt);
+ if(![childApproved,started,approved,expires].every(Number.isFinite))return missing('AUTHORIZATION_TIME_UNAVAILABLE');
+ if(childApproved<approved||childApproved>=expires||started<childApproved||started>=expires)return conflict('AUTHORIZATION_TIME_OUTSIDE_SCOPE');
+ const plan=run.planSummary,node=scope.graph.nodes.find(row=>row.id===run.workflowNodeId&&row.type==='ACTION'),selection=node?.selection;
+ if(!node||node.module!==run.module||plan.mode!=='Manual'||plan.actions.length!==1||workflowJsonDigest(plan.parameters??{})!==workflowJsonDigest(node.parameters??{})||selection?.unique!==true&&plan.actions[0].actionId!==(typeof selection==='string'?selection:selection?.actionId))return conflict('GRAPH_STRATEGY_MISMATCH');
+ if(!plan.runBudgetIdentity||plan.moduleConfig===undefined)return missing('CHILD_CONTRACT_UNAVAILABLE');
+ const parentScope={accountId:scope.accountId,runId:scope.runId,generation:scope.executionContext.generation,connectionId:scope.executionContext.connectionId};
+ if(workflowJsonDigest(plan.runBudgetIdentity)!==workflowJsonDigest({scope:parentScope,limits:scope.graph.budget})||workflowJsonDigest(plan.moduleConfig)!==workflowJsonDigest(scope.dependencies.moduleConfigs[run.module]))return conflict('CHILD_CONTRACT_MISMATCH');
+ return{status:'MATCHED',...expected};
+}
+
 // Audit the records already present in the two stores. The current graph can
 // have been edited since the run, so only its persisted ACTION trace is used.
 export function projectWorkflowExecutionHistory(accountId, workflowRun, operationRuns) {
@@ -377,11 +397,12 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
         run.workflowDefinitionId !== workflowDefinitionId || plan?.workflowDefinitionId !== workflowDefinitionId ||
         plan?.workflowNodeId !== node.nodeId || plan?.accountId !== accountId ||
         runCounts.get(run.runId) !== 1 || batchCounts.get(batchId) !== 1 || authorization?.batchId !== batchId ||
+        authorization?.planHash !== undefined && authorization.planHash !== plan?.planHash ||
         !sameIds(actionIds, ids(plan?.actions, row => row?.actionId)) || !sameIds(actionIds, ids(authorization?.actionIds, id => id))) {
       unlinkedOperationCount++;
       continue;
     }
-    node.batches.push({ batchId, operationRunId: run.runId, module: run.module ?? null, finalStatus: run.finalStatus,
+    node.batches.push({ batchId, operationRunId: run.runId, module: run.module ?? null, finalStatus: run.finalStatus, runAuthorizationLink:workflowRunAuthorizationLink(workflowRun,run),
       startedAt: run.startedAt ?? null, finishedAt: run.finishedAt ?? null, recovered: run.recovered === true,
       actions: run.actions.map(row => ({ actionId: row.actionId, capabilityId: row.capabilityId ?? null,
         actionType: row.actionType ?? null, result: row.result, requestStatus: row.requestStatus,
