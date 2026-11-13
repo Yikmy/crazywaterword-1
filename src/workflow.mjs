@@ -89,7 +89,8 @@ export function workflowLevelEvent(session,baseline,rule,cursor){
  if(current.streamId!==baseline.streamId||current.playerId!==baseline.playerId||current.worldId!==baseline.worldId||current.cursor<baseline.cursor)throw fail('事件连接流或游标基线已失效','WORKFLOW_EVENT_UNKNOWN');
  if(current.cursor===baseline.cursor)return null;
  const source=(rule.kind==='PLAYER_LEVEL_CHANGED'?readPlayerLevelEvent:readVipLevelEvent)(session.client,cursor===undefined?{}:{cursor});if(!source.reliable)throw fail('具体业务事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');const event=source.event;
- return event&&event.cursor>baseline.cursor&&event.previousLevel!==event.vipLevel&&event[rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel']===rule.level?copy(event):null;
+ const levelKey=rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel';
+ return event&&event.cursor>baseline.cursor&&event.previousLevel!==event[levelKey]&&event[levelKey]===rule.level?copy(event):null;
 }
 function validateEventTriggerHistory(run){
  const rule=run.runPolicy?.eventTrigger,trigger=run.eventTrigger;if(rule===undefined){if(trigger!==undefined)throw fail('事件历史缺少原规则');return;}validateWorkflowEventRule(rule);
