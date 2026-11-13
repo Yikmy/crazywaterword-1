@@ -142,3 +142,42 @@ test('empty or fully blocked intents still validate the entire budget and explic
   assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[],budget:unifiedBudget,...change},{modules:unifiedRegistry}));
  }
 });
+
+
+test('known workflow store disappearance cannot erase either account history',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-lost-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules});assert.deepEqual(store.list('A'),[]);assert.equal(fs.existsSync(file),false);
+ store.save('A',graph());store.record('B',{runId:'prior',workflowId:'wf-1',status:'UNKNOWN'});const bytes=fs.readFileSync(file,'utf8');fs.unlinkSync(file);
+ for(const act of [()=>store.list('A'),()=>store.history('B'),()=>store.save('A',graph()),()=>store.record('B',{runId:'new',workflowId:'wf-1',status:'COMPLETED'}),()=>store.remove('A','wf-1')])assert.throws(act,{code:'WORKFLOW_STORE_UNAVAILABLE'});
+ assert.deepEqual(fs.readdirSync(dir),[]);fs.writeFileSync(file,bytes);assert.equal(store.history('B')[0].status,'UNKNOWN');assert.deepEqual(store.history('A'),[]);
+});
+
+for(const fault of ['fsync','rename','writer','missing'])test('workflow '+fault+' failure preserves evidence and removes only its own temporary file',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-fault-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const base=createWorkflowStore({file,modules});base.save('A',graph());base.record('B',{runId:'prior',workflowId:'wf-1',status:'UNKNOWN'});const bytes=fs.readFileSync(file,'utf8');let armed=false,owned=true;
+ const io={...fs,fsyncSync(fd){if(armed&&fault==='fsync')throw Error('flush failure');fs.fsyncSync(fd);if(armed&&fault==='writer')owned=false;if(armed&&fault==='missing')fs.unlinkSync(file);},renameSync(...args){if(armed&&fault==='rename')throw Error('replace failure');return fs.renameSync(...args);}};
+ const store=createWorkflowStore({file,modules,fileSystem:io,assertWriter(){if(!owned)throw Object.assign(Error('owner lost'),{code:'WRITER_LOST'});}});assert.equal(store.history('B')[0].status,'UNKNOWN');armed=true;
+ assert.throws(()=>store.record('A',{runId:'new',workflowId:'wf-1',status:'COMPLETED'}),{code:fault==='writer'?'WRITER_LOST':'WORKFLOW_STORE_UNAVAILABLE'});
+ assert.deepEqual(fs.readdirSync(dir),fault==='missing'?[]:['workflow.json']);if(fault!=='missing')assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ if(fault==='missing')assert.throws(()=>store.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});else assert.deepEqual(store.history('A'),[]);
+});
+
+for(const defect of ['version','status','trace','steps','duplicate','directory','symlink','size'])test('workflow rejects '+defect+' evidence and refuses overwrite',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-invalid-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules});store.save('A',graph());store.record('A',{runId:'prior',workflowId:'wf-1',status:'UNKNOWN'});const data=JSON.parse(fs.readFileSync(file,'utf8'));
+ if(defect==='version')data.version=2;if(defect==='status')data.accounts.A.history[0].status='AUTO_RESUMED';if(defect==='trace')data.accounts.A.history[0].trace=[{nodeId:'a',type:'ACTION',result:'WAIT',blockedReasons:[3]}];if(defect==='steps')data.accounts.A.history[0].steps=-1;if(defect==='duplicate')data.accounts.A.history.push(data.accounts.A.history[0]);
+ fs.writeFileSync(file,JSON.stringify(data));const bytes=fs.readFileSync(file,'utf8');
+ const io={...fs,lstatSync(p){const stat=fs.lstatSync(p);if(defect==='directory')return {isFile:()=>false,isSymbolicLink:()=>false,size:0};if(defect==='symlink')return {isFile:()=>true,isSymbolicLink:()=>true,size:0};if(defect==='size')return {isFile:()=>true,isSymbolicLink:()=>false,size:8*1024*1024+1};return stat;}};
+ const restored=createWorkflowStore({file,modules,fileSystem:io});assert.throws(()=>restored.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.throws(()=>restored.save('B',graph()),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.deepEqual(fs.readdirSync(dir),['workflow.json']);
+});
+
+test('oversized workflow write cannot replace a readable store',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-limit-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules});store.save('A',graph());const bytes=fs.readFileSync(file,'utf8');assert.throws(()=>store.record('A',{runId:'new',workflowId:'wf-1',status:'UNKNOWN',reason:'x'.repeat(8*1024*1024)}),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.deepEqual(fs.readdirSync(dir),['workflow.json']);
+});
+
+test('lost workflow evidence stops unified Loop before its next plan',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-stop-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules});store.save('A',graph());
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};let surveyed=0,planned=0,released=0;
+ const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>{released++;},operations:{history:()=>({runs:[]}),surveyModule:async()=>{surveyed++;fs.unlinkSync(file);return {accountId:'A',module:'fixture',view:{candidates:[]}};},plan:async()=>{planned++;}},onUpdate:status=>store.record('A',status)});
+ const result=await runner.start('A',uniqueGraph(2));assert.equal(result.status,'FAILED');assert.equal(planned,0);assert.equal(surveyed,1);assert.equal(released,1);assert.equal(fs.existsSync(file),false);
+});

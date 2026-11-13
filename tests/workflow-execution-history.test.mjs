@@ -238,3 +238,14 @@ test('persisted blocked and preview identities survive restart without inventing
  }
  assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
 });
+
+test('Console cannot replace a known missing Workflow Store or run the next game operation',async t=>{
+ const f=fixture('missing-workflow-store');t.after(()=>f.close());f.ready();f.workflowStore.save('A',{version:1,id:'missing-store',name:'Missing store',nodes:[{id:'start',type:'START'},{id:'action',type:'ACTION',module:'formation',parameters:{presetId:2},selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'action'},{from:'action',to:'stop'}]});
+ const prior=await f.request('/api/workflows?account=A');assert.equal(prior.status,200);const bytes=fs.readFileSync(workflowFile,'utf8'),headers={'x-cw-csrf':prior.data.csrfToken};fs.unlinkSync(workflowFile);
+ try{
+  const missing=await f.request('/api/workflows?account=A');assert.equal(missing.data.code,'WORKFLOW_STORE_UNAVAILABLE');
+  const save=await f.request('/api/workflows/save?account=A',{headers,body:{graph:{version:1,id:'replacement',name:'Replacement',nodes:[{id:'s',type:'START'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'z'}]}}});assert.equal(save.data.code,'WORKFLOW_STORE_UNAVAILABLE');
+  assert.equal(fs.existsSync(workflowFile),false);assert.deepEqual(f.sent,[]);assert.deepEqual(f.history.list('A'),[]);
+ }finally{fs.writeFileSync(workflowFile,bytes);}
+ assert.equal((await f.request('/api/workflows?account=A')).status,200);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
+});

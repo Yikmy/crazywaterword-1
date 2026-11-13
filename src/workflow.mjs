@@ -328,23 +328,60 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
     nodes: [...nodes.values()] };
 }
 
-export function createWorkflowStore({ file, modules, secrets = () => [] } = {}) {
+export function createWorkflowStore({ file, modules, secrets = () => [], assertWriter = () => {}, fileSystem = fs } = {}) {
   if (!text(file) || !path.isAbsolute(file)) throw fail('工作流存储必须使用显式绝对路径');
   const unavailable = () => fail('工作流存储损坏或不可读；原证据已保留', 'WORKFLOW_STORE_UNAVAILABLE');
+  const maxBytes = 8 * 1024 * 1024;
+  let knownStore = false;
+  const statuses = new Set(['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED']);
+  function validRun(run, accountId) {
+    if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
+        || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
+    if (run.trace === undefined) return true;
+    if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
+    try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
+      && (row.timestamp === undefined || text(row.timestamp)) && Boolean(traceEvidence(row))); } catch { return false; }
+  }
   function read() {
-    let raw; try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return { version: 1, accounts: Object.create(null) }; throw unavailable(); }
-    if (!plain(raw) || raw.version !== 1 || !plain(raw.accounts)) throw unavailable();
-    for (const [accountId, entry] of Object.entries(raw.accounts)) {
-      if (!text(accountId) || !plain(entry) || !Array.isArray(entry.workflows) || !Array.isArray(entry.history) || entry.history.some(run => !plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.status))) throw unavailable();
-      try { entry.workflows.forEach(graph => validateWorkflow(graph, { modules })); if (new Set(entry.workflows.map(graph => graph.id)).size !== entry.workflows.length || new Set(entry.history.map(run => run.runId)).size !== entry.history.length) throw unavailable(); } catch { throw unavailable(); }
-    }
-    return raw;
+    try {
+      let stat;
+      try { stat = fileSystem.lstatSync(file); } catch (error) {
+        if (error.code === 'ENOENT' && !knownStore) return { version: 1, accounts: Object.create(null) };
+        throw unavailable();
+      }
+      knownStore = true;
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) throw unavailable();
+      const source = fileSystem.readFileSync(file, 'utf8');
+      if (Buffer.byteLength(source, 'utf8') > maxBytes) throw unavailable();
+      const raw = JSON.parse(source);
+      if (!plain(raw) || raw.version !== 1 || !plain(raw.accounts)) throw unavailable();
+      for (const [accountId, entry] of Object.entries(raw.accounts)) {
+        if (!text(accountId) || !plain(entry) || !Array.isArray(entry.workflows) || !Array.isArray(entry.history) || entry.history.some(run => !validRun(run, accountId))) throw unavailable();
+        entry.workflows.forEach(graph => validateWorkflow(graph, { modules }));
+        if (new Set(entry.workflows.map(graph => graph.id)).size !== entry.workflows.length || new Set(entry.history.map(run => run.runId)).size !== entry.history.length) throw unavailable();
+      }
+      return raw;
+    } catch { throw unavailable(); }
   }
   function write(raw) {
+    assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
-    try { fs.mkdirSync(path.dirname(file), { recursive: true }); const fd = fs.openSync(temporary, 'wx', 0o600); try { fs.writeFileSync(fd, JSON.stringify(raw, null, 2) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.renameSync(temporary, file); }
-    catch { throw fail('工作流原子保存失败，原历史未覆盖', 'WORKFLOW_STORE_UNAVAILABLE'); }
-    finally { try { fs.unlinkSync(temporary); } catch {} }
+    try {
+      const serialized = JSON.stringify(raw, null, 2) + '\n';
+      if (Buffer.byteLength(serialized, 'utf8') > maxBytes) throw unavailable();
+      fileSystem.mkdirSync(path.dirname(file), { recursive: true });
+      const fd = fileSystem.openSync(temporary, 'wx', 0o600);
+      try { fileSystem.writeFileSync(fd, serialized, 'utf8'); fileSystem.fsyncSync(fd); } finally { fileSystem.closeSync(fd); }
+      assertWriter();
+      // Recheck the original path after flushing: a lost store must never be
+      // silently replaced with a new history while its owner is still running.
+      read();
+      fileSystem.renameSync(temporary, file);
+      knownStore = true;
+    } catch (error) {
+      if (error?.code?.startsWith('WRITER_')) throw error;
+      throw fail('工作流原子保存失败，原历史未覆盖', 'WORKFLOW_STORE_UNAVAILABLE');
+    } finally { try { fileSystem.unlinkSync(temporary); } catch {} }
   }
   function entry(raw, accountId) { if (!text(accountId)) throw fail('缺少精确账号 ID'); if (!Object.hasOwn(raw.accounts, accountId)) Object.defineProperty(raw.accounts, accountId, { value: { workflows: [], history: [] }, enumerable: true, configurable: true, writable: true }); return raw.accounts[accountId]; }
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }

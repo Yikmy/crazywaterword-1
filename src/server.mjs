@@ -140,7 +140,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, history, assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
-  const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets});
+  const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets,assertWriter:()=>writerOwnership.assertOwned()});
   function prepareStageRunner(session) {
     const id=session.id, instance=session.client;
         if (!session.stageRunner || session.stageClient !== instance) {
