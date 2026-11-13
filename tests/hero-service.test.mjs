@@ -39,6 +39,7 @@ function fixture({ enabled = true, apply = true, historyFile } = {}) {
         if (state.apply) {
           if (name === 'HeroLevelUpRequest') { const cost = row.level === 1 ? 5 : 8; row.level++; state.stock.set('英雄经验', state.stock.get('英雄经验') - cost); }
           if (name === 'HeroSkillLevelUpRequest') { row.skillLevels[body.skillIdx - 1]++; state.stock.set('技能书', state.stock.get('技能书') - 4); }
+          if (name === 'HeroFragExchangeRequest') { const source = gameConfig.tables.HeroCfg.data.find(value => value.id === body.heroId).universalItemId; state.stock.set(source, state.stock.get(source) - body.num); state.stock.set(body.fragItemId, (state.stock.get(body.fragItemId) ?? 0) + body.num); }
           if (name === 'HeroStarUpRequest') { row.star++; state.stock.set(row.heroId + '碎片', state.stock.get(row.heroId + '碎片') - 5); }
         }
         state.onWrite?.(name, body);
@@ -182,4 +183,54 @@ test('stable hero selector never lets an old preview or permit authorize the nex
     assert.throws(() => f.authorize(target, planned), { code: 'STALE_PLAN' });
     assert.equal((await f.execute(target, fresh)).status.finalStatus, 'SUCCESS'); assert.equal(target.synthetic.writes.length, 1); assert.equal(target.synthetic.heroes[0].level, 3);
   } finally { await f.cleanup(); }
+});
+
+const fragmentParams=(heroId='A',num=7)=>({heroId,action:'fragment-exchange',num});
+function configureFragments(f,target){
+ f.config(cfg=>{cfg.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});cfg.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['A','B'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};});
+ target.synthetic.stock.set('蓝卡万能碎片',20);target.client.factContext={accountId:target.id,generation:target.generation,connectionId:target.connectionId};
+}
+test('fragment Service confirms exact 1:1 debit and credit without hero growth, with durable intent and single permit',async()=>{
+ const f=fixture(),t=f.session();configureFragments(f,t);const heroes=structuredClone(t.synthetic.heroes);
+ try{
+  const p=await f.displayed(t,fragmentParams()),r=await f.execute(t,p);assert.equal(r.status.finalStatus,'SUCCESS');assert.deepEqual(p.resourceBudget,[{id:'蓝卡万能碎片',num:7}]);assert.equal(t.synthetic.stock.get('蓝卡万能碎片'),13);assert.equal(t.synthetic.stock.get('A碎片'),17);assert.deepEqual(t.synthetic.heroes,heroes);
+  const w=t.synthetic.writes[0];assert.deepEqual(w.body,{heroId:'A',fragItemId:'A碎片',num:7});assert.equal(w.durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.equal(r.record.actions[0].verification.status,'CONFIRMED');assert.equal(createExecutionHistory({file:f.file}).unresolved(t.id),false);assert.throws(()=>f.service.execute(t,r.permit));
+ }finally{await f.cleanup();}
+});
+test('fragment UNKNOWN retains universal budget and blocks replay across restart',async()=>{
+ const f=fixture({apply:false}),t=f.session();configureFragments(f,t);let restarted;
+ try{
+  const r=await f.execute(t,await f.displayed(t,fragmentParams()));assert.equal(r.status.finalStatus,'UNKNOWN');assert.equal(r.record.actions[0].unresolvedWrite,true);assert.deepEqual(r.record.runBudget.reserved.resources,[{id:'蓝卡万能碎片',num:7}]);await assert.rejects(f.displayed(t,fragmentParams()),{code:'RESPONSE_UNCERTAIN'});assert.equal(t.synthetic.writes.length,1);
+  restarted=fixture({historyFile:f.file});const fresh=restarted.session();configureFragments(restarted,fresh);await assert.rejects(restarted.displayed(fresh,fragmentParams()),{code:'RECOVERY_UNCERTAIN'});assert.equal(fresh.synthetic.writes.length,0);assert.equal(restarted.durable.list(fresh.id)[0].finalStatus,'UNKNOWN');
+ }finally{await restarted?.cleanup();await f.cleanup();}
+});
+test('fragment relevant configuration or balances invalidate existing permit without a send',async()=>{
+ for(const kind of ['config','source','target']){
+  const f=fixture(),t=f.session();configureFragments(f,t);
+  try{const p=await f.displayed(t,fragmentParams());if(kind==='config'){f.config(cfg=>cfg.tables.ItemCfg.revision=2);assert.throws(()=>f.authorize(t,p),{code:'STALE_PLAN'});}else{const permit=f.authorize(t,p);t.synthetic.stock.set(kind==='source'?'蓝卡万能碎片':'A碎片',19);f.service.execute(t,permit);await f.service.settle(t.id);assert.notEqual(f.service.status(t.id).finalStatus,'SUCCESS');}assert.equal(t.synthetic.writes.length,0);}finally{await f.cleanup();}
+ }
+});
+for(const kind of ['account','player','world','generation','connection'])test('fragment '+kind+' isolation prevents dispatch',async()=>{
+ const f=fixture(),t=f.session();configureFragments(f,t);
+ try{const p=await f.displayed(t,fragmentParams()),permit=f.authorize(t,p);if(kind==='account'){const b=f.session('account-B');configureFragments(f,b);assert.throws(()=>f.service.execute(b,permit));assert.equal(b.synthetic.writes.length,0);}else{if(kind==='player')t.player.playerId='9000';if(kind==='world')t.player.worldId=2;if(kind==='generation'){t.generation++;t.client.factContext.generation++;}if(kind==='connection'){t.connectionId+='changed';t.client.factContext.connectionId+='changed';}try{f.service.execute(t,permit);await f.service.settle(t.id);}catch{}assert.notEqual(f.service.status(t.id).finalStatus,'SUCCESS');}assert.equal(t.synthetic.writes.length,0);}finally{await f.cleanup();}
+});
+test('fragment persistent budget or intent failure prevents transport',async()=>{
+ for(const kind of ['budget','intent']){
+  const f=fixture(),t=f.session();configureFragments(f,t);
+  try{const p=await f.displayed(t,fragmentParams());f.failPersist(record=>kind==='budget'?(record.runBudget?.reserved.resources??[]).some(row=>row.id==='蓝卡万能碎片'):record.actions?.some(row=>row.dispatchEvidence?.state==='MAY_HAVE_DISPATCHED'));f.service.execute(t,f.authorize(t,p));await f.service.settle(t.id);assert.equal(t.synthetic.writes.length,0);assert.notEqual(f.service.status(t.id).finalStatus,'SUCCESS');}finally{f.failPersist(()=>false);await f.cleanup();}
+ }
+});
+test('fragment stop after dispatch preserves UNKNOWN despite late exact effect',async()=>{
+ const f=fixture(),t=f.session();configureFragments(f,t);let finish;
+ try{t.client.sendWatch=async(name,body)=>{t.client.mutate(name,body);return new Promise(resolve=>{finish=resolve;});};const p=await f.displayed(t,fragmentParams()),permit=f.authorize(t,p);f.service.execute(t,permit);for(let i=0;i<100&&!finish;i++)await new Promise(resolve=>setImmediate(resolve));assert.ok(finish);f.service.stop(t.id);finish({status:'SUCCESS'});await f.service.settle(t.id);const record=f.durable.list(t.id)[0];assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].unresolvedWrite,true);assert.equal(t.synthetic.stock.get('A碎片'),17);await assert.rejects(f.displayed(t,fragmentParams()));assert.equal(t.synthetic.writes.length,1);}finally{finish?.({status:'UNKNOWN'});await f.cleanup();}
+});
+for(const limit of [12,14])test('fragment Workflow shares finite universal source '+limit+' across heroes and ignores later stock credits',async()=>{
+ const f=fixture(),t=f.session();configureFragments(f,t);
+ try{
+  const nodes=[{id:'s',type:'START'}];for(const [heroId,suffix]of [['A','a'],['B','b']]){const p=fragmentParams(heroId),survey=await f.service.surveyModule(t,'heroes',p);nodes.push({id:suffix,type:'ACTION',module:'heroes',parameters:p,selection:survey.view.candidates[0].actionId},{id:'v'+suffix,type:'VERIFY',module:'heroes'});}nodes.push({id:'z',type:'STOP'});
+  const graph={version:1,id:'fragments-'+limit,name:'Fragment budget',budget:{resources:[{id:'蓝卡万能碎片',num:limit}],quotas:[],uids:['A','B'].map(id=>({type:'hero-fragment-exchange',id}))},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
+  const runner=f.runner(t),first=await runner.start(t.id,graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal((await f.execute(t,first.plan)).status.finalStatus,'SUCCESS');t.synthetic.stock.set('蓝卡万能碎片',1000);
+  const second=await runner.resume();assert.equal(second.status,'AWAITING_AUTHORIZATION');assert.deepEqual(second.runBudget.reserved.resources,[{id:'蓝卡万能碎片',num:7}]);const result=await f.execute(t,second.plan),final=await runner.resume();
+  assert.equal(t.synthetic.writes.length,limit===14?2:1);assert.equal(result.status.finalStatus==='SUCCESS',limit===14);assert.equal(final.status==='COMPLETED',limit===14);assert.equal(final.runBudget.state,'CLOSED');
+ }finally{await f.cleanup();}
 });

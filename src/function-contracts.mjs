@@ -183,11 +183,12 @@ export const FUNCTION_CONTRACTS = freeze({
     dependencyVersions: dependencies(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.GameParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg'], [{ when: 'mode=Automatic', keys: ['productionPolicy'] }]),
   }),
   heroes: contract('heroes', ['C221','C222','C223','C224','C225','C226'], ['P3-6','P3-7'], ['src/hero-operations.mjs#heroModule','src/heroes.mjs#planHeroes','src/heroes.mjs#buildHeroAction'], {
-    heroId: string, action: { type: 'string', enum: ['level','star','skill','exclusive-level','exclusive-star'] }, skillIdx: integer, allowUniversal: boolean,
+    heroId: string, action: { type: 'string', enum: ['level','star','skill','exclusive-level','exclusive-star','fragment-exchange'] }, skillIdx: integer, allowUniversal: boolean, num: integer,
   }, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['LEVEL','STAR','SKILL','EXCLUSIVE-LEVEL','EXCLUSIVE-STAR'], blockedCapabilities: [blocked('EXCLUSIVE_ACTIVATION', 'An active exclusive weapon is required; activation has no authorized contract'), blocked('UNIVERSAL_FRAGMENTS', 'Independent universal-fragment cost and consumption semantics are not proven')] },
-    verification: verification('verifyHeroOperation','src/hero-operations.mjs#verifyHeroOperation','Fresh AllHero plus exact single target growth and full inventory delta; LEVEL/SKILL and explicit active exclusive actions have no dedicated response; require exactly level+1 or star+1, exact owned cost debits, and unchanged non-target heroes'),
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['LEVEL','STAR','SKILL','EXCLUSIVE-LEVEL','EXCLUSIVE-STAR','FRAGMENT-EXCHANGE'], blockedCapabilities: [blocked('EXCLUSIVE_ACTIVATION', 'An active exclusive weapon is required; activation has no authorized contract'), blocked('UNIVERSAL_FRAGMENTS', 'Inline universal consumption during star growth remains blocked; explicit 1:1 fragment-exchange is separately authorized')] },
+    verification: verification('verifyHeroOperation','src/hero-operations.mjs#verifyHeroOperation','Fresh AllHero plus exact single target growth and full inventory delta; LEVEL/SKILL and explicit active exclusive actions have no dedicated response; require exactly level+1 or star+1, exact owned cost debits, and unchanged non-target heroes; explicit fragment exchange requires exact 1:1 inventory delta and all heroes unchanged'),
     dependencyVersions: dependencies(['moduleConfig','config.HeroCfg'], [
+      { when: 'parameters.action=fragment-exchange', keys: ['config.ItemCfg'] },
       { when: 'parameters.action=exclusive-level', keys: ['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg'] },
       { when: 'parameters.action=exclusive-star', keys: ['config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg'] },
       { when: 'parameters.action=level', keys: ['config.HeroUpgradeCfg'] },

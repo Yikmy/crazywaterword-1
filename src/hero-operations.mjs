@@ -43,16 +43,20 @@ export function validateHeroConfig(value = {}) {
   return { enabled: value.enabled ?? false };
 }
 export function validateHeroParameters(value = {}) {
-  if (!plainFields(value, ['heroId', 'action', 'skillIdx', 'allowUniversal'])) throw invalid('英雄参数只允许 heroId、action、skillIdx、allowUniversal');
+  if (!plainFields(value, ['heroId', 'action', 'skillIdx', 'allowUniversal', 'num'])) throw invalid('英雄参数只允许 heroId、action、skillIdx、allowUniversal、num');
   const out = {};
   if (own(value, 'heroId')) { if (!id(value.heroId)) throw invalid('heroId 必须为明确英雄 ID'); out.heroId = value.heroId; }
-  if (own(value, 'action')) { if (![...kinds, ...exclusiveKinds].includes(value.action)) throw invalid('action 只允许 level、star、skill、exclusive-level、exclusive-star'); out.action = value.action; }
+  if (own(value, 'action')) { if (![...kinds, ...exclusiveKinds, 'fragment-exchange'].includes(value.action)) throw invalid('action 只允许 level、star、skill、exclusive-level、exclusive-star、fragment-exchange'); out.action = value.action; }
   if (own(value, 'skillIdx')) {
     if (value.action !== 'skill' || !positive(value.skillIdx) || value.skillIdx > 4) throw invalid('skillIdx 必须为 skill 动作的 1 至 4 槽位');
     out.skillIdx = value.skillIdx;
   }
   if (own(value, 'allowUniversal') && (value.action !== 'star' || typeof value.allowUniversal !== 'boolean')) throw invalid('allowUniversal 只允许用于 star 动作且必须为布尔值');
   if (value.action === 'star') out.allowUniversal = value.allowUniversal ?? false;
+  if (own(value, 'num')) {
+    if (value.action !== 'fragment-exchange' || !positive(value.num)) throw invalid('num 只允许用于 fragment-exchange 且必须为正 int32');
+    out.num = value.num;
+  }
   return out;
 }
 function exactNonnegative(value) {
@@ -113,7 +117,7 @@ export async function surveyHeroOperations(client, protocol, { player, parameter
     catch (error) { if (executionOutcome(error) === 'CANCELLED') throw error; notes.push(request + ': STATE_UNKNOWN'); return { value: null, sourceAt: Date.now() }; }
   }));
   active();
-  if (isExclusiveAction(parameters.action) && !equal(context, exclusiveContext(client, player))) throw Object.assign(new Error('专武采集期间账号、角色或连接代次改变'), { code: 'CANCELLED' });
+  if ((isExclusiveAction(parameters.action) || parameters.action === 'fragment-exchange') && !equal(context, exclusiveContext(client, player))) throw Object.assign(new Error('英雄采集期间账号、角色或连接代次改变'), { code: 'CANCELLED' });
   const observed = responses.map(row => row.value), inputs = { heroes: toSnapshotJson(observed[0]), items: toSnapshotJson(observed[1]), resources: toSnapshotJson(observed[2]) };
   const rawHeroes = heroList(observed[0]), heroes = rawHeroes === null ? null : heroList(inputs.heroes), playerId = playerIdentity(player), playerLevel = own(player, 'level') && positive(player.level) ? player.level : null;
   // Inspect decoded optional fields before normalization. Prototype scalar
@@ -125,7 +129,7 @@ export async function surveyHeroOperations(client, protocol, { player, parameter
   sourceFacts.inventory = createStateFact({ items: inputs.items, resources: inputs.resources }, { ...provenance, source: 'AllItemResponse+AllResourceResponse', sourceAt: Math.min(responses[1].sourceAt, responses[2].sourceAt), reliable: inventory.stockReliable });
   return { module: 'heroes', heroes, heroesReliable: heroes !== null, playerId, playerLevel, ...inventory, parameters, available: Object.keys(protocol ?? {}), notes,
     identityContext: context, inputs, sourceFacts, exclusiveObservations,
-    state: { playerId, playerLevel, heroes: heroes?.map(hero => hero.raw) ?? null, ...(isExclusiveAction(parameters.action) ? { context } : {}) } };
+    state: { playerId, playerLevel, heroes: heroes?.map(hero => hero.raw) ?? null, ...((isExclusiveAction(parameters.action) || parameters.action === 'fragment-exchange') ? { context } : {}) } };
 }
 function rows(config, name) { const value = config?.tables?.[name]?.data; return dense(value) && value.length ? value : null; }
 function ordered(rows, key, first = 0) { return rows.every((row, index) => own(row, key) && uint(row[key]) && row[key] >= first && (!index || rows[index - 1][key] < row[key])); }
@@ -172,6 +176,7 @@ function nextGrowth(hero, action, slot) {
 }
 function candidate(facts, parameters, { config, moduleConfig = HERO_DEFAULT_CONFIG } = {}) {
   parameters = validateHeroParameters(parameters); moduleConfig = validateHeroConfig(moduleConfig);
+  if (parameters.action === 'fragment-exchange') return fragmentExchangeCandidate(facts, parameters, { config, moduleConfig });
   if (isExclusiveAction(parameters.action)) return exclusiveCandidate(facts, parameters, { config, moduleConfig });
   const hero = facts?.heroes?.find(row => row.heroId === parameters.heroId), action = parameters.action, slot = parameters.skillIdx - 1;
   let reason = null, step = null, request = null, costs = [], plannerNotes = [];
@@ -210,25 +215,27 @@ export function viewHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_
   const choices = [];
   for (const hero of facts?.heroes ?? []) {
     if (parameters.heroId && parameters.heroId !== hero.heroId) continue;
-    for (const action of isExclusiveAction(parameters.action) ? [parameters.action] : kinds) {
+    for (const action of (isExclusiveAction(parameters.action) || parameters.action === 'fragment-exchange') ? [parameters.action] : kinds) {
       if (parameters.action && parameters.action !== action) continue;
       if (action === 'skill') {
         for (let slot = 0; slot < hero.skillLevels.length; slot += 1) {
           if (parameters.skillIdx && parameters.skillIdx !== slot + 1) continue;
           choices.push({ heroId: hero.heroId, action, skillIdx: slot + 1 });
         }
-      } else choices.push({ heroId: hero.heroId, action, ...(action === 'star' ? { allowUniversal: parameters.allowUniversal ?? false } : {}) });
+      } else choices.push({ heroId: hero.heroId, action, ...(action === 'fragment-exchange' && own(parameters, 'num') ? { num: parameters.num } : {}), ...(action === 'star' ? { allowUniversal: parameters.allowUniversal ?? false } : {}) });
     }
   }
   if (!choices.length) choices.push(parameters);
   const exclusive = isExclusiveAction(parameters.action);
-  const authority = exclusive && moduleConfig.enabled && exclusiveAuthority(facts);
-  const candidates = choices.map(choice => exclusive
+  const authority = (exclusive || parameters.action === 'fragment-exchange') && moduleConfig.enabled && exclusiveAuthority(facts);
+  const candidates = choices.map(choice => parameters.action === 'fragment-exchange'
+    ? fragmentExchangeCandidate(facts, choice, { config, moduleConfig, authority, includePlanEvidence: false }) : exclusive
     ? exclusiveCandidate(facts, choice, { config, moduleConfig, authority, includePlanEvidence: false })
     : candidate(facts, choice, { config, moduleConfig }));
   return { module: 'heroes', heroes: facts?.heroes?.map(hero => ({ ...growth(hero), power: hero.power, ...(observedExclusive(hero.raw) ? { exclusive: clone(observedExclusive(hero.raw)) } : {}) })) ?? [], playerLevel: facts?.playerLevel ?? null,
     reliability: { heroes: facts?.heroesReliable === true, stock: facts?.stockReliable === true, player: Boolean(facts?.playerId) && positive(facts?.playerLevel) },
-    candidates, blocked: candidates.filter(row => !row.executable), notes: [...(facts?.notes ?? [])], universalExchange: 'BLOCKED_EVIDENCE' };
+    candidates, blocked: candidates.filter(row => !row.executable), notes: [...(facts?.notes ?? [])], universalExchange: 'BLOCKED_EVIDENCE', fragmentExchange: 'EXPLICIT_1_TO_1',
+    fragments: (facts?.heroes ?? []).map(hero => { const cfg = rows(config, 'HeroCfg')?.find(row => row.id === hero.heroId), sourceId = cfg?.universalItemId, targetId = hero.heroId + '碎片'; return { heroId: hero.heroId, sourceId: sourceId ?? null, sourceNum: facts?.stockReliable && id(sourceId) ? facts.stock.get(sourceId) ?? 0 : null, targetId, targetNum: facts?.stockReliable ? facts.stock.get(targetId) ?? 0 : null }; }) };
 }
 export function planHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_CONFIG, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable === true ? facts.stock : null) } = {}) {
   parameters = validateHeroParameters(parameters);
@@ -245,6 +252,7 @@ export function verifyHeroOperation(operation, beforeFacts, afterFacts, response
   const fail = reason => ({ confirmed: false, reason });
   let parameters, costs;
   try { parameters = validateHeroParameters(operation?.parameters); costs = resourceCosts(operation?.costs); } catch { return fail('OPERATION_CONTRACT_INVALID'); }
+  if (parameters.action === 'fragment-exchange') return verifyFragmentExchange(operation, beforeFacts, afterFacts, parameters);
   if (isExclusiveAction(parameters.action)) return verifyExclusiveGrowth(operation, beforeFacts, afterFacts, parameters);
   const before = beforeFacts?.heroes?.find(hero => hero.heroId === parameters.heroId), after = afterFacts?.heroes?.find(hero => hero.heroId === parameters.heroId), action = parameters.action, slot = parameters.skillIdx - 1;
   if (operation?.module !== 'heroes' || !before || !after || !kinds.includes(action) || action === 'skill' && (!own(parameters, 'skillIdx') || slot >= before.skillLevels.length)
@@ -272,6 +280,7 @@ export function verifyHeroOperation(operation, beforeFacts, afterFacts, response
 }
 export function heroDependencyVersions({ config, moduleConfig = HERO_DEFAULT_CONFIG, parameters = {} } = {}) {
   const action = parameters?.action;
+  if (action === 'fragment-exchange') return { moduleConfig: clone(moduleConfig), ...Object.fromEntries(fragmentExchangeTables.map(name => ['config.' + name, clone(config?.tables?.[name] ?? null)])) };
   if (isExclusiveAction(action)) return { moduleConfig: clone(moduleConfig), ...Object.fromEntries(exclusiveTablesFor(action).map(name => ['config.' + name, clone(config?.tables?.[name] ?? null)])) };
   const tables = ['HeroCfg', ...(action === 'level' ? ['HeroUpgradeCfg'] : action === 'star' ? ['HeroStarCfg'] : action === 'skill' ? ['HeroStarCfg', 'HeroSkillUpCfg'] : ['HeroUpgradeCfg', 'HeroStarCfg', 'HeroSkillUpCfg'])];
   return { moduleConfig: clone(moduleConfig), ...Object.fromEntries(tables.map(name => ['config.' + name, clone(config?.tables?.[name] ?? null)])) };
@@ -422,4 +431,52 @@ function verifyExclusiveGrowth(operation, beforeFacts, afterFacts, parameters) {
     if (beforeAmount < (debits.get(key) ?? 0) || (afterFacts.stock.get(key) ?? 0) !== beforeAmount - (debits.get(key) ?? 0)) return fail('EXACT_EXCLUSIVE_MATERIAL_DEBIT_OR_OTHER_INVENTORY_CHANGED');
   }
   return { confirmed: true, reason: (dimension === 'star' ? '新 AllHero 完整复读确认已有专武单次星级+1、等级不变、对应碎片和升星石精确扣除及非目标状态不变' : '新 AllHero 完整复读确认已有专武单次等级+1、所选材料精确扣除及非目标状态不变') + '；仅目标power/attributes允许权威派生变化', afterState: clone(after.raw), responseEvidence: null };
+}
+
+// Same fixed v76 FragExchangePop evidence used by antique exchange. The request
+// names the target fragment; HeroCfg determines the owned universal source.
+const fragmentExchangeTables = Object.freeze(['HeroCfg', 'ItemCfg']);
+const heroUniversalFragments = Object.freeze({ BLUE: '蓝卡万能碎片', PURPLE: '紫卡万能碎片', ORANGE: '橙卡万能碎片', RED: '红卡万能碎片' });
+const fragmentExchangeSource = 'v76 HeroDetailStar._onBtnShowExchange + FragExchangePop._refreshInfo/_onBtnExchange; HeroCfg.universalItemId; HeroUtil.heroFragItemId; explicit owned source 1:1 target; no star change';
+function fragmentExchangeCandidate(facts, parameters, { config, moduleConfig, authority, includePlanEvidence = true }) {
+  const target = { heroId: parameters.heroId ?? null }, hero = facts?.heroes?.find(row => row.heroId === parameters.heroId);
+  const heroRows = rows(config, 'HeroCfg'), items = rows(config, 'ItemCfg'), cfg = heroRows?.find(row => row.id === parameters.heroId);
+  const sourceId = cfg?.universalItemId, targetId = parameters.heroId ? parameters.heroId + '碎片' : null, num = parameters.num;
+  let reason = null, costs = [];
+  const unique = value => value && value.every(row => own(row, 'id') && id(row.id)) && new Set(value.map(row => row.id)).size === value.length;
+  if (!parameters.heroId || !positive(num)) reason = 'EXPLICIT_HERO_AND_EXCHANGE_QUANTITY_REQUIRED';
+  else if (!moduleConfig.enabled) reason = 'HERO_MODULE_DISABLED';
+  else if (!(authority ?? exclusiveAuthority(facts)) || !hero) reason = 'HERO_FRAGMENT_AUTHORITY_OR_CONTEXT_UNKNOWN';
+  else if (!unique(heroRows) || !cfg || !own(cfg, 'type') || cfg.type !== '英雄' || !own(cfg, 'quality') || !own(cfg, 'universalItemId') || !own(heroUniversalFragments, cfg.quality) || sourceId !== heroUniversalFragments[cfg.quality]) reason = 'HERO_FRAGMENT_SOURCE_CONFIG_UNKNOWN';
+  else if (!unique(items) || !items.some(row => row.id === sourceId && own(row, 'type') && row.type === '英雄万能碎片' && own(row, 'quality') && row.quality === cfg.quality)
+    || !items.some(row => row.id === targetId && own(row, 'type') && row.type === '英雄碎片' && own(row, 'quality') && row.quality === cfg.quality)) reason = 'HERO_FRAGMENT_ITEM_CONFIG_UNKNOWN';
+  else if (!facts.available?.includes('HeroFragExchangeRequest')) reason = 'PROTOCOL_UNAVAILABLE';
+  else if ((facts.stock.get(sourceId) ?? 0) < num) reason = 'HERO_FRAGMENT_STOCK_INSUFFICIENT';
+  else if (safeResourceQuantity((facts.stock.get(targetId) ?? 0) + num) === null) reason = 'HERO_FRAGMENT_TARGET_OVERFLOW';
+  else costs = [{ id: sourceId, num }];
+  const action = { request: 'HeroFragExchangeRequest', response: null, body: { heroId: parameters.heroId, fragItemId: targetId, num } };
+  if (!reason) { try { assertPaymentAllowed({ ...action, costs }); } catch (error) { reason = error.code ?? 'COST_NOT_ALLOWED'; } }
+  const beforeState = hero ? { hero: clone(hero.raw), sourceId, sourceNum: facts.stock?.get(sourceId) ?? 0, targetId, targetNum: facts.stock?.get(targetId) ?? 0 } : null;
+  return { module: 'heroes', actionId: 'heroes:FRAGMENT-EXCHANGE:' + hash({ target, parameters }), actionType: 'FRAGMENT-EXCHANGE', target, parameters,
+    ...(includePlanEvidence ? { identity: hero ? hash({ context: facts.identityContext, playerLevel: facts.playerLevel, heroes: facts.heroes.map(row => row.raw), beforeState, dependencies: heroDependencyVersions({ config, moduleConfig, parameters }) }) : null,
+    configEvidence: Object.fromEntries(fragmentExchangeTables.map(name => [name, clone(config?.tables?.[name] ?? null)])) } : {}),
+    beforeState, expectedState: reason === null && beforeState ? { ...clone(beforeState), sourceNum: beforeState.sourceNum - num, targetNum: beforeState.targetNum + num } : null,
+    costs, costSource: fragmentExchangeSource,
+    budgetClaims: { resources: clone(costs), quotas: [], uids: parameters.heroId ? [{ type: 'hero-fragment-exchange', id: parameters.heroId }] : [] },
+    executable: reason === null, blockedReason: reason, notes: [], label: '英雄专属碎片兑换 ' + (parameters.heroId ?? ''), ...(reason === null ? { action } : {}) };
+}
+function verifyFragmentExchange(operation, before, after, parameters) {
+  const fail = reason => ({ confirmed: false, reason });
+  if (!exclusiveAuthority(before) || !exclusiveAuthority(after) || !equal(before.identityContext, after.identityContext) || before.playerLevel !== after.playerLevel) return fail('HERO_FRAGMENT_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  if (['heroes', 'items', 'resources'].some(key => after.sourceFacts[key].provenance.sourceAt < before.sourceFacts[key].provenance.sourceAt)) return fail('HERO_FRAGMENT_POST_WRITE_SOURCE_PREDATES_PRE_WRITE');
+  const config = { tables: Object.fromEntries(fragmentExchangeTables.map(name => [name, operation?.configEvidence?.[name] ?? null])) };
+  const contract = fragmentExchangeCandidate(before, parameters, { config, moduleConfig: { enabled: true } });
+  if (!contract.executable || operation.module !== 'heroes' || ['actionId','actionType','target','identity','action','beforeState','expectedState','costs','costSource','budgetClaims','configEvidence'].some(key => !equal(operation[key], contract[key]))) return fail('HERO_FRAGMENT_PLAN_OR_IDENTITY_MISMATCH');
+  if (!equal(before.heroes, after.heroes)) return fail('HERO_CHANGED_DURING_FRAGMENT_EXCHANGE');
+  const { sourceId, targetId } = contract.beforeState, num = parameters.num;
+  for (const key of new Set([sourceId, targetId, ...before.stock.keys(), ...after.stock.keys()])) {
+    const expected = (before.stock.get(key) ?? 0) + (key === sourceId ? -num : key === targetId ? num : 0);
+    if ((after.stock.get(key) ?? 0) !== expected) return fail('EXACT_FRAGMENT_EXCHANGE_OR_OTHER_INVENTORY_CHANGED');
+  }
+  return { confirmed: true, reason: '新完整库存确认对应万能碎片精确扣除及专属碎片1:1净入，全部英雄和其他库存不变', afterState: clone(contract.expectedState), responseEvidence: null };
 }

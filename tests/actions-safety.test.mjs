@@ -277,3 +277,10 @@ test('D6 admits only exact free pirate sweep wire fields', () => {
     assert.throws(() => assertPaymentAllowed(bad, { allowPaid: true }), { code: 'D6_FORBIDDEN' });
   }
 });
+
+test('hero fragment D6 contract accepts only target fragment and matching owned universal debit',()=>{
+ const action={request:'HeroFragExchangeRequest',body:{heroId:'A',fragItemId:'A碎片',num:7},costs:[{id:'蓝卡万能碎片',num:7}]};
+ assert.deepEqual(assertPaymentAllowed(action),action);
+ for(const change of [a=>a.body.fragItemId='蓝卡万能碎片',a=>a.body.fragItemId='B碎片',a=>a.body.num=0,a=>a.body.num=2147483648,a=>a.body.universal=true,a=>a.costs[0].num=6,a=>a.costs[0].id='RUBY',a=>a.costs[0].id='蓝藏万能碎片',a=>a.costs=[]]){const bad=structuredClone(action);change(bad);assert.throws(()=>assertPaymentAllowed(bad));}
+ const codec=protocol.HeroFragExchangeRequest;const decoded=codec.decode(codec.encode(action.body).finish());assert.equal(decoded.fragItemId,'A碎片');assert.equal(decoded.num,7);
+});

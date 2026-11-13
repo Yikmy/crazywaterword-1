@@ -13,6 +13,7 @@
 | W19 PARTIAL | 保留精确账号工作流→节点→批次→动作历史；Tasks/Dailies/Loop统一入口复用Registry/OperationService、累计父预算、逐批授权及持久History/Memory；有限轮次每次重新采集唯一候选，缺证/既有拒绝仅阻对应节点，UNKNOWN停止；阻塞原因、来源模块及预览batch/action/hash落盘并只读恢复，拒绝不产生重复ACTION关联，身份冲突/阻塞节点不伪关联派发；原业务和禁用直写入口保留 | 核对可信冷却/游戏日界领域策略来源，缺证保持保守拒绝；继续其他依赖已满足的业务闭环 | 现有普通点金resetTime及招募冷却用于资格/额度，不足以证明拒绝可按冷却/游戏日自动解除；仍UNTIL_IDENTITY_CHANGE，UNKNOWN不得自动过期；具体缺证业务未解禁，R7/R8未执行 | 统一入口1915a72；历史证据增强为本行所在提交（父1915a72） | 2026-11-13：第一批13文件413/413 PASS；第二批workflow/history、memory Service、gameplay HTTP/UI及完整页面6文件325/325 PASS，0 fail/cancel/skip/todo，6.15秒；新增阻塞/预览持久证据、拒绝关联、身份冲突及Store字节不变测试。两批重叠不累计；合成传输，REAL_UNVERIFIED |
 | W11 PARTIAL | 保留博物馆及古董成长成果；静态复核既有v76 FragExchangePop明确fragItemId为目标古董专属碎片，已纠正请求与D6校验；成本仍为对应品质万能碎片，独立复读验证1:1净入且古董状态不变 | 继续原博物馆结算/领取恢复身份与古董剩余分支 | 博物馆结算及领取缺精确可恢复身份的操作继续冻结；不得把配置或typed提示当最终到账 | 本行所在提交（父ec28846） | 2026-11-13：antique-advanced领域/Service及actions-safety三文件76/76 PASS，0 fail/cancel/skip/todo，17.28秒；保留全部负例并新增旧错误源ID和错误目标ID拒绝。合成传输，REAL_UNVERIFIED |
 
+| W06 PARTIAL | 英雄显式 fragment-exchange 接入原 heroes Function/Registry/OperationService/API/专业页/Workflow；对应品质自有万能碎片按明确数量1:1兑换目标专属碎片，所有英雄及其他库存不变，兑换与升星分别授权；自动混用万能碎片升星仍冻结 | 继续原碎片/背包剩余兑换合同及其他依赖已满足分支 | 其他兑换需各自明确身份、成本与结算证据；无 dedicated Response 的兑换只凭新完整库存净入确认，缺失或迟到均 UNKNOWN，无自动重放 | 本行所在提交（父ac64891）；古董目标ID纠正ac64891 | 2026-11-13：英雄领域/Service/专武回归、D6、合同/注册/设置、HTTP/完整页面九文件478/478 PASS，0 fail/cancel/skip/todo，9.60秒；覆盖四品质固定配置、零初始库存、篡改、父预算、持久意图、重启/隔离/迟到、表单编辑及既有扫荡控件回归。仅本地Codec/合成传输，REAL_UNVERIFIED |\n
 R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的独立真实操作授权。
 
 ## 1. 结论、计数与范围

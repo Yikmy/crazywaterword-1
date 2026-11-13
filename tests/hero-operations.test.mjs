@@ -424,3 +424,74 @@ test('exclusive exact effect cannot be confirmed by a fresh but older source',as
   assert.deepEqual(verifyHeroOperation(operation,facts,stale),{confirmed:false,reason:'EXCLUSIVE_POST_WRITE_SOURCE_PREDATES_PRE_WRITE'});
  }
 });
+
+const exchangeParams = (heroId='A',num=7) => ({action:'fragment-exchange',heroId,num});
+function exchangeCfg(quality='BLUE') {
+ const source={BLUE:'蓝卡万能碎片',PURPLE:'紫卡万能碎片',ORANGE:'橙卡万能碎片',RED:'红卡万能碎片'}[quality];
+ return {tables:{HeroCfg:{data:['A','B'].map(id=>({id,type:'英雄',quality,universalItemId:source}))},ItemCfg:{data:[{id:source,type:'英雄万能碎片',quality},...['A','B'].map(id=>({id:id+'碎片',type:'英雄碎片',quality}))]}}};
+}
+function exchangeFake({quality='BLUE',apply=true,afterWrite,stock=20}={}) {
+ const cfg=exchangeCfg(quality),source=cfg.tables.HeroCfg.data[0].universalItemId;
+ const client=fake({stock:{[source]:stock,A碎片:10,B碎片:3,其他:2}});
+ client.factContext={accountId:'account-A',generation:1,connectionId:'exchange-connection'};client.config=cfg;
+ client.mutate=function(request,body){assert.equal(request,'HeroFragExchangeRequest');wire(request,body);this.writes.push({request,body:structuredClone(body)});if(apply){this.stock.set(source,this.stock.get(source)-body.num);this.stock.set(body.fragItemId,(this.stock.get(body.fragItemId)??0)+body.num);}afterWrite?.(this);};
+ return client;
+}
+const exchangeOptions=(p=exchangeParams(),cfg=exchangeCfg())=>({...options(p,cfg),player:{id:'17',worldId:'9',level:20}});
+const exchangeSurvey=(client,p=exchangeParams())=>surveyHeroOperations(client,wireProtocol,exchangeOptions(p,client.config));
+const exchangePlan=(facts,client,p=exchangeParams())=>planHeroOperations(facts,exchangeOptions(p,client.config));
+async function exchangePrepared(input={}){const client=exchangeFake(input),facts=await exchangeSurvey(client),operation=exchangePlan(facts,client).actions[0];assert.ok(operation);return {client,facts,operation};}
+test('explicit fragment exchange uses target fragment, owned quality source and exact quantity across all four qualities',async()=>{
+ assert.equal(wireProtocol.HeroFragExchangeResponse,undefined);
+ for(const quality of ['BLUE','PURPLE','ORANGE','RED']){
+  const {client,facts,operation}=await exchangePrepared({quality});
+  assert.deepEqual(operation.action,{request:'HeroFragExchangeRequest',response:null,body:{heroId:'A',fragItemId:'A碎片',num:7}});
+  assert.deepEqual(operation.costs,[{id:client.config.tables.HeroCfg.data[0].universalItemId,num:7}]);
+  assert.deepEqual(operation.budgetClaims,{resources:operation.costs,quotas:[],uids:[{type:'hero-fragment-exchange',id:'A'}]});
+  assert.equal(operation.expectedState.targetNum,17);client.mutate(operation.action.request,operation.action.body);
+  const verified=verifyHeroOperation(operation,facts,await exchangeSurvey(client));assert.equal(verified.confirmed,true);assert.equal(verified.responseEvidence,null);
+  const view=viewHeroOperations(facts,exchangeOptions(exchangeParams(),client.config));assert.equal(view.candidates[0].actionType,'FRAGMENT-EXCHANGE');assert.equal(view.fragments[0].sourceNum,20);
+ }
+ const {client,facts}=await exchangePrepared();assert.equal(exchangePlan(facts,client,exchangeParams('A',20)).actions.length,1,'explicit quantity may exceed next star deficit');
+ assert.equal(viewHeroOperations(facts,exchangeOptions({},client.config)).candidates.some(row=>row.actionType==='FRAGMENT-EXCHANGE'),false);
+ assert.equal(exchangePlan(facts,client,{...params('star'),allowUniversal:true}).actions.length,0);
+});
+test('fragment parameters reject injection, invalid quantity and wrong action scopes',()=>{
+ for(const p of [exchangeParams('A',0),exchangeParams('A',-1),exchangeParams('A',1.2),exchangeParams('A',2147483648),exchangeParams('A','7'),{...exchangeParams(),allowUniversal:false},{...exchangeParams(),fragItemId:'A碎片'},{...exchangeParams(),sourceId:'蓝卡万能碎片'},{...exchangeParams(),skillIdx:1},{action:'level',num:1}])assert.throws(()=>validateHeroParameters(p),{code:'INVALID_PARAMETERS'});
+});
+test('fragment exchange requires exact complete fresh state, context, configuration and affordability',async()=>{
+ const mutations=[
+  c=>delete c.factContext,c=>c.factContext.accountId='',c=>c.heroes.push(structuredClone(c.heroes[0])),
+  c=>c.config.tables.HeroCfg.data[0].universalItemId='紫卡万能碎片',
+  c=>c.config.tables.HeroCfg.data[0].type='宠物',c=>c.config.tables.HeroCfg.data.push(c.config.tables.HeroCfg.data[0]),
+  c=>c.config.tables.ItemCfg.data[0].type='英雄碎片',c=>c.config.tables.ItemCfg.data[1].quality='PURPLE',
+  c=>c.config.tables.ItemCfg.data.push(c.config.tables.ItemCfg.data[0]),c=>c.stock.set('蓝卡万能碎片',6),
+  c=>c.stock.set('A碎片',Number.MAX_SAFE_INTEGER)
+ ];
+ for(const mutate of mutations){const client=exchangeFake();mutate(client);assert.equal(exchangePlan(await exchangeSurvey(client),client).actions.length,0);assert.equal(client.writes.length,0);}
+ const {client,facts}=await exchangePrepared();facts.sourceFacts.heroes.provenance.sourceAt-=31000;assert.equal(exchangePlan(facts,client).actions.length,0);
+ const fresh=await exchangeSurvey(client);assert.equal(exchangePlan(fresh,client,{action:'fragment-exchange'}).actions.length,0);
+ for(const table of ['HeroCfg','ItemCfg']){const before=heroDependencyVersions(exchangeOptions());const cfg=exchangeCfg();cfg.tables[table].revision=2;assert.notDeepEqual(heroDependencyVersions(exchangeOptions(exchangeParams(),cfg)),before);}
+});
+test('fragment verification rejects fabricated replies, collateral changes, context and contract tampering',async()=>{
+ for(const change of [c=>c.stock.set('A碎片',16),c=>c.stock.set('蓝卡万能碎片',14),c=>c.stock.set('其他',3),c=>c.heroes[0].star++,c=>c.heroes[1].power++,c=>c.factContext.generation++]){const {client,facts,operation}=await exchangePrepared({afterWrite:change});client.mutate(operation.action.request,operation.action.body);assert.equal(verifyHeroOperation(operation,facts,await exchangeSurvey(client),{success:true}).confirmed,false);}
+ const {client,facts,operation}=await exchangePrepared();client.mutate(operation.action.request,operation.action.body);const after=await exchangeSurvey(client);assert.equal(verifyHeroOperation(operation,facts,after).confirmed,true);
+ for(const change of [o=>o.action.body.fragItemId='蓝卡万能碎片',o=>o.action.body.num++,o=>o.costs[0].num--,o=>o.expectedState.targetNum++,o=>o.budgetClaims.resources=[],o=>o.budgetClaims.uids=[],o=>o.identity='forged',o=>o.configEvidence.ItemCfg.data[0].type='英雄碎片']){const altered=structuredClone(operation);change(altered);assert.equal(verifyHeroOperation(altered,facts,after).confirmed,false);}
+ const old=structuredClone(after);old.sourceFacts.items.provenance.sourceAt=facts.sourceFacts.items.provenance.sourceAt-1;assert.equal(verifyHeroOperation(operation,facts,old).confirmed,false);
+});
+test('fragment shared executor preserves UNKNOWN and reserved source without authoritative effect',async()=>{
+ const {client,operation}=await exchangePrepared({apply:false}),scope={accountId:'account-A',runId:'fragment-run',generation:1,connectionId:'exchange-connection'};
+ const budget={scope,runBudget:createRunBudgetContext({scope,limits:operation.budgetClaims}),batchId:'fragment-batch',limits:operation.budgetClaims,ledger:null};
+ const result=await executeBusinessOperation(client,wireProtocol,operation,{adapter:heroModule,...exchangeOptions(operation.parameters,client.config),allowMutate:true,budget});
+ assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,1);assert.deepEqual(budget.runBudget.snapshot().reserved.resources,operation.costs);
+});
+
+test('fragment independent verifier requires credit even when target was absent from complete inventory',async()=>{
+ const client=exchangeFake();client.stock.delete('A碎片');const before=await exchangeSurvey(client),op=exchangePlan(before,client).actions[0];assert.ok(op);client.stock.set('蓝卡万能碎片',13);assert.equal(verifyHeroOperation(op,before,await exchangeSurvey(client)).confirmed,false);client.stock.set('A碎片',7);assert.equal(verifyHeroOperation(op,before,await exchangeSurvey(client)).confirmed,true);
+});
+test('fragment fixed config maps actual hero qualities and target IDs without invented source defaults',async()=>{
+ const cfg={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))};
+ for(const quality of ['BLUE','PURPLE','ORANGE','RED']){
+  const hc=cfg.tables.HeroCfg.data.find(row=>row.type==='英雄'&&row.quality===quality);assert.ok(hc);const client=exchangeFake({quality});client.config=cfg;client.heroes=[hero(hc.id)];client.stock=new Map([[hc.universalItemId,20]]);const p=exchangeParams(hc.id),op=exchangePlan(await exchangeSurvey(client,p),client,p).actions[0];assert.ok(op);assert.deepEqual(op.action.body,{heroId:hc.id,fragItemId:hc.id+'碎片',num:7});assert.deepEqual(op.costs,[{id:hc.universalItemId,num:7}]);
+ }
+});
