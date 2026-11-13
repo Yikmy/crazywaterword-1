@@ -263,3 +263,47 @@ test('free gift unified intents are explicit, offline, and reject paid or mixed 
   for(const bad of[{...row,packId:'礼包1'},{...row,packId:'合并礼包'},{...row,taskId:1001},{...row,tierId:1},{...row,parameters:{request:'GotFreeDailyPackRequest'}},...(phase==='dailies'?[{kind:'daily-gift',packId:'赠礼'},{...row,action:'perform'}]:[])])assert.throws(()=>compileUnifiedExecution({entry,[phase]:[bad],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'});
  }
 });
+
+
+test('unified preparation persists exact excluded intents and entry without creating executable nodes',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-unified-audit-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const input={entry:'loop',id:'owner-selected-id',tasks:[{kind:'orderDaily',taskId:6}],dailies:[{taskId:1001},{taskId:1010},{taskId:1006}],budget:unifiedBudget};
+ const result=compileUnifiedExecution(input,{modules:unifiedRegistry}),expected={entry:'loop',blocked:result.blocked};
+ assert.deepEqual(result.graph.preparation,expected);assert.equal(result.blocked.length,3);
+ assert.deepEqual(result.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['free-gold']);
+ const store=createWorkflowStore({file,modules:unifiedRegistry});store.save('A',result.graph);
+ const bytes=fs.readFileSync(file,'utf8'),restarted=createWorkflowStore({file,modules:unifiedRegistry});
+ assert.deepEqual(restarted.list('A')[0].preparation,expected);assert.deepEqual(restarted.list('B'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ result.blocked[0].taskId=99;assert.equal(result.graph.preparation.blocked[0].taskId,6);
+ assert.equal(Object.hasOwn(validateWorkflow(graph(),{modules}).workflow,'preparation'),false);
+});
+test('unified audit metadata rejects malformed policies, credentials, duplicate or ambiguous blockers',()=>{
+ const base={entry:'loop',blocked:[{phase:'dailies',index:0,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:1010}]};
+ const variants=[null,{}, {...base,entry:'scheduler'},{...base,policy:{kind:'GAME_DAY'}},{...base,token:'fake'},
+  {...base,blocked:[...base.blocked,...base.blocked]}, {...base,blocked:[{...base.blocked[0],index:48}]},
+  {...base,blocked:[{...base.blocked[0],index:-1}]},{...base,blocked:[{...base.blocked[0],taskId:1006}]},
+  {...base,blocked:[{...base.blocked[0],reason:'ALLOW_RETRY'}]},{...base,blocked:[{...base.blocked[0],request:'InjectedRequest'}]},
+  {...base,blocked:[{...base.blocked[0],phase:'world'}]},{...base,entry:'tasks'}, {...base,blocked:new Array(1)},
+  {...base,blocked:[{...base.blocked[0],taskId:undefined}]},{...base,blocked:Array.from({length:97},()=>base.blocked[0])}];
+ for(const preparation of variants)assert.throws(()=>validateWorkflow({...graph(),preparation},{modules}),{code:'WORKFLOW_INVALID'});
+ const prepared={...graph(),preparation:base};prepared.nodes[2].module='unregistered';assert.throws(()=>validateWorkflow(prepared,{modules}));
+});
+test('original declaration blockers survive completion but never authorize or mask UNKNOWN',async t=>{
+ const preparation={entry:'loop',blocked:[{phase:'tasks',index:0,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED',taskId:6}]};
+ for(const outcome of ['SUCCESS','UNKNOWN']){
+  const f=fixture(),g={...graph(),preparation:structuredClone(preparation)};t.after(async()=>{f.runner.stop();await f.runner.settle();});
+  const pending=await f.runner.start(f.session.id,g);assert.deepEqual(pending.preparation,preparation);assert.equal(pending.status,'AWAITING_AUTHORIZATION');
+  g.preparation.blocked=[];f.runs.push(f.success({finalStatus:outcome}));const result=await f.runner.resume();
+  assert.equal(result.status,outcome==='SUCCESS'?'COMPLETED':'UNKNOWN');assert.deepEqual(result.preparation,preparation);
+  if(outcome==='SUCCESS')assert.match(result.reason,/未纳入/);assert.equal(f.calls.filter(c=>c[0]==='plan').length,1);
+ }
+});
+test('invalid persisted preparation fails closed without replacing existing Workflow evidence',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-unified-corrupt-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules}),preparation={entry:'tasks',blocked:[{phase:'tasks',index:0,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED',taskId:6}]};
+ store.record('A',{runId:'original',workflowId:'wf-1',status:'UNKNOWN',preparation});
+ assert.deepEqual(store.history('A')[0].preparation,preparation);
+ const original=fs.readFileSync(file,'utf8');assert.throws(()=>store.record('A',{runId:'bad',workflowId:'wf-1',status:'UNKNOWN',preparation:{...preparation,policy:'retry'}}));assert.equal(fs.readFileSync(file,'utf8'),original);
+ const raw=JSON.parse(original);raw.accounts.A.history[0].preparation.blocked[0].reason='ALLOW_RETRY';fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');
+ const restarted=createWorkflowStore({file,modules});assert.throws(()=>restarted.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
+});

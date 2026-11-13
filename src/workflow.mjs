@@ -37,11 +37,27 @@ function condition(value) {
   if (value.operator !== 'EXISTS' && !Object.hasOwn(value, 'value')) throw fail('条件比较值缺失');
   if (Object.hasOwn(value, 'value')) { if (value.value !== null && !['string','number','boolean'].includes(typeof value.value)) throw fail('条件比较值必须是标量'); json(value.value); }
 }
+// Declarative compilation provenance only. Never an eligibility, retry or time policy.
+function validatePreparation(value) {
+  exact(value, ['entry','blocked'], '统一入口来源');
+  if (!['tasks','dailies','loop'].includes(value.entry) || !Array.isArray(value.blocked) || value.blocked.length > 96) throw fail('统一入口来源无效');
+  const seen = new Set();
+  for (const row of value.blocked) {
+    exact(row, ['phase','index','reason','taskId'], '未纳入步骤');
+    if (!['tasks','dailies'].includes(row.phase) || value.entry !== 'loop' && row.phase !== value.entry || !Number.isSafeInteger(row.index) || row.index < 0 || row.index >= 48 || !Number.isSafeInteger(row.taskId) || row.taskId < 1) throw fail('未纳入步骤身份无效');
+    const key = row.phase + ':' + row.index;
+    if (seen.has(key)) throw fail('未纳入步骤重复'); seen.add(key);
+    if (row.phase === 'tasks' ? row.reason !== 'DAILY_ORDER_CONTRACT_UNVERIFIED' : !['DAILY_ACTION_CONTRACT_UNVERIFIED','EXACT_PIRATE_TARGET_REQUIRED'].includes(row.reason)) throw fail('未纳入步骤原因无效');
+    if (row.reason === 'EXACT_PIRATE_TARGET_REQUIRED' && row.taskId !== 1010) throw fail('海盗目标缺口身份无效');
+  }
+  return copy(value);
+}
 export function validateWorkflow(input, options = {}) {
-  exact(input, ['version','id','name','nodes','edges','budget'], '工作流');
+  exact(input, ['version','id','name','nodes','edges','budget','preparation'], '工作流');
   if (input.version !== 1 || !text(input.id) || input.id.length > 100 || !text(input.name) || input.name.length > 160 || !Array.isArray(input.nodes) || !input.nodes.length || input.nodes.length > WORKFLOW_LIMITS.nodes || !Array.isArray(input.edges) || input.edges.length > WORKFLOW_LIMITS.edges) throw fail('工作流版本、身份或图大小无效');
   const registry = registryOf(options); let graph; try { graph = copy(input); } catch { throw fail('工作流必须为可复制的 JSON'); } const nodes = new Map();
   if (graph.budget !== undefined) { try { graph.budget=normalizeBudgetClaims(graph.budget); } catch { throw fail('工作流预算必须为有限资源/配额/UID上限'); } }
+  if (graph.preparation !== undefined) graph.preparation = validatePreparation(graph.preparation);
   const fields = {
     START: [], STOP: [], BRANCH: [], WAIT: ['durationMs'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
     CONDITION: ['condition'], RULE: ['condition'], VERIFY: ['module','condition'],
@@ -118,7 +134,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
   let context = null, task = null, starting = false, resuming = false, finishing = false;
   const now = () => new Date(clock()).toISOString();
-  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
+  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
   // Capture both owners: the Console session and the existing client's live
   // connection facts. Reusing a client must never inherit an old workflow.
   const connectionScope = session => [session.id, session.connectionId, session.client?.factContext?.accountId, session.client?.factContext?.generation, session.client?.factContext?.connectionId];
@@ -152,7 +168,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       while (true) {
         current(ctx); if (++ctx.steps > WORKFLOW_LIMITS.steps) throw fail('工作流步骤上限已达到', 'WORKFLOW_UNKNOWN');
         const node = ctx.graph.nodes.find(entry => entry.id === ctx.nodeId);
-        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) ? '工作流到达 STOP；含未执行的阻塞节点，详情见 trace' : '工作流到达 STOP'); break; }
+        if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) || ctx.graph.preparation?.blocked.length ? '工作流到达 STOP；含未执行的阻塞节点或编译未纳入步骤，详情见运行历史' : '工作流到达 STOP'); break; }
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'SURVEY') { ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId })); current(ctx); ctx.surveyModule = node.module; await trace(ctx, node, 'SURVEYED'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'ACTION') {
@@ -327,7 +343,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
         verificationStatus: row.verification?.status ?? null, needsReconciliation: actionNeedsReconciliation(run, row),
         reconciliationStatus: Array.isArray(row.reconciliations) ? row.reconciliations.at(-1)?.status ?? null : null })) });
   }
-  return { accountId, workflowRunId, workflowDefinitionId, status: workflowRun.status,
+  return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
     nodes: [...nodes.values()] };
@@ -342,6 +358,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
         || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
+    try { if (run.preparation !== undefined) validatePreparation(run.preparation); } catch { return false; }
     if (run.trace === undefined) return true;
     if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
@@ -392,8 +409,9 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }
   function save(accountId, graph) { const validated = validateWorkflow(graph, { modules }).workflow, raw = read(), account = entry(raw, accountId); account.workflows = [validated, ...account.workflows.filter(existing => existing.id !== validated.id)]; write(raw); return copy(validated); }
   function record(accountId, run) {
-    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget'];
+    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
+    if (run.preparation !== undefined) validatePreparation(run.preparation);
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;
     if (safe.trace !== undefined) { if (!Array.isArray(safe.trace) || safe.trace.length > WORKFLOW_LIMITS.steps) throw fail('工作流历史过大'); if (safe.trace.some(row => !plain(row) || !text(row.nodeId) || !TYPES.has(row.type) || !text(row.result) || row.timestamp !== undefined && !text(row.timestamp))) throw fail('工作流trace必须是有限状态记录'); safe.trace = safe.trace.map(row => ({...Object.fromEntries(['nodeId','type','result','timestamp'].filter(key => row?.[key] !== undefined).map(key => [key, row[key]])),...traceEvidence(row)})); }

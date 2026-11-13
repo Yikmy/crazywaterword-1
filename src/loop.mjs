@@ -147,7 +147,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         }else{
           exact(row,['kind','taskId']);
           if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
-          if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'});continue;}
+          if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
           module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
         }
@@ -181,7 +181,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,selection:step.selection});
   }
   add({id:'stop',type:'STOP'});
-  const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget};
+  const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget,preparation:{entry:input.entry,blocked:structuredClone(blocked)}};
   const validated=validateWorkflow(graph,{modules}).workflow;
   return {entry:input.entry,graph:steps.length?validated:null,blocked};
 }

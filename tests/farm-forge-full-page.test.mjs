@@ -500,7 +500,7 @@ test('all legacy entry buttons prepare the shared Workflow without game reads or
  }
  const pending=h.node('wf-unified-prepare').click();await tick();
  const request=h.pending('/api/workflows/prepare');assert.ok(request);assert.equal(JSON.parse(request.options.body).entry,'loop');
- h.respond('/api/workflows/prepare',{accountId:'A',blocked:[{reason:'EXACT_PIRATE_TARGET_REQUIRED'}],graph:{version:1,id:'unified-loop',name:'Unified loop',nodes:[{id:'start',type:'START'},{id:'daily',type:'ACTION',module:'free-gold',selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'daily'},{from:'daily',to:'stop'}]}});await pending;
+ h.respond('/api/workflows/prepare',{accountId:'A',blocked:[{phase:'dailies',index:0,taskId:1010,reason:'EXACT_PIRATE_TARGET_REQUIRED'}],graph:{version:1,id:'unified-loop',name:'Unified loop',preparation:{entry:'loop',blocked:[{phase:'dailies',index:0,taskId:1010,reason:'EXACT_PIRATE_TARGET_REQUIRED'}]},nodes:[{id:'start',type:'START'},{id:'daily',type:'ACTION',module:'free-gold',selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'daily'},{from:'daily',to:'stop'}]}});await pending;
  assert.equal(h.node('wf-id').value,'unified-loop');assert.match(h.node('wf-unified-blocked').textContent,/EXACT_PIRATE_TARGET_REQUIRED/);assert.equal(h.confirmations.length,0);assert.equal(h.node('wf-authorize').disabled,true);
 });
 test('late unified preparation cannot import another account graph',async()=>{
@@ -635,4 +635,20 @@ test('free gift form prepares only constant free pack with fresh survey and no a
  kind.value='daily-gift';input.value='';const before=h.requests.length;prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),{kind:'daily-gift',packId:'赠礼'});assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
  const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'daily-gift',packId:'赠礼'}});h.respond('/api/gameplay/survey',data(spec));await survey;assert.match(h.node('gp-task-rewards-facts').textContent,/服务器原样标记 1/);
  h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+
+
+test('unified saved graph and history retain original excluded declarations without dispatch or stale-account display',async()=>{
+ const h=await boot(),preparation={entry:'loop',blocked:[{phase:'tasks',index:0,taskId:6,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'}]};
+ const graph={version:1,id:'saved-unified',name:'Saved mixed declaration',preparation,nodes:[{id:'start',type:'START'},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'stop'}]};
+ const loading=h.node('wf-load').click();await tick();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[graph],history:[{accountId:'A',runId:'persisted',workflowId:graph.id,status:'RECOVERED_STOPPED'}]});await loading;
+ h.node('wf-saved').value=graph.id;await h.node('wf-open').click();assert.match(h.node('wf-unified-blocked').textContent,/DAILY_ORDER_CONTRACT_UNVERIFIED/);
+ assert.deepEqual(JSON.parse(h.node('wf-json').value).preparation,preparation);
+ const history={accountId:'A',workflowRunId:'persisted',workflowDefinitionId:graph.id,status:'RECOVERED_STOPPED',recovered:true,readOnly:true,resumable:false,unlinkedOperationCount:0,preparation,nodes:[]};
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',history);await reading;
+ assert.match(h.node('wf-history-detail').textContent,/原声明入口：loop.*未纳入 1 项/);assert.match(h.node('wf-history-detail').textContent,/任务 6.*未执行.*DAILY_ORDER/);
+ const late=h.node('wf-history-read').click();await tick();h.run("selectAccount('B')");h.respond('/api/workflows/history',history);await late;
+ assert.equal(h.node('wf-unified-blocked').textContent,'');assert.equal(h.node('wf-history-detail').textContent,'');
+ assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/plan').length,0);
 });

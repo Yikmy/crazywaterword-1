@@ -54,7 +54,7 @@ function fixture(name) {
       if (body !== undefined) req.emit('data', JSON.stringify(body));
       req.emit('end');
     });
-  function ready() {
+  function ready({apply=true}={}) {
     let formation = { presetId: 1, petUid: '9007199254740993', heroPositions: [{ heroId: 'tank', pos: { x: 1, y: 3 } }] };
     const client = new EventEmitter();
     Object.assign(client, { connected: true, pending: [], watchers: [], uncertainWrites: new Set(),
@@ -64,7 +64,7 @@ function fixture(name) {
         if (name === 'GetFormationRequest') return { formation: structuredClone(formation) };
         if (name === 'MyFormationPresetRequest') return { ids: [2] };
         if (name === 'AllHeroRequest') return { heroes: [{ heroId: 'tank' }] };
-        if (name === 'SaveFormationRequest') { formation = structuredClone(body.formation); return { formation }; }
+        if (name === 'SaveFormationRequest') { if(apply)formation = structuredClone(body.formation); return { formation }; }
         throw Error('Unexpected synthetic request ' + name);
       },
     });
@@ -248,4 +248,33 @@ test('Console cannot replace a known missing Workflow Store or run the next game
   assert.equal(fs.existsSync(workflowFile),false);assert.deepEqual(f.sent,[]);assert.deepEqual(f.history.list('A'),[]);
  }finally{fs.writeFileSync(workflowFile,bytes);}
  assert.equal((await f.request('/api/workflows?account=A')).status,200);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
+});
+
+
+for(const apply of[true,false])test('unified compilation exclusions survive exact authorized HTTP execution and read-only restart '+apply,async t=>{
+ const f=fixture('unified-audit-'+apply);t.after(()=>f.close());
+ const first=await f.request('/api/workflows?account=A'),headers={'x-cw-csrf':first.data.csrfToken};
+ const input={entry:'loop',id:'unified-audit-'+apply,tasks:[{kind:'orderDaily',taskId:6}],dailies:[{taskId:1001}],world:[{module:'formation',parameters:{presetId:2}}],budget:{resources:[],quotas:[],uids:[]}};
+ const compiled=await f.request('/api/workflows/prepare?account=A',{headers,body:input});assert.equal(compiled.status,200,compiled.text);
+ const graph=compiled.data.graph,preparation=structuredClone(graph.preparation);assert.equal(preparation.blocked.length,2);assert.deepEqual(f.sent,[]);assert.equal(f.sessions.size,0);
+ assert.equal((await f.request('/api/workflows/save?account=A',{headers,body:{graph}})).status,200);
+ assert.deepEqual(f.workflowStore.list('A').find(g=>g.id===graph.id).preparation,preparation);
+ assert.equal((await f.request('/api/workflows/start?account=A',{headers,body:{graph}})).status,409);assert.deepEqual(f.sent,[]);
+ const session=f.ready({apply});assert.equal((await f.request('/api/workflows/start?account=A',{headers,body:{graph}})).status,200);
+ const pending=(await waitStatus(f,'AWAITING_AUTHORIZATION')).status;assert.deepEqual(pending.preparation,preparation);
+ assert.equal(f.sent.includes('SaveFormationRequest'),false);assert.equal(pending.plan.actions.length,1);
+ const changed=structuredClone(graph);changed.preparation.blocked=[];f.workflowStore.save('A',changed);
+ const plan=pending.plan,permit=f.operations.authorize(session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(a=>a.actionId),resourceBudget:plan.resourceBudget,confirm:true});
+ f.operations.execute(session,permit);await f.operations.settle('A');await f.request('/api/workflows/resume?account=A',{headers,body:{}});
+ let read;for(let i=0;i<30;i++){read=await f.request('/api/workflows?account=A');if(read.data.status.status===(apply?'COMPLETED':'UNKNOWN'))break;await new Promise(r=>setImmediate(r));}
+ assert.equal(read.data.status.status,apply?'COMPLETED':'UNKNOWN',read.text);
+ assert.equal(f.sent.filter(n=>n==='SaveFormationRequest').length,1);
+ const url=historyUrl('A',pending.runId),before=await f.request(url);assert.deepEqual(before.data.preparation,preparation);assert.equal(before.data.nodes.length,1);
+ assert.equal(before.data.nodes[0].batches[0].finalStatus,apply?'SUCCESS':'UNKNOWN');if(apply)assert.match(read.data.status.reason,/未纳入/);
+ const bytes=[workflowFile,f.file].map(file=>fs.readFileSync(file,'utf8')),sent=f.sent.slice();
+ const restarted=createWorkflowStore({file:workflowFile,modules:f.operations.modules}),saved=restarted.history('A',{runId:pending.runId})[0];
+ assert.deepEqual(saved.preparation,preparation);assert.equal(saved.resumable,false);assert.equal(restarted.history('B',{runId:pending.runId}).length,0);
+ const projected=projectWorkflowExecutionHistory('A',saved,f.history.list('A'));assert.deepEqual(projected.preparation,preparation);assert.equal(projected.resumable,false);
+ assert.equal((await f.request(historyUrl('B',pending.runId))).status,404);assert.deepEqual(f.sent,sent);assert.deepEqual([workflowFile,f.file].map(file=>fs.readFileSync(file,'utf8')),bytes);
+ if(!apply){await assert.rejects(f.operations.surveyModule(session,'formation',{presetId:2}));assert.equal(f.sent.filter(n=>n==='SaveFormationRequest').length,1);}
 });
