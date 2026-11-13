@@ -233,3 +233,24 @@ test('Dailies claim is an explicit original task-rewards Function intent, preser
   assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[row],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'});
  }
 });
+
+
+test('Tasks Dailies and Loop compile explicit daily activity tiers through the same Function offline',()=>{
+ for(const entry of['tasks','dailies','loop']){
+  const row=entry==='tasks'?{kind:'daily-activity',tierId:2}:{kind:'daily-activity',tierId:2,action:'claim'};
+  const phase=entry==='tasks'?'tasks':'dailies',result=compileUnifiedExecution({entry,[phase]:[row],budget:unifiedBudget},{modules:unifiedRegistry});
+  assert.deepEqual(result.blocked,[]);const action=result.graph.nodes.find(n=>n.type==='ACTION');assert.equal(action.module,'task-rewards');assert.deepEqual(action.parameters,{kind:'daily-activity',tierId:2});assert.deepEqual(action.selection,{unique:true});assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+ }
+ const mixed=compileUnifiedExecution({entry:'loop',tasks:[{kind:'main',taskId:1}],dailies:[{kind:'daily-activity',tierId:2,action:'claim'},{taskId:1006},{taskId:1001}],budget:unifiedBudget},{modules:unifiedRegistry});
+ assert.deepEqual(mixed.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['task-rewards','task-rewards','free-gold']);assert.deepEqual(mixed.blocked,[{phase:'dailies',index:2,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:1001}]);
+});
+
+test('daily activity entry refuses implicit claims, mixed identities and arbitrary driver parameters',()=>{
+ for(const phase of['tasks','dailies']){
+  const base={kind:'daily-activity',tierId:2,...(phase==='dailies'?{action:'claim'}:{})};
+  const rows=[{...base,tierId:0},{...base,tierId:'2'},{...base,tierId:2147483648},{...base,tierId:null},{...base,taskId:1001},{...base,index:[2]},{...base,kind:'weekly-activity'}];
+  if(phase==='dailies')rows.push({kind:'daily-activity',tierId:2},{...base,action:'perform'},{...base,action:null},{...base,parameters:{uid:1}},{...base,parameters:{request:'DrawDailyRewardRequest'}},{...base,parameters:null},{...base,parameters:[]});
+  else rows.push({...base,action:'claim'},{...base,parameters:{}});
+  for(const row of rows)assert.throws(()=>compileUnifiedExecution({entry:phase,[phase]:[row],budget:unifiedBudget},{modules:unifiedRegistry}),{code:'WORKFLOW_INVALID'},JSON.stringify(row));
+ }
+});

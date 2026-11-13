@@ -362,3 +362,30 @@ test('daily activity uses original Workflow and parent UID budget without automa
  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
  let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(run.plan);run=await runner.resume();assert.equal(run.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'world-0-1');assert.equal(f.state.writes.length,1);
 });
+
+
+for(const entry of['tasks','dailies','loop'])for(const apply of[true,false])test('compiled '+entry+' activity shares authorization, UID history and '+(apply?'verified single claim':'UNKNOWN stop'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{tierId:2,apply}),read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),row=read.view.candidates[0];
+ const phase=entry==='tasks'?'tasks':'dailies',intent=entry==='tasks'?{kind:'daily-activity',tierId:2}:{kind:'daily-activity',tierId:2,action:'claim'};
+ const compiled=compileUnifiedExecution({entry,[phase]:[intent],...(entry==='loop'?{rounds:2,tasks:[{kind:'daily-activity',tierId:2}]}:{}),budget:row.budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(run.plan);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);
+ const records=f.durable.list(f.session.id);assert.equal(records.length,1);assert.equal(records[0].workflowNodeId,(entry==='dailies'?'dailies':'tasks')+'-0-1');assert.equal(records[0].workflowDefinitionId,compiled.graph.id);assert.deepEqual(records[0].runBudget.reserved.uids,row.budgetClaims.uids);
+ if(apply&&entry==='loop')assert.ok(run.trace.some(r=>r.result==='BLOCKED_NO_EXECUTABLE_CANDIDATE'));
+ if(!apply){
+  const next=serviceFixture(t,{tierId:2,file:f.file});next.state.daily.dailyResetTime=3000;
+  const restarted=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:next.service,claim:(_id,runId,options)=>next.service.claimWorkflow(next.session,runId,options),getSession:()=>next.session});t.after(()=>restarted.stop());
+  await assert.rejects(restarted.start(next.session.id,compiled.graph),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);assert.equal(next.durable.list(next.session.id).length,1);
+ }
+});
+
+test('manual activity refusal remains shared across Dailies and Tasks reconnection aliases',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{tierId:2,apply:false});
+ f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};const plan=await f.plan();assert.equal((await f.run(plan)).record.finalStatus,'REJECTED');
+ for(const entry of['tasks','dailies','loop']){
+  const next=serviceFixture(t,{tierId:2,file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement-'+entry;
+  const phase=entry==='tasks'?'tasks':'dailies',intent=phase==='tasks'?{kind:'daily-activity',tierId:2}:{kind:'daily-activity',tierId:2,action:'claim'};
+  const compiled=compileUnifiedExecution({entry,[phase]:[intent],budget:plan.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:next.service,claim:(_id,runId,options)=>next.service.claimWorkflow(next.session,runId,options),getSession:()=>next.session});t.after(()=>runner.stop());
+  const run=await runner.start(next.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(next.state.writes.length,0);assert.equal(next.durable.list(next.session.id).length,1);
+ }
+});

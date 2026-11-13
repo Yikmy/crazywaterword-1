@@ -618,3 +618,12 @@ test('daily activity prepare uses exact tier field, clears preview and ignores o
  const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'daily-activity',tierId:2}});h.respond('/api/gameplay/survey',data(spec));await survey;assert.match(h.node('gp-task-rewards-facts').textContent,/日活跃宝箱/);assert.match(h.node('gp-task-rewards-facts').textContent,/2000/);
  h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");input.value='3';prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+
+test('assembled Dailies activity intent preserves tier identity and only prepares an account-bound graph',async()=>{
+ const h=await boot(),opening=h.node('dailies-unified').click();await tick();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf-A',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
+ const intent={entry:'dailies',dailies:[{kind:'daily-activity',tierId:2,action:'claim'}],budget:{resources:[],quotas:[],uids:[{type:'daily-activity-reward',id:'2000:2'}]}};
+ h.node('wf-unified-intent').value=JSON.stringify(intent);const pending=h.node('wf-unified-prepare').click();await tick();assertMutation(h.pending('/api/workflows/prepare'),'/api/workflows/prepare',intent);
+ const graph={version:1,id:'unified-dailies-activity',name:'Activity claim',budget:intent.budget,nodes:[{id:'start',type:'START'},{id:'dailies-0-1',type:'ACTION',module:'task-rewards',parameters:{kind:'daily-activity',tierId:2},selection:{unique:true}},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'dailies-0-1'},{from:'dailies-0-1',to:'stop'}]};
+ h.respond('/api/workflows/prepare',{accountId:'A',blocked:[],graph});await pending;assert.equal(h.node('wf-id').value,graph.id);assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.ok(PAGE.includes('kind:"daily-activity",tierId:精确档位ID,action:"claim"'));
+});

@@ -137,18 +137,27 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
       if(phase==='tasks'){
-        exact(row,['kind','taskId']);
-        if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
-        if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'});continue;}
-        if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
-        module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
+        if(row?.kind==='daily-activity'){
+          exact(row,['kind','tierId']);
+          if(!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647)invalid('日活跃领奖需要精确档位ID');
+          module='task-rewards';parameters={kind:'daily-activity',tierId:row.tierId};
+        }else{
+          exact(row,['kind','taskId']);
+          if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
+          if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'});continue;}
+          if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
+          module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
+        }
       } else if(phase==='dailies'){
-        exact(row,['taskId','parameters','action']);
-        if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Dailies 需要精确任务ID');
+        const activity=row?.kind==='daily-activity';
+        exact(row,activity?['kind','tierId','parameters','action']:['taskId','parameters','action']);
+        if(activity){
+          if(row.action!=='claim'||!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647)invalid('日活跃宝箱仅允许明确action=claim与精确档位ID');
+        }else if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Dailies 需要精确任务ID');
         if(Object.hasOwn(row,'action')&&!['perform','claim'].includes(row.action))invalid('Dailies action 只允许 perform 或 claim');
         if(row.action==='claim'){
-          if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确taskId，不接受驱动或协议参数');
-          module='task-rewards';parameters={kind:'daily',taskId:row.taskId};
+          if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确任务或档位ID，不接受驱动或协议参数');
+          module='task-rewards';parameters=activity?{kind:'daily-activity',tierId:row.tierId}:{kind:'daily',taskId:row.taskId};
         }else{
           module=({1002:'free-recruit',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep'})[row.taskId];
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}

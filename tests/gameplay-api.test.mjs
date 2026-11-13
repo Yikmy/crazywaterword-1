@@ -389,3 +389,17 @@ for(const unconfirmed of[false,true])test('daily activity HTTP shares original e
   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,403);assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);if(unconfirmed)assert.equal((await app.survey()).status,409);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+
+test('activity unified HTTP prepares exact tier without a session or authorization and rejects weekly or driver injection',async()=>{
+ const app=await harness({includeDailyActivity:true});try{
+  await app.call('/api/workflows');
+  for(const entry of['tasks','dailies','loop']){
+   const phase=entry==='tasks'?'tasks':'dailies',row=phase==='tasks'?{kind:'daily-activity',tierId:2}:{kind:'daily-activity',tierId:2,action:'claim'},payload={entry,[phase]:[row],budget:{resources:[],quotas:[],uids:[]}};
+   const prepared=await app.call('/api/workflows/prepare',{body:payload});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal(prepared.data.accountId,'A');assert.deepEqual(prepared.data.blocked,[]);const action=prepared.data.graph.nodes.find(n=>n.type==='ACTION');assert.equal(action.module,'task-rewards');assert.deepEqual(action.parameters,{kind:'daily-activity',tierId:2});
+   assert.equal((await app.call('/api/workflows/prepare',{body:payload,authorized:false})).status,403);
+  }
+  for(const row of[{kind:'daily-activity',tierId:2},{kind:'daily-activity',tierId:2,action:'perform'},{kind:'daily-activity',tierId:2,action:'claim',taskId:1001},{kind:'daily-activity',tierId:2,action:'claim',parameters:{request:'DrawDailyRewardRequest'}},{kind:'weekly-activity',tierId:2,action:'claim'}])assert.equal((await app.call('/api/workflows/prepare',{body:{entry:'dailies',dailies:[row],budget:{resources:[],quotas:[],uids:[]}}})).status,400);
+  assert.equal(app.sessions.size,0);assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
