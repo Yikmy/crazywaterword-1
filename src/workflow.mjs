@@ -305,7 +305,7 @@ function repeatAfterStop(ctx,node){
           }
           let plan;
           if(ctx.graph.runPolicy){ctx.actionPlans++;await onUpdate(getStatus());current(ctx);}
-          try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId })); current(ctx); }
+          try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId, signal: ctx.cancel.signal })); current(ctx); }
           catch (error) {
             current(ctx);
             if (node.selection?.unique === true && error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY', {actionId:selectedId,blockedReasons:['REJECTION_MEMORY_ACTIVE']}); ctx.nodeId = next(ctx); continue; }

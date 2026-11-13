@@ -48,7 +48,7 @@ test('workflow scope is internal and onUpdate records before an authorization pa
  const plan={batchId:'scope-batch',planHash:'scope-hash',accountId:session.id,module:'fixture',actions:[{actionId:'operation-1'}]};
  const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(...args)=>{calls.push(['survey',args]);return {}},plan:async(...args)=>{calls.push(['plan',args]);return plan},history:()=>({runs:[]})},claim:()=>true,onUpdate:async state=>{updates.push(state)}});
  const result=await runner.start(session.id,graph());assert.equal(result.status,'AWAITING_AUTHORIZATION');
- const runId=result.runId,signal=calls[0][1][3].signal;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);assert.notEqual(signal,session.abort.signal);assert.deepEqual(calls[0][1][3],{workflowId:runId,signal});assert.deepEqual(calls[1][1][2],{workflowId:runId});
+ const runId=result.runId,signal=calls[0][1][3].signal;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);assert.notEqual(signal,session.abort.signal);assert.deepEqual(calls[0][1][3],{workflowId:runId,signal});assert.deepEqual(calls[1][1][2],{workflowId:runId,signal});
  assert.equal(updates[0].status,'STARTING');assert.equal(updates.at(-1).status,'AWAITING_AUTHORIZATION');assert.equal(updates.at(-1).plan.batchId,'scope-batch');runner.stop();await runner.settle();assert.equal(signal.aborted,true);assert.equal(session.abort.signal.aborted,false);
 });
 test('persistence failure stops before the next node and releases the claim',async()=>{

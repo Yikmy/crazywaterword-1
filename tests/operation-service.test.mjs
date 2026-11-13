@@ -145,3 +145,38 @@ test('history failure before dispatch sends nothing; failure after dispatch bloc
   f = fixture({ history: { unresolved: () => false, list: () => [], put: record => { writes++; if (record.actions.some(row => row.result === 'SUCCESS')) fail(); } } }); a = f.session('A');
   try { start(f, a, await createPlan(f, a, ['order-a', 'order-b'], 'Automatic')); await f.service.settle('A'); assert.equal(f.calls.length, 1); assert.equal(f.service.status('A').blocked, true); await assert.rejects(createPlan(f, a), /未决/); } finally { f.cleanup(); }
 });
+
+test('Workflow stop cancels ACTION planning reads before continuation and never creates a batch',async t=>{
+ const {createWorkflowRunner}=await import('../src/workflow.mjs'),{awaitExecution}=await import('../src/execution.mjs');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-plan-cancel-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const history=createExecutionHistory({file:path.join(dir,'history.json')}),reads=[];let release,entered,planned=0,signal;
+ const gate=new Promise(resolve=>release=resolve),waiting=new Promise(resolve=>entered=resolve);
+ const adapter={id:'fixture',async survey(client,_protocol,options){signal=options.signal;reads.push('first');entered();await awaitExecution(gate,client,options);reads.push('second');return {stockReliable:true,stock:new Map()};},view:()=>({candidates:[]}),plan(){planned++;return {actions:[]};},verify(){}};
+ const modules={fixture:adapter},service=createOperationService({protocol:{},modules,history,getConfig:()=>({}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:{enabled:true}})}}),session={id:'offline-plan',player:{playerId:'1',worldId:'2'},generation:1,connectionId:'offline-plan',client:{connected:true,pending:[],watchers:[]},abort:new AbortController(),state:'READY',loop:{running:false},busy:null};
+ const graph={version:1,id:'planning-cancel',name:'Planning cancellation',budget:{resources:[],quotas:[],uids:[]},nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'fixture',selection:{actionId:'one'}},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};
+ const runner=createWorkflowRunner({modules,operations:service,getSession:()=>session,claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options)});
+ t.after(async()=>{release();runner.stop();await runner.settle();});
+ const running=runner.start(session.id,graph);await waiting;runner.stop();assert.equal((await running).status,'CANCELLED');assert.equal(session.abort.signal.aborted,false);
+ release();await new Promise(resolve=>setTimeout(resolve,40));assert.deepEqual(reads,['first']);assert.equal(signal.aborted,true);assert.equal(planned,0);assert.equal(service.view(session.id).lastPlan,null);assert.deepEqual(history.list(session.id),[]);assert.equal(session.busy,null);
+});
+
+test('cancelled planning caller or session performs no investigation and creates no authorization or history',async()=>{
+ for(const source of ['caller','session']){
+  const f=fixture(),session=f.session('offline-'+source),abort=new AbortController();
+  try{(source==='caller'?abort:session.abort).abort();await assert.rejects(f.service.plan(session,{module:'orders',mode:'Manual',selections:['order-a']},{signal:abort.signal}),{code:'CANCELLED'});
+   assert.equal(f.surveys(),0);assert.equal(f.calls.length,0);assert.equal(f.service.view(session.id).lastPlan,null);assert.deepEqual(f.history.list(session.id),[]);assert.equal(session.busy,null);
+  }finally{f.cleanup();}
+ }
+});
+
+test('late planning facts from an adapter ignoring cancellation cannot replace a prior plan or acquire a permit',async()=>{
+ for(const source of ['caller','session']){
+  let block=false,entered,release;const waiting=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+  const f=fixture({survey:async()=>{if(block){entered();await gate;}return {stockReliable:true,stock:new Map([['wood',100]])};}}),session=f.session('offline-late-'+source),abort=new AbortController();
+  try{
+   const original=await createPlan(f,session);block=true;
+   const planning=f.service.plan(session,{module:'orders',mode:'Manual',selections:['order-b']},{signal:abort.signal});await waiting;(source==='caller'?abort:session.abort).abort();release();await assert.rejects(planning,{code:'CANCELLED'});
+   assert.deepEqual(f.service.view(session.id).lastPlan,original);assert.equal(f.calls.length,0);assert.deepEqual(f.history.list(session.id),[]);assert.equal(session.busy,null);
+  }finally{release();f.cleanup();}
+ }
+});

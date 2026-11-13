@@ -323,7 +323,9 @@ function authorizeWorkflowPlan(session,payload){
   }
   function activateWorkflowEvent(session,runId,event){const parent=workflowBudgets.get(session.id);assertWorkflowApprovalScope(session,parent);if(parent.runId!==runId||!parent.eventCursor||parent.event!==null)throw error('事件运行不匹配或已经消费','AUTHORIZATION_REQUIRED',403);const source=workflowLevelEvent(session,parent.eventCursor,parent.contract.graph.runPolicy.eventTrigger,event?.cursor);if(!source||operationDigest(source)!==operationDigest(event))throw error('事件缺少独立可信游标来源','AUTHORIZATION_REQUIRED',403);parent.event=clone(source);}
   function assertWorkflowTime(session,runId){const parent=workflowBudgets.get(session.id);if(parent?.runId===runId&&parent.eventCursor){if(parent.event===null)throw error('业务事件尚未触发，禁止提前计划或派发','WORKFLOW_EVENT_PENDING');workflowLevelEvent(session,parent.eventCursor,parent.contract.graph.runPolicy.eventTrigger,parent.event.cursor);}if(parent?.runId===runId&&parent.notBefore!==null&&clock()<Date.parse(parent.notBefore))throw error('尚未到明确触发时间，禁止提前计划或派发','SCHEDULE_NOT_DUE');}
-  async function plan(session, payload, { workflowId = null } = {}) {
+  async function plan(session, payload, { workflowId = null, signal = null } = {}) {
+    const planSignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
+    assertExecutionActive(session.client,{signal:planSignal});
     if(workflowId)assertWorkflowTime(session,workflowId);
     const bound=workflowNodes.get(session),workflowContext=workflowId&&bound?.runId===workflowId?{workflowId:bound.workflowId,nodeId:bound.nodeId,...(bound.round!==undefined?{round:bound.round}:{})}:null;
     if(workflowContext!==null){exact(workflowContext,['workflowId','nodeId','round']);if(!workflowId||['workflowId','nodeId'].some(key=>typeof workflowContext[key]!=='string'||!workflowContext[key]||workflowContext[key].length>100))throw error('工作流关联上下文无效','INVALID_INPUT',400);}
@@ -342,9 +344,10 @@ function authorizeWorkflowPlan(session,payload){
       const config = getConfig(), rules = loadRules(session.id).config;
       const moduleConfig = adapter ? moduleSettings.get(session.id,module).config : null;
       const production = loadProduction(session.id).config;
-      const options = { config, rules, mode, productionPolicy: production, player: session.player, signal: session.abort.signal, parameters: normalizedParameters, moduleConfig };
+      const options = { config, rules, mode, productionPolicy: production, player: session.player, signal: planSignal, parameters: normalizedParameters, moduleConfig };
       const memorySourceAt=clock();
       const facts = await (adapter ? adapter.survey(client,protocol,options) : survey(client,protocol,options));
+      assertExecutionActive(client,options);
       current(session, generation, client);
       if((session.workflowOwner??null)!==workflowId || operationDigest(executionContext(session))!==contextHash)throw error('工作流或账号角色/世界身份已变化', 'CANCELLED');
       if (facts.stockReliable !== true || !(facts.stock instanceof Map)) throw error('库存来源不可靠，禁止计划');
