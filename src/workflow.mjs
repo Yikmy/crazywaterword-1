@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { toSnapshotJson } from './game.mjs';
 import { redact } from './security.mjs';
 import { normalizeBudgetClaims } from './resource-ledger.mjs';
 import { validateFunctionParameters } from './function-contracts.mjs';
@@ -121,9 +122,10 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   // Capture both owners: the Console session and the existing client's live
   // connection facts. Reusing a client must never inherit an old workflow.
   const connectionScope = session => [session.id, session.connectionId, session.client?.factContext?.accountId, session.client?.factContext?.generation, session.client?.factContext?.connectionId];
+  const roleScope = session => [session.player?.playerId, session.player?.worldId].map(value => { const normalized=toSnapshotJson(value); return typeof normalized==='number'||typeof normalized==='string'?String(normalized):JSON.stringify(normalized); });
   function current(ctx) {
     if (ctx.cancel.signal.aborted || signal?.aborted || context !== ctx || ![...ACTIVE].includes(ctx.status) || ctx.session.abort?.signal?.aborted) throw fail('工作流已取消或账号会话失效', 'CANCELLED');
-    if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || ctx.client?.connected === false || ctx.session.abort?.signal !== ctx.sessionSignal || connectionScope(ctx.session).some((value,index) => value !== ctx.connectionScope[index]) || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话或连接已切换', 'CANCELLED');
+    if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || ctx.client?.connected === false || ctx.session.abort?.signal !== ctx.sessionSignal || connectionScope(ctx.session).some((value,index) => value !== ctx.connectionScope[index]) || roleScope(ctx.session).some((value,index) => value !== ctx.roleScope[index]) || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话或连接已切换', 'CANCELLED');
   }
   async function relinquish(ctx) { if (!ctx.claimed) return; ctx.claimed = false; if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId); }
   async function finish(ctx, status, reason) {
@@ -203,7 +205,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     const validated = validateWorkflow(graph, { modules }); starting = true;
     try {
       const session = await getSession(accountId); if (!session || session.id !== accountId) throw fail('工作流账号会话不存在');
-      const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
+      const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
       context = ctx; ctx.externalAbort = () => { ctx.cancel.abort(); if (ctx.status === 'AWAITING_AUTHORIZATION') task = finish(ctx, 'CANCELLED', '外部信号或账号会话已取消工作流').then(getStatus); }; signal?.addEventListener('abort', ctx.externalAbort, { once: true }); ctx.sessionSignal?.addEventListener('abort', ctx.externalAbort, { once: true });
       try { current(ctx); const lock = await claim(accountId, ctx.runId, {limits:ctx.graph.budget??null}); if (lock === false) throw fail('账号已有互斥任务', 'WORKFLOW_BUSY'); ctx.claimed = true; ctx.releaseClaim = typeof lock === 'function' ? lock : null; current(ctx); await onUpdate(getStatus()); current(ctx); }
       catch (error) { await finish(ctx, error.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', error.message); throw error; }

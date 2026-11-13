@@ -211,3 +211,12 @@ test('connection replacement during History read cannot consume an old completed
  f.session.connectionId='second';resolveHistory({runs:[f.success()]});
  const state=await resuming;assert.equal(state.status,'CANCELLED');assert.equal(state.trace.some(row=>row.type==='VERIFY'),false);assert.equal(state.plan,null);assert.equal(f.released(),1);
 });
+
+for(const field of ['playerId','worldId'])test('workflow cannot consume old confirmation after same-connection '+field+' replacement',async()=>{
+ const f=fixture();f.session.player={playerId:'9007199254740993',worldId:'9'};await f.runner.start(f.session.id,graph());f.runs.push(f.success());f.session.player[field]=field==='playerId'?'9007199254740994':'10';
+ assert.equal(f.runner.getLiveRunId(),null);assert.equal((await f.runner.resume()).status,'CANCELLED');assert.equal(f.runner.getStatus().trace.some(row=>row.type==='VERIFY'),false);assert.equal(f.released(),1);
+});
+
+test('workflow role scope preserves exact int64 identity across equivalent Long and string representations',async()=>{
+ const f=fixture();f.session.player={playerId:{low:1,high:2097152,unsigned:false},worldId:'9'};await f.runner.start(f.session.id,graph());f.session.player.playerId='9007199254740993';f.runs.push(f.success());assert.equal((await f.runner.resume()).status,'COMPLETED');assert.equal(f.released(),1);
+});

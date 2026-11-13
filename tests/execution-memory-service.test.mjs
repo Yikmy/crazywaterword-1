@@ -154,12 +154,12 @@ test('Dailies UNKNOWN stops Loop and remains blocked after restart',async()=>{
  }finally{runner?.stop();next?.stop();await runner?.settle();await next?.settle();await restarted?.cleanup();await f.cleanup();}
 });
 
-for(const entry of ['tasks','dailies','loop'])for(const outcome of ['SUCCESS','UNKNOWN'])test('unified '+entry+' cancels after same-client reconnection while preserving '+outcome+' History',async()=>{
+for(const entry of ['tasks','dailies','loop'])for(const outcome of ['SUCCESS','UNKNOWN'])for(const changed of ['connection','player','world'])test('unified '+entry+' cancels after '+changed+' replacement while preserving '+outcome+' History',async()=>{
  const moduleId=entry==='dailies'?'free-gold':'task-rewards',f=fixture({moduleId,outcome});let runner;
  try{f.rows.delete('two');runner=unifiedRunner(f);const paused=await runner.start('A',compileUnifiedExecution(unifiedIntent(entry,moduleId,entry==='loop'?2:1),{modules:f.service.modules}).graph);
  const result=await f.execute(paused.plan);assert.equal(result.record.finalStatus,outcome);assert.equal(f.writes.length,1);
  const historyBytes=fs.readFileSync(f.historyFile,'utf8'),memoryBefore=f.store.list('A');
- f.account.connectionId='replacement-connection';assert.equal(runner.getLiveRunId(),null);
+ if(changed==='connection')f.account.connectionId='replacement-connection';if(changed==='player')f.account.player.playerId='other-role';if(changed==='world')f.account.player.worldId=2;assert.equal(runner.getLiveRunId(),null);
  const stopped=await runner.resume();assert.equal(stopped.status,'CANCELLED');assert.equal(stopped.plan,null);assert.equal(f.writes.length,1);
  assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.deepEqual(f.store.list('A'),memoryBefore);
  assert.equal(f.history.unresolved('A'),outcome==='UNKNOWN');assert.deepEqual(f.service.executionMemory('B').events,[]);
