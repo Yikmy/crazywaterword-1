@@ -1,3 +1,4 @@
+import { compileUnifiedExecution } from '../src/loop.mjs';
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -659,4 +660,142 @@ test('wait history shows exact local interval and preserves missing legacy durat
  const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',{accountId:'A',workflowRunId:'waiting-run',workflowDefinitionId:'wait-flow',status:'RECOVERED_STOPPED',recovered:true,readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[{nodeId:'interval',result:'WAIT_STARTED',durationMs:60000,timestamp:'2026-11-13T00:00:00.000Z'},{nodeId:'legacy',result:'WAITED',timestamp:null}]});await reading;
  const text=h.node('wf-history-detail').textContent;assert.match(text,/interval.*等待已开始.*60000 毫秒/);assert.match(text,/legacy.*等待已结束.*时长 未知.*时间未知/);assert.match(text,/不代表游戏冷却或可重放资格/);
  assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
+
+
+async function unifiedForm(entry='tasks') {
+ const h=await boot(),opening=h.node(entry+'-unified').click();await tick();
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
+ return h;
+}
+const unifiedDraft=h=>JSON.parse(h.node('wf-unified-intent').value);
+function unifiedAdd(h,phase,kind,target='') {
+ h.node('wf-unified-phase').value=phase;h.node('wf-unified-phase').onchange();
+ h.node('wf-unified-kind').value=kind;h.node('wf-unified-kind').onchange();
+ h.node('wf-unified-target').value=target;h.node('wf-unified-add').click();
+}
+function unifiedLoad(h,draft) {
+ h.node('wf-unified-intent').value=JSON.stringify(draft);h.node('wf-unified-form-load').click();
+}
+const unifiedStep=(h,key,move)=>descendants(h.node('wf-unified-steps')).find(n=>n.dataset.unifiedStep===key&&n.dataset.unifiedMove===move);
+function unifiedBudget(h,kind,id,num='',type='') {
+ for(const [key,value] of Object.entries({'budget-kind':kind,'budget-id':id,'budget-num':num,'budget-type':type}))h.node('wf-unified-'+key).value=value;
+ h.node('wf-unified-budget-kind').onchange();h.node('wf-unified-budget-add').click();
+}
+
+test('unified business form maps explicit task rewards and daily drivers without dispatch',async()=>{
+ const h=await unifiedForm('loop'),before=h.requests.length;
+ unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],rounds:2,everyMs:3000,budget:{resources:[],quotas:[],uids:[]}});
+ for(const [kind,id] of [['main','1'],['branch','2'],['achievement','1001'],['daily','8001'],['daily-activity','3'],['daily-gift','']])unifiedAdd(h,'tasks',kind,id);
+ for(const [kind,id] of [['daily','8002'],['daily-activity','4'],['daily-gift',''],['free-recruit',''],['free-gold',''],['trial-challenge',''],['pirate-sweep','9007199254740991']])unifiedAdd(h,'dailies',kind,id);
+ assert.deepEqual(unifiedDraft(h).tasks,[{kind:'main',taskId:1},{kind:'branch',taskId:2},{kind:'achievement',taskId:1001},{kind:'daily',taskId:8001},{kind:'daily-activity',tierId:3},{kind:'daily-gift',packId:'赠礼'}]);
+ assert.deepEqual(unifiedDraft(h).dailies,[{taskId:8002,action:'claim'},{kind:'daily-activity',tierId:4,action:'claim'},{kind:'daily-gift',packId:'赠礼',action:'claim'},{taskId:1002,action:'perform'},{taskId:1006,action:'perform'},{taskId:1009,action:'perform'},{taskId:1010,action:'perform',parameters:{uid:9007199254740991}}]);
+ assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+});
+
+test('unified form refuses invalid targets and unsupported entry combinations without changing draft',async()=>{
+ const h=await unifiedForm(),before=h.requests.length;
+ for(const target of ['','0','-1','1.5','1e3','2147483648','9007199254740992']){
+  const source=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','main',target);
+  assert.equal(h.node('wf-unified-intent').value,source,target);assert.match(h.node('wf-unified-form-hint').textContent,/明确整数/);
+ }
+ for(const [phase,kind] of [['dailies','free-gold'],['tasks','free-recruit']]){
+  const source=h.node('wf-unified-intent').value;unifiedAdd(h,phase,kind);assert.equal(h.node('wf-unified-intent').value,source);
+ }
+ h.node('wf-unified-entry').value='loop';h.node('wf-unified-rounds').value='2';h.node('wf-unified-every').value='500';h.node('wf-unified-limits').click();
+ unifiedAdd(h,'dailies','pirate-sweep','9007199254740992');assert.equal(unifiedDraft(h).dailies.length,0);
+ unifiedAdd(h,'tasks','main','1');const source=h.node('wf-unified-intent').value;
+ h.node('wf-unified-entry').value='dailies';h.node('wf-unified-rounds').value='1';h.node('wf-unified-every').value='0';h.node('wf-unified-limits').click();
+ assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('wf-unified-form-hint').textContent,/其他分组/);
+ assert.equal(h.requests.length,before);
+});
+
+test('unified form enforces finite rounds and delay and keeps Tasks and Dailies single round',async()=>{
+ const h=await unifiedForm();
+ for(const [entry,rounds,every] of [['loop','49','0'],['loop','0','0'],['loop','1e1','0'],['loop','2','60001'],['loop','2','-1'],['tasks','2','0'],['dailies','1','1']]){
+  const source=h.node('wf-unified-intent').value;
+  for(const [id,value] of Object.entries({entry,rounds,every}))h.node('wf-unified-'+id).value=value;
+  h.node('wf-unified-limits').click();assert.equal(h.node('wf-unified-intent').value,source,[entry,rounds,every].join('/'));
+ }
+ for(const [entry,rounds,every] of [['dailies','1','0'],['tasks','1','0'],['loop','48','60000']]){
+  for(const [id,value] of Object.entries({entry,rounds,every}))h.node('wf-unified-'+id).value=value;
+  h.node('wf-unified-limits').click();assert.equal(unifiedDraft(h).entry,entry);assert.equal(unifiedDraft(h).rounds,Number(rounds));assert.equal(unifiedDraft(h).everyMs,Number(every));
+ }
+ assert.equal(writes(h).length,0);
+});
+
+test('unified budgets preserve UID strings and reject duplicate, ambiguous or unsafe amounts',async()=>{
+ const h=await unifiedForm(),before=h.requests.length;
+ unifiedBudget(h,'resources','GOLD','37');unifiedBudget(h,'quotas','free-gold:reset:2000','1');unifiedBudget(h,'uids','9007199254740995','','mail');
+ assert.deepEqual(unifiedDraft(h).budget,{resources:[{id:'GOLD',num:37}],quotas:[{id:'free-gold:reset:2000',num:1}],uids:[{type:'mail',id:'9007199254740995'}]});
+ assert.equal(h.node('wf-unified-budget-num').disabled,true);assert.equal(h.node('wf-unified-budget-type').disabled,false);
+ for(const [kind,id,num,type] of [['resources','GOLD','1',''],['uids','9007199254740995','','mail'],['resources',' RUBY','1',''],['uids','1','',''],['resources','WOOD','0',''],['resources','WOOD','1.5',''],['resources','WOOD','1e3',''],['resources','WOOD','9007199254740992','']]){
+  const source=h.node('wf-unified-intent').value;unifiedBudget(h,kind,id,num,type);assert.equal(h.node('wf-unified-intent').value,source,[kind,id,num,type].join('/'));
+ }
+ unifiedBudget(h,'uids','9007199254740995','','equipment');assert.equal(unifiedDraft(h).budget.uids.length,2);
+ const remove=descendants(h.node('wf-unified-budget-rows')).find(n=>n.dataset.unifiedBudget==='resources:0');remove.click();assert.deepEqual(unifiedDraft(h).budget.resources,[]);
+ const source=h.node('wf-unified-intent').value;remove.click();assert.equal(h.node('wf-unified-intent').value,source);
+ assert.equal(h.requests.length,before);
+});
+
+test('unified step edits retain advanced world selections and metadata and discard stale callbacks',async()=>{
+ const h=await unifiedForm('loop'),world={module:'production',parameters:{cityId:1},selection:{actionId:'exact'}};
+ unifiedLoad(h,{entry:'loop',id:'custom-id',name:'自定义',tasks:[{kind:'main',taskId:1},{kind:'branch',taskId:2}],dailies:[],world:[world],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]},custom:{keep:true}});
+ const stale=unifiedStep(h,'tasks:0','0');unifiedStep(h,'tasks:1','-1').click();
+ assert.deepEqual(unifiedDraft(h).tasks,[{kind:'branch',taskId:2},{kind:'main',taskId:1}]);
+ const source=h.node('wf-unified-intent').value;stale.click();assert.equal(h.node('wf-unified-intent').value,source);
+ unifiedStep(h,'tasks:0','1').click();unifiedStep(h,'tasks:0','0').click();
+ const draft=unifiedDraft(h);assert.deepEqual(draft.tasks,[{kind:'branch',taskId:2}]);assert.deepEqual(draft.world,[world]);assert.equal(draft.id,'custom-id');assert.equal(draft.name,'自定义');assert.deepEqual(draft.custom,{keep:true});
+ const old=unifiedStep(h,'tasks:0','0');draft.name='高级编辑后';h.node('wf-unified-intent').value=JSON.stringify(draft);old.click();assert.equal(unifiedDraft(h).name,'高级编辑后');assert.equal(unifiedDraft(h).tasks.length,1);
+ assert.equal(writes(h).length,0);
+});
+
+test('unified form rejects malformed advanced input and caps each group without destructive repair',async()=>{
+ const h=await unifiedForm();
+ for(const value of ['{','null','[]',JSON.stringify({entry:'tasks',tasks:{},budget:{}}),JSON.stringify({entry:'tasks',tasks:[],budget:null})]){
+  h.node('wf-unified-intent').value=value;h.node('wf-unified-form-load').click();unifiedAdd(h,'tasks','main','1');assert.equal(h.node('wf-unified-intent').value,value);assert.ok(h.node('wf-unified-form-hint').textContent);
+ }
+ unifiedLoad(h,{entry:'tasks',tasks:Array.from({length:48},(_,i)=>({kind:'main',taskId:i+1})),budget:{resources:[],quotas:[],uids:[]}});
+ const source=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','main','49');assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('wf-unified-form-hint').textContent,/48/);assert.equal(writes(h).length,0);
+});
+
+test('unified form prepares through the existing endpoint and locks edits until response',async()=>{
+ const h=await unifiedForm();unifiedAdd(h,'tasks','main','1');const source=h.node('wf-unified-intent').value;
+ const stale=unifiedStep(h,'tasks:0','0'),pending=h.node('wf-unified-prepare').click();await tick();
+ const request=h.pending('/api/workflows/prepare');assert.ok(request);assert.equal(request.options.method,'POST');assert.equal(JSON.parse(request.options.body).tasks[0].taskId,1);
+ for(const id of ['add','limits','budget-add','form-load'])assert.equal(h.node('wf-unified-'+id).disabled,true,id);
+ assert.equal(stale.disabled,true);stale.click();unifiedAdd(h,'tasks','main','2');assert.equal(h.node('wf-unified-intent').value,source);
+ h.respond('/api/workflows/prepare',{accountId:'A',blocked:[],graph:null});await pending;
+ assert.equal(h.node('wf-unified-add').disabled,false);assert.equal(writes(h).length,1);assert.equal(h.confirmations.length,0);
+ for(const word of ['connect','authorize','execute','survey'])assert.equal(h.requests.some(r=>r.url.includes(word)),false,word);
+});
+
+test('unified form clears on account changes and old handlers cannot change new account draft',async()=>{
+ const h=await unifiedForm();unifiedAdd(h,'tasks','main','1');unifiedBudget(h,'resources','GOLD','3');
+ const oldStep=unifiedStep(h,'tasks:0','0'),oldBudget=descendants(h.node('wf-unified-budget-rows')).find(n=>n.dataset.unifiedBudget==='resources:0');
+ h.run("selectAccount('B')");assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.node('wf-unified-steps').textContent,'');assert.equal(h.node('wf-unified-budget-rows').textContent,'');assert.equal(h.node('wf-unified-target').value,'');
+ unifiedAdd(h,'tasks','branch','7');const source=h.node('wf-unified-intent').value;oldStep.click();oldBudget.click();assert.equal(h.node('wf-unified-intent').value,source);assert.equal(writes(h).length,0);
+});
+
+test('unified form respects the existing running Workflow lock',async()=>{
+ const h=await unifiedForm();unifiedAdd(h,'tasks','main','1');const source=h.node('wf-unified-intent').value,old=unifiedStep(h,'tasks:0','0');
+ const loading=h.node('wf-load').click();await tick();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'AWAITING_AUTHORIZATION',running:true},graphs:[],history:[]});await loading;
+ for(const id of ['add','limits','budget-add','form-load','prepare'])assert.equal(h.node('wf-unified-'+id).disabled,true,id);
+ assert.equal(old.disabled,true);old.click();unifiedBudget(h,'resources','GOLD','4');assert.equal(h.node('wf-unified-intent').value,source);assert.equal(writes(h).length,0);
+});
+
+test('unified generated declaration compiles with the original Registry and keeps exact preview budget',async()=>{
+ const h=await unifiedForm('loop');
+ unifiedLoad(h,{entry:'loop',id:'business-form',name:'专业表单',tasks:[],dailies:[],world:[],rounds:2,everyMs:100,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'tasks','main','7');unifiedAdd(h,'dailies','daily-activity','2');unifiedAdd(h,'dailies','free-gold');
+ unifiedBudget(h,'resources','GOLD','15');unifiedBudget(h,'quotas','free-gold:reset:2000','2');unifiedBudget(h,'uids','2000:1','','free-gold');
+ const pending=h.node('wf-unified-prepare').click();await tick();const req=h.pending('/api/workflows/prepare'),body=JSON.parse(req.options.body);
+ // Only transport metadata is removed by the real handler before the pure compiler.
+ delete body.accountId;delete body.csrfToken;
+ const modules=Object.fromEntries(['task-rewards','free-gold'].map(id=>[id,{id,survey(){throw Error('offline preview cannot survey')},view(){},plan(){},verify(){}}]));
+ const result=compileUnifiedExecution(body,{modules});assert.deepEqual(result.blocked,[]);
+ assert.deepEqual(result.graph.nodes.filter(n=>n.type==='ACTION').map(n=>[n.module,n.parameters]),Array.from({length:2},()=>[['task-rewards',{kind:'main',taskId:7}],['task-rewards',{kind:'daily-activity',tierId:2}],['free-gold',{}]]).flat());
+ assert.deepEqual(result.graph.budget,unifiedDraft(h).budget);assert.equal(result.graph.nodes.filter(n=>n.type==='WAIT').length,1);
+ h.respond('/api/workflows/prepare',{accountId:'A',...result});await pending;
+ assert.equal(h.node('wf-id').value,'business-form');assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(writes(h).length,1);
 });
