@@ -274,7 +274,7 @@ export const PAGE = `<!doctype html>
   <section id="tab-operations-history" class="hidden">
     <h2>执行历史</h2>
     <p class="dim">按当前账号保存的历史证据，不代表当前实时游戏状态。UNKNOWN 保留未决状态，不能作为失败重试。</p>
-    <div class="bar"><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
+    <p class="dim">操作记录可按运行筛选；当日汇总仍统计本账号全部验证记录。</p><div class="bar"><label>操作运行 ID（留空查看全部）<input id="ops-history-run-id" type="text" maxlength="512"></label><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
     <div id="ops-history">尚未读取历史。</div>
     <h2>只读执行记忆</h2>
     <p class="dim">记忆是原始执行历史的补充审计，不代表当前游戏状态。原始 UNKNOWN 永远保留；当前是否已复核仅以原始历史追加证据为准。此处不提供清除、重试或执行授权。</p>
@@ -933,7 +933,7 @@ function resetOperations() {
   $('production-policy-source').textContent = '尚未读取本账号策略。'; $('production-policy-hint').textContent = '';
   for (const id of ['ops-orders', 'ops-city', 'ops-production', 'ops-stock', 'ops-notes', 'ops-hint', 'ops-history-hint', 'ops-plan-actions']) clear($(id));
   $('ops-status').textContent = '选择账号后读取已有运行状态。';
-  $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
+  $('ops-history-run-id').value = ''; $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
   resetOperationMemory();
   $('ops-budget').textContent = '尚未生成预览。'; $('ops-plan-meta').textContent = '先选择操作并生成预览，再授权执行。';
   renderOperationSelection(); operationControls();
@@ -1194,6 +1194,9 @@ function renderOperationHistory(data, historyScope = viewGuard.begin('operations
   for (const run of runs) {
     const card = el('details', 'order-preview-card'); card.appendChild(el('summary', null, (run.runId || '?') + ' · ' + run.module + ' · ' + run.mode + ' · ' + run.finalStatus + (run.recovered ? ' · 进程恢复记录' : '')));
     card.appendChild(el('div', 'dim', '开始 ' + when(run.startedAt) + ' · 结束 ' + (run.finishedAt ? when(run.finishedAt) : '未完成') + ' · 停止原因 ' + (run.stopReason || '无')));
+    const recorded = value => typeof value === 'string' && value ? value : '未知';
+    card.appendChild(el('div', 'dim', '流程定义：' + recorded(run.workflowDefinitionId) + ' · 流程运行：' + recorded(run.workflowId) + ' · 节点：' + recorded(run.workflowNodeId) + ' · 父运行：' + recorded(run.parentRunId)));
+    card.appendChild(el('div', 'dim', '计划批次：' + recorded(run.planSummary?.batchId) + ' · 授权批次：' + recorded(run.authorizationSummary?.batchId)));
     card.appendChild(el('div', null, '授权范围：' + JSON.stringify(run.authorizationSummary ?? null)));
     card.appendChild(el('div', null, '本批次预算：' + operationCosts(run.resourceBudget)));
     for (const action of run.actions || []) {
@@ -1258,10 +1261,19 @@ function renderOperationHistory(data, historyScope = viewGuard.begin('operations
 }
 async function refreshOperationHistory() {
   if (!current) return;
-  const scope = viewGuard.begin('operations-history'); $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
-  try { const data = await call('/api/operations/history', undefined, scope); if (data.accountId !== scope.account) throw new Error('历史账号不匹配'); renderOperationHistory(data, scope); $('ops-history-hint').textContent = ''; }
-  catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
+  const scope = viewGuard.begin('operations-history'), runId = $('ops-history-run-id').value; $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
+  try {
+    if (runId && (runId.trim() !== runId || runId.length > 512)) throw new Error('请输入无首尾空格且不超过512字符的精确运行 ID。');
+    const data = await call('/api/operations/history' + (runId ? '?runId=' + encodeURIComponent(runId) : ''), undefined, scope);
+    if ($('ops-history-run-id').value !== runId) return;
+    if (data.accountId !== scope.account) throw new Error('历史账号不匹配');
+    if (!Array.isArray(data.runs) || runId && data.runs.some(run => run.runId !== runId)) throw new Error('历史运行不匹配');
+    renderOperationHistory(data, scope); $('ops-history-hint').textContent = '';
+  } catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
 }
+$('ops-history-run-id').oninput = () => {
+  viewGuard.begin('operations-history'); clear($('ops-history')); $('ops-production-report').textContent = '请重新读取本账号验证收取汇总。'; $('ops-history-hint').textContent = '筛选已更改，请读取持久历史。';
+};
 $('ops-history-load').onclick = refreshOperationHistory;
 
 function resetOperationMemory() {

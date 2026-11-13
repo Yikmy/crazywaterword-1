@@ -618,3 +618,43 @@ test('foreign or missing account identity in a history run has no recovery contr
  }
  assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
 });
+
+
+test('operation history filters through the original exact GET without game requests',async()=>{
+ const h=await boot(),runId='run /?#<literal>';h.node('ops-history-run-id').value=runId;h.node('ops-history-run-id').oninput();
+ const pending=h.node('ops-history-load').onclick(),request=h.pending('/api/operations/history','A');
+ assert.equal(new URL(request.url,'http://localhost').searchParams.get('runId'),runId);assert.equal(request.options.method,undefined);
+ const data=recoveryHistory();data.runs[0].runId=runId;h.respond('/api/operations/history','A',data);await pending;
+ assert.ok(h.node('ops-history').textContent.includes(runId));assert.match(PAGE,/当日汇总仍统计本账号全部验证记录/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+test('editing history filter clears old history and discards old responses and recovery callbacks',async()=>{
+ const h=await boot();await load(h);await loadRecoveryHistory(h);const old=await showRecovery(h),pending=h.node('ops-history-load').onclick(),count=h.requests.length;
+ h.node('ops-history-run-id').value='another-run';h.node('ops-history-run-id').oninput();old.preview.onclick();old.confirm.onclick();assert.equal(h.requests.length,count);assert.equal(h.node('ops-history').textContent,'');
+ h.respond('/api/operations/history','A',recoveryHistory());await pending;assert.equal(h.node('ops-history').textContent,'');assert.match(h.node('ops-history-hint').textContent,/筛选已更改/);
+});
+test('history filter rejects non-exact identifiers locally and mismatched returned runs',async()=>{
+ const h=await boot();
+ for(const id of [' bad','bad ','x'.repeat(513)]){h.node('ops-history-run-id').value=id;h.node('ops-history-run-id').oninput();const count=h.requests.length;await h.node('ops-history-load').onclick();assert.equal(h.requests.length,count);assert.match(h.node('ops-history-hint').textContent,/精确/);}
+ h.node('ops-history-run-id').value='wanted';h.node('ops-history-run-id').oninput();const pending=h.node('ops-history-load').onclick();h.respond('/api/operations/history','A',recoveryHistory());await pending;assert.equal(h.node('ops-history').textContent,'');assert.match(h.node('ops-history-hint').textContent,/运行不匹配/);
+});
+test('account changes clear the history filter and empty filter restores all-history GET',async()=>{
+ const h=await boot();h.node('ops-history-run-id').value='A-run';h.node('ops-history-run-id').oninput();h.run("selectAccount('B')");
+ assert.equal(h.node('ops-history-run-id').value,'');const pending=h.node('ops-history-load').onclick(),request=h.pending('/api/operations/history','B');assert.equal(new URL(request.url,'http://localhost').searchParams.has('runId'),false);h.respond('/api/operations/history','B',{accountId:'B',runs:[]});await pending;assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+test('history shows recorded workflow and batch links while legacy gaps stay unknown and literal',async()=>{
+ const h=await boot(),data=recoveryHistory(),payload='<img onerror=alert(1)>';Object.assign(data.runs[0],{workflowDefinitionId:'definition-A',workflowId:'workflow-run-A',workflowNodeId:payload,parentRunId:'parent-recorded',planSummary:{batchId:'plan-batch'},authorizationSummary:{batchId:'auth-batch'}});
+ data.runs.push({...structuredClone(data.runs[0]),runId:'legacy-run',workflowDefinitionId:undefined,workflowId:undefined,workflowNodeId:undefined,parentRunId:undefined,planSummary:undefined,authorizationSummary:undefined});await loadRecoveryHistory(h,data);
+ const cards=h.node('ops-history').children;for(const v of ['definition-A','workflow-run-A',payload,'parent-recorded','plan-batch','auth-batch'])assert.ok(cards[0].textContent.includes(v),v);
+ for(const v of ['流程定义：未知','流程运行：未知','节点：未知'])assert.ok(cards[1].textContent.includes(v),v);assert.ok(descendants(h.node('ops-history')).every(n=>n.tagName!=='img'));assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+
+
+test('new exact-history query wins over an older query within the same account',async()=>{
+ const h=await boot();
+ h.node('ops-history-run-id').value='old-run';h.node('ops-history-run-id').oninput();const old=h.node('ops-history-load').onclick(),oldRequest=h.pending('/api/operations/history','A');
+ h.node('ops-history-run-id').value='new-run';h.node('ops-history-run-id').oninput();const fresh=h.node('ops-history-load').onclick();
+ const freshRequest=h.requests.find(r=>!r.settled&&r!==oldRequest&&new URL(r.url,'http://localhost').pathname==='/api/operations/history');
+ const current=recoveryHistory();current.runs[0].runId='new-run';freshRequest.settled=true;freshRequest.resolve({ok:true,json:async()=>current});await fresh;
+ h.respond('/api/operations/history','A',{accountId:'A',runs:[{runId:'old-run',module:'foreign-old'}]});await old;
+ assert.match(h.node('ops-history').textContent,/new-run/);assert.doesNotMatch(h.node('ops-history').textContent,/old-run|foreign-old/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});

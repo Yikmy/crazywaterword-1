@@ -110,3 +110,14 @@ test('recovery HTTP reads participate in the shared account lock and concurrent 
     gate.resolve({ formation: clone(desired) }); assert.equal((await first).status, 200); assert.equal(session.busy, null); assert.equal(app.history.unresolved('A'), true); assert.equal(app.writes.length, 0);
   } finally { gate.resolve({ formation: clone(desired) }); await app.close(); }
 });
+
+test('history GET scopes an exact operation run offline and rejects ambiguous filters',async()=>{
+ const app=await harness();try{
+  app.history.put({...clone(app.record),runId:'another-run'});app.history.put({...clone(app.record),accountId:'B',runId:'foreign-run'});const bytes=fs.readFileSync(app.file,'utf8');
+  for(const [id,runId,expected]of [['A','recovery-run',['recovery-run']],['A','another-run',['another-run']],['A','foreign-run',[]],['B','recovery-run',[]],['A','missing',[]]]){
+   const result=await app.call('/api/operations/history?'+new URLSearchParams({runId}),{id});assert.equal(result.status,200);assert.equal(result.data.accountId,id);assert.deepEqual(result.data.runs.map(r=>r.runId),expected);
+  }
+  for(const q of ['runId=','runId=a&runId=b','runId=%20a','runId=a%20','runId='+('x'.repeat(513)),'workflowId=forged','__proto__=x','account=A&account=B'])assert.equal((await app.call('/api/operations/history?'+q,{id:q.startsWith('account=')?null:'A'})).status,400,q);
+  assert.equal((await app.call('/api/operations/history')).data.runs.length,2);assert.equal(fs.readFileSync(app.file,'utf8'),bytes);assert.equal(app.history.list('A')[1].actions[0].result,'UNKNOWN');assert.equal(app.sessions.size,0);assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
