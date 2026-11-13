@@ -2223,3 +2223,21 @@ test('daily checklist opens original unified declaration without changing a draf
  h.run("globalThis.openedUnified=false;selectAccount('B');");link.click();assert.equal(h.run('globalThis.openedUnified'),false);assert.equal(h.requests.length,before);
  const blocked=dailyChecklist({ok:{DailyTaskInfoRequest:{dailyTask:[{id:1013,progress:0,targetProgress:1,rewardClaimed:false}]}},failed:{}},{config:{tables:{}}});h.run('renderDailies('+JSON.stringify({checklist:blocked,tasks:[]})+')');assert.equal(descendants(h.node('dailies-table')).some(n=>n.textContent==='打开日常统一执行声明'),false);
 });
+
+test('mailbox UI declares bounded reads and prepares the exact observed source page without authorizing',async()=>{
+ const h=await boot(),row=(id,pageNo)=>({emailId:id,pageNo,subject:'<img src=x onerror=alert(1)>',read:false,got:false,attachment:{hasAttachment:false}});
+ const data=(mailbox=null)=>({accountId:'A',module:'mail',csrfToken:'synthetic-mail-csrf',config:{enabled:false},status:{running:false,blocked:false},functions:[],view:{page:{pageNo:0,pageCount:1,totalReported:21,emails:[row('100',0)]},...(mailbox?{mailbox}:{}),candidates:[]}});
+ const load=h.node('gp-mail-load').onclick();h.respond('/api/gameplay',data(),{module:'mail'});await load;
+ const find=key=>descendants(h.node('gp-mail-facts')).find(n=>n.dataset[key]==='true'),limit=descendants(h.node('gp-mail-facts')).find(n=>n.id==='gp-mail-maxPages');assert.equal(limit.value,'20');
+ const before=h.requests.length;for(const value of ['',0,101,'1.5']){limit.value=String(value);await find('mailEnumerate').click();assert.equal(h.requests.length,before);assert.match(h.node('gp-mail-hint').textContent,/1至100/);}
+ limit.value='3';const task=find('mailEnumerate').click();assert.deepEqual(JSON.parse(h.pending('/api/gameplay/survey').options.body),{module:'mail',parameters:{action:'enumerate',maxPages:3}});assert.equal(find('mailEnumerate').disabled,true);assert.equal(limit.disabled,true);
+ const mailbox={status:'COMPLETE',allPagesComplete:true,atomicSnapshot:false,readPages:3,expectedPages:3,maxPages:3,reason:null,emails:[row('100',0),row('120',2)]};h.respond('/api/gameplay/survey',data(mailbox));await task;
+ assert.match(h.node('gp-mail-facts').textContent,/分页覆盖完成.*3.*3.*非原子快照/);assert.match(h.node('gp-mail-facts').textContent,/<img src=x onerror=alert\(1\)>/);assert.equal(h.node('gp-mail-plan').disabled,true);assert.equal(h.node('gp-mail-authorize').disabled,true);
+ const prepare=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailReadPrepare==='120');assert.ok(prepare);prepare.click();assert.deepEqual(JSON.parse(h.node('gp-mail-parameters').value),{pageNo:2,action:'read',emailId:'120'});assert.equal(h.node('gp-mail-plan').disabled,true);assert.equal(h.node('gp-mail-authorize').disabled,true);
+ assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('partial mailbox UI remains explicit and stale enumeration callbacks cannot cross accounts',async()=>{
+ const h=await boot(),data={accountId:'A',module:'mail',csrfToken:'synthetic-mail-csrf',config:{enabled:false},status:{running:false,blocked:false},functions:[],view:{page:{pageNo:0,pageCount:0,totalReported:21,emails:[]},mailbox:{status:'PARTIAL',allPagesComplete:false,atomicSnapshot:false,readPages:2,expectedPages:3,maxPages:2,reason:'MAIL_PAGE_LIMIT_REACHED',emails:[]},candidates:[]}};
+ const load=h.node('gp-mail-load').onclick();h.respond('/api/gameplay',data,{module:'mail'});await load;assert.match(h.node('gp-mail-facts').textContent,/分页覆盖未完成.*MAIL_PAGE_LIMIT_REACHED/);
+ const button=descendants(h.node('gp-mail-facts')).find(n=>n.dataset.mailEnumerate==='true'),task=button.click();assert.ok(h.pending('/api/gameplay/survey'));h.run("selectAccount('B')");const late=structuredClone(data);late.view.mailbox.reason='late-A-mailbox';h.respond('/api/gameplay/survey',late);await task;assert.doesNotMatch(h.node('gp-mail-facts').textContent,/late-A-mailbox/);const count=h.requests.length;await button.click();assert.equal(h.requests.length,count);assert.equal(writes(h,'/api/operations/execute').length,0);
+});

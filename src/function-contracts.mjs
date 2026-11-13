@@ -80,8 +80,8 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone receipt plus independent AFK and complete inventory reads; unchanged level, interval and unrelated stock'),
     dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg']),
   }),
-  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim','read']},emailId:string},{
-    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','READ'],blockedCapabilities:[blocked('BULK_ENUMERATION_AND_INSTANCE_ATTACHMENTS','Complete mailbox enumeration, bulk actions and hero/equipment/antique attachments need distinct contracts')]},
+  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim','read','enumerate']},emailId:string,maxPages:integer},{
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','READ'],blockedCapabilities:[blocked('BULK_AND_INSTANCE_ATTACHMENTS','Bulk actions and hero/equipment/antique attachments need distinct contracts'),blocked('ATOMIC_MAILBOX_SNAPSHOT','Explicit bounded traversal confirms observed page coverage only; no mailbox revision proves an atomic snapshot')]},
     verification:verification('verifyMailClaim','src/mail.mjs#verifyMailClaim','Exact emailId and immutable attachment, independently read+got with unchanged page peers and complete exact asset net income; READ requires a complete empty attachment and unchanged inventory; a page is never a complete mailbox'),
     dependencyVersions:dependencies(['moduleConfig','config.ItemCfg']),
   }),

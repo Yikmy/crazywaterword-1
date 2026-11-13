@@ -94,3 +94,49 @@ test('existing Workflow SURVEY observes one mail page without authorization, his
   const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
   const result=await runner.start(f.session.id,graph);assert.equal(result.status,'COMPLETED');assert.deepEqual(f.reads,[{pageNo:3}]);assert.equal(f.writes.length,0);assert.equal(f.session.busy,null);
 });
+
+function enumerationFixture(total=23){
+ const f=fake();f.options.parameters={action:'enumerate',maxPages:20};
+ f.state.onRead=()=>{const pageNo=f.reads.at(-1).pageNo;f.state.raw={total,email:Array.from({length:Math.min(10,Math.max(0,total-pageNo*10))},(_,index)=>email({emailId:String(9007199254740995n+BigInt(pageNo*10+index))}))};};return f;
+}
+test('explicit bounded enumeration uses fixed v76 pages and exact int64 IDs without implying an atomic snapshot or write',async()=>{
+ const f=enumerationFixture(),facts=await surveyMail(f.client,protocol,f.options),v=viewMail(facts);
+ assert.deepEqual(f.reads,[{pageNo:0},{pageNo:1},{pageNo:2}]);assert.equal(v.mailbox.status,'COMPLETE');assert.equal(v.mailbox.allPagesComplete,true);assert.equal(v.mailbox.atomicSnapshot,false);assert.equal(v.mailbox.expectedPages,3);assert.equal(v.mailbox.readPages,3);assert.equal(v.mailbox.pageSize,10);assert.equal(v.mailbox.emails.length,23);assert.equal(v.mailbox.emails.at(-1).emailId,'9007199254741017');assert.equal(v.mailbox.emails.at(-1).pageNo,2);assert.equal(v.page.allPagesComplete,false);
+ assert.deepEqual(v.pageProvenance.map(p=>p.scope.key),['mail-page:0','mail-page:1','mail-page:2']);assert.doesNotMatch(JSON.stringify(v),/private-content-must-not-escape|private-sender/);assert.match(v.notes.join(' '),/不证明原子快照/);
+ assert.deepEqual(planMail(facts,{parameters:f.options.parameters}).actions,[]);assert.throws(()=>planMail(facts,{parameters:f.options.parameters,selections:['all']}),{code:'MAIL_READ_ONLY'});assert.deepEqual(planMail(facts,{parameters:{pageNo:2,action:'claim',emailId:v.mailbox.emails.at(-1).emailId},selections:['all']}).actions,[]);assert.equal(f.writes.length,0);
+ v.mailbox.emails[0].subject='mutated';assert.notEqual(facts.mailbox.emails[0].subject,'mutated');
+});
+for(const total of [0,1,10,11,20])test('enumeration exact mailbox size '+total+' stops at the evidenced final page',async()=>{
+ const f=enumerationFixture(total),facts=await surveyMail(f.client,protocol,f.options);assert.equal(facts.mailbox.allPagesComplete,true);assert.equal(facts.mailbox.atomicSnapshot,false);assert.equal(facts.mailbox.emails.length,total);assert.equal(f.reads.length,Math.max(1,Math.ceil(total/10)));assert.equal(f.writes.length,0);
+});
+test('enumeration is explicit, strictly bounded and cannot combine bulk writes or exact-mail parameters',()=>{
+ assert.deepEqual(validateMailParameters({action:'enumerate'}),{action:'enumerate',maxPages:20});assert.deepEqual(validateMailParameters({action:'enumerate',maxPages:100}),{action:'enumerate',maxPages:100});
+ for(const v of [{action:'enumerate',maxPages:0},{action:'enumerate',maxPages:101},{action:'enumerate',maxPages:1.5},{action:'enumerate',maxPages:'1'},{action:'enumerate',maxPages:null},{action:'enumerate',pageNo:0},{action:'enumerate',emailId:'1'},{action:'enumerate',all:true},{maxPages:1},{action:'claim',emailId:'1',maxPages:2},{action:'enumerate',get maxPages(){throw Error('getter');}}])assert.throws(()=>validateMailParameters(v),{code:'INVALID_PARAMETERS'});
+});
+test('enumeration limit preserves truthful partial coverage and never requests outside its declared bound',async()=>{
+ const f=enumerationFixture();f.options.parameters.maxPages=2;const facts=await surveyMail(f.client,protocol,f.options);assert.equal(facts.mailbox.status,'PARTIAL');assert.equal(facts.mailbox.allPagesComplete,false);assert.equal(facts.mailbox.reason,'MAIL_PAGE_LIMIT_REACHED');assert.equal(facts.mailbox.emails.length,20);assert.equal(f.reads.length,2);
+});
+for(const [name,change,reason] of [
+ ['changed total',raw=>raw.total++,'MAIL_TOTAL_CHANGED'],['missing total',raw=>delete raw.total,'MAIL_TOTAL_UNKNOWN'],['short page',raw=>raw.email.pop(),'MAIL_PAGE_SIZE_MISMATCH'],['long page',raw=>raw.email.push(email({emailId:'77'})),'MAIL_PAGE_SIZE_MISMATCH'],['empty page',raw=>raw.email=[],'MAIL_PAGE_SIZE_MISMATCH'],['duplicate across pages',raw=>raw.email[0].emailId='9007199254740995','MAIL_CROSS_PAGE_DUPLICATE_ID'],['duplicate within page',raw=>raw.email[0].emailId=raw.email[1].emailId,'MAIL_LIST_OR_ID_UNKNOWN'],['bad identity',raw=>delete raw.email[0].emailId,'MAIL_LIST_OR_ID_UNKNOWN']
+])test('enumeration stops immediately on '+name,async()=>{
+ const f=enumerationFixture(31),base=f.state.onRead;f.state.onRead=()=>{base();if(f.reads.length===2)change(f.state.raw);};const facts=await surveyMail(f.client,protocol,f.options);assert.equal(facts.mailbox.status,'PARTIAL');assert.equal(facts.mailbox.allPagesComplete,false);assert.equal(facts.mailbox.reason,reason);assert.equal(f.reads.length,2);assert.equal(f.writes.length,0);
+});
+test('enumeration read failure is sanitized, never retried, and partial pages cannot become a writable baseline',async()=>{
+ const f=enumerationFixture(),base=f.state.onRead;f.state.onRead=()=>{if(f.reads.length===2)throw Error('secret-read-error');base();};const facts=await surveyMail(f.client,protocol,f.options);assert.equal(facts.mailbox.reason,'MAIL_PAGE_READ_FAILED');assert.equal(facts.mailbox.readPages,1);assert.equal(f.reads.length,2);assert.doesNotMatch(JSON.stringify(facts),/secret-read-error/);assert.equal(f.writes.length,0);
+});
+for(const [name,change] of [['account',f=>f.client.factContext.accountId='other'],['role',f=>f.options.player.playerId='44'],['world',f=>f.options.player.worldId='44'],['connection',f=>f.client.factContext.connectionId='new'],['generation',f=>f.client.factContext.generation++]])test('enumeration fences '+name+' change before another page',async()=>{
+ const f=enumerationFixture(31),base=f.state.onRead;f.state.onRead=()=>{base();if(f.reads.length===2)change(f);};await assert.rejects(surveyMail(f.client,protocol,f.options),{code:'CANCELLED'});assert.equal(f.reads.length,2);assert.equal(f.writes.length,0);
+});
+test('enumeration cancellation ignores a late second page and never starts a third',async()=>{
+ const f=enumerationFixture(31),base=f.state.onRead,abort=new AbortController();let release;f.state.onRead=()=>{base();if(f.reads.length===2){queueMicrotask(()=>abort.abort());return new Promise(resolve=>release=resolve);}};await assert.rejects(surveyMail(f.client,protocol,{...f.options,signal:abort.signal}),{code:'CANCELLED'});release();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.reads.length,2);assert.equal(f.writes.length,0);
+});
+test('enumeration unknown context and missing protocol issue no reads',async()=>{
+ const f=enumerationFixture();delete f.client.factContext.connectionId;assert.equal((await surveyMail(f.client,protocol,f.options)).mailbox.reason,'MAIL_CONTEXT_UNKNOWN');assert.equal(f.reads.length,0);
+ const g=enumerationFixture();assert.equal((await surveyMail(g.client,{},g.options)).mailbox.reason,'MAIL_PROTOCOL_UNAVAILABLE');assert.equal(g.reads.length,0);
+});
+test('registered Service and original Workflow SURVEY enumerate without new histories, authorization or writes',async t=>{
+ const f=serviceFixture();f.state.onRead=()=>{const pageNo=f.reads.at(-1).pageNo;f.state.raw={total:11,email:Array.from({length:pageNo?1:10},(_,index)=>email({emailId:String(100+pageNo*10+index)}))};};
+ const parameters={action:'enumerate',maxPages:2},a=await f.service.surveyModule(f.session,'mail',parameters);assert.equal(a.view.mailbox.allPagesComplete,true);assert.equal(f.service.moduleView('other','mail').view,null);
+ const graph={version:1,id:'mail-enumeration',name:'Mail enumeration',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'mail',parameters},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'z'}]};assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());assert.equal((await runner.start(f.session.id,graph)).status,'COMPLETED');assert.equal(f.reads.length,4);assert.equal(f.writes.length,0);assert.equal(f.session.busy,null);
+});

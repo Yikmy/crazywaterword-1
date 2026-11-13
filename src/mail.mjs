@@ -9,6 +9,8 @@ import { assertPaymentAllowed } from './actions.mjs';
 import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const moduleId='mail',maxPage=2147483647;
+// Fixed v76 AllMailModel.hasNextPage/nextPageNo and GameConstants.MAIL_PAGE_SIZE.
+const mailPageSize=10,maxEnumerationPages=100;
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const own=(v,k)=>{const d=object(v)?Object.getOwnPropertyDescriptor(v,k):null;return d?.enumerable&&Object.hasOwn(d,'value')?d.value:undefined;};
 const fields=(v,keys)=>object(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value'));
@@ -23,8 +25,13 @@ export function validateMailConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateMailParameters(v={}) {
-  if(!fields(v,['pageNo','action','emailId'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId；pageNo 须为非负 int32');
-  if(Object.hasOwn(v,'action')&&!['claim','read'].includes(v.action))throw invalid('邮件写操作仅支持单封 action=claim/read');
+  if(!fields(v,['pageNo','action','emailId','maxPages'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId、maxPages；pageNo 须为非负 int32');
+  if(v.action==='enumerate'){
+    if(Object.hasOwn(v,'pageNo')||Object.hasOwn(v,'emailId')||Object.hasOwn(v,'maxPages')&&(!Number.isInteger(v.maxPages)||v.maxPages<1||v.maxPages>maxEnumerationPages))throw invalid('邮箱枚举从0页开始，maxPages须为1至100的明确页数上限，不接受邮件ID');
+    return {action:'enumerate',maxPages:v.maxPages??20};
+  }
+  if(Object.hasOwn(v,'maxPages'))throw invalid('maxPages仅用于明确的邮箱枚举');
+  if(Object.hasOwn(v,'action')&&!['claim','read'].includes(v.action))throw invalid('邮件仅支持单封 action=claim/read 或只读 enumerate');
   if(Object.hasOwn(v,'emailId')&&(typeof v.emailId!=='string'||int64(v.emailId,{positive:true})!==v.emailId))throw invalid('emailId 须为精确正 int64 字符串');
   if(Object.hasOwn(v,'action')!==Object.hasOwn(v,'emailId'))throw invalid('单封操作必须同时指定 action=claim/read 和 emailId');
   return {...v,pageNo:v.pageNo??0};
@@ -64,7 +71,7 @@ export function mailPage(raw,{pageNo=0}={}) {
     scope:'CURRENT_PAGE_ONLY',allPagesComplete:false,hasNext:null,hasPrevious:pageNo>0};
 }
 export async function surveyMail(client,protocol,{config,parameters={},player,signal,stop,timeout=15000}={}) {
-  parameters=validateMailParameters(parameters);if(['claim','read'].includes(parameters.action))return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
+  parameters=validateMailParameters(parameters);if(parameters.action==='enumerate')return surveyMailbox(client,protocol,{parameters,player,signal,stop,timeout});if(['claim','read'].includes(parameters.action))return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
   const active=()=>assertExecutionActive(client,options);active();
   let page=mailPage(null,parameters),sourceAt=null;
   const contextKnown=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
@@ -77,6 +84,38 @@ export async function surveyMail(client,protocol,{config,parameters={},player,si
   active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('邮件采集期间账号或连接改变'),{code:'CANCELLED'});
   const fact=createStateFact(page,{accountId:context.accountId,generation:context.generation,source:'EmailBoxResponse',sourceAt,scope:{kind:'ENTITY',key:'mail-page:'+parameters.pageNo},reliable:contextKnown&&page.status==='AVAILABLE'});
   return {module:moduleId,parameters,context,page,sourceFact:fact,notes,stockReliable:false,stock:null};
+}
+// A complete traversal proves observed page coverage only. The protocol has no
+// mailbox revision/snapshot token; even matching totals cannot prove atomicity.
+// Each subsequent claim/read must freshly survey its exact page and email ID.
+async function surveyMailbox(client,protocol,{parameters,player,signal,stop,timeout}){
+ const context=contextOf(client,player),options={signal,stop},pages=[],sourceFacts=[],seen=new Set();
+ const active=()=>{assertExecutionActive(client,options);if(!same(context,contextOf(client,player)))throw Object.assign(new Error('邮件枚举期间账号或连接改变'),{code:'CANCELLED'});};active();
+ const known=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
+ let total=null,expectedPages=null,reason=null,complete=false;
+ if(!known)reason='MAIL_CONTEXT_UNKNOWN';
+ else if(!protocol?.EmailBoxRequest||!protocol?.EmailBoxResponse)reason='MAIL_PROTOCOL_UNAVAILABLE';
+ else for(let pageNo=0;pageNo<parameters.maxPages;pageNo++){
+  active();let raw,sourceAt;
+  try{raw=await awaitExecution(client.request('EmailBoxRequest',{pageNo},'EmailBoxResponse',timeout,{signal}),client,options);sourceAt=Date.now();}
+  catch(error){if(executionOutcome(error)==='CANCELLED')throw error;reason='MAIL_PAGE_READ_FAILED';break;}
+  active();const page=mailPage(raw,{pageNo});pages.push(page);
+  sourceFacts.push(createStateFact(page,{accountId:context.accountId,generation:context.generation,source:'EmailBoxResponse',sourceAt,scope:{kind:'ENTITY',key:'mail-page:'+pageNo},reliable:page.status==='AVAILABLE'}));
+  if(page.status!=='AVAILABLE'){reason='MAIL_LIST_OR_ID_UNKNOWN';break;}
+  if(page.totalReported===null){reason='MAIL_TOTAL_UNKNOWN';break;}
+  if(total===null){total=page.totalReported;expectedPages=Math.max(1,Math.ceil(total/mailPageSize));}
+  else if(page.totalReported!==total){reason='MAIL_TOTAL_CHANGED';break;}
+  const expectedCount=Math.min(mailPageSize,Math.max(0,total-pageNo*mailPageSize));
+  if(page.pageCount!==expectedCount){reason='MAIL_PAGE_SIZE_MISMATCH';break;}
+  if(page.emails.some(row=>seen.has(row.emailId))){reason='MAIL_CROSS_PAGE_DUPLICATE_ID';break;}
+  for(const row of page.emails)seen.add(row.emailId);
+  if(pageNo+1===expectedPages){complete=seen.size===total;if(!complete)reason='MAIL_ENUMERATION_COUNT_MISMATCH';break;}
+ }
+ active();if(!complete&&!reason)reason='MAIL_PAGE_LIMIT_REACHED';
+ const mailbox={scope:'OBSERVED_MAILBOX_PAGES',status:complete?'COMPLETE':pages.length?'PARTIAL':'UNKNOWN',allPagesComplete:complete,atomicSnapshot:false,
+  totalReported:total,pageSize:mailPageSize,expectedPages,readPages:pages.length,maxPages:parameters.maxPages,reason,pages,
+  emails:pages.flatMap(page=>page.emails.map(row=>({...row,pageNo:page.pageNo})))};
+ return {module:moduleId,parameters,context,page:pages[0]??mailPage(null),mailbox,sourceFacts,notes:reason?[reason]:[],stockReliable:false,stock:null};
 }
 const hash=value=>createHash('sha256').update(stableBusinessValue(value)).digest('hex');
 const copy=value=>structuredClone(value);
@@ -142,8 +181,8 @@ function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?
 }
 export function viewMail(facts,options={}) {
  const claim=privateClaims.has(facts),candidate=claim?claimCandidate(facts,options):null;
- return {module:moduleId,page:copy(facts?.page??mailPage(null)),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],
-  notes:[...(facts?.notes??[]),'只展示所选页；total 原值不证明页数、全量或快照一致性。单封普通道具/资源附件和完整空附件未读邮件可精确授权；全量、批量及实例附件继续冻结。']};
+ return {module:moduleId,page:copy(facts?.page??mailPage(null)),...(facts?.mailbox?{mailbox:copy(facts.mailbox),pageProvenance:copy(facts.sourceFacts.map(f=>f.provenance))}:{}),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],
+  notes:[...(facts?.notes??[]),'普通读取只展示所选页；明确枚举按固定客户端每页10封逐页观察，页数上限内总数稳定、数量匹配且ID唯一才标为分页覆盖完成，不证明原子快照一致。单封普通道具/资源附件和完整空附件未读邮件仍须重新精确探测和授权；批量及实例附件继续冻结。']};
 }
 export function planMail(facts,{parameters={},selections=[],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),...options}={}) {
  const p=validateMailParameters(parameters);
