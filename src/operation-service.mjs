@@ -73,10 +73,19 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     if(['DISPATCHING','EXECUTING','VERIFY'].includes(row.requestStatus))return null;
     const status=actionWasUncertain(row)?'UNKNOWN':row.result;
     if(!['REJECTED','UNKNOWN'].includes(status)||!module||!row.actionType||!row.target||identity===undefined||identity===null||!batchId||!row.actionId)return null;
-    if(status==='REJECTED'&&(typeof row.dispatched!=='boolean'||row.unresolvedWrite!==false))return null;
+    if(status==='REJECTED'&&(row.requestStatus!=='REJECTED'||typeof row.dispatched!=='boolean'||row.unresolvedWrite!==false))return null;
     return {module,actionType:row.actionType,target:row.target,identity,source:'ExecutionHistory.action.result.v1',generation:run.executionContext?.generation??0,
       runId:run.runId,workflowId:run.workflowId??null,nodeId:run.workflowNodeId??null,batchId,actionId:row.actionId,capabilityId:row.capabilityId??null,
       status,dispatched:row.dispatched===true||row.dispatchEvidence?.state==='MAY_HAVE_DISPATCHED',unresolvedWrite:status==='UNKNOWN',reason:String(row.reason??row.error??'原始执行历史结果；不推断冷却或日界').slice(0,4000),policy:{kind:'UNTIL_IDENTITY_CHANGE'}};
+  }
+  // Preserve an original refusal even when its old schema cannot populate the
+  // supplemental store. Missing fields are never inferred from a later plan.
+  function rejectionHistoryGap(run,row) {
+    if(![row.result,row.requestStatus].includes('REJECTED')||actionWasUncertain(row)||memoryInput(run,row))return null;
+    const known=value=>typeof value==='string'&&value.length>0&&value===value.trim()?value:null;
+    const module=known(row.module??run.module),actionType=known(row.actionType);let targetKey=null;
+    if(module&&actionType&&row.target)try{targetKey=executionMemoryKey({module,actionType,target:row.target});}catch{}
+    return {runId:run.runId,batchId:run.planSummary?.batchId??run.authorizationSummary?.batchId??null,actionId:row.actionId??null,status:'REJECTED',module,actionType,targetKey,projectable:false,reason:'REJECTION_HISTORY_INCOMPLETE_OR_CONFLICTING'};
   }
   function memoryOrigin(event,entries) {
     const matches=entries.filter(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId)
@@ -89,12 +98,12 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   }
   function memorySnapshot(accountId,{synchronize=false}={}) {
     const entries=history.list(accountId);
-    if(!decisionMemory)return {available:false,events:[],entries,pending:[],unknown:[],coverage:'CUSTOM_NON_FILE_HISTORY_WITHOUT_MEMORY'};
+    if(!decisionMemory)return {available:false,events:[],entries,pending:[],gaps:[],unknown:[],coverage:'CUSTOM_NON_FILE_HISTORY_WITHOUT_MEMORY'};
     if(synchronize)for(const run of entries)for(const row of run.actions){const input=memoryInput(run,row);if(input)decisionMemory.record(accountId,input);}
-    const events=decisionMemory.list(accountId),pending=[];
+    const events=decisionMemory.list(accountId),pending=[],gaps=entries.flatMap(run=>run.actions.map(row=>rejectionHistoryGap(run,row)).filter(Boolean));
     for(const run of entries)for(const row of run.actions){const input=memoryInput(run,row);if(input&&!events.some(event=>event.runId===input.runId&&event.batchId===input.batchId&&event.actionId===input.actionId&&event.status===input.status))pending.push({runId:run.runId,batchId:input.batchId,actionId:row.actionId,status:input.status});}
     const projected=events.map(event=>({...event,historyOrigin:memoryOrigin(event,entries)}));
-    return {available:true,entries,events:projected,pending,unknown:projected.filter(event=>event.status==='UNKNOWN'&&!event.historyOrigin.resolved),coverage:'UNTIL_IDENTITY_CHANGE_AND_UNKNOWN_AUDIT'};
+    return {available:true,entries,events:projected,pending,gaps,unknown:projected.filter(event=>event.status==='UNKNOWN'&&!event.historyOrigin.resolved),coverage:'UNTIL_IDENTITY_CHANGE_AND_UNKNOWN_AUDIT'};
   }
   function assertMemoryAccount(accountId,{synchronize=true}={}) {
     const before=memorySnapshot(accountId);
@@ -115,6 +124,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     // Legacy city and registered production are the same existing operations.
     // Keep immutable event identities; compare both historical module aliases.
     const memoryModules=['city','production'].includes(operation.module)&&['startProduce','gainFactory','speedUpProduce'].includes(operation.actionType)?['city','production']:[operation.module];
+    if(snapshot.gaps.length){
+      const targetKeys=new Set(memoryModules.map(module=>executionMemoryKey({module,actionType:operation.actionType,target:operation.target})));
+      if(snapshot.gaps.some(gap=>(!gap.module||memoryModules.includes(gap.module))&&(!gap.actionType||gap.actionType===operation.actionType)&&(!gap.targetKey||targetKeys.has(gap.targetKey))))throw error('原始拒绝历史缺字段或存在冲突，无法证明该操作可重新规划；保留原记录','REJECTION_MEMORY_ACTIVE');
+    }
     if(!snapshot.events.some(event=>event.status==='REJECTED'&&memoryModules.includes(event.module)&&event.actionType===operation.actionType))return;
     const query={module:operation.module,actionType:operation.actionType,target:operation.target,identity:operation.identity??operation.beforeState};
     const rejectionIdentity=modules[operation.module]?.rejectionIdentity;
@@ -141,7 +154,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     exact(filters,['module','runId','workflowId','nodeId','batchId','actionId','status']);
     if(Object.values(filters).some(value=>typeof value!=='string'||!value||value!==value.trim()||value.length>512))throw error('记忆筛选无效','INVALID_INPUT',400);
     const snapshot=memorySnapshot(accountId);
-    return {accountId,available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(event=>Object.entries(filters).every(([key,value])=>event[key]===value)),pendingHistoryProjection:snapshot.pending,resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
+    return {accountId,available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(event=>Object.entries(filters).every(([key,value])=>event[key]===value)),pendingHistoryProjection:[...snapshot.pending,...snapshot.gaps],resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
   }
   function acquire(session, label, workflowId = null, { recoveryRead = false } = {}) {
     assertWriter();

@@ -528,3 +528,11 @@ test('order base config and typed received rewards stay evidence only without ch
  assert.match(h.node('ops-history').textContent,/UNKNOWN/);assert.match(h.node('ops-history').textContent,/receivedReward/);assert.match(h.node('ops-history').textContent,/operationStatusUnchanged/);assert.match(h.node('ops-history').textContent,/UNCONFIRMED/);
  assert.equal(h.requests.filter(r=>new URL(r.url,'http://localhost').pathname==='/api/operations/execute').length,0);
 });
+
+test('incomplete rejection audit retains scoped protection message and offers no repair, retry or execution controls',async()=>{
+ const h=await boot(),gap={runId:'legacy-gap',batchId:'prior-batch',actionId:'one',module:'fixture',actionType:'SAVE',targetKey:'target-digest',status:'REJECTED',projectable:false,reason:'REJECTION_HISTORY_INCOMPLETE_OR_CONFLICTING'};
+ await loadMemory(h,memoryFixture('A',{pendingHistoryProjection:[gap]}));const text=memoryText(h);
+ assert.match(text,/缺少字段或存在冲突/);assert.match(text,/相关目标保持拒绝保护/);assert.match(text,/其他目标可独立重新规划/);assert.match(text,/legacy-gap/);
+ assert.equal(descendants(h.node('ops-memory-pending')).filter(node=>node.tagName==='button').length,0);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+ h.run("selectAccount('B')");assert.doesNotMatch(memoryText(h),/legacy-gap/);
+});

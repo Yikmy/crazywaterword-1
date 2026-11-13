@@ -29,6 +29,19 @@ test('memory GET requires one exact stored account and isolates run/account sele
  const app=harness();try{for(const [url,status]of [['/api/operations/memory',400],['/api/operations/memory?account=label-A',404],['/api/operations/memory?account=unknown',404],['/api/operations/memory?account=A&account=B',400]])assert.equal((await app.request(url)).status,status);assert.equal((await app.request('/api/operations/memory?account=B')).data.events.length,0);assert.equal((await app.request('/api/operations/memory?account=A&runId=audit-run')).data.events.length,1);assert.equal((await app.request('/api/operations/memory?account=A&runId=other')).data.events.length,0);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});}finally{await app.close();}
 });
 
+
+test('original refusal projection gap is scoped to its account and exposed by readonly HTTP without inventing fields',async()=>{
+ const app=harness();try{
+  const {createExecutionHistory}=await import('../src/execution-history.mjs'),file=path.join(dir,'execution-history.json'),history=createExecutionHistory({file});
+  history.put({accountId:'A',runId:'legacy-gap-http',module:'fixture',planSummary:{batchId:'gap-batch'},finalStatus:'REJECTED',actions:[{actionId:'gap-action',actionType:'SAVE',target:{id:'exact'},identity:{revision:1},requestStatus:'REJECTED',result:'REJECTED',unresolvedWrite:false}]});
+  const original=fs.readFileSync(file,'utf8'),memory=fs.readFileSync(memoryFile,'utf8'),result=await app.request();
+  assert.equal(result.status,200);const gaps=result.data.pendingHistoryProjection.filter(row=>row.projectable===false);assert.equal(gaps.length,1);assert.equal(gaps[0].runId,'legacy-gap-http');assert.equal(gaps[0].actionId,'gap-action');
+  assert.equal(gaps[0].reason,'REJECTION_HISTORY_INCOMPLETE_OR_CONFLICTING');assert.equal(result.data.events.some(event=>event.runId==='legacy-gap-http'),false);assert.equal(result.data.retryAllowed,false);
+  assert.equal((await app.request('/api/operations/memory?account=B')).data.pendingHistoryProjection.length,0);
+  assert.equal(fs.readFileSync(file,'utf8'),original);assert.equal(fs.readFileSync(memoryFile,'utf8'),memory);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.sessions.size,0);assert.equal(result.text.includes(token),false);assert.equal(result.text.includes(sign),false);
+ }finally{await app.close();}
+});
+
 test('memory HTTP interface admits only local readonly GET and never accepts memory writes, proofs or expiry policies',async()=>{
  const app=harness();try{for(const headers of [{origin:'https://attacker.invalid'},{host:'attacker.invalid'},{'sec-fetch-site':'cross-site'}])assert.equal((await app.request(undefined,{headers})).status,403);for(const url of ['/api/operations/memory','/api/operations/memory/record','/api/operations/memory/clear','/api/operations/memory/proof'])assert.equal((await app.request(url+'?account=A',{method:'POST'})).status,403);for(const filter of ['proof=forged','policy=COOLDOWN','__proto__=x','runId=a&runId=b','runId='])assert.equal((await app.request('/api/operations/memory?account=A&'+filter)).status,400);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});}finally{await app.close();assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}
 });

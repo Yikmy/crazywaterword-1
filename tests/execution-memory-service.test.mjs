@@ -210,3 +210,66 @@ for(const moduleId of ['formation','alliance','museum','treasure','fleet','order
 for(const [moduleId,field]of [['orders','ruleResult'],['city','expectedState'],['production','expectedState']])test('W19 core '+moduleId+' missing original '+field+' cannot release rejection',async()=>{
  const domain=refusalDomain(moduleId),f=fixture({moduleId,domain,outcome:'REJECTED'});try{await f.execute(await f.plan());const original=f.history.list('A')[0];delete original.actions[0][field];f.history.put(original);f.account.player.worldId=2001000001;await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,1);}finally{await f.cleanup();}
 });
+
+async function seedIncompleteRefusal(f,change){
+ const plan=await f.plan(),row={...structuredClone(plan.actions[0]),requestStatus:'REJECTED',result:'REJECTED',dispatched:true,unresolvedWrite:false};
+ const run={accountId:'A',runId:'legacy-incomplete-refusal',module:f.adapter.id,executionContext:{accountId:'A',playerId:'A',worldId:1,generation:1,connectionId:'synthetic-A'},planSummary:{batchId:'legacy-batch'},finalStatus:'REJECTED',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),actions:[row]};
+ change(run,row);f.history.put(run);return {run,row};
+}
+for(const field of['dispatched','unresolvedWrite','target','actionType','module','identity','batchId','actionId'])test('legacy definite refusal missing '+field+' cannot disappear from shared decision protection',async()=>{
+ const f=fixture();try{
+  await seedIncompleteRefusal(f,(run,row)=>{
+   if(field==='module'){delete run.module;delete row.module;}
+   else if(field==='identity'){delete row.identity;delete row.beforeState;}
+   else if(field==='batchId')delete run.planSummary;
+   else delete row[field];
+  });
+  const bytes=fs.readFileSync(f.historyFile,'utf8');await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});
+  const audit=f.service.executionMemory('A');assert.equal(audit.events.length,0);assert.equal(audit.pendingHistoryProjection.length,1);assert.equal(audit.pendingHistoryProjection[0].projectable,false);
+  assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(f.writes.length,0);assert.equal(fs.existsSync(f.memoryFile),false);
+  assert.equal((await f.plan(['one'],f.session('B'))).actions.length,1);assert.equal(f.writes.length,0);
+ }finally{await f.cleanup();}
+});
+test('incomplete refusal blocks its known target while another exact target still uses shared authorization',async()=>{
+ const f=fixture();try{
+  await seedIncompleteRefusal(f,(_run,row)=>delete row.dispatched);const bytes=fs.readFileSync(f.historyFile,'utf8');
+  await assert.rejects(f.plan(['one']),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);
+  const plan=await f.plan(['two']);assert.equal(plan.actions.length,1);assert.equal((await f.execute(plan)).record.finalStatus,'SUCCESS');assert.equal(f.writes.length,1);assert.equal(f.writes[0].body.id,'two');
+ }finally{await f.cleanup();}
+});
+for(const variant of['request-conflict','result-conflict'])test('contradictory original refusal '+variant+' retains scoped protection without a fabricated memory event',async()=>{
+ const f=fixture();try{
+  await seedIncompleteRefusal(f,(_run,row)=>{if(variant==='request-conflict')row.requestStatus='SUCCESS';else row.result='SUCCESS';});
+  await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.store.list('A').length,0);assert.equal(f.writes.length,0);
+ }finally{await f.cleanup();}
+});
+test('legacy refusal gap survives Service restart and business changes without inferring missing transport facts',async()=>{
+ const f=fixture();let restarted;try{
+  await seedIncompleteRefusal(f,(_run,row)=>delete row.dispatched);restarted=fixture({file:f.historyFile});restarted.rows.get('one').revision=2;restarted.account.generation=9;restarted.account.connectionId='new-connection';
+  await assert.rejects(restarted.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal((await restarted.plan(['two'])).actions.length,1);assert.equal(restarted.store.list('A').length,0);assert.equal(restarted.writes.length,0);
+ }finally{await restarted?.cleanup();await f.cleanup();}
+});
+test('incomplete refusal appearing after authorization stops the shared executor before transport',async()=>{
+ const f=fixture();try{
+  const plan=await f.plan(),permit=f.authorize(plan);let seeded=false;
+  f.onSurvey(()=>{if(seeded)return;seeded=true;f.history.put({accountId:'A',runId:'raced-incomplete-refusal',module:'fixture',planSummary:{batchId:'old-batch'},finalStatus:'REJECTED',actions:[{...structuredClone(plan.actions[0]),result:'REJECTED',requestStatus:'REJECTED',unresolvedWrite:false}]});});
+  const result=await f.execute(plan,f.account,permit);assert.equal(result.record.finalStatus,'NOT_EXECUTED');assert.equal(f.writes.length,0);assert.equal(result.record.actions[0].dispatched,false);
+ }finally{await f.cleanup();}
+});
+
+for(const entry of['tasks','dailies','loop'])test('unified '+entry+' retains incomplete original refusal without new authorization or dispatch',async()=>{
+ const moduleId=entry==='dailies'?'free-gold':'task-rewards',f=fixture({moduleId});let runner;
+ try{
+  f.rows.delete('two');await seedIncompleteRefusal(f,(_run,row)=>delete row.dispatched);const bytes=fs.readFileSync(f.historyFile,'utf8');
+  runner=unifiedRunner(f);const state=await runner.start('A',compileUnifiedExecution(unifiedIntent(entry,moduleId),{modules:f.service.modules}).graph);
+  assert.equal(state.status,'COMPLETED');assert.ok(state.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(state.plan,null);assert.equal(f.writes.length,0);assert.equal(f.store.list('A').length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);
+ }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+
+for(const moduleId of['formation','production'])test('registered '+moduleId+' retains incomplete refusal including the original city/production alias',async()=>{
+ const f=fixture({moduleId,domain:refusalDomain(moduleId)});try{
+  const seeded=await seedIncompleteRefusal(f,(run,row)=>{delete row.dispatched;if(moduleId==='production'){run.module='city';row.module='city';}});
+  if(moduleId==='production')assert.equal(seeded.row.actionType,'startProduce');
+  const bytes=fs.readFileSync(f.historyFile,'utf8');await assert.rejects(f.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,0);assert.equal(f.store.list('A').length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);
+ }finally{await f.cleanup();}
+});

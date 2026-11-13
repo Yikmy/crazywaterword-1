@@ -1263,6 +1263,7 @@ function renderOperationMemory(data) {
   coverage.appendChild(el('div','dim',data.note||'只读审计；不恢复执行、预算或授权。'));
   const projections=Array.isArray(data.pendingHistoryProjection)?data.pendingHistoryProjection:[];
   pending.appendChild(el('div',projections.length?'warn':'dim','原始历史待投影结果：'+projections.length+'；本次 GET 只读取，不补写记忆。'));
+  if(projections.some(row=>row.projectable===false))pending.appendChild(el('div','warn','部分原始拒绝记录缺少字段或存在冲突，无法补写为完整记忆；相关目标保持拒绝保护。可明确区分的其他目标可独立重新规划。'));
   if(projections.length)pending.appendChild(el('pre',null,JSON.stringify(projections,null,2)));
   for(const event of Array.isArray(data.events)?data.events:[]) {
     const origin=event.historyOrigin||{},unknown=event.status==='UNKNOWN';
