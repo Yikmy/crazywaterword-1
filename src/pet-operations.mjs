@@ -133,13 +133,14 @@ export function petDependencyVersions({config,moduleConfig=PET_DEFAULT_CONFIG}={
 }
 function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
   p=validatePetParameters(p);moduleConfig=validatePetConfig(moduleConfig);
-  const valid=authority(f,config),building=valid?f.buildings.find(b=>b.buildingId===p.buildingId):null,job=building?.petBreed?.breedQ.find(j=>j.idx===p.jobIdx);
+  const valid=authority(f,config),building=valid?f.buildings.find(b=>b.buildingId===p.buildingId&&makeTypeResolver(config)(b.buildingId)===type):null,job=building?.petBreed?.breedQ.find(j=>j.idx===p.jobIdx);
   const clock=valid?currentClock(f):null,costs=job?costsOf(job.feedRequirements,f.catalog):[],duplicates=valid?f.buildings.flatMap(b=>b.petBreed?.breedQ??[]).filter(j=>j.idx===p.jobIdx).length:0;
   const action={request:'PetFeedRequest',response:null,body:{jobIdx:p.jobIdx}};let reason=null;
   if(p.action!=='feed'||!p.buildingId||!own(p,'jobIdx'))reason='EXPLICIT_BUILDING_JOB_AND_FEED_REQUIRED';
   else if(!moduleConfig.enabled)reason='PET_MODULE_DISABLED';
   else if(!valid)reason='PET_AUTHORITY_OR_CONTEXT_UNKNOWN';
   else if(!building||!job||!building.petBreed||building.level<1||!own(building,'buildFinishTime')||building.buildFinishTime!==0)reason='EXACT_AVAILABLE_PET_JOB_REQUIRED';
+  else if(!own(building,'auto')||building.auto!==false)reason='PET_SERVER_AUTO_WORK_NOT_EXPLICITLY_DISABLED';
   else if(duplicates!==1)reason='PET_JOB_IDX_AMBIGUOUS';
   else if(!clock)reason='TRUSTED_GAME_CLOCK_UNKNOWN';
   else if(job.finishTime<=clock.latest)reason='PET_JOB_ALREADY_DUE_OR_UNCERTAIN';
@@ -156,7 +157,7 @@ function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
     label:'海兽单次投喂 '+(p.buildingId??'')+' '+(p.jobIdx??''),...(reason===null?{action}:{})};
 }
 export function viewPet(f,{config,moduleConfig,parameters=f?.parameters??{}}={}){
-  const p=validatePetParameters(parameters),valid=authority(f,config),rooms=valid?f.buildings.filter(b=>own(b,'petBreed')):[],choices=[];
+  const p=validatePetParameters(parameters),valid=authority(f,config),rooms=valid?f.buildings.filter(b=>makeTypeResolver(config)(b.buildingId)===type&&own(b,'petBreed')):[],choices=[];
   for(const b of rooms)if(!p.buildingId||p.buildingId===b.buildingId)for(const job of b.petBreed.breedQ)if(!own(p,'jobIdx')||p.jobIdx===job.idx)choices.push({action:'feed',buildingId:b.buildingId,jobIdx:job.idx});
   const candidates=(choices.length?choices:[p]).map(choice=>{
     const c=candidate(f,choice,{config,moduleConfig});return without(c,['identity','configEvidence']);

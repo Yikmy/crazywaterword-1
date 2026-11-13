@@ -151,6 +151,16 @@ test('Pet rejects missing authority, unavailable building, alias idx, unknown/pa
   const f=fixture(t);mutate(f);const before=await f.survey();assert.equal(f.plan(before).actions.length,0);assert.equal(f.state.writes.length,0);
  }
 });
+test('Pet feed requires an actual breeding room and explicitly disabled server automation before all writes',async t=>{
+ for(const auto of [true,'missing']){
+  const f=fixture(t,{shared:true});if(auto==='missing')delete f.room.auto;else f.room.auto=auto;
+  const read=await f.service.surveyModule(f.session,'pet',parameters);
+  assert.equal(read.view.candidates[0].executable,false);assert.equal(read.view.candidates[0].blockedReason,'PET_SERVER_AUTO_WORK_NOT_EXPLICITLY_DISABLED');assert.equal(f.state.writes.length,0);
+ }
+ const f=fixture(t);f.state.buildings[1].petBreed=structuredClone(f.room.petBreed);f.state.buildings[1].auto=false;
+ const before=await f.survey();assert.equal(pet.planPet(before,f.options({parameters:{...parameters,buildingId:'1民居'}})).actions.length,0);
+ const view=pet.viewPet(before,f.options({parameters:{}}));assert.deepEqual(view.rooms.map(r=>r.buildingId),[parameters.buildingId]);assert.ok(view.candidates.every(c=>c.target.buildingId===parameters.buildingId));assert.equal(f.state.writes.length,0);
+});
 test('Pet fact edits, foreign clocks, stale reads and dropped authority never become executable',async t=>{
  const f=await prepared(t);
  assert.equal(f.plan(structuredClone(f.before)).actions.length,0);
