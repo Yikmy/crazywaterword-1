@@ -315,7 +315,7 @@ function repeatAfterStop(ctx,node){
         }
         throw fail('节点未通过静态注册验证', 'WORKFLOW_UNKNOWN');
       }
-    } catch (error) { await finish(ctx, ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code === 'CANCELLED' ? 'CANCELLED' : error.code === 'WORKFLOW_UNKNOWN' ? 'UNKNOWN' : 'FAILED',ctx.limitReason??(error.code === 'CANCELLED' ? '工作流已停止或账号会话失效' : error.message)); }
+    } catch (error) { await finish(ctx, ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code === 'CANCELLED' ? 'CANCELLED' : ['WORKFLOW_UNKNOWN','WORKFLOW_EVENT_UNKNOWN'].includes(error.code) ? 'UNKNOWN' : 'FAILED',ctx.limitReason??(error.code === 'CANCELLED' ? '工作流已停止或账号会话失效' : error.message)); }
     return getStatus();
   }
   async function start(accountId, graph) {
@@ -390,7 +390,7 @@ function authorizeRun(payload){
  const invalidScope=payload.confirm!==true||!plain(payload.offer)||workflowJsonDigest(payload.offer)!==workflowJsonDigest(ctx.authorizationOffer),invalidContext=scheduled?(payload.batchId!==null||payload.planHash!==null||ctx.trigger&&clock()>=Date.parse(ctx.trigger.scheduledAt??ctx.graph.runPolicy.schedule.at)):(payload.batchId!==ctx.waitingPlan.batchId||payload.planHash!==ctx.waitingPlan.planHash);if(invalidScope||invalidContext)throw fail('授权范围与当前暂停计划或时间触发不一致','AUTHORIZATION_REQUIRED');
  authorizing=true;if(!scheduled)ctx.status='RUNNING';
  const work=(async()=>{try{current(ctx);await operations.authorizeWorkflow(ctx.session,payload,async audit=>{current(ctx);ctx.runAuthorization=copy(audit);await onUpdate(getStatus());current(ctx);});current(ctx);authorizing=false;if(scheduled)return getStatus();if(await executeAuthorizedBatch(ctx))return await advance(ctx);return getStatus();}
- catch(error){if(scheduled)ctx.cancel.abort();await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':'FAILED',ctx.limitReason??error.message);return getStatus();}finally{authorizing=false;}})();
+ catch(error){if(scheduled)ctx.cancel.abort();await finish(ctx,ctx.limitReason||error.code==='WORKFLOW_LIMIT'?'STOPPED':error.code==='CANCELLED'?'CANCELLED':error.code==='WORKFLOW_EVENT_UNKNOWN'?'UNKNOWN':'FAILED',ctx.limitReason??error.message);return getStatus();}finally{authorizing=false;}})();
  if(scheduled)ctx.authorizationTask=work;else task=work;return work;
 }
   async function resume(...args) {
