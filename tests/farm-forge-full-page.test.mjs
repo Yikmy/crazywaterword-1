@@ -1215,3 +1215,50 @@ test('object list uses the existing hundred-entry bound and renders identities a
  assert.equal(parameterListButton(h,'heroPositions','add').disabled,true);parameterListButton(h,'heroPositions','add').click();assert.equal(parameterListControls(h,'heroPositions','remove').length,100);parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.heroPositions,original);
  assert.ok(descendants(h.node('wf-nodes')).every(n=>!n.tagName.startsWith('img')));assert.equal(writes(h).length,0);
 });
+
+const workflowCard=(h,id)=>h.node('wf-nodes').children.find(card=>card.children.some(n=>n.tagName==='label'&&n.children.some(c=>c.tagName==='input'&&c.value===id)));
+const workflowCardField=(h,id,label)=>workflowCard(h,id).children.find(n=>n.tagName==='label'&&n.textContent.startsWith(label+' ')).children.find(n=>['select','input'].includes(n.tagName));
+const workflowCardButton=(h,id,label)=>workflowCard(h,id).children.find(n=>n.tagName==='button'&&n.textContent===label);
+const workflowEdgeField=(h,index,label)=>h.node('wf-edges').children[index].children.find(n=>n.tagName==='label'&&n.textContent.startsWith(label+' ')).children.find(n=>n.tagName==='select');
+
+test('detached node graph controls cannot rename, replace, move or remove nodes in a replacement graph',async()=>{
+ const h=await parameterPage('mail',{action:'read',pageNo:0,emailId:'old'}),id=workflowCardField(h,'business','ID'),type=workflowCardField(h,'business','类型'),module=workflowCardField(h,'business','玩法'),remove=workflowCardButton(h,'business','删除节点及相关连线'),move=workflowCardButton(h,'business','上移'),json=descendants(workflowCard(h,'business')).find(n=>n.tagName==='textarea');
+ const graph=conditionGraph(h);graph.nodes.find(n=>n.id==='business').parameters.emailId='replacement';h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();const source=h.node('wf-json').value;
+ id.value='forged';id.onchange();type.value='STOP';type.onchange();module.value='pet';module.onchange();json.value='{}';json.onchange();remove.click();move.click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('detached edge callbacks cannot change replacement branches or remove an edge by its former index',async()=>{
+ const h=await parameterPage(),from=workflowEdgeField(h,0,'从'),to=workflowEdgeField(h,0,'到'),when=workflowEdgeField(h,0,'分支'),remove=h.node('wf-edges').children[0].children.find(n=>n.tagName==='button');
+ const graph=conditionGraph(h);graph.edges=[{from:'start',to:'stop'},{from:'business',to:'stop'}];h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();const source=h.node('wf-json').value;
+ from.value='business';from.onchange();to.value='start';to.onchange();when.value='FAIL';when.onchange();remove.click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('node and edge controls from the previous account stay inert after selecting that account again',async()=>{
+ const h=await parameterPage('mail',{pageNo:0}),id=workflowCardField(h,'business','ID'),remove=workflowCardButton(h,'business','删除节点及相关连线'),edge=h.node('wf-edges').children[0].children.find(n=>n.tagName==='button'),load=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business');
+ h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-json').value,requests=h.requests.length;id.value='forged';id.onchange();remove.click();edge.click();load.click();assert.equal(h.node('wf-json').value,source);assert.equal(h.requests.length,requests);
+});
+
+test('running and pending Workflows lock all graph mutation and candidate controls even when callbacks are invoked directly',async()=>{
+ const h=await parameterPage('mail',{pageNo:0}),id=workflowCardField(h,'business','ID'),remove=workflowCardButton(h,'business','删除节点及相关连线'),json=descendants(workflowCard(h,'business')).find(n=>n.tagName==='textarea'),load=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business'),edge=workflowEdgeField(h,0,'到');
+ const reading=h.node('wf-load').click();for(const input of [id,remove,json,load,edge,h.node('wf-add'),h.node('wf-id'),h.node('wf-json')])assert.equal(input.disabled,true);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;
+ const source=h.node('wf-json').value,requests=h.requests.length;id.value='forged';id.onchange();remove.click();json.value='{}';json.onchange();edge.value='start';edge.onchange();load.click();h.node('wf-add').click();h.node('wf-add-edge').click();h.node('wf-json-apply').click();h.node('wf-id').value='forged';h.node('wf-id').oninput();h.node('wf-name').value='forged';h.node('wf-name').oninput();assert.equal(h.node('wf-json').value,source);assert.equal(h.requests.length,requests);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;assert.equal(id.disabled,false);id.value='renamed';id.onchange();assert.ok(conditionGraph(h).nodes.some(n=>n.id==='renamed'));assert.ok(conditionGraph(h).edges.some(e=>e.to==='renamed'));assert.equal(writes(h).length,0);
+});
+
+test('current graph move and delete controls operate on exact node identity and expire as soon as rerendered',async()=>{
+ const h=await parameterPage(),move=workflowCardButton(h,'business','上移'),staleRemove=workflowCardButton(h,'business','删除节点及相关连线');move.click();assert.deepEqual(conditionGraph(h).nodes.map(n=>n.id),['business','start','stop']);const source=h.node('wf-json').value;move.click();staleRemove.click();assert.equal(h.node('wf-json').value,source);
+ workflowCardButton(h,'business','删除节点及相关连线').click();assert.deepEqual(conditionGraph(h).nodes.map(n=>n.id),['start','stop']);assert.deepEqual(conditionGraph(h).edges,[]);assert.equal(writes(h).length,0);
+});
+
+test('current graph select fields reject forged choices without modifying the declaration',async()=>{
+ const h=await parameterPage(),source=h.node('wf-json').value;
+ for(const [label,value]of [['类型','FORGED'],['玩法','unregistered']]){const field=workflowCardField(h,'business',label);field.value=value;field.onchange();assert.equal(h.node('wf-json').value,source);}
+ const branch=workflowEdgeField(h,0,'分支');branch.value='UNKNOWN';branch.onchange();assert.equal(h.node('wf-json').value,source);const target=workflowEdgeField(h,0,'到');target.value='missing';target.onchange();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('retained candidate load and selection callbacks cannot probe or select in a replaced graph',async()=>{
+ const h=await parameterPage('free-gold'),load=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business'),reading=load.click();await tick();h.respond('/api/gameplay/survey',data(cases.find(s=>s.module==='free-gold')));await reading;
+ const select=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowSelection==='business'),newLoad=descendants(workflowCard(h,'business')).find(n=>n.dataset.workflowCandidate==='business'),graph=conditionGraph(h);graph.nodes.find(n=>n.id==='business').parameters={replacement:true};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();
+ const source=h.node('wf-json').value,requests=h.requests.length;load.click();newLoad.click();select.value=cases.find(s=>s.module==='free-gold').actionId;select.onchange();assert.equal(h.node('wf-json').value,source);assert.equal(h.requests.length,requests);assert.equal(writes(h,'/api/operations/plan').length,0);
+});
