@@ -562,3 +562,20 @@ test('a forged public VIP reader or plain message source cannot arm an event wor
 for(const entry of ['tasks','dailies','loop'])test(entry+' supports an explicit player level event through the existing compiler without changing the business DAG',()=>{
  const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger={kind:'PLAYER_LEVEL_CHANGED',level:3};const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.edges,before.graph.edges);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.runPolicy,intent.runPolicy);assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
 });
+
+for(const entry of ['dailies','loop'])test('unified '+entry+' maps daily mainline to the original finite Stage Function without implying a daily claim',async()=>{
+ const {createStageFunction}=await import('../src/stage-function.mjs');
+ const stage=createStageFunction({getSession(){throw Error('compile must not survey');},prepareRunner(){throw Error('compile must not prepare Runner');}});
+ const {registerBusinessFunction}=await import('../src/function-registry.mjs');const registry={...unifiedRegistry,stage:registerBusinessFunction(stage)},config={enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true};
+ const input={entry,dailies:[{taskId:1003,action:'perform',parameters:{config}}],budget:unifiedBudget,...(entry==='loop'?{rounds:2}:{})};
+ const result=compileUnifiedExecution(input,{modules:registry}),nodes=result.graph.nodes.filter(n=>n.type==='ACTION');
+ assert.equal(result.blocked.length,0);assert.equal(nodes.length,entry==='loop'?2:1);
+ for(const node of nodes){assert.equal(node.module,'stage');assert.deepEqual(node.parameters,{config});assert.deepEqual(node.selection,{unique:true});}
+ assert.equal(simulateWorkflow(result.graph,{modules:registry}).requestsSent,0);
+ const claim=compileUnifiedExecution({entry,dailies:[{taskId:1003,action:'claim'}],budget:unifiedBudget},{modules:registry}).graph.nodes.find(n=>n.type==='ACTION');
+ assert.equal(claim.module,'task-rewards');assert.deepEqual(claim.parameters,{kind:'daily',taskId:1003});
+ for(const bad of [{...config,maxAttempts:null},{...config,maxAttempts:201},{...config,enabled:false},{...config,allowPaid:true}]){
+  assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1003,parameters:{config:bad}}]},{modules:registry}));
+ }
+ assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1003,parameters:{request:'ChallengeStageRequest'}}]},{modules:registry}));
+});

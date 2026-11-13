@@ -58,7 +58,7 @@ async function harness({unconfirmed=false,includeStage=false,includeAlliance=fal
  const survey=(input=parameters)=>call('/api/gameplay/survey',{body:{module,parameters:input}});
  const plan=async(input=parameters)=>{const read=await survey(input);assert.equal(read.status,200);const candidate=read.data.view.candidates[0];assert.equal(candidate.executable,true);return call('/api/operations/plan',{body:{module,mode:'Manual',selections:[candidate.actionId],parameters:input}});};
  const approve=p=>call('/api/operations/authorize',{body:{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true}});
- return {...app,call,ready,enable,survey,plan,approve,requests,counts:()=>({clients,collections})};}
+ return {...app,history,call,ready,enable,survey,plan,approve,requests,counts:()=>({clients,collections})};}
 async function waitForWorkflow(app,expected){let data;for(let i=0;i<30;i++){data=(await app.call('/api/workflows')).data;if(data.status.status===expected)return data;if(['FAILED','UNKNOWN','CANCELLED'].includes(data.status.status))throw Error('Unexpected workflow '+JSON.stringify(data.status));}throw Error('Workflow did not reach '+expected+': '+JSON.stringify(data.status));}
 const graph=(id,nodes,edges)=>({version:1,id,name:id,nodes,edges});
 const stoppedGraph=id=>graph(id,[{id:'start',type:'START'},{id:'stop',type:'STOP'}],[{from:'start',to:'stop'}]);
@@ -591,5 +591,82 @@ test('original dailies HTTP exposes only cached seasonal observations per accoun
   for(const [object,key,value]of[[session,'generation',2],[session,'connectionId','other'],[session.player,'playerId','2'],[session.player,'worldId',18]]){const old=object[key];object[key]=value;const changed=(await app.call('/api/dailies')).data.checklist.festival;assert.equal(changed.status,'UNKNOWN');assert.deepEqual(changed.rows,[]);object[key]=old;}
   app.ready('B');const other=await app.call('/api/dailies',{id:'B'});assert.equal(other.data.checklist.festival.status,'UNKNOWN');assert.deepEqual(other.data.checklist.festival.rows,[]);
   assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal((await app.call('/api/dailies/run',{body:{confirm:true}})).data.code,'READ_ONLY_ROUTE');
+ }finally{await app.close();}
+});
+for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline reuses original Runner authorization history and account isolation',async()=>{
+ const app=await harness({includeStage:true});try{
+  const session=app.ready('A');app.ready('B');
+  await app.call('/api/gameplay?module=stage');
+  await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
+  const config={enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true};
+  const intent={entry,dailies:[{taskId:1003,action:'perform',parameters:{config}}],budget:{resources:[],quotas:[],uids:[]}};
+  const prepared=await app.call('/api/workflows/prepare',{body:intent});
+  assert.equal(prepared.status,200);assert.deepEqual(prepared.data.blocked,[]);
+  const g=prepared.data.graph;assert.equal(g.nodes.find(n=>n.type==='ACTION').module,'stage');
+  const count=app.requests.length;assert.equal((await app.call('/api/workflows/simulate',{body:{graph:g}})).data.requestsSent,0);
+  assert.equal(app.requests.length,count);assert.equal(session.stageRunner,undefined);
+  await app.call('/api/workflows/start',{body:{graph:g}});const paused=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,0);assert.equal(session.stageRunner,undefined);
+  const p=paused.plan,payload={batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true};
+  assert.notEqual((await app.call('/api/operations/authorize',{id:'B',body:payload})).status,200);
+  assert.equal((await app.call('/api/operations/authorize',{body:payload,headers:{'x-cw-csrf':'wrong'}})).status,403);
+  const permit=await app.approve(p);assert.equal(permit.status,200);
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  await app.operations.settle('A');
+  assert.equal((await app.call('/api/workflows/resume',{body:{}})).status,200);
+  const completed=(await waitForWorkflow(app,'COMPLETED')).status;
+  assert.deepEqual(app.requests.filter(r=>r.name==='ChallengeStageRequest').map(r=>r.body.stage),[41]);
+  assert.ok(session.stageRunner);assert.equal(session.stageClient,session.client);
+  const detail=await app.call('/api/workflows/history?workflowRunId='+encodeURIComponent(completed.runId));
+  assert.equal(detail.status,200);assert.equal(detail.data.preparation.entry,entry);
+  const runs=(await app.call('/api/operations/history')).data.runs;
+  assert.equal(runs.length,1);assert.equal(runs[0].module,'stage');assert.equal(runs[0].workflowId,completed.runId);
+  assert.equal(runs[0].actions[0].verification.status,'CONFIRMED');assert.equal(runs[0].finalStatus,'SUCCESS');
+  assert.equal(app.requests.some(r=>r.name==='DrawDailyTaskRewardRequest'),false);
+  assert.notEqual((await app.call('/api/workflows/history?workflowRunId='+encodeURIComponent(completed.runId),{id:'B'})).status,200);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline UNKNOWN stops siblings and survives a new shared Service without replay',async()=>{
+ const app=await harness({includeStage:true});try{
+  const session=app.ready('A'),original=session.client.request;
+  session.client.request=async function(name,...args){const response=await original.call(this,name,...args);return name==='ChallengeStageRequest'?{...response,initialData:{...response.initialData,battleType:2}}:response;};
+  await app.call('/api/gameplay?module=stage');
+  await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
+  const row={taskId:1003,action:'perform',parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true}}};
+  const prepared=await app.call('/api/workflows/prepare',{body:{entry,dailies:[row,row],budget:{resources:[],quotas:[],uids:[]}}});
+  await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
+  const paused=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,permit=await app.approve(paused.plan);
+  await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');
+  await app.call('/api/workflows/resume',{body:{}});
+  const stopped=(await app.call('/api/workflows')).data.status;assert.equal(stopped.status,'UNKNOWN');
+  const runs=app.history.list('A');assert.equal(runs.length,1);assert.equal(runs[0].actions[0].result,'UNKNOWN');
+  assert.equal(runs[0].actions[0].unresolvedWrite,true);assert.equal(app.history.unresolved('A'),true);
+  assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,1);
+  const before=fs.readFileSync(app.history.storagePath,'utf8');
+  const {createOperationService}=await import('../src/operation-service.mjs');
+  const reopened=createExecutionHistory({file:app.history.storagePath}),service=createOperationService({history:reopened,modules:app.operations.modules,loadRules:()=>({config:{}})});
+  const fresh={...session,stageRunner:null,busy:null,workflowOwner:null,abort:new AbortController(),client:{...session.client,uncertainWrites:new Set()}};
+  assert.equal(service.blocked('A'),true);
+  await assert.rejects(service.plan(fresh,{module:'stage',mode:'Manual',selections:[],parameters:row.parameters}));
+  assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),before);
+  assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,1);
+  assert.equal(app.requests.some(r=>r.name==='DrawDailyTaskRewardRequest'),false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline cancellation before authorization cannot dispatch through an old plan',async()=>{
+ const app=await harness({includeStage:true});try{
+  const session=app.ready('A');await app.call('/api/gameplay?module=stage');
+  await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
+  const intent={entry,dailies:[{taskId:1003,parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true}}}],budget:{resources:[],quotas:[],uids:[]}};
+  const prepared=await app.call('/api/workflows/prepare',{body:intent});await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
+  const p=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status.plan,permit=await app.approve(p);
+  assert.equal((await app.call('/api/workflows/stop',{body:{}})).data.status.status,'CANCELLED');
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).data.code,'STALE_PLAN');
+  assert.equal(session.stageRunner,undefined);assert.equal(session.busy,null);
+  assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,0);
+  assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });

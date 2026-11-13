@@ -2150,3 +2150,22 @@ test('assembled daily page renders seasonal observations as text without any aut
  h.run('renderDailies('+JSON.stringify({checklist:view,tasks:[]})+')');const text=h.node('dailies-table').textContent;assert.match(text,/季节活动.*最近推送观察/);assert.match(text,/SCAllActivity.festivalActivities.*OBSERVED/);assert.match(text,/9007199254740993/);assert.match(text,/1、2/);assert.match(text,/start 800；open 900；close 1900；end 2000/);assert.match(text,/<img src=x onerror=alert\(1\)>/);assert.match(text,/未知：签到资格及独立复读缺证/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+for(const entry of ['dailies','loop'])test('unified '+entry+' professional form declares explicit finite mainline and keeps claim separate',async()=>{
+ const h=await unifiedForm(entry),before=h.requests.length;
+ unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'dailies','stage','2');
+ assert.equal(h.node('wf-unified-target').disabled,false);
+ assert.match(h.node('wf-unified-target-label').textContent,/1–200/);
+ assert.deepEqual(unifiedDraft(h).dailies,[{taskId:1003,action:'perform',parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true}}}]);
+ assert.match(h.node('wf-unified-steps').textContent,/有限主线战斗/);
+ assert.match(h.node('wf-unified-steps').textContent,/maxAttempts/);
+ unifiedAdd(h,'dailies','daily','1003');
+ assert.deepEqual(unifiedDraft(h).dailies[1],{taskId:1003,action:'claim'});
+ for(const target of ['','0','-1','1.5','1e2','201','9007199254740992']){
+  const source=h.node('wf-unified-intent').value;unifiedAdd(h,'dailies','stage',target);
+  assert.equal(h.node('wf-unified-intent').value,source);
+ }
+ assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const stale=h.node('wf-unified-add').onclick;h.run("selectAccount('B');selectAccount('A')");
+ const source=h.node('wf-unified-intent').value;stale();assert.equal(h.node('wf-unified-intent').value,source);
+});
