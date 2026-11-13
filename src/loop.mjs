@@ -124,7 +124,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
   const invalid = message => { throw Object.assign(new Error(message), { code:'WORKFLOW_INVALID',statusCode:400 }); };
   const object = value => value && typeof value === 'object' && !Array.isArray(value);
   const exact = (value,keys) => { if(!object(value)||Object.keys(value).some(key=>!keys.includes(key))) invalid('统一执行声明包含未知字段'); };
-  exact(input,['entry','id','name','tasks','dailies','world','rounds','everyMs','budget']);
+  exact(input,['entry','id','name','tasks','dailies','world','rounds','everyMs','budget','runPolicy']);
   if(!['tasks','dailies','loop'].includes(input.entry))invalid('需要 Tasks、Dailies 或 Loop 入口');
   const rounds=input.rounds===undefined?1:input.rounds,everyMs=input.everyMs===undefined?0:input.everyMs;
   if(!Number.isSafeInteger(rounds)||rounds<1||rounds>48||!Number.isSafeInteger(everyMs)||everyMs<0||everyMs>60000)invalid('统一循环必须有限且间隔不超过60000毫秒');
@@ -181,7 +181,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,selection:step.selection});
   }
   add({id:'stop',type:'STOP'});
-  const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget,preparation:{entry:input.entry,blocked:structuredClone(blocked)}};
+  const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget,...(Object.hasOwn(input,'runPolicy')?{runPolicy:input.runPolicy}:{}),preparation:{entry:input.entry,blocked:structuredClone(blocked)}};
   const validated=validateWorkflow(graph,{modules}).workflow;
   return {entry:input.entry,graph:steps.length?validated:null,blocked};
 }

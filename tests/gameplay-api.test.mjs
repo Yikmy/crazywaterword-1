@@ -427,3 +427,13 @@ test('existing Workflow API stores and simulates optional run boundaries with st
   assert.deepEqual((await app.call('/api/workflows')).data.graphs.find(row=>row.id===g.id).runPolicy,g.runPolicy);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.requests.length,0);
  }finally{await app.close();}
 });
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' HTTP prepares the existing bounded graph offline and rejects scope expansion or malformed run policy',async()=>{
+ const app=await harness({includeDailyReward:true});try{
+  await app.call();const payload={entry,budget:{resources:[],quotas:[],uids:[]},runPolicy:{maxDurationMs:1000,maxActions:1,modules:['task-rewards']},...(entry==='tasks'?{tasks:[{kind:'main',taskId:1}]}:{dailies:[{taskId:1001,action:'claim'}],...(entry==='loop'?{rounds:2}:{})})};
+  const prepared=await app.call('/api/workflows/prepare',{body:payload});assert.equal(prepared.status,200);assert.deepEqual(prepared.data.graph.runPolicy,payload.runPolicy);assert.deepEqual(prepared.data.graph.budget,payload.budget);assert.equal(prepared.data.graph.preparation.entry,entry);
+  const save=await app.call('/api/workflows/save',{body:{graph:prepared.data.graph}});assert.equal(save.status,200);
+  for(const policy of [null,{...payload.runPolicy,modules:[]},{...payload.runPolicy,maxDurationMs:0},{...payload.runPolicy,allowRetry:true}])assert.equal((await app.call('/api/workflows/prepare',{body:{...payload,runPolicy:policy}})).status,400);
+  assert.equal((await app.call('/api/workflows/prepare',{body:payload,authorized:false})).status,403);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.requests.length,0);
+ }finally{await app.close();}
+});
