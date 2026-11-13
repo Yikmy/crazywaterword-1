@@ -112,7 +112,10 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     if(!decisionMemory)return;
     const snapshot=assertMemoryAccount(session.id);
     if(snapshot.unknown.length)throw error('原始UNKNOWN尚未由执行历史复核','RECOVERY_UNCERTAIN');
-    if(!snapshot.events.some(event=>event.status==='REJECTED'&&event.module===operation.module&&event.actionType===operation.actionType))return;
+    // Legacy city and registered production are the same existing operations.
+    // Keep immutable event identities; compare both historical module aliases.
+    const memoryModules=['city','production'].includes(operation.module)&&['startProduce','gainFactory','speedUpProduce'].includes(operation.actionType)?['city','production']:[operation.module];
+    if(!snapshot.events.some(event=>event.status==='REJECTED'&&memoryModules.includes(event.module)&&event.actionType===operation.actionType))return;
     const query={module:operation.module,actionType:operation.actionType,target:operation.target,identity:operation.identity??operation.beforeState};
     const rejectionIdentity=modules[operation.module]?.rejectionIdentity;
     if(typeof rejectionIdentity==='function') {
@@ -120,7 +123,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       // Domain business comparison requires the same fresh authoritative fact.
       const freshness=factsFreshnessPolicy(identityFact,{accountId:session.id,generation:session.generation,now:clock(),maxAgeMs:300000,scope:{kind:'ENTITY',key}});
       if(freshness.status!=='FRESH'||operationDigest(toSnapshotJson(identityFact.value))!==operationDigest(toSnapshotJson(query.identity)))throw error('拒绝记忆需要当前账号的新鲜权威事实','REJECTION_MEMORY_ACTIVE');
-      for(const event of snapshot.events.filter(event=>event.status==='REJECTED'&&event.key===key)) {
+      const keys=new Set(memoryModules.map(module=>executionMemoryKey({...query,module})));
+      for(const event of snapshot.events.filter(event=>event.status==='REJECTED'&&keys.has(event.key))) {
         // Compare original History business facts, never mutate or reinterpret the
         // event digest. An absent/mismatched origin cannot prove a changed fact.
         const originalRun=snapshot.entries.find(run=>run.runId===event.runId&&(run.planSummary?.batchId??run.authorizationSummary?.batchId)===event.batchId);

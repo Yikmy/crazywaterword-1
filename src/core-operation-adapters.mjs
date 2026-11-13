@@ -147,7 +147,26 @@ function dependencies(id, options = {}) {
 }
 const evidence = sources => Object.freeze({ sources: Object.freeze(sources), offline: 'REAL_FUNCTION_SYNTHETIC_CLIENT', realGame: 'REAL_UNVERIFIED',
   limitations: Object.freeze(['协议存在不代表业务效果；成功仅继承原执行器权威复核', '免费刷新仍要求可信配额证据；不从调用参数授权', 'C112完整游戏产量和C124金币奖励不在此包装器声明完成']) });
-const shared = { defaultConfig, validateConfig: settings, validateParameters: validateCoreOperationParameters, survey: surveyCoreOperations, verify: verifyCoreOperation };
+// The legacy core executors persist a different, already enforced contract.
+// Compare those original fields directly; never synthesize missing generic
+// parameters, cost sources or expected states for historical orders.
+function coreRejectionIdentity(operation,{context}={}) {
+  const fields=['module','actionType','target','identity','beforeState','costs','budgetClaims'];
+  if(!operation||fields.some(key=>!Object.hasOwn(operation,key)||operation[key]===null||operation[key]===undefined)
+    ||!context||['accountId','playerId','worldId','generation','connectionId'].some(key=>!Object.hasOwn(context,key)||context[key]===null||context[key]===undefined))return null;
+  const result=Object.fromEntries(fields.map(key=>[key,structuredClone(operation[key])]));
+  if(operation.module==='orders'){
+    if(!operation.ruleResult)return null;
+    result.ruleResult=structuredClone(operation.ruleResult);
+  }else{
+    if(!operation.expectedState)return null;
+    result.expectedState=structuredClone(operation.expectedState);
+  }
+  if(['city','production'].includes(operation.module)&&productionKinds.has(operation.actionType))result.module='production';
+  result.context={accountId:context.accountId,playerId:context.playerId,worldId:context.worldId};
+  return result;
+}
+const shared = { rejectionIdentity: coreRejectionIdentity, defaultConfig, validateConfig: settings, validateParameters: validateCoreOperationParameters, survey: surveyCoreOperations, verify: verifyCoreOperation };
 export const ordersModule = Object.freeze({ ...shared, id: 'orders', label: '居民订单',
   capabilities: Object.freeze(['C121', 'C122', 'C123', 'C125', 'C126', 'C128']),
   view: viewCoreOrders, plan: planCoreOrders, execute: (client, protocol, operation, options) => executeCore('orders', client, protocol, operation, options),

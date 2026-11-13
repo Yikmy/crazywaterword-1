@@ -1,3 +1,5 @@
+import { createModuleSettings } from '../src/gameplay-settings.mjs';
+import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,7 +21,7 @@ const config = { tables: {
 const wire = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFields', 'MyFleets', 'FinishWorkerOrder']
   .flatMap(name => [[name + 'Request', {}], [name + 'Response', {}]]));
 wire.BuildBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
-function fixture(stock = 4) {
+function fixture(stock = 4, outcome = 'SUCCESS') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-adapters-integration-'));
   const history = createExecutionHistory({ file: path.join(dir, 'history.json') });
   let productionPolicy = { version: 1, enabled: false, onlyShortages: true, productIds: [], maxOperations: 10 };
@@ -31,7 +33,7 @@ function fixture(stock = 4) {
   ] };
   const writes = [], reads = [], uncertain = new Set();
   const mutate = (name, body) => {
-    writes.push({ name, body });
+    writes.push({ name, body });if(outcome==='REJECTED')throw Object.assign(Error('synthetic definite core refusal'),{code:'REJECTED'});
     if (name === 'FinishWorkerOrderRequest') { raw.workerOrder = raw.workerOrder.filter(order => order.index !== body.index); raw.orderOfTheDay.orderNum++; stock -= 2; }
     else if (name === 'BuildBuildingRequest') { raw.building.find(row => row.buildingId === body.buildingId).level = 1; stock--; }
     else if (name === 'StartFactoryProduceRequest') { raw.building.find(row => row.buildingId === body.buildingId).factory.factoryQ.push({ idx: 1, productId: body.productId, finishTime: Math.floor(Date.now() / 1000) + 60 }); stock--; }
@@ -52,7 +54,8 @@ function fixture(stock = 4) {
     markUnverifiedWrite(name, body) { uncertain.add(JSON.stringify({ name, body })); },
     confirmWatchedWrite(name, body) { uncertain.delete(JSON.stringify({ name, body })); },
   };
-  const service = createOperationService({ protocol: wire, getConfig: () => config, loadRules: () => ({ config: policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
+  const moduleSettings=createModuleSettings({file:path.join(dir,'settings.json'),modules:GAMEPLAY_MODULES});
+  const service = createOperationService({ moduleSettings, protocol: wire, getConfig: () => config, loadRules: () => ({ config: policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
   const session = { id: 'synthetic-account', client, state: 'READY', generation: 1, abort: new AbortController(),
     player: { level: 3 }, loop: { running: false }, busy: null };
   const start = async (module, mode, selections) => {
@@ -130,4 +133,14 @@ test('real Automatic production is restricted by account policy and a policy cha
     assert.deepEqual(f.writes.map(row => row.name), ['StartFactoryProduceRequest']);
     assert.deepEqual(f.history.list(f.session.id)[0].planSummary.productionPolicy.productIds, ['bread']);
   } finally { await f.service.settle(f.session.id); f.cleanup(); }
+});
+
+for(const [module,kind]of [['orders','SUBMIT'],['city','build']])test('W19 legacy '+module+' shares refusal across combined and explicit Registry entry',async()=>{
+ const f=fixture(4,'REJECTED');try{f.session.player.playerId='1';f.session.player.worldId=17;f.session.connectionId='legacy-core';const view=(await f.service.survey(f.session)).view,row=module==='orders'?view.orders[0]:view.city.candidates.find(r=>r.actionType===kind),payload={module:'combined',mode:'Manual',selections:[row.actionId]};await f.start('combined','Manual',[row.actionId]);assert.equal(f.history.list(f.session.id)[0].finalStatus,'REJECTED');f.session.generation++;f.session.connectionId='replacement-core';await assert.rejects(f.service.plan(f.session,payload),{code:'REJECTION_MEMORY_ACTIVE'});f.service.saveModuleConfig(f.session.id,{module,config:{enabled:true}});await assert.rejects(f.service.plan(f.session,{...payload,module,parameters:{}}),{code:'REJECTION_MEMORY_ACTIVE'});f.session.player.worldId=18;assert.equal((await f.service.plan(f.session,payload)).actions.length,1);f.session.player.worldId=17;await assert.rejects(f.service.plan(f.session,payload),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,1);
+ }finally{await f.service.settle(f.session.id);f.cleanup();}
+});
+
+for(const fromLegacy of [true,false])test('W19 production refusal shared across '+(fromLegacy?'legacy city to Registry production':'Registry production to legacy city'),async()=>{
+ const f=fixture(4,'REJECTED');try{f.session.player.playerId='1';f.session.player.worldId=17;f.session.connectionId='core-production';f.service.saveModuleConfig(f.session.id,{module:'production',config:{enabled:true}});const row=(await f.service.survey(f.session)).view.city.candidates.find(r=>r.actionType==='startProduce');const legacy={module:'city',mode:'Manual',selections:[row.actionId]},registered={...legacy,module:'production',parameters:{}};const p=await f.service.plan(f.session,fromLegacy?legacy:registered);const permit=f.service.authorize(f.session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.history.list(f.session.id)[0].finalStatus,'REJECTED');const opposite=fromLegacy?registered:legacy;await assert.rejects(f.service.plan(f.session,opposite),{code:'REJECTION_MEMORY_ACTIVE'});f.session.player.worldId=18;assert.equal((await f.service.plan(f.session,opposite)).actions.length,1);f.session.player.worldId=17;await assert.rejects(f.service.plan(f.session,opposite),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,1);
+ }finally{await f.service.settle(f.session.id);f.cleanup();}
 });
