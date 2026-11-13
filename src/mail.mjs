@@ -93,8 +93,8 @@ function claimObservation(raw,p,config){
  if(page.status!=='AVAILABLE'||!uint(total)||!cat)return null;
  const target=rows.find(row=>int64(own(row,'emailId'),{positive:true})===p.emailId);
  if(!target)return null;
- const attachment=own(target,'attachment'),assets=own(own(attachment,'assets'),'asset'),emptyAttachment=attachment===null||(object(attachment)&&dense(assets)&&assets.length===0&&['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0));
- if(p.action==='read' ? !emptyAttachment : !dense(assets)||!assets.length||!object(attachment)||!['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0))return null;
+ const attachment=own(target,'attachment'),assets=own(own(attachment,'assets'),'asset');
+ if(!dense(assets)||(p.action==='read'?assets.length!==0:!assets.length)||!['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0))return null;
  const rewards=[];
  for(const r of assets){
   const type=own(r,'type'),id=own(r,'id'),num=safeResourceQuantity(own(r,'num'));
@@ -103,7 +103,7 @@ function claimObservation(raw,p,config){
  }
  if(new Set(rewards.map(r=>r.id)).size!==rewards.length||![1,2].includes(own(target,'status'))||typeof own(target,'got')!=='boolean')return null;
  const normalized=toSnapshotJson(target);
- return {page,target:page.emails.find(r=>r.emailId===p.emailId),hasAttachment:!emptyAttachment,rewards:rewards.sort((a,b)=>a.id.localeCompare(b.id)),
+ return {page,target:page.emails.find(r=>r.emailId===p.emailId),rewards:rewards.sort((a,b)=>a.id.localeCompare(b.id)),
   immutable:hash(omitStatus(normalized)),others:rows.filter(r=>int64(own(r,'emailId'),{positive:true})!==p.emailId).map(r=>({id:int64(own(r,'emailId'),{positive:true}),hash:hash(toSnapshotJson(r))})).sort((a,b)=>a.id.localeCompare(b.id)),total};
 }
 async function surveyClaim(client,protocol,{config,parameters,player,signal,stop,timeout}){
@@ -128,7 +128,7 @@ export function mailDependencyVersions({config,moduleConfig=MAIL_DEFAULT_CONFIG}
 }
 function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
  const p=validateMailParameters(parameters),enabled=validateMailConfig(moduleConfig).enabled,valid=authority(f,config),o=valid?f.observation:null,read=p.action==='read',actionType=read?'READ':'CLAIM';
- let reason=!['claim','read'].includes(p.action)?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':read?(o.hasAttachment!==false?'MAIL_READ_REQUIRES_EMPTY_ATTACHMENT':o.target.read!==false?'MAIL_ALREADY_READ':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null):o.hasAttachment!==true?'MAIL_ATTACHMENT_REQUIRED':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
+ let reason=!['claim','read'].includes(p.action)?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':read?(o.target.read!==false?'MAIL_ALREADY_READ':null):o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
  if(!reason&&(!f.available.includes('QuickGotReadEmailRequest')||f.available.includes('QuickGotReadEmailResponse')))reason='MAIL_PROTOCOL_UNAVAILABLE';
  if(!reason&&(!same(f.parameters,p)||o.rewards.some(r=>!Number.isSafeInteger((f.stock.get(r.id)??0)+r.num))))reason='MAIL_PARAMETERS_OR_REWARD_RANGE_INVALID';
  const action={request:'QuickGotReadEmailRequest',response:null,body:{emailId:[p.emailId],all:false}};

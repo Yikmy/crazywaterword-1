@@ -194,3 +194,6 @@ test('mail READ intent persistence failure and missing parent UID send zero requ
  const f=fixture(t,{action:'read',shared:true}),p=await f.displayed();f.failPersist(record=>record.actions.some(row=>row.dispatchEvidence?.state==='MAY_HAVE_DISPATCHED'));try{await f.execute(p);}catch{}assert.equal(f.state.writes.length,0);
  const g=await prepared(t,{action:'read'});assert.notEqual((await g.run(g.operation,{budget:g.budget({resources:[],quotas:[],uids:[]})})).status,'SUCCESS');assert.equal(g.state.writes.length,0);
 });
+test('mail READ missing or null attachments never imply authoritative emptiness or throw',async t=>{
+ for(const value of [null,undefined]){const f=fixture(t,{action:'read'});f.state.onResponse=(name,response)=>{if(name==='EmailBoxRequest'){if(value===undefined)delete response.email[0].attachment;else response.email[0].attachment=value;}return response;};const facts=await f.survey();assert.equal(mail.viewMail(facts,f.options()).candidates[0].executable,false);assert.equal(f.plan(facts).actions.length,0);assert.equal(f.state.writes.length,0);}
+});
