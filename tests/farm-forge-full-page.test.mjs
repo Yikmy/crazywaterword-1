@@ -1278,3 +1278,72 @@ test('unified budget text identities retain exact characters and original backen
  const h=await unifiedForm(),id='界'.repeat(RUN_BUDGET_LIMITS.idLength),requests=h.requests.length;unifiedBudget(h,'resources',id,'1');assert.equal(unifiedDraft(h).budget.resources[0].id,id);assert.equal(normalizeBudgetClaims(unifiedDraft(h).budget).resources[0].id,id);
  for(const value of [' '+id,id+' ',id+'界']){const source=h.node('wf-unified-intent').value;unifiedBudget(h,'quotas',value,'1');assert.equal(h.node('wf-unified-intent').value,source);}assert.equal(h.requests.length,requests);
 });
+
+function graphBudgetEnable(h,enabled=true) {h.node('wf-budget-enabled').checked=enabled;h.node('wf-budget-enabled').onchange();}
+function graphBudgetAdd(h,kind,id,num='',type='') {for(const [key,value]of Object.entries({kind,id,num,type}))h.node('wf-budget-'+key).value=value;h.node('wf-budget-kind').onchange();h.node('wf-budget-add').click();}
+const graphBudgetRemove=(h,key)=>descendants(h.node('wf-budget-rows')).find(n=>n.dataset.workflowBudget===key);
+
+test('current graph budget explicitly applies finite resources, quotas and exact UID limits without changing the unified declaration',async()=>{
+ const h=await parameterPage('free-gold'),intent=h.node('wf-unified-intent').value,source=h.node('wf-json').value,requests=h.requests.length;
+ assert.equal(h.node('wf-budget-enabled').checked,false);graphBudgetEnable(h);graphBudgetAdd(h,'resources','GOLD','7');graphBudgetAdd(h,'quotas','free-gold:reset:2000','1');graphBudgetAdd(h,'uids','9007199254740995','','mail');
+ assert.equal(h.node('wf-json').value,source);assert.equal(h.node('wf-unified-intent').value,intent);h.node('wf-budget-apply').click();
+ assert.deepEqual(conditionGraph(h).budget,{resources:[{id:'GOLD',num:7}],quotas:[{id:'free-gold:reset:2000',num:1}],uids:[{type:'mail',id:'9007199254740995'}]});assert.equal(h.node('wf-unified-intent').value,intent);assert.equal(h.requests.length,requests);
+});
+
+test('graph budget keeps old missing declaration distinct from an explicitly empty limit and removes only after apply',async()=>{
+ const h=await parameterPage('free-gold');assert.equal(Object.hasOwn(conditionGraph(h),'budget'),false);assert.equal(h.node('wf-budget-add').disabled,true);
+ h.node('wf-budget-apply').click();assert.equal(Object.hasOwn(conditionGraph(h),'budget'),false);
+ graphBudgetEnable(h);h.node('wf-budget-apply').click();assert.deepEqual(conditionGraph(h).budget,{resources:[],quotas:[],uids:[]});
+ graphBudgetEnable(h,false);assert.equal(Object.hasOwn(conditionGraph(h),'budget'),true);h.node('wf-budget-apply').click();assert.equal(Object.hasOwn(conditionGraph(h),'budget'),false);assert.equal(writes(h).length,0);
+});
+
+test('graph budget row controls reject detached removal and preserve drafts through ordinary node rerenders',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);graphBudgetAdd(h,'resources','GOLD','7');const old=graphBudgetRemove(h,'resources:0');graphBudgetAdd(h,'quotas','once','1');old.click();assert.ok(graphBudgetRemove(h,'resources:0'));
+ const remove=graphBudgetRemove(h,'quotas:0');const id=workflowCardField(h,'business','ID');id.value='renamed';id.onchange();remove.click();assert.ok(graphBudgetRemove(h,'quotas:0'));
+ h.node('wf-budget-apply').click();assert.deepEqual(conditionGraph(h).budget,{resources:[{id:'GOLD',num:7}],quotas:[{id:'once',num:1}],uids:[]});assert.equal(writes(h).length,0);
+});
+
+test('graph budget input failures never change the draft or existing graph and use shared identity bounds',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);graphBudgetAdd(h,'resources','GOLD','2');const source=h.node('wf-json').value,text=h.node('wf-budget-rows').textContent;
+ for(const [kind,id,num,type]of [['resources','GOLD','1',''],['resources','wood','1e3',''],['resources','wood','9007199254740993',''],['resources',' wood','1',''],['quotas','x'.repeat(301),'1',''],['uids','7','',''],['uids','7','','x'.repeat(301)],['forged','wood','1','']]){
+  graphBudgetAdd(h,kind,id,num,type);assert.equal(h.node('wf-json').value,source);assert.equal(h.node('wf-budget-rows').textContent,text);
+ }
+ const exact='x'.repeat(RUN_BUDGET_LIMITS.idLength);graphBudgetAdd(h,'uids',exact,'',exact);h.node('wf-budget-apply').click();assert.deepEqual(normalizeBudgetClaims(conditionGraph(h).budget),conditionGraph(h).budget);assert.equal(writes(h).length,0);
+});
+
+test('graph budget callbacks expire when the graph or account scope changes',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);graphBudgetAdd(h,'resources','GOLD','7');const oldApply=h.node('wf-budget-apply').onclick,oldAdd=h.node('wf-budget-add').onclick,oldEnable=h.node('wf-budget-enabled').onchange;
+ const graph=conditionGraph(h);graph.budget={resources:[{id:'WOOD',num:5}],quotas:[],uids:[]};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();const source=h.node('wf-json').value;oldAdd();oldEnable();oldApply();assert.equal(h.node('wf-json').value,source);assert.match(h.node('wf-budget-rows').textContent,/WOOD/);assert.doesNotMatch(h.node('wf-budget-rows').textContent,/GOLD/);
+ const currentApply=h.node('wf-budget-apply').onclick,currentAdd=h.node('wf-budget-add').onclick;h.run("selectAccount('B');selectAccount('A')");const reset=h.node('wf-json').value;currentAdd();currentApply();assert.equal(h.node('wf-json').value,reset);assert.equal(writes(h).length,0);
+});
+
+test('graph budget remains locked during pending and running execution and never changes a live parent allowance',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);graphBudgetAdd(h,'resources','GOLD','7');const apply=h.node('wf-budget-apply').onclick,add=h.node('wf-budget-add').onclick,remove=graphBudgetRemove(h,'resources:0'),source=h.node('wf-json').value;
+ const reading=h.node('wf-load').click();for(const id of ['enabled','apply','add','kind','id','num'])assert.equal(h.node('wf-budget-'+id).disabled,true);apply();add();remove.click();assert.equal(h.node('wf-json').value,source);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;apply();add();remove.click();assert.equal(h.node('wf-json').value,source);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;assert.equal(h.node('wf-budget-apply').disabled,false);h.node('wf-budget-apply').click();assert.equal(conditionGraph(h).budget.resources[0].num,7);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('malformed graph budgets keep original data and require advanced correction instead of silently replacing values',async()=>{
+ for(const budget of [null,[],{resources:'unknown'},{resources:[],extra:{keep:'original'}}]){
+  const h=await parameterPage('free-gold'),graph=conditionGraph(h);graph.budget=budget;h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();const source=h.node('wf-json').value;assert.equal(h.node('wf-budget-apply').disabled,true);h.node('wf-budget-add').click();h.node('wf-budget-apply').click();assert.equal(h.node('wf-json').value,source);assert.deepEqual(conditionGraph(h).budget,budget);assert.match(h.node('wf-budget-hint').textContent,/JSON/);assert.equal(writes(h).length,0);
+ }
+});
+
+test('graph budget preserves original invalid row facts for the authoritative contract and escapes display text',async()=>{
+ const h=await parameterPage('free-gold'),graph=conditionGraph(h),budget={resources:[{id:'<img onerror=alert(1)>',num:0,extra:'keep'}],uids:[{type:'mail',id:'9007199254740995'}]};graph.budget=budget;h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();h.node('wf-budget-apply').click();assert.deepEqual(conditionGraph(h).budget,{...budget,quotas:[]});assert.throws(()=>normalizeBudgetClaims(conditionGraph(h).budget));assert.ok(descendants(h.node('wf-budget-rows')).every(n=>n.tagName!=='img'));assert.equal(writes(h).length,0);
+});
+
+test('graph budget saves and simulates using the original Workflow API without issuing any execution request',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);graphBudgetAdd(h,'quotas','free-gold:reset:2000','1');graphBudgetAdd(h,'uids','2000:1','','free-gold');h.node('wf-budget-apply').click();const graph=conditionGraph(h);
+ for(const action of ['save','simulate']){
+  const request=h.node('wf-'+action).click();await tick();const pending=h.pending('/api/workflows/'+action);assert.ok(pending);assert.deepEqual(JSON.parse(pending.options.body).graph,graph);
+  h.respond('/api/workflows/'+action,{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[graph],history:[],simulation:action==='simulate'?{valid:true,budget:graph.budget}:undefined});await request;
+ }
+ assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('current graph budget rows can be explicitly replaced without leaking to the old unified budget draft',async()=>{
+ const h=await parameterPage('free-gold');unifiedBudget(h,'resources','GOLD','99');const unified=h.node('wf-unified-intent').value,graph=conditionGraph(h);graph.budget={resources:[{id:'GOLD',num:7}],quotas:[],uids:[]};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').click();
+ graphBudgetRemove(h,'resources:0').click();graphBudgetAdd(h,'resources','GOLD','5');h.node('wf-budget-apply').click();assert.deepEqual(conditionGraph(h).budget.resources,[{id:'GOLD',num:5}]);assert.equal(h.node('wf-unified-intent').value,unified);assert.equal(writes(h).length,0);
+});
