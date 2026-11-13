@@ -1,3 +1,4 @@
+import { navalView } from '../src/naval-rules.mjs';
 import { treasureView } from '../src/treasure.mjs';
 import { fleetView } from '../src/fleet.mjs';
 import { RUN_BUDGET_LIMITS, normalizeBudgetClaims } from '../src/resource-ledger.mjs';
@@ -1532,4 +1533,66 @@ test('treasure draft callbacks expire after advanced edits or a new account-boun
 test('treasure controls lock for pending and UNKNOWN, and late account reads cannot restore old target actions',async()=>{
  const h=await treasureEditorPage(),prepare=treasureEditorButton(h,'treasurePrepare'),candidate=treasureEditorButton(h,'treasureAction'),reading=h.node('gp-treasure-load').click();assert.equal(prepare.disabled,true);assert.equal(candidate.disabled,true);const data=treasureEditorData();data.status={blocked:true,running:false,state:'UNKNOWN'};h.respond('/api/gameplay',data,{module:'treasure'});await reading;assert.equal(treasureEditorButton(h,'treasurePrepare').disabled,true);
  const late=h.node('gp-treasure-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',treasureEditorData(),{module:'treasure'});await late;prepare.click();candidate.click();assert.equal(h.node('gp-treasure-targets').textContent,'');assert.equal(writes(h).length,0);
+});
+
+
+function navalEditorData(parameters={},change=()=>{}) {
+ const config={...GAMEPLAY_MODULES.naval.defaultConfig,enabled:true,observe:true};
+ const facts={now:100,worldReliable:true,stockReliable:true,stock:new Map([['汽油',500]]),scope:{completeness:'CURRENT_RESPONSE_ONLY'},worldFleets:[
+  {playerId:'9007199254740995',buildingId:'<img onerror=alert(1)>',guildId:'9007199254740997',cityId:7,power:'9007199254740999',state:1,durability:50,maxDura:100},
+  {playerId:'42',buildingId:'fleet-b',guildId:'0',cityId:8,power:'3',state:2,durability:30,maxDura:100},
+  {playerId:'43',buildingId:'fleet-c',guildId:null,cityId:7,power:null,state:1,durability:null,maxDura:null}
+ ]};change(facts,config);
+ return {accountId:'A',module:'naval',csrfToken:'synthetic-csrf-A',config,status:{running:false,blocked:false},functions:[],view:navalView(facts,{parameters,moduleConfig:config})};
+}
+async function navalEditorPage(data=navalEditorData()) {const h=await boot(),reading=h.node('gp-naval-load').click();h.respond('/api/gameplay',data,{module:'naval'});await reading;return h;}
+const navalEditorNodes=h=>descendants(h.node('gp-naval-observations'));
+const navalEditorField=(h,key,part='value')=>navalEditorNodes(h).find(n=>n.dataset.navalParameter===key&&n.dataset.navalControl===part);
+const navalEditorApply=h=>navalEditorNodes(h).find(n=>n.dataset.navalParametersApply);
+function navalEditorDraft(h,values) {for(const [key,value]of Object.entries(values)){const enabled=navalEditorField(h,key,'enabled');enabled.checked=value!==undefined;enabled.onchange();if(value===undefined)continue;if(key==='screenCenter'){for(const axis of ['x','y'])navalEditorField(h,key,axis).value=value[axis];}else navalEditorField(h,key).value=value;}}
+
+test('naval professional observations retain exact IDs and three-valued authority in safe DOM with no combat candidates',async()=>{
+ const data=navalEditorData({minimumPower:'9007199254740998'}),h=await navalEditorPage(data),text=h.node('gp-naval-observations').textContent;
+ assert.equal([...PAGE.matchAll(/id="gp-naval-observations"/g)].length,1);assert.match(text,/CURRENT_RESPONSE_ONLY/);assert.match(text,/9007199254740995/);assert.match(text,/9007199254740999/);assert.match(text,/PASS/);assert.match(text,/FAIL/);assert.match(text,/UNKNOWN/);assert.match(text,/SIDE_UNVERIFIED/);assert.match(text,/TARGET_ID_UNVERIFIED/);assert.ok(navalEditorNodes(h).every(n=>n.tagName!=='img'));assert.deepEqual(data.view.targets.map(r=>r.status),['PASS','FAIL','UNKNOWN']);assert.equal(h.node('gp-naval-plan').disabled,true);assert.equal(h.node('gp-naval-authorize').disabled,true);assert.equal(writes(h).length,0);
+});
+
+test('naval explicit filters preserve int64 text, zero coordinates and empty lists through the existing read-only survey',async()=>{
+ const h=await navalEditorPage();navalEditorDraft(h,{playerId:'9007199254740995',excludeGuildIds:'0\n9007199254740997',cityIds:'7\n2147483647',minimumPower:'0',maximumPower:'9223372036854775807',screenCenter:{x:'0',y:'-2147483647'}});navalEditorApply(h).click();
+ const parameters={playerId:'9007199254740995',excludeGuildIds:['0','9007199254740997'],cityIds:[7,2147483647],minimumPower:'0',maximumPower:'9223372036854775807',screenCenter:{x:0,y:-2147483647}};
+ assert.deepEqual(JSON.parse(h.node('gp-naval-parameters').value),parameters);assert.deepEqual(GAMEPLAY_MODULES.naval.validateParameters(parameters),parameters);assert.equal(writes(h).length,0);
+ const scan=h.node('gp-naval-survey').click();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'naval',parameters});h.respond('/api/gameplay/survey',navalEditorData(parameters));await scan;assert.equal(h.node('gp-naval-plan').disabled,true);assert.equal(h.node('gp-naval-authorize').disabled,true);assert.deepEqual(writes(h).map(r=>new URL(r.url,'http://localhost').pathname),['/api/gameplay/survey']);
+ navalEditorDraft(h,{playerId:undefined,excludeGuildIds:'',cityIds:''});navalEditorApply(h).click();const empty=JSON.parse(h.node('gp-naval-parameters').value);assert.equal(Object.hasOwn(empty,'playerId'),false);assert.deepEqual(empty.excludeGuildIds,[]);assert.deepEqual(empty.cityIds,[]);
+});
+
+test('naval target selection copies only the precise response key and retains filters until explicit resurvey',async()=>{
+ const h=await navalEditorPage(),requests=h.requests.length;navalEditorDraft(h,{minimumPower:'1'});navalEditorApply(h).click();const old=navalEditorNodes(h).find(n=>n.dataset.navalObservedTarget);old.click();const key='9007199254740995:<img onerror=alert(1)>';
+ assert.deepEqual(JSON.parse(h.node('gp-naval-parameters').value),{minimumPower:'1',targetId:key,playerId:'9007199254740995'});assert.equal(h.requests.length,requests);const before=h.node('gp-naval-parameters').value;old.click();assert.equal(h.node('gp-naval-parameters').value,before);assert.equal(h.node('gp-naval-plan').disabled,true);
+});
+
+for(const [label,values]of [
+ ['zero player',{playerId:'0'}],['int64 overflow',{playerId:'9223372036854775808'}],['leading zero',{minimumPower:'01'}],['decimal',{minimumPower:'1.0'}],['exponent',{maximumPower:'1e3'}],['whitespace',{excludeGuildIds:' 7'}],['duplicate guild',{excludeGuildIds:'7\n7'}],['blank guild',{excludeGuildIds:'7\n'}],['duplicate city',{cityIds:'7\n7'}],['zero city',{cityIds:'0'}],['city overflow',{cityIds:'2147483648'}],['oversized list',{cityIds:Array.from({length:101},(_,i)=>String(i+1)).join('\n')}],['reversed bounds',{minimumPower:'9007199254740999',maximumPower:'9007199254740998'}],['missing coordinate',{screenCenter:{x:'0',y:''}}],['coordinate overflow',{screenCenter:{x:'-2147483648',y:'0'}}],['coordinate exponent',{screenCenter:{x:'1e0',y:'0'}}],['empty target',{targetId:' '}]
+])test('naval filter form rejects '+label+' atomically and sends no requests',async()=>{
+ const h=await navalEditorPage(),before=h.node('gp-naval-parameters').value;navalEditorDraft(h,{targetId:'valid-prior-field',...values});navalEditorApply(h).click();assert.equal(h.node('gp-naval-parameters').value,before);assert.match(h.node('gp-naval-hint').textContent,/筛选未应用/);assert.equal(writes(h).length,0);
+});
+
+test('naval malformed advanced parameters require explicit repair and unknown fields reach the original contract rejection',async()=>{
+ const h=await navalEditorPage();h.node('gp-naval-parameters').value='[]';h.node('gp-naval-parameters').oninput();let reading=h.node('gp-naval-load').click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;assert.equal(navalEditorApply(h).disabled,true);assert.match(h.node('gp-naval-observations').textContent,/高级JSON修正/);navalEditorApply(h).click();assert.equal(h.node('gp-naval-parameters').value,'[]');
+ h.node('gp-naval-parameters').value=JSON.stringify({request:'untrusted'});h.node('gp-naval-parameters').oninput();reading=h.node('gp-naval-load').click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;navalEditorDraft(h,{cityIds:'7'});navalEditorApply(h).click();const value=JSON.parse(h.node('gp-naval-parameters').value);assert.deepEqual(value,{request:'untrusted',cityIds:[7]});assert.throws(()=>GAMEPLAY_MODULES.naval.validateParameters(value),{code:'INVALID_INPUT'});assert.equal(writes(h).length,0);
+});
+
+test('naval missing world authority keeps target selection disabled and observations UNKNOWN',async()=>{
+ const h=await navalEditorPage(navalEditorData({},f=>{f.worldReliable=false;})),button=navalEditorNodes(h).find(n=>n.dataset.navalObservedTarget),before=h.node('gp-naval-parameters').value;assert.equal(button.disabled,true);button.click();assert.equal(h.node('gp-naval-parameters').value,before);assert.match(h.node('gp-naval-observations').textContent,/可靠性 UNKNOWN/);assert.equal(writes(h).length,0);
+});
+
+test('naval observation callbacks expire on parameter edits, replacement views and account changes',async()=>{
+ const h=await navalEditorPage(),apply=navalEditorApply(h),target=navalEditorNodes(h).find(n=>n.dataset.navalObservedTarget);navalEditorDraft(h,{cityIds:'7'});h.node('gp-naval-parameters').value=JSON.stringify({cityIds:[8]});h.node('gp-naval-parameters').oninput();apply.click();target.click();assert.deepEqual(JSON.parse(h.node('gp-naval-parameters').value),{cityIds:[8]});
+ let reading=h.node('gp-naval-load').click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;apply.click();target.click();assert.deepEqual(JSON.parse(h.node('gp-naval-parameters').value),{cityIds:[8]});
+ const latest=navalEditorApply(h);reading=h.node('gp-naval-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;latest.click();target.click();assert.equal(h.node('gp-naval-observations').textContent,'');assert.equal(writes(h).length,0);
+});
+
+test('naval pending, UNKNOWN, running, disconnect and busy states lock professional filters',async()=>{
+ const h=await navalEditorPage(),apply=navalEditorApply(h),reading=h.node('gp-naval-load').click();assert.equal(apply.disabled,true);apply.click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;
+ for(const status of [{blocked:true,running:false,state:'UNKNOWN'},{blocked:false,running:true}]){const data=navalEditorData();data.status=status;const read=h.node('gp-naval-load').click();h.respond('/api/gameplay',data,{module:'naval'});await read;assert.equal(navalEditorApply(h).disabled,true);navalEditorApply(h).click();}
+ for(const state of ["snapshot.connected=false","snapshot.busy='other-operation'"]){const other=await navalEditorPage();other.run(state);navalEditorApply(other).click();assert.equal(writes(other).length,0);}
+ assert.equal(writes(h).length,0);
 });
