@@ -144,6 +144,7 @@ export const ACTIONS = {
     request: 'DrawDailyRewardRequest',
     response: null,
     mutate: true,
+    costs: [],
     desc: '领取日常活跃宝箱（档位来自 DailyActivityRewardCfg，门槛 20/40/60/80/100）',
     params: ['index'],
     body: ({ index }) => ({ index: indexList(index) }),
@@ -325,6 +326,8 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(request==='TrialRaidChallengeRequest'&&(!fields(body,['raidId','stageId'])||body.raidId!==1||!positiveInt32(body.stageId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','经验试炼只允许精确 raidId=1、stageId 和明确零支出');
   if(request==='RecruitStartRequest'&&body.way===1&&(!fields(body,['way'])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','免费英雄招募仅允许明确 way=1 与零支出');
   if(request==='ClickGoldRequest'&&(!fields(body,['times','free'])||body.times!==1||body.free!==true||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','普通免费点金仅允许 times=1、free=true 与明确零支出');
+  const rewardIndices=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length>0&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value')&&positiveInt32(d.value))&&new Set(v).size===v.length;
+  if(request==='DrawDailyRewardRequest'&&(!fields(body,['index'])||!rewardIndices(body.index)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','日活跃奖励只允许明确唯一档位列表与零支出');
   if(request==='DrawDailyTaskRewardRequest'&&(!fields(body,['id'])||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','日常任务奖励仅允许精确 id 与明确零支出');
   if(request==='GotAchievementRewardRequest'&&(!fields(body,['id'])||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','成就奖励仅允许精确 id 与明确零支出');
   if(['DrawMainTaskRewardRequest','GotBranchTaskRewardRequest'].includes(request)&&(!fields(body,['taskId'])||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','任务奖励只允许精确 taskId 与明确零支出');

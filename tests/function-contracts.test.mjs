@@ -209,3 +209,8 @@ test('PRO-007 uses an independent antique contract rather than remapping Museum 
 test('equipment STAR contract is explicit RED single growth and keeps replacement blocked',()=>{
  const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.implementation.actions.includes('STAR'));assert.ok(c.inputSchema.properties.action.enum.includes('star'));assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=star').keys,['config.EquipAttrCfg','config.EquipUpStarCfg']);assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='STAR_REPLACE'&&row.reason.includes('Replacement')));assert.match(c.verification.scope,/RED STAR\+1/);
 });
+
+test('task rewards retain C capability identity with explicit daily inventory references and a blocked weekly contract',()=>{
+ const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C516']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
+ assert.ok(c.dependencyVersions.conditional.some(r=>r.when==='parameters.kind=daily-activity'&&JSON.stringify(r.keys)===JSON.stringify(['config.DailyActivityRewardCfg','config.ItemCfg'])));
+});

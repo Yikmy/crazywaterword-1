@@ -20,7 +20,7 @@ import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish());
 const parameters={kind:'daily',taskId:1001};
-function fixture({codec=true,apply=true,receipt={activity:5}}={}){
+function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId=null}={}){
  const state={wall:1000000,mono:100,daily:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false},{id:1002,progress:0,targetProgress:2,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[1],weeklyRewardClaimed:[],dailyResetTime:2000},stock:[{itemId:'unrelated',num:9}],resources:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
  const clock=trustedGameClock({accountId:'synthetic-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
  clock.markPing(state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:state.wall,serverTimestamp:state.wall}));
@@ -36,8 +36,13 @@ function fixture({codec=true,apply=true,receipt={activity:5}}={}){
   state.reads.push(n);await state.onRead?.(n);
   let value=n==='DailyTaskInfoRequest'?state.daily:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
+ },
+ async sendWatch(n,b,opts){
+  assert.equal(n,'DrawDailyRewardRequest');wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});
+  if(apply){const season=Number(BigInt(options.player.worldId)/1000000n%1000n),rows=actual.tables.DailyActivityRewardCfg.data,selected=Math.max(...rows.filter(r=>r.season<=season).map(r=>r.season)),row=rows.find(r=>r.season===selected&&r.id===b.index[0]);state.daily.dailyRewardClaimed.push(row.id);const [id,num]=row.reward,old=state.stock.find(i=>i.itemId===id);if(old)old.num+=num;else state.stock.push({itemId:id,num});}
+  await state.onWrite?.();return {status:'UNKNOWN'};
  }};
- const options={config:{tables:{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}},moduleConfig:{enabled:true},parameters:clone(parameters),player:{playerId:'9007199254740993',worldId:'17'}};
+ const options={config:{tables:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null?'17':'1000001')}};
  return {state,client,options};
 }
 async function ready(input={},mutate){const f=fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
@@ -170,7 +175,7 @@ function serviceFixture(t,{file=null,...input}={}){
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:f.options.moduleConfig})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  f.state.onDispatch=()=>{f.state.saved=clone(durable.list(session.id)[0]);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
- async function plan(){const read=await service.surveyModule(session,'task-rewards',parameters),row=read.view.candidates[0];assert.equal(row.executable,true,JSON.stringify(row));return service.plan(session,{module:'task-rewards',mode:'Manual',parameters,selections:[row.actionId]});}
+ async function plan(){const read=await service.surveyModule(session,'task-rewards',f.options.parameters),row=read.view.candidates[0];assert.equal(row.executable,true,JSON.stringify(row));return service.plan(session,{module:'task-rewards',mode:'Manual',parameters:f.options.parameters,selections:[row.actionId]});}
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true});
  async function run(p){const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};}
  return {...f,file,durable,history,session,service,plan,authorize,run};
@@ -263,4 +268,97 @@ for(const apply of[true,false])test('compiled Loop claim never repeats '+(apply?
  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
  let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');await f.run(run.plan);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id).length,1);
  if(apply)assert.ok(run.trace.some(r=>r.result==='BLOCKED_NO_EXECUTABLE_CANDIDATE'));else assert.equal(f.durable.list(f.session.id)[0].actions[0].unresolvedWrite,true);
+});
+
+const readyActivity=(input={},mutate)=>ready({tierId:1,...input},f=>{f.state.daily.dailyRewardClaimed=[];mutate?.(f);});
+async function settledActivity(f,mutate){await f.client.sendWatch('DrawDailyRewardRequest',{index:[f.options.parameters.tierId]});mutate?.(f);return surveyTaskRewards(f.client,protocol,f.options);}
+
+test('C516 one exact daily activity tier has zero debit, period UID, selected season and full inventory rule',async()=>{
+ const f=await readyActivity();assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.capabilityId,'C516');assert.deepEqual(f.operation.parameters,{kind:'daily-activity',tierId:1});
+ assert.deepEqual(f.operation.action,{request:'DrawDailyRewardRequest',response:null,body:{index:[1]}});assert.deepEqual(f.operation.rewards,[{id:'加速器',num:120}]);assert.deepEqual(f.operation.costs,[]);
+ assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'daily-activity-reward',id:'2000:1'}]});assert.equal(f.operation.target.season,1);assert.equal(f.operation.target.configuredSeason,1);
+ const after=await settledActivity(f);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);assert.deepEqual(after.daily.dailyRewardClaimed,[1]);assert.equal(after.stock.get('加速器'),120);assert.equal(after.daily.dailyActivity,40);assert.equal(after.daily.weeklyActivity,85);
+ assert.equal(verifyTaskReward(f.operation,f.facts,after,{reward:{}}).confirmed,false);
+});
+
+test('daily activity parameter schema keeps task IDs, tier IDs and unknown weekly periods distinct',()=>{
+ assert.deepEqual(validateTaskRewardsParameters({kind:'daily-activity',tierId:2147483647}),{kind:'daily-activity',tierId:2147483647});
+ for(const p of[{kind:'daily-activity',taskId:1},{kind:'daily-activity',tierId:1,taskId:1},{kind:'daily',tierId:1},{kind:'main',taskId:1,tierId:1},{tierId:1},{kind:'daily-activity',tierId:0},{kind:'weekly-activity',tierId:1},{kind:'daily-activity',tierId:'1'},{kind:'daily-activity',tierId:1,all:true}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
+});
+
+for(const [worldId,season,rewardId]of[
+ ['1000001',1,'普橙随机碎片II'],['2000001',2,'橙卡随机碎片S1'],['3000001',3,'橙卡随机碎片S2'],['4000001',4,'橙卡随机碎片'],['5000001',4,'橙卡随机碎片'],['9007199254740993',4,'橙卡随机碎片']
+])test('tier five reward uses exact world and configured floor season '+worldId,async()=>{
+ const f=await readyActivity({tierId:5,worldId},f=>f.state.daily.dailyActivity=100);assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.target.configuredSeason,season);assert.deepEqual(f.operation.rewards,[{id:rewardId,num:20}]);
+ const after=await settledActivity(f);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);assert.equal(after.stock.get(rewardId),20);assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].name,'DrawDailyRewardRequest');
+});
+
+for(const [label,mutate]of[
+ ['incomplete activity',f=>f.state.daily.dailyActivity=19],
+ ['already claimed',f=>f.state.daily.dailyRewardClaimed=[1]],
+ ['unrecognized prior tier',f=>f.state.daily.dailyRewardClaimed=[999]],
+ ['world has no proven season',f=>f.options.player.worldId='17'],
+ ['unsafe world Number',f=>f.options.player.worldId=Number.MAX_SAFE_INTEGER+1],
+ ['missing world',f=>delete f.options.player.worldId],
+ ['missing table',f=>delete f.options.config.tables.DailyActivityRewardCfg],
+ ['duplicate tier',f=>f.options.config.tables.DailyActivityRewardCfg.data.push(clone(f.options.config.tables.DailyActivityRewardCfg.data[0]))],
+ ['unsorted season groups',f=>f.options.config.tables.DailyActivityRewardCfg.data.reverse()],
+ ['zero threshold',f=>f.options.config.tables.DailyActivityRewardCfg.data[0].activity=0],
+ ['zero reward',f=>f.options.config.tables.DailyActivityRewardCfg.data[0].reward[1]=0],
+ ['unknown reward item',f=>f.options.config.tables.DailyActivityRewardCfg.data[0].reward[0]='未知奖励'],
+ ['unknown reward type',f=>f.options.config.tables.ItemCfg.data.find(r=>r.id==='加速器').type='Meta'],
+ ['instance reward',f=>f.options.config.tables.ItemCfg.data.find(r=>r.id==='加速器').type='英雄'],
+ ['ambiguous item',f=>f.options.config.tables.ItemCfg.data.push(clone(f.options.config.tables.ItemCfg.data.find(r=>r.id==='加速器')))],
+ ['missing item table',f=>delete f.options.config.tables.ItemCfg],
+ ['overflow income',f=>f.state.stock.push({itemId:'加速器',num:Number.MAX_SAFE_INTEGER})],
+ ['expired clock',f=>f.state.daily.dailyResetTime=1000],
+])test('daily activity fails closed: '+label,async()=>{const f=await readyActivity({},mutate);assert.equal(f.operation,undefined);assert.equal(f.state.writes.length,0);});
+
+for(const [label,mutate]of[
+ ['wrong tier claimed',f=>f.state.daily.dailyRewardClaimed=[2]],
+ ['two tiers claimed',f=>f.state.daily.dailyRewardClaimed=[1,2]],
+ ['reward absent',f=>f.state.stock=f.state.stock.filter(r=>r.itemId!=='加速器')],
+ ['extra inventory',f=>f.state.stock[0].num++],
+ ['other task changed',f=>f.state.daily.dailyTask[0].progress++],
+ ['daily activity changed',f=>f.state.daily.dailyActivity++],
+ ['weekly activity changed',f=>f.state.daily.weeklyActivity++],
+ ['weekly claims changed',f=>f.state.daily.weeklyRewardClaimed=[1]],
+ ['daily marker changed',f=>f.state.daily.dailyResetTime++],
+ ['period expired',f=>f.state.mono+=1000000],
+ ['world changed',f=>f.options.player.worldId='2000001'],
+ ['config changed',f=>f.options.config.tables.DailyActivityRewardCfg.revision=2],
+])test('daily activity settlement remains UNKNOWN: '+label,async()=>{const f=await readyActivity(),after=await settledActivity(f,mutate);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,false);});
+
+test('daily activity D6 retains explicit legacy tier lists while denying sparse/duplicate/paid metadata',()=>{
+ const base={request:'DrawDailyRewardRequest',body:{index:[1]},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(base));assert.doesNotThrow(()=>assertPaymentAllowed({...base,body:{index:[1,2]}}));assert.deepEqual(ACTIONS.dailyRewardDraw.costs,[]);
+ for(const index of[1,'1',[],Array(1),[1,1],[0],['1'],[2147483648]])assert.throws(()=>assertPaymentAllowed({...base,body:{index}}));
+ for(const body of[{index:[1],buy:false},{index:[1],all:true}])assert.throws(()=>assertPaymentAllowed({...base,body}));
+ for(const costs of[undefined,[{id:'GOLD',num:1}],[{id:'RUBY',num:1}]])assert.throws(()=>assertPaymentAllowed({...base,costs}));
+});
+
+test('daily activity dependency versions bind only tier and item tables without changing daily task dependencies',async()=>{
+ const f=await readyActivity(),before=taskRewardsDependencyVersions(f.options);assert.deepEqual(Object.keys(before.tables),['DailyActivityRewardCfg','ItemCfg']);const config=clone(f.options.config);config.tables.DailyTaskCfg={revision:3};assert.deepEqual(taskRewardsDependencyVersions({...f.options,config}),before);for(const key of['DailyActivityRewardCfg','ItemCfg']){const next=clone(config);next.tables[key].revision=2;assert.notDeepEqual(taskRewardsDependencyVersions({...f.options,config:next}),before);}
+});
+
+for(const apply of[true,false])test('daily activity Service persists exact intent, parent UID and '+(apply?'verified income':'durable UNKNOWN with no replay'),async t=>{
+ const f=serviceFixture(t,{tierId:2,apply}),p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.writes[0],{name:'DrawDailyRewardRequest',body:{index:[2]}});assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.saved.runBudget.reserved.uids,[{type:'daily-activity-reward',id:'2000:2'}]);
+ const next=serviceFixture(t,{tierId:2,file:f.file});if(!apply){next.state.daily.dailyResetTime=3000;await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+
+test('daily activity persistence failure, identity changes and cancellation never dispatch',async t=>{
+ for(const mode of['disk','world','config','cancel']){
+  const f=serviceFixture(t,{tierId:2}),p=await f.plan();if(mode==='world'){f.session.player.worldId='2000001';assert.throws(()=>f.authorize(p));continue;}if(mode==='config'){f.options.config.tables.ItemCfg.revision=2;assert.throws(()=>f.authorize(p));continue;}const permit=f.authorize(p);
+  if(mode==='cancel')f.session.abort.abort();else{const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0,mode);
+ }
+});
+
+test('daily activity late watch after replacement retains UNKNOWN and rejection memory survives reconnection',async t=>{
+ const f=serviceFixture(t,{tierId:2}),p=await f.plan();let release;f.state.onWrite=()=>new Promise(r=>release=r);const permit=f.authorize(p);f.service.execute(f.session,permit);for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();await f.service.settle(f.session.id);assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');assert.equal(f.state.writes.length,1);
+ const r=serviceFixture(t,{tierId:2,apply:false});r.state.onWrite=()=>{throw Object.assign(Error('definite synthetic refusal'),{code:'REJECTED'});};assert.equal((await r.run(await r.plan())).record.finalStatus,'REJECTED');const next=serviceFixture(t,{tierId:2,file:r.file});next.session.connectionId=next.client.factContext.connectionId='new';await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+
+test('daily activity uses original Workflow and parent UID budget without automatic authorization',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{tierId:2}),read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),row=read.view.candidates[0],compiled=compileUnifiedExecution({entry:'loop',world:[{module:'task-rewards',parameters:f.options.parameters}],budget:row.budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(run.plan);run=await runner.resume();assert.equal(run.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'world-0-1');assert.equal(f.state.writes.length,1);
 });

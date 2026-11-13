@@ -1850,6 +1850,7 @@ function renderDailyChecklist(data) {
       row.id,known(row.requiredActivity),labels[row.status]||'未知',
       row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):row.rewardReason==='SEASON_REWARD_AMBIGUOUS'?'季节奖励未确定':'奖励配置未知'
     ])));
+    if(kind==='daily'&&activity.tiers.length){const scope=viewGuard.capture(),link=el('button','','打开日活跃宝箱领奖');link.type='button';link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);}
     if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
   }
   box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','仅显示免费赠礼状态；领取合同待核实']]));

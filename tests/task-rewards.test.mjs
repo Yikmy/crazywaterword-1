@@ -32,7 +32,7 @@ async function ready(input={},extra={}){const config=cfg(),f=fake(input),options
 async function claimed(f,mutate){await f.client.sendWatch(f.operation.action.request,f.operation.action.body);mutate?.(f.state);return surveyTaskRewards(f.client,protocol,f.options);}
 
 test('default disabled semantics adapter has strict fields, paired exact ID and no caller getters',()=>{
- assert.equal(taskRewardsModule.execute,undefined);assert.deepEqual(taskRewardsModule.defaultConfig,{enabled:false});assert.deepEqual(taskRewardsModule.capabilities,['C502','C503']);assert.deepEqual(validateTaskRewardsParameters({}),{});assert.deepEqual(validateTaskRewardsParameters({kind:'branch',taskId:2147483647}),{kind:'branch',taskId:2147483647});
+ assert.equal(taskRewardsModule.execute,undefined);assert.deepEqual(taskRewardsModule.defaultConfig,{enabled:false});assert.deepEqual(taskRewardsModule.capabilities,['C502','C503','C516']);assert.deepEqual(validateTaskRewardsParameters({}),{});assert.deepEqual(validateTaskRewardsParameters({kind:'branch',taskId:2147483647}),{kind:'branch',taskId:2147483647});
  for(const v of[null,[],{kind:'main'},{taskId:1},{kind:'unknown',taskId:1},{kind:'main',taskId:0},{kind:'main',taskId:'1'},{kind:'branch',taskId:2147483648},{kind:'main',taskId:1,request:'Buy'},Object.create(parameters)])assert.throws(()=>validateTaskRewardsParameters(v),{code:'INVALID_PARAMETERS'});
  const getter={};Object.defineProperty(getter,'kind',{enumerable:true,get(){throw Error('must not execute');}});assert.throws(()=>validateTaskRewardsParameters(getter),{code:'INVALID_PARAMETERS'});
  for(const v of[{enabled:1},{enabled:true,automatic:true},Object.create({enabled:true})])assert.throws(()=>validateTaskRewardsConfig(v),{code:'INVALID_PARAMETERS'});

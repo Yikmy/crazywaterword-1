@@ -93,6 +93,7 @@ export function planChests(daily, config) {
   if (dailyTiers.length > 0) {
     actions.push({
       request: 'DrawDailyRewardRequest',
+      costs: [],
       body: { index: dailyTiers.map((tier) => tier.id) },
       response: null,
       cost: '无',
@@ -600,7 +601,7 @@ export async function claimDailies(client, protocol, options = {}) {
     const claimable = claimableDailyTasks(after);
     for (const task of claimable) {
       const title = TASK_TITLES[task.id] ?? String(task.id);
-      const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', body: { id: task.id }, cost: '无', note: `领任务奖励（${title}）` };
+      const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', costs: [], body: { id: task.id }, cost: '无', note: `领任务奖励（${title}）` };
       if (await perform(task.id, title, action)) return results;
       await executionDelay(300, options);
     }

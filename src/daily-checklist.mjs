@@ -79,7 +79,7 @@ function activityView(body,config,kind) {
     const rewardKnown=completeSeasons&&variantsRewards.every(r=>r!==null)&&new Set(variantsRewards.map(r=>JSON.stringify(r))).size===1;
     return {id,requiredActivity:threshold,claimed:taken,eligible,status:taken===true?'CLAIMED':eligible===null?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE',
       configuredRewards:rewardKnown?variantsRewards[0]:null,rewardStatus:rewardKnown?'AVAILABLE':'UNKNOWN',rewardReason:rewardKnown?null:!completeSeasons?'SEASON_CONFIG_INCOMPLETE':variantsRewards.some(r=>r===null)?'REWARD_CONFIG_INVALID':'SEASON_REWARD_AMBIGUOUS',
-      executable:false,blockedReason:'ACTIVITY_CLAIM_CONTRACT_UNVERIFIED'};
+      executable:false,blockedReason:kind==='daily'?'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION':'ACTIVITY_CLAIM_CONTRACT_UNVERIFIED',...(kind==='daily'?{claimFunctionId:'task-rewards',claimParameters:{kind:'daily-activity',tierId:id}}:{})};
   }).sort((a,b)=>a.id-b.id);
   const known=base.tiers.every(row=>row.eligible!==null);
   base.complete=known?base.tiers.every(row=>row.claimed):null;

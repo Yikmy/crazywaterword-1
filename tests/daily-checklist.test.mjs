@@ -190,3 +190,7 @@ test('cached recruit/trial objectives point to existing controlled Functions wit
   assert.ok(view.tasks.rows.every(r=>!r.executable&&!Object.hasOwn(r,'action')&&r.blockedReason==='CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION'&&r.claimFunctionId==='task-rewards'&&r.claimParameters.kind==='daily'&&r.claimParameters.taskId===r.taskId));
  }
 });
+
+test('daily activity cache provides only a fresh-survey navigation target, while weekly period stays blocked',()=>{
+ const v=dailyChecklist(fixture(),{config});for(const row of v.activity.daily.tiers){assert.equal(row.executable,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily-activity',tierId:row.id});assert.equal(Object.hasOwn(row,'action'),false);}for(const row of v.activity.weekly.tiers){assert.equal(row.executable,false);assert.equal(Object.hasOwn(row,'claimParameters'),false);assert.equal(row.blockedReason,'ACTIVITY_CLAIM_CONTRACT_UNVERIFIED');}
+});
