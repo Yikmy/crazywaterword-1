@@ -1,3 +1,4 @@
+import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Mainline Formation adapter. Shared execution owns authorization, locks and dispatch.
 import { createHash } from 'node:crypto';
 import { getConfig } from './config.mjs';
@@ -238,4 +239,4 @@ export function recommendFormations(report, facts, { moduleConfig = defaultConfi
   return viewFormation(facts, { moduleConfig }).candidates.filter(r => r.executable).map(r => ({ actionId: r.actionId, parameters: r.parameters, beforeState: r.beforeState, expectedState: r.expectedState,
     rule: 'CLIENT_CAREER_LAYOUT', reason: '按客户端职业排序预览已解锁阵型；本场统计不能证明该候选必然更优', requiresApproval: true, automatic: false }));
 }
-export const formationModule = Object.freeze({ id: 'formation', validateParameters: validateFormationParameters, defaultConfig, survey: surveyFormation, view: viewFormation, plan: planFormation, verify: verifyFormation });
+export const formationModule = Object.freeze({ id: 'formation', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: validateFormationParameters, defaultConfig, survey: surveyFormation, view: viewFormation, plan: planFormation, verify: verifyFormation });

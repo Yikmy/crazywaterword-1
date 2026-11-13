@@ -1,3 +1,4 @@
+import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Alliance adapter only; the shared service owns authorization and transport.
 // Evidence: cached GuildHelpRequest/Pop:1455-1459, GuildCityArmyPop:1445,
 // GuildChestPop:1441, GuildUtil:1533, static protocol and configuration.
@@ -230,4 +231,4 @@ export function verifyAlliance(op,b,a,response){
   if(op.actionType==='claimWelfare'){const n=quantity(b.guild?.gotWelfareTime),m=quantity(a.guild?.gotWelfareTime),assets=response?.reward?.asset;return n!==null&&m!==null&&m>n&&m>=op.expectedState.gotWelfareTimeAtLeast&&assetsValid(assets)&&resourceCosts(assets).length>0&&resourceCosts(assets).every(({id,num})=>increase(b,a,id,num));}
   return false;
 }
-export const allianceModule=Object.freeze({id:'alliance', validateParameters: parametersOf,defaultConfig:ALLIANCE_DEFAULT_CONFIG,validateConfig:validateAllianceConfig,survey:surveyAlliance,view:allianceView,plan:planAlliance,verify:verifyAlliance});
+export const allianceModule=Object.freeze({id:'alliance', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf,defaultConfig:ALLIANCE_DEFAULT_CONFIG,validateConfig:validateAllianceConfig,survey:surveyAlliance,view:allianceView,plan:planAlliance,verify:verifyAlliance});

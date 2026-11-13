@@ -1,3 +1,4 @@
+import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Museum adapter; no separate executor or speculative free-acceleration path.
 // Cached client: MuseumModel:2207, MuseumUtil:2225, BuildTeamPop:439,
 // SpeedPop:2949, MusuemUpgradePop:2247, MuseumRecruitTaskItem:2219.
@@ -250,4 +251,4 @@ export function verifyMuseum(op,b,a,response){
 
   return false;
 }
-export const museumModule=Object.freeze({id:'museum', validateParameters: parametersOf,defaultConfig:MUSEUM_DEFAULT_CONFIG,validateConfig:validateMuseumConfig,survey:surveyMuseum,view:museumView,plan:planMuseum,verify:verifyMuseum});
+export const museumModule=Object.freeze({id:'museum', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf,defaultConfig:MUSEUM_DEFAULT_CONFIG,validateConfig:validateMuseumConfig,survey:surveyMuseum,view:museumView,plan:planMuseum,verify:verifyMuseum});

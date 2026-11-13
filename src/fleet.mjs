@@ -1,3 +1,4 @@
+import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Fleet/cargo adapters. Existing GameClient, Session and shared executor own execution.
 import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { loadMapAsset } from './world.mjs';
@@ -331,4 +332,4 @@ function fleetDependencyVersions({config,moduleConfig={}}={}) {
   const names=['CityCfg','AttackCityConsumeCfg','FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'];
   return {moduleConfig:opts,config:Object.fromEntries(names.map(name=>[name,structuredClone(config?.tables?.[name]??null)])),mapAsset:map?{scenarioId:map.scenarioId,width:map.width,height:map.height,tileWidth:map.tileWidth??null,tileHeight:map.tileHeight??null,cityInfo:structuredClone(map.cityInfo??null)}:null};
 }
-export const fleetModule = Object.freeze({ dependencyVersions:fleetDependencyVersions, id: 'fleet', validateParameters: parametersOf, defaultConfig: FLEET_DEFAULT_CONFIG, validateConfig: validateFleetConfig, survey: surveyFleet, view: fleetView, plan: planFleet, verify: verifyFleet });
+export const fleetModule = Object.freeze({ dependencyVersions:fleetDependencyVersions, id: 'fleet', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf, defaultConfig: FLEET_DEFAULT_CONFIG, validateConfig: validateFleetConfig, survey: surveyFleet, view: fleetView, plan: planFleet, verify: verifyFleet });
