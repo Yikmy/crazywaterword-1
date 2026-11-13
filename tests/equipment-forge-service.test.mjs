@@ -137,3 +137,9 @@ for(const action of ['make','pick'])test('registered '+action+' persists UNKNOWN
     assert.equal(result.record.finalStatus,'UNKNOWN');assert.equal(result.record.actions[0].unresolvedWrite,true);assert.equal(target.synthetic.writes.length,1);assert.equal(f.durable.unresolved(target.id),true);await assert.rejects(f.displayed(target,parameters(action)));assert.equal(target.synthetic.writes.length,1);
   }finally{await f.cleanup();}
 });
+
+for(const action of ['make','pick'])test('W19 forge '+action+' refusal survives reconnect and role return',async()=>{
+ const f=fixture({apply:false}),a=f.session('account-A',action==='make'?idle():making());let next;try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite forge refusal'),{code:'REJECTED'});};assert.equal((await f.execute(a,await f.displayed(a,parameters(action)))).record.finalStatus,'REJECTED');next=fixture({apply:false,historyFile:f.file});const b=next.session('account-A',action==='make'?idle():making());b.generation=b.client.factContext.generation=2;b.connectionId='replacement-forge';
+ await assert.rejects(next.displayed(b,parameters(action)),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId=1000002;assert.equal((await next.displayed(b,parameters(action))).actions.length,1);b.player.worldId=1000001;await assert.rejects(next.displayed(b,parameters(action)),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
+ }finally{await next?.cleanup();await f.cleanup();}
+});

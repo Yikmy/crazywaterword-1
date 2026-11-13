@@ -6,7 +6,7 @@ import { assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 
 const own = (value, key) => value !== null && typeof value === 'object' && Object.hasOwn(value, key);
@@ -287,7 +287,7 @@ export function heroDependencyVersions({ config, moduleConfig = HERO_DEFAULT_CON
 }
 export const heroModule = Object.freeze({ id: 'heroes', label: '英雄成长', capabilities: Object.freeze(['C221', 'C222', 'C223', 'C224', 'C225', 'C226']),
   defaultConfig: HERO_DEFAULT_CONFIG, validateConfig: validateHeroConfig, validateParameters: validateHeroParameters,
-  survey: surveyHeroOperations, view: viewHeroOperations, plan: planHeroOperations, verify: verifyHeroOperation,
+  survey: surveyHeroOperations, view: viewHeroOperations, plan: planHeroOperations, verify: verifyHeroOperation, rejectionIdentity: businessRejectionIdentityFromHistory,
   dependencyVersions: heroDependencyVersions, dependencyKeys: Object.freeze(['moduleConfig', 'config.HeroCfg', 'config.HeroUpgradeCfg', 'config.HeroStarCfg', 'config.HeroSkillUpCfg', 'config.ExclusiveUpgradeCfg', 'config.ExclusiveStarCfg', 'config.ExclusiveShowCfg', 'config.ExclusiveWeaponCfg', 'config.ItemCfg']) });
 
 // Exclusive growth extends the existing hero adapter without changing the legacy planner.

@@ -10,7 +10,7 @@ import { assertPaymentAllowed } from './actions.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy, readGameTime, gameTimeBounds } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
 
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -198,4 +198,4 @@ export function verifyEquipmentForge(op,b,a,response){
   return {confirmed:true,reason:'原精确批次、typed equipId、新唯一UID及完整权威复读共同确认收取',afterState:copy(after.raw),responseEvidence:{equipId:response.equipId,uid:fresh[0].uid,star:fresh[0].star}};
 }
 export function forgeDependencyVersions({config,moduleConfig=FORGE_DEFAULT_CONFIG}={}){return {moduleConfig:copy(moduleConfig),...Object.fromEntries(tableNames.map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};}
-export const equipmentForgeModule=Object.freeze({id:'equipment-forge',label:'装备制造',capabilities:Object.freeze(['BIZ-R07']),defaultConfig:FORGE_DEFAULT_CONFIG,validateConfig:validateForgeConfig,validateParameters:validateForgeParameters,survey:surveyEquipmentForge,view:viewEquipmentForge,plan:planEquipmentForge,verify:verifyEquipmentForge,dependencyVersions:forgeDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...tableNames.map(n=>'config.'+n)])});
+export const equipmentForgeModule=Object.freeze({id:'equipment-forge',label:'装备制造',capabilities:Object.freeze(['BIZ-R07']),defaultConfig:FORGE_DEFAULT_CONFIG,validateConfig:validateForgeConfig,validateParameters:validateForgeParameters,survey:surveyEquipmentForge,view:viewEquipmentForge,plan:planEquipmentForge,verify:verifyEquipmentForge,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:forgeDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...tableNames.map(n=>'config.'+n)])});

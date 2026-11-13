@@ -135,3 +135,8 @@ for(const[label,mutate]of[['player',t=>t.player.playerId='2'],['world',t=>t.play
 test('registered Service isolates accounts and invalidates changed relevant table revision',async()=>{
  const f=serviceFixture(),a=f.session(),b=f.session('synthetic-B');try{let p=await f.displayed(a);f.config.tables.FormationTypeUnlockCfg.revision=2;assert.throws(()=>f.authorize(a,p),{code:'STALE_PLAN'});p=await f.displayed(a);const permit=f.authorize(a,p);assert.throws(()=>f.service.execute(b,permit));assert.equal(b.synthetic.writes.length,0);assert.equal(f.durable.list(b.id).length,0);f.service.execute(a,permit);await f.service.settle(a.id);assert.equal(f.durable.list(a.id)[0].finalStatus,'SUCCESS');}finally{await f.cleanup();}
 });
+
+test('W19 formation unlock refusal survives reconnect without changing original history',async()=>{
+ const f=serviceFixture({apply:false}),a=f.session();try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite unlock refusal'),{code:'REJECTED'});};assert.equal((await f.execute(a,await f.displayed(a))).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');a.generation=a.client.factContext.generation=4;a.connectionId=a.client.factContext.connectionId='replacement-unlock';await assert.rejects(f.displayed(a),{code:'REJECTION_MEMORY_ACTIVE'});a.player.worldId='18';assert.equal((await f.displayed(a)).actions.length,1);a.player.worldId='17';await assert.rejects(f.displayed(a),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(a.synthetic.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+ }finally{await f.cleanup();}
+});

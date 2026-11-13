@@ -6,7 +6,7 @@ import { ResourceLedger, safeResourceQuantity, stockFromResponses, RESOURCE_NAME
 import { createStateFact, factsFreshnessPolicy, readGameTime } from './state-facts.mjs';
 import { assertExecutionActive } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
 
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -222,6 +222,6 @@ export function verifyFarmOperation(operation,beforeFacts,afterFacts,response) {
 }
 export function farmDependencyVersions({config,moduleConfig=FARM_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFarmConfig(moduleConfig),...Object.fromEntries(['BuildingCfg','FarmlandPlantCfg'].map(name=>['config.'+name,copy(config?.tables?.[name]??null)])),evidence:FARM_EVIDENCE};}
 export const farmModule=Object.freeze({id:'farm',label:'农田',capabilities:Object.freeze(['BIZ-R16a','BIZ-R16b','BIZ-R16c']),defaultConfig:FARM_DEFAULT_CONFIG,
-  validateConfig:validateFarmConfig,validateParameters:validateFarmParameters,survey:surveyFarmOperations,view:viewFarmOperations,plan:planFarmOperations,verify:verifyFarmOperation,
+  validateConfig:validateFarmConfig,validateParameters:validateFarmParameters,survey:surveyFarmOperations,view:viewFarmOperations,plan:planFarmOperations,verify:verifyFarmOperation,rejectionIdentity:businessRejectionIdentityFromHistory,
   dependencyVersions:farmDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig','config.BuildingCfg','config.FarmlandPlantCfg','evidence']),
   evidence:FARM_EVIDENCE});

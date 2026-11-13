@@ -7,7 +7,7 @@ import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { stableBusinessValue } from './business-functions.mjs';
+import { stableBusinessValue, businessRejectionIdentity } from './business-functions.mjs';
 
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -109,4 +109,4 @@ export function verifyFormationUnlock(operation,before,after,response){
  return {confirmed:true,reason:'MyFormationPreset完整集合仅新增指定模板，权威库存精确净扣自有图纸1张，原完整阵容与宠物保持不变',afterState:copy(after.state),responseEvidence:{typedResponse:'NOT_DEFINED',authority:['MyFormationPresetResponse','AllItemResponse','AllResourceResponse','GetFormationResponse']}};
 }
 export function formationUnlockDependencyVersions({config,player,moduleConfig=FORMATION_UNLOCK_DEFAULT_CONFIG}={}){return {catalog:catalog(config,player),tables:Object.fromEntries(tableNames.map(name=>[name,copy(config?.tables?.[name]??null)])),config:validateFormationUnlockConfig(moduleConfig)};}
-export const formationUnlockModule=Object.freeze({id:'formation-unlock',label:'普通阵型图纸解锁',capabilities:Object.freeze(['FRM-005']),defaultConfig:FORMATION_UNLOCK_DEFAULT_CONFIG,validateConfig:validateFormationUnlockConfig,validateParameters:validateFormationUnlockParameters,survey:surveyFormationUnlock,view:viewFormationUnlock,plan:planFormationUnlock,verify:verifyFormationUnlock,dependencyVersions:formationUnlockDependencyVersions});
+export const formationUnlockModule=Object.freeze({id:'formation-unlock',label:'普通阵型图纸解锁',capabilities:Object.freeze(['FRM-005']),defaultConfig:FORMATION_UNLOCK_DEFAULT_CONFIG,validateConfig:validateFormationUnlockConfig,validateParameters:validateFormationUnlockParameters,survey:surveyFormationUnlock,view:viewFormationUnlock,plan:planFormationUnlock,verify:verifyFormationUnlock,rejectionIdentity:businessRejectionIdentity,dependencyVersions:formationUnlockDependencyVersions});

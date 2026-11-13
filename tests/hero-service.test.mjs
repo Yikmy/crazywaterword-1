@@ -234,3 +234,11 @@ for(const limit of [12,14])test('fragment Workflow shares finite universal sourc
   assert.equal(t.synthetic.writes.length,limit===14?2:1);assert.equal(result.status.finalStatus==='SUCCESS',limit===14);assert.equal(final.status==='COMPLETED',limit===14);assert.equal(final.runBudget.state,'CLOSED');
  }finally{await f.cleanup();}
 });
+
+for(const action of ['level','skill','star','fragment-exchange'])test('W19 hero '+action+' refusal survives restart, reconnect and role return',async()=>{
+ const f=fixture({apply:false}),a=f.session();let next;const p=action==='fragment-exchange'?fragmentParams():parameters(action);
+ const prepare=t=>{if(action==='star')t.synthetic.heroes[0].star=1;if(action==='fragment-exchange')t.synthetic.stock.set('蓝卡万能碎片',20);};
+ try{prepare(a);if(action==='fragment-exchange')configureFragments(f,a);a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite hero refusal'),{code:'REJECTED'});};assert.equal((await f.execute(a,await f.displayed(a,p))).record.finalStatus,'REJECTED');
+ next=fixture({apply:false,historyFile:f.file});const b=next.session();prepare(b);if(action==='fragment-exchange')configureFragments(next,b);b.generation=2;b.connectionId='replacement-hero';b.client.factContext={accountId:b.id,generation:2,connectionId:b.connectionId};await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});b.player.playerId='1003';assert.equal((await next.displayed(b,p)).actions.length,1);b.player.playerId='1001';await assert.rejects(next.displayed(b,p),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
+ }finally{await next?.cleanup();await f.cleanup();}
+});
