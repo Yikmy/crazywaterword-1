@@ -89,7 +89,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       action: reason ? null : { request: 'TreasureLootSendFleetsRequest', response: null, body: { uid: target.uid, fleetBuildingIds: ids } } };
   });
 }
-export function treasureView(facts, options = {}) { return { candidates: buildCandidates(facts, options), targetDetails: facts.targetDetails ?? null, treasures: facts.treasures ?? [], fleets: facts.fleets ?? [], todayRewardTimes: facts.todayRewardTimes, totalRewardTimes: facts.totalRewardTimes }; }
+export function treasureView(facts, options = {}) { return { candidates: buildCandidates(facts, options), targetDetails: facts.targetDetails ?? null, reliability: { treasures: facts.treasureReliable === true, fleets: facts.fleetReliable === true, stock: facts.stockReliable === true, stats: facts.statsReliable === true }, treasures: facts.treasures ?? [], fleets: facts.fleets ?? [], todayRewardTimes: facts.todayRewardTimes, totalRewardTimes: facts.totalRewardTimes }; }
 export function planTreasure(facts, options = {}) { return selectedActions(buildCandidates(facts, options), options.selections ?? [], options.ledger ?? new ResourceLedger(facts.stockReliable ? facts.stock : null), validateTreasureConfig(options.moduleConfig).petrolReserve); }
 export function verifyTreasure(operation, beforeFacts, afterFacts) {
   if (operation?.actionType !== 'treasureDispatch' || !beforeFacts?.fleetReliable || !afterFacts?.fleetReliable || !afterFacts?.treasureReliable) return { confirmed: false, reason: '寻宝权威复读不完整' };

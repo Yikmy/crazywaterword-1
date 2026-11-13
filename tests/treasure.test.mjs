@@ -64,3 +64,8 @@ test('treasure opening and closing boundaries require entire trusted uncertainty
  set(closes-1,closes-2,closes);assert.equal(candidate(f).reason,'SEASON_UNKNOWN');
  set(closes+1,closes,closes+2);assert.equal(candidate(f).reason,'SEASON_CLOSED');
 });
+
+test('treasure view exposes original source reliability independently and never upgrades missing flags',()=>{
+ const f=facts();assert.deepEqual(treasureView(f).reliability,{treasures:true,fleets:true,stock:true,stats:true});
+ for(const [flag,key]of [['treasureReliable','treasures'],['fleetReliable','fleets'],['stockReliable','stock'],['statsReliable','stats']]){const f=facts();delete f[flag];assert.equal(treasureView(f).reliability[key],false);}
+});

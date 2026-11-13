@@ -1,3 +1,4 @@
+import { treasureView } from '../src/treasure.mjs';
 import { fleetView } from '../src/fleet.mjs';
 import { RUN_BUDGET_LIMITS, normalizeBudgetClaims } from '../src/resource-ledger.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
@@ -1472,4 +1473,63 @@ test('maintenance and movement controls lock on pending and UNKNOWN and old view
 
 test('fleet movement current-view options render literal identities and late account responses do not revive old operation selectors',async()=>{
  const next=fleetOperationsData();next.view.fleets[0].buildingId='<img onerror=alert(1)>';const h=await fleetEditorPage(next),old=fleetOperationButton(h,'fleetRepair'),prepare=fleetMovePrepare(h),load=h.node('gp-fleet-load').click();assert.ok(descendants(h.node('gp-fleet-operations')).every(n=>n.tagName!=='img'));h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',next,{module:'fleet'});await load;old.click();prepare.click();assert.equal(h.node('gp-fleet-operations').textContent,'');assert.equal(writes(h).length,0);
+});
+
+function treasureEditorFacts() {
+ const fleet=(buildingId,extra={})=>({buildingId,state:1,durability:1900,maxDura:2000,treasureLootUid:0,repairing:null,autoFight:{isOn:false},...extra});
+ return {now:300000,config:{tables:{WorldParamCfg:{data:[{paramName:'进攻宝藏消耗汽油',paramValue:500}]},GameplayOpenCfg:{data:[{gameplay:'世界宝藏',openDays:[3,1,1]}]}}},player:{worldId:2001000000},parameters:{},stockReliable:true,stock:new Map([['汽油',2000]]),fleetReliable:true,treasureReliable:true,statsReliable:true,protocolReady:true,todayRewardTimes:0,totalRewardTimes:3,season:{reliable:true,startTime:100000,endTime:1000000},fleets:[fleet('fleet-a'),fleet('fleet-b'),fleet('fleet-busy',{state:2})],treasures:[{uid:7,color:5,ownerGuildIdx:0,ownerFleetNum:0,progress:0,gridIdx:1},{uid:8,color:4,ownerGuildIdx:9,ownerFleetNum:1,progress:50,gridIdx:2}]};
+}
+function treasureEditorData(parameters={},change=()=>{}) {
+ const f=treasureEditorFacts(),config={...GAMEPLAY_MODULES.treasure.defaultConfig,enabled:true,dispatch:true,maxFleets:2};if(parameters.uid)f.targetDetails={uid:parameters.uid,rankReliable:true,defenceReliable:true,rank:[{playerId:'9007199254740995',nickname:'<img onerror=alert(1)>'}],defence:[]};change(f,config);
+ const view=treasureView(f,{moduleConfig:config,parameters});view.candidates=view.candidates.map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false&&row.decision!=='BLOCKED'}));return {accountId:'A',module:'treasure',csrfToken:'synthetic-csrf-A',config,status:{running:false,blocked:false},functions:[],view};
+}
+async function treasureEditorPage(data=treasureEditorData()) {const h=await boot(),request=h.node('gp-treasure-load').click();h.respond('/api/gameplay',data,{module:'treasure'});await request;return h;}
+const treasureEditorButton=(h,key,value)=>descendants(h.node('gp-treasure-targets')).find(n=>n.dataset[key]!==undefined&&(value===undefined||n.dataset[key]===value));
+function treasureEditorDraft(h,uid='7',fleets=['fleet-a']) {treasureEditorButton(h,'treasureTarget').value=uid;for(const input of descendants(h.node('gp-treasure-targets')).filter(n=>n.dataset.treasureFleet))input.checked=fleets.includes(input.dataset.treasureFleet);treasureEditorButton(h,'treasurePrepare').click();}
+
+test('world treasure professional page explicitly prepares a selected target and fleets without authorizing or inferring loot',async()=>{
+ const h=await treasureEditorPage(),requests=h.requests.length;assert.equal([...PAGE.matchAll(/id="gp-treasure-targets"/g)].length,1);assert.match(h.node('gp-treasure-targets').textContent,/TreasureLootList.*TreasureLootStats.*MyFleets/);assert.match(h.node('gp-treasure-targets').textContent,/已用 0.*上限 3/);
+ treasureEditorDraft(h,'7',['fleet-a','fleet-b']);const parameters={uid:7,fleetBuildingIds:['fleet-a','fleet-b']};assert.deepEqual(JSON.parse(h.node('gp-treasure-parameters').value),parameters);assert.deepEqual(GAMEPLAY_MODULES.treasure.validateParameters(parameters),parameters);assert.equal(h.node('gp-treasure-plan').disabled,true);assert.equal(h.node('gp-treasure-authorize').disabled,true);assert.equal(h.requests.length,requests);assert.match(h.node('gp-treasure-hint').textContent,/排行\/防守/);
+});
+
+test('treasure detail selection retains explicit fleet IDs and loads authoritative target details only after normal survey',async()=>{
+ const h=await treasureEditorPage();treasureEditorDraft(h,'7',['fleet-a']);const button=treasureEditorButton(h,'treasureDetails','7'),requests=h.requests.length;button.click();assert.equal(h.requests.length,requests);assert.deepEqual(JSON.parse(h.node('gp-treasure-parameters').value),{uid:7,fleetBuildingIds:['fleet-a']});
+ const scan=h.node('gp-treasure-survey').click();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'treasure',parameters:{uid:7,fleetBuildingIds:['fleet-a']}});h.respond('/api/gameplay/survey',treasureEditorData({uid:7,fleetBuildingIds:['fleet-a']}));await scan;assert.match(h.node('gp-treasure-targets').textContent,/排行 本次读取可靠.*防守 本次读取可靠/);assert.match(h.node('gp-treasure-targets').textContent,/9007199254740995/);assert.ok(descendants(h.node('gp-treasure-targets')).every(n=>n.tagName!=='img'));assert.equal(writes(h,'/api/operations/plan').length,0);
+});
+
+test('treasure explicit fleet choice reaches the existing ready candidate and Manual preview with exact two-fleet cost',async()=>{
+ const h=await treasureEditorPage();treasureEditorDraft(h,'7',['fleet-a','fleet-b']);const parameters=JSON.parse(h.node('gp-treasure-parameters').value),scan=h.node('gp-treasure-survey').click(),data=treasureEditorData(parameters);h.respond('/api/gameplay/survey',data);await scan;
+ const candidate=data.view.candidates[0],button=treasureEditorButton(h,'treasureAction',candidate.actionId);assert.equal(button.disabled,false);assert.deepEqual(candidate.costs,[{id:'汽油',num:1000}]);const requests=h.requests.length;button.click();assert.equal(h.requests.length,requests);const preview=h.node('gp-treasure-plan').click();assertMutation(h.pending('/api/operations/plan'),'/api/operations/plan',{module:'treasure',mode:'Manual',selections:[candidate.actionId],parameters});
+ h.respond('/api/operations/plan',plan({module:'treasure',actionId:candidate.actionId,actionType:candidate.actionType,costs:candidate.costs,target:candidate.target,parameters}));await preview;assert.match(h.node('gp-treasure-targets').textContent,/仅确认派遣关联/);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('treasure form refuses forged or empty target and fleet sets while preserving the old parameters atomically',async()=>{
+ const h=await treasureEditorPage(),source=h.node('gp-treasure-parameters').value;for(const [uid,ids]of [['',[]],['7',[]],['7',['fleet-busy']],['999',['fleet-a']],['7e0',['fleet-a']],['7.0',['fleet-a']]]){treasureEditorDraft(h,uid,ids);assert.equal(h.node('gp-treasure-parameters').value,source);}
+ assert.equal(treasureEditorButton(h,'treasureFleet','fleet-busy').disabled,true);assert.equal(writes(h).length,0);
+});
+
+test('treasure form respects the existing maximum, durability and automatic-fight rules without choosing substitutes',async()=>{
+ const data=treasureEditorData({},(f,c)=>{c.maxFleets=1;f.fleets[1].durability=1;f.fleets[2].state=1;f.fleets[2].autoFight={isOn:true};}),h=await treasureEditorPage(data),source=h.node('gp-treasure-parameters').value;
+ assert.equal(treasureEditorButton(h,'treasureFleet','fleet-b').disabled,true);assert.equal(treasureEditorButton(h,'treasureFleet','fleet-busy').disabled,true);treasureEditorDraft(h,'7',['fleet-a','fleet-b']);assert.equal(h.node('gp-treasure-parameters').value,source);assert.equal(writes(h).length,0);
+ const max=await treasureEditorPage(treasureEditorData({},(_f,c)=>c.maxFleets=1)),before=max.node('gp-treasure-parameters').value;treasureEditorDraft(max,'7',['fleet-a','fleet-b']);assert.equal(max.node('gp-treasure-parameters').value,before);
+});
+
+test('treasure contested targets and missing detailed defence keep original blocked candidates and never claim free execution',async()=>{
+ for(const data of [treasureEditorData({uid:8,fleetBuildingIds:['fleet-a']}),treasureEditorData({uid:7,fleetBuildingIds:['fleet-a']},f=>f.targetDetails.defenceReliable=false),treasureEditorData({uid:7,fleetBuildingIds:['fleet-a']},f=>f.targetDetails.defence=[{name:'occupied'}])]){
+  const h=await treasureEditorPage(data),candidate=data.view.candidates[0],button=treasureEditorButton(h,'treasureAction',candidate.actionId);assert.equal(button.disabled,true);assert.match(h.node('gp-treasure-targets').textContent,/尚未形成可执行成本/);const source=h.node('gp-treasure-parameters').value;button.click();assert.equal(h.node('gp-treasure-parameters').value,source);assert.equal(writes(h).length,0);
+ }
+});
+
+test('treasure old cache reliability remains unknown and does not turn absent counters into zero',async()=>{
+ const data=treasureEditorData();delete data.view.reliability;const h=await treasureEditorPage(data);assert.equal(treasureEditorButton(h,'treasurePrepare').disabled,true);assert.equal(treasureEditorButton(h,'treasureDetails','7').disabled,true);assert.match(h.node('gp-treasure-targets').textContent,/已用 未知.*上限 未知/);assert.match(h.node('gp-treasure-targets').textContent,/旧缓存不推断完整/);assert.equal(writes(h).length,0);
+});
+
+test('treasure draft callbacks expire after advanced edits or a new account-bound view and cannot overwrite new choices',async()=>{
+ const h=await treasureEditorPage(),prepare=treasureEditorButton(h,'treasurePrepare'),details=treasureEditorButton(h,'treasureDetails','7');h.node('gp-treasure-parameters').value=JSON.stringify({uid:8});h.node('gp-treasure-parameters').oninput();prepare.click();details.click();assert.deepEqual(JSON.parse(h.node('gp-treasure-parameters').value),{uid:8});
+ const read=h.node('gp-treasure-load').click();h.respond('/api/gameplay',treasureEditorData({uid:8}),{module:'treasure'});await read;prepare.click();details.click();assert.deepEqual(JSON.parse(h.node('gp-treasure-parameters').value),{uid:8});assert.equal(writes(h).length,0);
+});
+
+test('treasure controls lock for pending and UNKNOWN, and late account reads cannot restore old target actions',async()=>{
+ const h=await treasureEditorPage(),prepare=treasureEditorButton(h,'treasurePrepare'),candidate=treasureEditorButton(h,'treasureAction'),reading=h.node('gp-treasure-load').click();assert.equal(prepare.disabled,true);assert.equal(candidate.disabled,true);const data=treasureEditorData();data.status={blocked:true,running:false,state:'UNKNOWN'};h.respond('/api/gameplay',data,{module:'treasure'});await reading;assert.equal(treasureEditorButton(h,'treasurePrepare').disabled,true);
+ const late=h.node('gp-treasure-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',treasureEditorData(),{module:'treasure'});await late;prepare.click();candidate.click();assert.equal(h.node('gp-treasure-targets').textContent,'');assert.equal(writes(h).length,0);
 });
