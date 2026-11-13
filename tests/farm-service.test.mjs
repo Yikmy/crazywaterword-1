@@ -19,19 +19,22 @@ const empty=buildingId=>({buildingId,level:1,buildStartTime:0,buildFinishTime:0,
 const params=buildingId=>({buildingId,action:'plant',productId:'小麦'});
 const claims=num=>({resources:[{id:seed,num}],quotas:[],uids:[]});
 const reserved=b=>b.reserved.resources.find(r=>r.id===seed)?.num??0;
-function fixture({seeds=3,plots=1,enabled=true,apply=true}={}){
+function fixture({seeds=3,plots=1,enabled=true,apply=true,harvest=false,receiptNum=10,critical=2,netGain=receiptNum}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-farm-service-')),file=path.join(dir,'history.json'),durable=createExecutionHistory({file});
  const settings=createModuleSettings({file:path.join(dir,'settings.json'),modules:GAMEPLAY_MODULES});
  const accountId='synthetic-farm-account',generation=3;
  if(enabled)settings.save(accountId,'farm',{enabled:true});
  const config={tables:{BuildingCfg:{data:[{buildingType:'农田'}]},FarmlandPlantCfg:{data:[{id:'小麦',material:[seed,1],time:1800,produceNum:5}]},BuildingUpgradeCfg:{data:[]},WorkerOrderCfg:{data:[]},WorkerSpecOrderCfg:{data:[]}}};
  const raw={building:Array.from({length:plots},(_,i)=>empty((i+1)+'农田')),autoFarming:false,workerOrder:[],orderOfTheDay:{orderNum:0}};
+ if(harvest)for(const plot of raw.building)plot.farm={productId:'小麦',plantTime:1700000000,ripeTime:1700001800};
  const stock=new Map([[seed,seeds],['小麦',5]]),reads=[],writes=[],journal=[],sessions=[];
  const round=(name,value)=>toSnapshotJson(protocol[name].decode(protocol[name].encode(value).finish()));
  function session(connectionId='synthetic-farm-connection'){
-  const client={connected:true,factContext:{accountId,generation},pending:[],watchers:[],lateResponses:new Map(),uncertainWrites:new Set(),
+  const client={connected:true,factContext:{accountId,generation,connectionId},gameClock:{sample:{status:'TRUSTED',reliable:true,accountId,generation,source:'PingResponse.serverTimestamp',earliestMs:1700001801000,nowMs:1700001801100,latestMs:1700001801200},read(){return this.sample;}},pending:[],watchers:[],lateResponses:new Map(),uncertainWrites:new Set(),
    async request(name,_body,response,_timeout,options){
-    assert.notEqual(options?.mutate,true,'Farm must use its no-response watch contract');reads.push(name);
+    this.beforeRead?.(name);
+    if(name==='FarmHarvestRequest'){assert.equal(options?.mutate,true);options.beforeDispatch?.();assert.ok(journal.at(-1),'harvest needs durable intent');writes.push({name,body:round(name,_body),durableBeforeWrite:structuredClone(journal.at(-1))});if(apply){for(const id of _body.buildingId)raw.building.find(r=>r.buildingId===id).farm=empty(id).farm;stock.set('小麦',stock.get('小麦')+netGain);}const receipt=round('FarmHarvestResponse',{reward:[{reward:{type:0,id:'小麦',num:receiptNum},critical}]});return this.onHarvest?this.onHarvest(receipt):receipt;}
+    assert.notEqual(options?.mutate,true,'Farm plant must use its no-response watch contract');reads.push(name);
     const body=name==='OnWaterRequest'?structuredClone(raw):name==='AllItemRequest'?{items:[...stock].map(([itemId,num])=>({itemId,num}))}:name==='AllResourceRequest'?{list:[]}:name==='MyResFieldsRequest'?{info:{fields:[]}}:name==='MyFleetsRequest'?{fleets:[]}:null;
     assert.ok(body,'unexpected synthetic read '+name);return round(response,body);
    },
@@ -45,8 +48,8 @@ function fixture({seeds=3,plots=1,enabled=true,apply=true}={}){
  }
  function service(history=durable){return createOperationService({protocol,history:{...history,put(record){const saved=history.put(record);journal.push(structuredClone(saved));return saved;}},getConfig:()=>config,moduleSettings:settings,loadRules:()=>({config:{version:1,enabled:false,rules:[]}}),loadProduction:()=>({config:{version:1,enabled:false,onlyShortages:true,productIds:[],maxOperations:10}})});}
  const operations=service(),account=session();
- async function candidates(parameters={}){const view=await operations.surveyModule(account,'farm',parameters,{workflowId:account.workflowOwner??null});return view.view.candidates.filter(r=>r.actionType==='PLANT');}
- async function plan(parameters=params('1农田'),ids=null,mode='Manual'){ids??=(await candidates(parameters)).map(r=>r.actionId);return operations.plan(account,{module:'farm',mode,selections:ids,parameters},{workflowId:account.workflowOwner??null});}
+ async function candidates(parameters={}){const view=await operations.surveyModule(account,'farm',parameters,{workflowId:account.workflowOwner??null});return view.view.candidates.filter(r=>r.actionType===(harvest?'HARVEST':'PLANT'));}
+ async function plan(parameters=harvest?{buildingId:'1农田',action:'harvest'}:params('1农田'),ids=null,mode='Manual'){ids??=(await candidates(parameters)).map(r=>r.actionId);return operations.plan(account,{module:'farm',mode,selections:ids,parameters},{workflowId:account.workflowOwner??null});}
  const authorize=p=>operations.authorize(account,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});
  async function execute(p,permit=authorize(p)){const start=operations.execute(account,permit);await operations.settle(accountId);return durable.list(accountId).find(r=>r.runId===start.runId);}
  async function cleanup(){await operations.settle(accountId);for(const s of sessions)s.client.connected=false;assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}
@@ -98,4 +101,30 @@ for(const limit of [1,2])test('genuine Workflow nodes retain '+limit+'-seed pare
   const second=await runner.resume();assert.equal(second.status,'AWAITING_AUTHORIZATION');assert.equal(second.plan.workflowNodeId,'second');const two=await f.execute(second.plan);assert.equal(two.finalStatus,limit===2?'SUCCESS':'NOT_EXECUTED',JSON.stringify(two.actions));assert.equal(f.writes.length,limit===2?2:1);assert.equal(reserved(f.operations.workflowBudget(f.account.id)),limit);
   if(limit===2){const final=await runner.resume();assert.equal(final.status,'COMPLETED');assert.equal(final.runBudget.state,'CLOSED');assert.equal(final.runBudget.outcome,'SUCCESS');}else{assert.equal(two.actions[0].dispatched,false);assert.equal(f.stock.get(seed),10);}
  }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+
+for(const apply of [true,false])test('harvest shared Service uses exact typed receipt, crop UID and durable '+(apply?'confirmation':'UNKNOWN recovery'),async()=>{
+ const f=fixture({harvest:true,apply});try{const p=await f.plan();assert.deepEqual(p.resourceBudget,[]);assert.equal(p.budgetClaims.uids.length,1);const permit=f.authorize(p),run=await f.execute(p,permit);assert.equal(run.finalStatus,apply?'SUCCESS':'UNKNOWN',JSON.stringify(run.actions));assert.equal(run.actions[0].verification.status,apply?'CONFIRMED':'UNCONFIRMED');assert.equal(f.writes.length,1);assert.deepEqual(f.writes[0].body,{buildingId:['1农田']});assert.equal(f.writes[0].durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.equal(f.writes[0].durableBeforeWrite.runBudget.reserved.uids.length,1);assert.equal(run.runBudget.reserved.uids.length,1);assert.equal(f.stock.get(seed),3);assert.equal(f.stock.get('小麦'),apply?15:5);
+ assert.throws(()=>f.operations.execute(f.account,permit));if(apply){assert.equal(run.actions[0].responseEvidence.num,10);assert.equal(f.operations.status(f.account.id).blocked,false);}else{const reopened=f.restart();assert.equal(reopened.operations.status(f.account.id).blocked,true);assert.equal(reopened.operations.executionMemory(f.account.id).events[0].status,'UNKNOWN');await assert.rejects(reopened.operations.plan(reopened.account,{module:'farm',mode:'Manual',selections:p.actions.map(r=>r.actionId),parameters:{buildingId:'1农田',action:'harvest'}}),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.writes.length,1);}
+ }finally{await f.cleanup();}
+});
+for(const fault of ['clock','auto','batch','connection'])test('harvest '+fault+' changing after authorization prevents dispatch',async()=>{
+ const f=fixture({harvest:true});try{const p=await f.plan(),permit=f.authorize(p);if(fault==='clock')f.account.client.gameClock.sample.status='UNKNOWN';if(fault==='auto')f.raw.autoFarming=true;if(fault==='batch')f.raw.building[0].farm.plantTime++;if(fault==='connection')f.account.connectionId='changed';
+ if(fault==='connection')assert.throws(()=>f.operations.execute(f.account,permit),{code:'STALE_PLAN'});else{const run=await f.execute(p,permit);assert.equal(run.finalStatus,'NOT_EXECUTED');assert.equal(run.actions[0].dispatched,false);}assert.equal(f.writes.length,0);assert.equal(f.stock.get('小麦'),5);
+ }finally{await f.cleanup();}
+});
+test('harvest late clock invalidation during shared resource preflight prevents transport',async()=>{
+ const f=fixture({harvest:true});try{const p=await f.plan(),permit=f.authorize(p);f.account.client.beforeRead=name=>{if(name==='AllResourceRequest')f.account.client.gameClock.sample.status='UNKNOWN';};const run=await f.execute(p,permit);assert.equal(run.finalStatus,'NOT_EXECUTED');assert.equal(f.writes.length,0);}finally{await f.cleanup();}
+});
+test('harvest typed quantity mismatch remains UNKNOWN without replay or double critical multiplication',async()=>{
+ const f=fixture({harvest:true,netGain:20});try{const run=await f.execute(await f.plan());assert.equal(run.finalStatus,'UNKNOWN');assert.equal(run.actions[0].unresolvedWrite,true);assert.equal(f.writes.length,1);assert.equal(f.operations.status(f.account.id).blocked,true);}finally{await f.cleanup();}
+});
+test('harvest cancellation after durable dispatch retains UNKNOWN and ignores a late typed response',async()=>{
+ const f=fixture({harvest:true});let release;try{let dispatched;const sent=new Promise(resolve=>dispatched=resolve);f.account.client.onHarvest=receipt=>new Promise(resolve=>{release=()=>resolve(receipt);dispatched();});const p=await f.plan(),permit=f.authorize(p);const started=f.operations.execute(f.account,permit);await sent;f.operations.stop(f.account.id);await f.operations.settle(f.account.id);let run=f.durable.list(f.account.id).find(r=>r.runId===started.runId);assert.equal(run.finalStatus,'UNKNOWN');assert.equal(run.actions[0].unresolvedWrite,true);release();await new Promise(resolve=>setImmediate(resolve));run=f.durable.list(f.account.id).find(r=>r.runId===started.runId);assert.equal(run.finalStatus,'UNKNOWN');assert.equal(f.writes.length,1);}finally{release?.();await f.cleanup();}
+});
+test('harvest intent persistence failure sends zero game mutations and preserves previous evidence',async()=>{
+ const f=fixture({harvest:true});try{const history={...f.durable,put(record){if(record.actions.some(row=>row.dispatchEvidence?.state==='MAY_HAVE_DISPATCHED'))throw Object.assign(Error('synthetic disk failure'),{code:'HISTORY_UNAVAILABLE'});return f.durable.put(record);}};const operations=createOperationService({protocol,history,getConfig:()=>({tables:{BuildingCfg:{data:[{buildingType:'农田'}]},FarmlandPlantCfg:{data:[{id:'小麦',material:[seed,1],time:1800,produceNum:5}]},BuildingUpgradeCfg:{data:[]},WorkerOrderCfg:{data:[]},WorkerSpecOrderCfg:{data:[]}}}),moduleSettings:f.settings,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});const parameters={buildingId:'1农田',action:'harvest'},survey=await operations.surveyModule(f.account,'farm',parameters),p=await operations.plan(f.account,{module:'farm',mode:'Manual',selections:[survey.view.candidates[0].actionId],parameters}),permit=operations.authorize(f.account,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:[],confirm:true});operations.execute(f.account,permit);await operations.settle(f.account.id);assert.equal(f.writes.length,0);assert.equal(f.stock.get('小麦'),5);}finally{await f.cleanup();}
+});
+test('harvest Workflow uses original cumulative UID ceiling and stops when second crop is outside parent scope',async()=>{
+ const f=fixture({harvest:true,plots:2});let runner;try{const firstParameters={buildingId:'1农田',action:'harvest'},secondParameters={buildingId:'2农田',action:'harvest'},rows=await f.candidates({action:'harvest'}),first=rows.find(r=>r.target.buildingId==='1农田'),second=rows.find(r=>r.target.buildingId==='2农田');const graph={version:1,id:'harvest-workflow',name:'Synthetic crop budget',budget:first.budgetClaims,nodes:[{id:'s',type:'START'},{id:'one',type:'ACTION',module:'farm',parameters:firstParameters,selection:first.actionId},{id:'two',type:'ACTION',module:'farm',parameters:secondParameters,selection:second.actionId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'one'},{from:'one',to:'two'},{from:'two',to:'z'}]};runner=createWorkflowRunner({operations:f.operations,modules:GAMEPLAY_MODULES,getSession:()=>f.account,claim:(_id,runId,options)=>f.operations.claimWorkflow(f.account,runId,options)});const one=await runner.start(f.account.id,graph);assert.equal(one.status,'AWAITING_AUTHORIZATION');assert.equal((await f.execute(one.plan)).finalStatus,'SUCCESS');const two=await runner.resume();assert.equal(two.status,'AWAITING_AUTHORIZATION');await assert.rejects(()=>f.execute(two.plan),{code:'RUN_BUDGET_INVALID'});assert.equal(f.writes.length,1);assert.equal(f.operations.workflowBudget(f.account.id).reserved.uids.length,1);}finally{runner?.stop();await runner?.settle();await f.cleanup();}
 });

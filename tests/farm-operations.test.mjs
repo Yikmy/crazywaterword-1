@@ -26,7 +26,7 @@ function planted(before,{productId='小麦',spend=1}={}){
 // Synthetic account/facts only. No real GameClient, login, runtime or transport.
 test('farm projection reuses exact raw sources and strict item/resource quantities',()=>{
  const raw=core(),before=structuredClone(raw),f=facts(raw);assert.deepEqual(raw,before);assert.equal(f.stock.get('小麦种子'),3);assert.equal(f.stock.has('do-not-trust-defaulted-stock'),false);
- assert.equal(f.plots[0].state,'EMPTY');assert.equal(f.autoFarming,false);assert.equal(f.identityContext.playerId,'9007199254740993');assert.equal(f.sourceFacts.water.provenance.source,'OnWaterResponse');assert.equal(f.sourceFacts.inventory.provenance.source,'AllItemResponse+AllResourceResponse');assert.equal(f.evidence.maturityTimeUnit,'BLOCKED_EVIDENCE');
+ assert.equal(f.plots[0].state,'EMPTY');assert.equal(f.autoFarming,false);assert.equal(f.identityContext.playerId,'9007199254740993');assert.equal(f.sourceFacts.water.provenance.source,'OnWaterResponse');assert.equal(f.sourceFacts.inventory.provenance.source,'AllItemResponse+AllResourceResponse');assert.equal(f.evidence.maturityTimeUnit,'SERVER_SECONDS_STRICTLY_BEFORE');
 });
 test('original core survey supplies exactly five reads and retains raw farm fields',async()=>{
  const raw=core(),calls=[],client={connected:true,factContext:context,request:async name=>{calls.push(name);return name==='OnWaterRequest'?raw.rawOnWater:name==='AllItemRequest'?raw.rawAllItem:name==='AllResourceRequest'?raw.rawAllResource:name==='MyResFieldsRequest'?{info:{fields:[]}}:{fleets:[]};}};
@@ -49,7 +49,7 @@ test('unknown timestamps never become zero or known mature state',()=>{
  for(const farm of [{productId:'小麦',plantTime:1700000000},{productId:'小麦',plantTime:NaN,ripeTime:1700001800},{productId:'小麦',plantTime:1700001800,ripeTime:1700000000},{productId:'小麦',plantTime:0,ripeTime:1700000000}])assert.equal(facts(core({buildings:[{...empty(),farm}]})).plots[0].state,'UNKNOWN');const f=facts(core({buildings:[growing()]}));assert.equal(f.plots[0].state,'GROWING_OR_RIPE_UNVERIFIED');assert.equal(f.plots[0].ripeTime,1700001800);
 });
 test('harvest maturity stays blocked despite local now or edited evidence',()=>{
- const f=facts(core({buildings:[growing()]}));f.now=2147483647;f.evidence={maturityTimeUnit:'SECONDS'};const row=viewFarmOperations(f,{parameters:{buildingId:'1农田',action:'harvest'},moduleConfig:enabled}).candidates[0];assert.equal(row.blockedReason,'FARM_MATURITY_TIME_UNIT_UNVERIFIED');assert.equal(Object.hasOwn(row,'action'),false);assert.deepEqual(planFarmOperations(f,{parameters:{buildingId:'1农田',action:'harvest'},moduleConfig:enabled}).actions,[]);assert.equal(verifyFarmOperation({...row,action:{request:'FarmHarvestRequest',response:'FarmHarvestResponse',body:{buildingId:['1农田']}}},f,f,{reward:[]}).confirmed,false);
+ const f=facts(core({buildings:[growing()]}));f.now=2147483647;f.evidence={maturityTimeUnit:'SECONDS'};const row=viewFarmOperations(f,{parameters:{buildingId:'1农田',action:'harvest'},moduleConfig:enabled}).candidates[0];assert.equal(row.blockedReason,'FARM_TRUSTED_CLOCK_OR_CONNECTION_UNKNOWN');assert.equal(Object.hasOwn(row,'action'),false);assert.deepEqual(planFarmOperations(f,{parameters:{buildingId:'1农田',action:'harvest'},moduleConfig:enabled}).actions,[]);assert.equal(verifyFarmOperation({...row,action:{request:'FarmHarvestRequest',response:'FarmHarvestResponse',body:{buildingId:['1农田']}}},f,f,{reward:[]}).confirmed,false);
 });
 test('plant constructs one exact repeated argument with seed costs and budget claims',()=>{
  const f=facts(),before=structuredClone(f),op=operation(f);assert.deepEqual(f,before);assert.equal(op.actionType,'PLANT');assert.deepEqual(op.costs,[{id:'小麦种子',num:1}]);assert.deepEqual(op.budgetClaims,{resources:op.costs,quotas:[],uids:[]});assert.deepEqual(op.action,{request:'FarmPlantRequest',response:null,body:{args:[{buildingId:'1农田',productId:'小麦'}]}});assert.equal(op.expectedState.requiresCompleteCropState,true);assert.equal(op.executable,true);
@@ -99,8 +99,8 @@ test('account world player generation autoFarming or config switches invalidate 
 test('real codec proves single-plot harvest typed rewards and plant args without invented response',()=>{
  const p=loadProtocol(),round=(type,v)=>toSnapshotJson(p[type].decode(p[type].encode(v).finish()));assert.deepEqual(round('FarmPlantRequest',{args:[{buildingId:'1农田',productId:'小麦'}]}),{args:[{buildingId:'1农田',productId:'小麦'}]});assert.deepEqual(round('FarmHarvestRequest',{buildingId:['1农田']}),{buildingId:['1农田']});assert.deepEqual(round('FarmHarvestResponse',{reward:[{reward:{type:0,id:'小麦',num:5},critical:1}]}),{reward:[{reward:{type:0,id:'小麦',num:5},critical:1}]});assert.equal(p.FarmPlantResponse,undefined);const raw=round('FarmBuildingInfo',{});assert.deepEqual(raw,{});assert.equal(facts(core({buildings:[{...empty(),farm:raw}]})).plots[0].reliable,false);
 });
-test('shared D6 allows exact seed-only plant and denies harvest; adapter never bypasses executor',()=>{
- const op=operation(facts());assert.doesNotThrow(()=>assertPaymentAllowed({...op.action,costs:op.costs}));assert.throws(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田']},costs:[]}),e=>e.code==='COST_UNKNOWN');assert.equal(Object.hasOwn(farmModule,'execute'),false);assert.equal(FARM_EVIDENCE.maturityTimeUnit,'BLOCKED_EVIDENCE');
+test('shared D6 allows exact seed-only plant and single-plot harvest; adapter never bypasses executor',()=>{
+ const op=operation(facts());assert.doesNotThrow(()=>assertPaymentAllowed({...op.action,costs:op.costs}));assert.doesNotThrow(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田']},costs:[]}));assert.throws(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田','2农田']},costs:[]}),e=>e.code==='COST_UNKNOWN');assert.equal(Object.hasOwn(farmModule,'execute'),false);assert.equal(FARM_EVIDENCE.maturityTimeUnit,'SERVER_SECONDS_STRICTLY_BEFORE');
 });
 test('dependency projection binds actual farm configs and preserves input data',()=>{
  const cfg=config(),versions=farmDependencyVersions({config:cfg,moduleConfig:enabled});assert.deepEqual(Object.keys(versions).sort(),['config.BuildingCfg','config.FarmlandPlantCfg','evidence','moduleConfig']);cfg.tables.FarmlandPlantCfg.data[0].material[1]=9;assert.equal(versions['config.FarmlandPlantCfg'].data[0].material[1],1);assert.deepEqual(farmModule.capabilities,['BIZ-R16a','BIZ-R16b','BIZ-R16c']);
@@ -115,3 +115,46 @@ test('another confirmed plot does not stale an independent same-batch target ide
  const changed=core({buildings:[empty(),{...empty('2农田'),level:2}]});
  assert.notEqual(plan(facts(changed),{parameters:second}).actions[0].identity,firstPlan.identity);
 });
+// Live harvest facts are produced only by the existing survey hook and bundled codecs.
+async function harvestFixture({earliest=1700001801000,autoFarming=false,protocolOverride}={}){
+ const p=protocolOverride??loadProtocol(),raw=core({buildings:[growing(),empty('2农田')],autoFarming}),c={...context,connectionId:'synthetic-harvest-connection'};
+ let clock={status:'TRUSTED',reliable:true,accountId:c.accountId,generation:c.generation,source:'PingResponse.serverTimestamp',earliestMs:earliest,nowMs:earliest+100,latestMs:earliest+200};
+ const client={connected:true,factContext:c,gameClock:{read:()=>clock},request:async(name,body,response)=>{const value=name==='OnWaterRequest'?raw.rawOnWater:name==='AllItemRequest'?raw.rawAllItem:name==='AllResourceRequest'?raw.rawAllResource:name==='MyResFieldsRequest'?{info:{fields:[]}}:{fleets:[]};return p[response].decode(p[response].encode(value).finish());}};
+ const read=()=>surveyFarmOperations(client,p,{config:config(),player,parameters:{buildingId:'1农田',action:'harvest'}});
+ const before=await read(),options={parameters:{buildingId:'1农田',action:'harvest'},moduleConfig:enabled},op=planFarmOperations(before,options).actions[0];
+ const receipt=(num=10,critical=2)=>p.FarmHarvestResponse.decode(p.FarmHarvestResponse.encode({reward:[{reward:{type:0,id:'小麦',num},critical}]}).finish());
+ function apply(num=10){raw.rawOnWater.building[0].farm=empty().farm;raw.rawAllItem.items.find(r=>r.itemId==='小麦').num+=num;}
+ return {p,raw,client,before,op,options,read,receipt,apply,clock:()=>clock,setClock:value=>{clock=value;}};
+}
+test('single ripe plot plans exact typed harvest and binds crop batch UID without claiming configured income',async()=>{
+ const f=await harvestFixture();assert.ok(f.op);assert.deepEqual(f.op.action,{request:'FarmHarvestRequest',response:'FarmHarvestResponse',body:{buildingId:['1农田']}});assert.deepEqual(f.op.costs,[]);assert.equal(f.op.budgetClaims.uids.length,1);assert.equal(f.op.budgetClaims.uids[0].type,'farm-harvest');assert.deepEqual(f.op.budgetClaims.resources,[]);assert.equal(f.op.expectedState.rewards,undefined);assertPaymentAllowed({...f.op.action,costs:f.op.costs});
+ f.apply(10);const verified=verifyFarmOperation(f.op,f.before,await f.read(),f.receipt(10,2));assert.equal(verified.confirmed,true,verified.reason);assert.equal(verified.responseEvidence.num,10);assert.deepEqual(verified.responseEvidence.critical,[2]);
+});
+for(const earliest of [1700001799999,1700001800000,1700001800999])test('strict floor(server seconds) maturity excludes boundary '+earliest,async()=>{const f=await harvestFixture({earliest});assert.equal(f.op,undefined);assert.equal(viewFarmOperations(f.before,f.options).candidates[0].blockedReason,'FARM_MATURITY_NOT_PROVEN');});
+test('unknown clock, foreign account/generation, broken interval and copied or edited facts never grant harvest',async()=>{
+ const f=await harvestFixture();const valid=f.clock();for(const clock of [null,{...valid,status:'UNKNOWN'},{...valid,source:'Date.now'},{...valid,accountId:'foreign'},{...valid,generation:4},{...valid,earliestMs:valid.latestMs+1},{...valid,earliestMs:NaN}]){f.setClock(clock);assert.equal(planFarmOperations(f.before,f.options).actions.length,0);}f.setClock(valid);
+ assert.equal(planFarmOperations(structuredClone(f.before),f.options).actions.length,0);f.before.gameTime.earliestMs=0;assert.equal(planFarmOperations(f.before,f.options).actions.length,0);
+});
+test('harvest needs current exact connection, role, world and explicit idle auto farming',async()=>{
+ for(const mutate of [f=>{f.client.factContext.connectionId='other';},f=>{f.client.factContext.generation++;},f=>{f.client.factContext.accountId='other';},f=>{f.client.connected=false;}]){const f=await harvestFixture();mutate(f);assert.equal(planFarmOperations(f.before,f.options).actions.length,0);}
+ for(const autoFarming of [true,null]){const f=await harvestFixture({autoFarming});assert.equal(f.op,undefined);}
+});
+test('harvest receipt critical is presentation only and exact typed quantity must equal net gain',async()=>{
+ for(const gain of [0,9,20]){const f=await harvestFixture();f.apply(gain);assert.equal(verifyFarmOperation(f.op,f.before,await f.read(),f.receipt(10,2)).confirmed,false);}
+ const f=await harvestFixture();f.apply();const after=await f.read();for(const mutate of [r=>delete r.reward,r=>r.reward=[],r=>delete r.reward[0].critical,r=>delete r.reward[0].reward.type,r=>r.reward[0].reward.type=1,r=>r.reward[0].reward.id='玉米',r=>r.reward[0].reward.num=0,r=>r.reward[0].critical=-1]){const r=toSnapshotJson(f.receipt());mutate(r);assert.equal(verifyFarmOperation(f.op,f.before,after,r).confirmed,false);}
+});
+test('harvest requires explicit cleared farm, unchanged non-target plots/building and other inventory',async()=>{
+ for(const mutate of [f=>delete f.raw.rawOnWater.building[0].farm,f=>{f.raw.rawOnWater.building[0].farm=growing().farm;},f=>{f.raw.rawOnWater.building[0].level=2;},f=>{f.raw.rawOnWater.building[1].farm=growing('2农田').farm;},f=>f.raw.rawAllResource.list[0].amount++,f=>f.raw.rawAllItem.items[0].num--,f=>{f.raw.rawOnWater.autoFarming=true;}]){const f=await harvestFixture();f.apply();mutate(f);assert.equal(verifyFarmOperation(f.op,f.before,await f.read(),f.receipt()).confirmed,false);}
+});
+test('harvest rejects tampered wire target, batch claims, identity and expected state',async()=>{
+ const f=await harvestFixture();f.apply();const after=await f.read();for(const mutate of [o=>o.action.body.buildingId.push('2农田'),o=>o.action.body.buildingId[0]='2农田',o=>o.budgetClaims.uids=[],o=>o.identity='fake',o=>o.beforeState.farm.ripeTime--,o=>o.expectedState.maturityTimeUnit='LOCAL',o=>o.costs=[{id:'小麦种子',num:1}]]){const op=structuredClone(f.op);mutate(op);assert.equal(verifyFarmOperation(op,f.before,after,f.receipt()).confirmed,false);}
+});
+test('single-plot harvest D6 rejects arrays with holes/extra keys, hidden controls, nonzero or omitted costs',()=>{
+ const action=()=>({request:'FarmHarvestRequest',body:{buildingId:['1农田']},costs:[]});assert.doesNotThrow(()=>assertPaymentAllowed(action()));
+ for(const mutate of [a=>a.body.buildingId=[],a=>a.body.buildingId.push('2农田'),a=>delete a.body.buildingId[0],a=>a.body.buildingId.extra=true,a=>a.body.all=true,a=>a.body.buyMissing=true,a=>a.body.autoFarming=false,a=>delete a.costs,a=>a.costs=[{id:'小麦种子',num:1}],a=>a.body.buildingId[0]='']){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
+});
+
+test('harvest verification cannot borrow matching inventory and plot state from a different live client',async()=>{const before=await harvestFixture(),other=await harvestFixture();other.apply();assert.equal(verifyFarmOperation(before.op,before.before,await other.read(),other.receipt()).confirmed,false);});
+
+test('harvest professional view distinguishes live ripe, growing and copied unknown facts',async()=>{const f=await harvestFixture();assert.equal(viewFarmOperations(f.before,f.options).plots[0].state,'RIPE');assert.equal(viewFarmOperations(structuredClone(f.before),f.options).plots[0].state,'MATURITY_UNKNOWN');f.setClock({...f.clock(),earliestMs:1700001800000,nowMs:1700001800100,latestMs:1700001800200});assert.equal(viewFarmOperations(f.before,f.options).plots[0].state,'GROWING');});
+test('harvest permits zero initial crop inventory and aggregates exact typed rows without anticipating configured yield',async()=>{const f=await harvestFixture();f.raw.rawAllItem.items=f.raw.rawAllItem.items.filter(r=>r.itemId!=='小麦');const before=await f.read(),op=planFarmOperations(before,f.options).actions[0];f.raw.rawOnWater.building[0].farm=empty().farm;f.raw.rawAllItem.items.push({itemId:'小麦',num:13});const response=f.p.FarmHarvestResponse.decode(f.p.FarmHarvestResponse.encode({reward:[{reward:{type:0,id:'小麦',num:5},critical:0},{reward:{type:0,id:'小麦',num:8},critical:3}]}).finish()),result=verifyFarmOperation(op,before,await f.read(),response);assert.equal(result.confirmed,true,result.reason);assert.equal(result.responseEvidence.num,13);});

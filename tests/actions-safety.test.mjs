@@ -116,7 +116,7 @@ test('farm seed-only D6 contract rejects batch expansion, hidden payment fields 
  assert.doesNotThrow(()=>assertPaymentAllowed(action()));
  for(const mutate of [a=>a.body.args.push({...a.body.args[0]}),a=>a.body.args=[],a=>a.body.args[0].buyMissing=true,a=>a.body.autoFarming=true,a=>a.costs=[],a=>delete a.costs,a=>a.costs[0].num=0,a=>a.costs[0].num=1.5,a=>a.body.args[0].productId='',a=>a.body.args.extra=true]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a),{code:'COST_UNKNOWN'});}
  for(const id of ['RUBY','钻石','4']){const a=action();a.costs[0].id=id;assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
- assert.throws(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田']},costs:[]}),{code:'COST_UNKNOWN'});
+ assert.throws(()=>assertPaymentAllowed({request:'FarmHarvestRequest',body:{buildingId:['1农田','2农田']},costs:[]}),{code:'COST_UNKNOWN'});
 });
 
 test('forge D6 allows only exact owned-material Make and explicit zero-cost Pick',()=>{

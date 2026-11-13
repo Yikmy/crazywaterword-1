@@ -19,10 +19,12 @@ const hash=v=>createHash('sha256').update(stableBusinessValue(v)).digest('hex');
 const premium=v=>['RUBY','钻石','4'].includes(String(v));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
 const source='FarmlandPlantCfg.material single [seedId,num] pair; FarmPlantRequest.args PlantArg(buildingId,productId); no replacement purchase';
-const maturityBlock='FARM_MATURITY_TIME_UNIT_UNVERIFIED';
+const harvestSource='Fixed v76 BuildingModel.isRiped strict server seconds; FarmView single buildingId; CriticalAsset.reward.num is final quantity, critical is presentation only';
+const liveFarmFacts=new WeakMap();
 export const FARM_DEFAULT_CONFIG=Object.freeze({enabled:false});
 export const FARM_EVIDENCE=Object.freeze({
-  maturityTimeUnit:'BLOCKED_EVIDENCE',missingFarmMeansEmpty:'BLOCKED_EVIDENCE',criticalRewardSemantics:'BLOCKED_EVIDENCE',
+  maturityTimeUnit:'SERVER_SECONDS_STRICTLY_BEFORE',missingFarmMeansEmpty:'BLOCKED_EVIDENCE',criticalRewardSemantics:'REWARD_NUM_FINAL_NO_CRITICAL_MULTIPLICATION',
+  fixedClient:Object.freeze({buildingModelByteOffset:905030,isRipedByteOffset:908580,farmViewByteOffset:2597847,itemVOByteOffset:3828116,sourcePackageSha256:'4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',entrySha256:'a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54',source:'Existing v76 package/entry manifest and in-memory module excerpts'}),
   sources:Object.freeze(['local reference src/world.mjs#farmOf and farmHarvest/farmPlant (index only)',
     'fixed cached protocol: FarmBuildingInfo/PlantArg/FarmHarvestRequest/FarmHarvestResponse/CriticalAsset',
     'fixed FarmlandPlantCfg.material/time/produceNum']),
@@ -87,7 +89,7 @@ function parsePlot(raw,types) {
   if(!own(f,'productId')||typeof f.productId!=='string'||!own(f,'plantTime')||!uint(f.plantTime)||!own(f,'ripeTime')||!uint(f.ripeTime))return unknown('FARM_FIELDS_UNKNOWN');
   if(f.productId==='')return f.plantTime===0&&f.ripeTime===0?{...base,state:'EMPTY',productId:'',plantTime:0,ripeTime:0,reliable:true,reason:null}:unknown('EMPTY_FARM_TIMES_CONFLICT');
   if(!id(f.productId)||f.plantTime<=0||f.ripeTime<f.plantTime)return unknown('CROP_ID_OR_TIMES_UNRELIABLE');
-  return {...base,state:'GROWING_OR_RIPE_UNVERIFIED',productId:f.productId,plantTime:f.plantTime,ripeTime:f.ripeTime,reliable:true,reason:maturityBlock};
+  return {...base,state:'GROWING_OR_RIPE_UNVERIFIED',productId:f.productId,plantTime:f.plantTime,ripeTime:f.ripeTime,reliable:true,reason:'MATURITY_REQUIRES_LIVE_SERVER_CLOCK'};
 }
 /** Decorates the original core read set. Raw inputs must come from the trusted
  * core survey hook, never from HTTP parameters or a previously defaulted view. */
@@ -112,7 +114,16 @@ export async function surveyFarmOperations(client,protocol,options={}) {
   const sourceAt=Date.now(),context=copy(client.factContext??{});
   const core=await surveyCoreOperations(client,protocol,{...options,parameters:{}});assertExecutionActive(client,options);
   if(!same(context,client.factContext??{}))throw Object.assign(new Error('农田采集期间账号或代次已变化'),{code:'CANCELLED'});
-  return decorateFarmSurvey(core,{config:options.config,protocol,context,player:options.player,sourceAt,time:readGameTime(client)});
+  const facts=decorateFarmSurvey(core,{config:options.config,protocol,context,player:options.player,sourceAt,time:readGameTime(client)});
+  liveFarmFacts.set(facts,{client,player:options.player,context:copy(context),digest:farmDigest(facts)});return facts;
+}
+const farmDigest=f=>hash({...f,stock:[...f.stock]});
+function harvestClock(facts) {
+  const live=liveFarmFacts.get(facts),context=live?.context;
+  if(!live||live.client.connected!==true||!id(context.connectionId)||!same(context,live.client.factContext)||!same(contextOf(context,live.player),facts.identityContext)||live.digest!==farmDigest(facts))return null;
+  let clock;try{clock=live.client.gameClock?.read(context);}catch{return null;}
+  if(clock?.status!=='TRUSTED'||clock.reliable!==true||clock.source!=='PingResponse.serverTimestamp'||clock.accountId!==context.accountId||clock.generation!==context.generation||!['earliestMs','nowMs','latestMs'].every(k=>own(clock,k)&&Number.isFinite(clock[k])&&clock[k]>=0&&clock[k]<=Number.MAX_SAFE_INTEGER)||clock.earliestMs>clock.nowMs||clock.nowMs>clock.latestMs)return null;
+  return clock;
 }
 function authority(facts) {
   const c=facts?.identityContext;
@@ -132,7 +143,15 @@ function candidate(facts,parameters,{moduleConfig=FARM_DEFAULT_CONFIG}={}) {
   if(moduleConfig.enabled!==true)reason='FARM_MODULE_DISABLED';
   else if(!authority(facts))reason='FARM_AUTHORITY_OR_CONTEXT_UNKNOWN';
   else if(!plot||!plot.reliable)reason=plot?.reason??'FARM_TARGET_UNKNOWN';
-  else if(actionType==='HARVEST')reason=maturityBlock;
+  else if(actionType==='HARVEST'){
+    const clock=harvestClock(facts);
+    if(facts.autoFarming!==false)reason=facts.autoFarming===true?'SERVER_AUTO_FARMING_ENABLED':'AUTO_FARMING_UNKNOWN';
+    else if(!plot.productId||plot.state==='EMPTY')reason='FARM_NOT_PLANTED';
+    else if(!clock)reason='FARM_TRUSTED_CLOCK_OR_CONNECTION_UNKNOWN';
+    else if(Math.floor(clock.earliestMs/1000)<=plot.ripeTime)reason='FARM_MATURITY_NOT_PROVEN';
+    else if(!crop?.reliable)reason='CROP_OR_SEED_COST_UNVERIFIED';
+    else if(!['FarmHarvestRequest','FarmHarvestResponse'].every(k=>facts.available?.includes(k)))reason='FARM_HARVEST_PROTOCOL_UNAVAILABLE';
+  }
   else if(plot.state!=='EMPTY')reason='FARM_NOT_EXPLICITLY_EMPTY';
   else if(facts.autoFarming!==false)reason=facts.autoFarming===true?'SERVER_AUTO_FARMING_ENABLED':'AUTO_FARMING_UNKNOWN';
   else if(!crop?.reliable)reason='CROP_OR_SEED_COST_UNVERIFIED';
@@ -141,11 +160,11 @@ function candidate(facts,parameters,{moduleConfig=FARM_DEFAULT_CONFIG}={}) {
   const target={buildingId:parameters.buildingId??null,...(actionType==='PLANT'?{productId:parameters.productId??null}:{productId:plot?.productId??null})};
   const beforeState=plot?copy(plot.raw):null;
   const expectedState=actionType==='PLANT'?{buildingId:target.buildingId,productId:target.productId,seedCosts:costs,autoFarming:false,requiresCompleteCropState:true}:
-    {buildingId:target.buildingId,previousProductId:target.productId,requiresTypedRewardAndNetInventory:true,maturityTimeUnit:'BLOCKED_EVIDENCE'};
+    {buildingId:target.buildingId,previousProductId:target.productId,requiresTypedRewardAndNetInventory:true,maturityTimeUnit:'SERVER_SECONDS_STRICTLY_BEFORE',rewardRule:'EXACT_TYPED_CROP_NUM_NO_CRITICAL_MULTIPLICATION',autoFarming:false};
   const identity=plot?hash({context:facts.identityContext,targetPlot:plot.raw,autoFarming:facts.autoFarming,crop,buildingTypes:facts.catalog.types}):null;
   return {module:'farm',actionId:'farm:'+actionType+':'+hash(target),actionType,target,parameters:copy(parameters),beforeState,expectedState,identity,costs,
-    budgetClaims:{resources:costs,quotas:[],uids:[]},costSource:source,executable:reason===null,blockedReason:reason,
-    ...(reason===null?{action:{request:'FarmPlantRequest',response:null,body:{args:[{buildingId:target.buildingId,productId:target.productId}]}}}:{})};
+    budgetClaims:{resources:costs,quotas:[],uids:actionType==='HARVEST'&&plot?[{type:'farm-harvest',id:hash({context:facts.identityContext,buildingId:plot.buildingId,farm:plot.raw.farm})}]:[]},costSource:actionType==='HARVEST'?harvestSource:source,executable:reason===null,blockedReason:reason,
+    ...(reason===null?{action:actionType==='HARVEST'?{request:'FarmHarvestRequest',response:'FarmHarvestResponse',body:{buildingId:[target.buildingId]}}:{request:'FarmPlantRequest',response:null,body:{args:[{buildingId:target.buildingId,productId:target.productId}]}}}:{})};
 }
 function choices(facts,parameters) {
   const out=[];
@@ -159,7 +178,8 @@ function choices(facts,parameters) {
 export function viewFarmOperations(facts,{parameters={},moduleConfig=FARM_DEFAULT_CONFIG}={}) {
   parameters=validateFarmParameters(parameters);moduleConfig=validateFarmConfig(moduleConfig);
   const candidates=choices(facts,parameters).map(p=>candidate(facts,p,{moduleConfig}));
-  return {module:'farm',plots:copy(facts?.plots??[]),autoFarming:facts?.autoFarming??null,crops:copy(facts?.catalog?.crops??[]),candidates,
+  const clock=authority(facts)?harvestClock(facts):null,plots=copy(facts?.plots??[]).map(plot=>plot.state==='GROWING_OR_RIPE_UNVERIFIED'?{...plot,state:clock?(Math.floor(clock.earliestMs/1000)>plot.ripeTime?'RIPE':'GROWING'):'MATURITY_UNKNOWN',reason:clock?null:'FARM_TRUSTED_CLOCK_OR_CONNECTION_UNKNOWN'}:plot);
+  return {module:'farm',plots,autoFarming:facts?.autoFarming??null,crops:copy(facts?.catalog?.crops??[]),candidates,
     reliability:copy(facts?.farmReliability??{}),evidence:FARM_EVIDENCE,notes:[...(facts?.notes??[])],realGame:'REAL_UNVERIFIED'};
 }
 export function planFarmOperations(facts,{parameters={},moduleConfig=FARM_DEFAULT_CONFIG,selections,ledger=new ResourceLedger(facts?.stockReliable===true?facts.stock:null)}={}) {
@@ -178,15 +198,24 @@ export function verifyFarmOperation(operation,beforeFacts,afterFacts,response) {
   const fail=reason=>({confirmed:false,reason});let parameters;
   try{parameters=validateFarmParameters(operation?.parameters);}catch{return fail('FARM_OPERATION_CONTRACT_INVALID');}
   if(!authority(beforeFacts)||!authority(afterFacts)||!same(beforeFacts.identityContext,afterFacts.identityContext))return fail('FARM_AUTHORITY_OR_CONTEXT_UNKNOWN');
-  if(parameters.action==='harvest')return fail(maturityBlock);
   const original=candidate(beforeFacts,parameters,{moduleConfig:{enabled:true}}),after=afterFacts.plots.find(p=>p.buildingId===parameters.buildingId);
   try{if(!original.executable||operation.module!=='farm'||['actionId','actionType','target','costs','costSource','identity','beforeState','expectedState','action'].some(k=>!same(operation[k],original[k]))||!same(operationBudgetClaims(operation),operationBudgetClaims(original)))return fail('FARM_OPERATION_TARGET_OR_BEFORE_MISMATCH');}catch{return fail('FARM_OPERATION_CONTRACT_INVALID');}
   if(!same(beforeFacts.catalog,afterFacts.catalog)||beforeFacts.autoFarming!==false||afterFacts.autoFarming!==false)return fail('FARM_CONFIG_OR_AUTO_FARMING_CHANGED');
-  if(!after?.reliable||after.productId!==parameters.productId||after.state!=='GROWING_OR_RIPE_UNVERIFIED'||after.plantTime<=0||after.ripeTime<after.plantTime)return fail('EXACT_CROP_STATE_NOT_CONFIRMED');
+  if(parameters.action==='harvest'){if(!harvestClock(afterFacts)||liveFarmFacts.get(beforeFacts)?.client!==liveFarmFacts.get(afterFacts)?.client||!same(liveFarmFacts.get(beforeFacts)?.context,liveFarmFacts.get(afterFacts)?.context)||!after?.reliable||after.state!=='EMPTY')return fail('EXACT_EMPTY_FARM_OR_LIVE_CONTEXT_NOT_CONFIRMED');}
+  else if(!after?.reliable||after.productId!==parameters.productId||after.state!=='GROWING_OR_RIPE_UNVERIFIED'||after.plantTime<=0||after.ripeTime<after.plantTime)return fail('EXACT_CROP_STATE_NOT_CONFIRMED');
   const withoutFarm=raw=>Object.fromEntries(Object.entries(raw).filter(([k])=>k!=='farm'));
   if(!same(withoutFarm(original.beforeState),withoutFarm(after.raw)))return fail('TARGET_BUILDING_CHANGED_OUTSIDE_FARM');
   const other=f=>f.rawBuildings.filter(r=>r.buildingId!==parameters.buildingId).sort((a,b)=>a.buildingId<b.buildingId?-1:1);
   if(!same(other(beforeFacts),other(afterFacts)))return fail('NON_TARGET_PLOT_CHANGED');
+  if(parameters.action==='harvest'){
+    if(!own(response,'reward')||!dense(response.reward)||!response.reward.length)return fail('FARM_TYPED_CROP_REWARD_REQUIRED');
+    let amount=0;const critical=[];
+    for(const row of response.reward){const reward=own(row,'reward')?row.reward:null,num=own(reward,'num')?safeResourceQuantity(reward.num):null;
+      if(!own(row,'critical')||!uint(row.critical)||!own(reward,'type')||reward.type!==0||!own(reward,'id')||reward.id!==original.target.productId||num===null||num<=0||!Number.isSafeInteger(amount+num))return fail('FARM_TYPED_CROP_REWARD_INVALID');amount+=num;critical.push(row.critical);}
+    const keys=new Set([...beforeFacts.stock.keys(),...afterFacts.stock.keys(),original.target.productId]);
+    for(const key of keys){const before=safeResourceQuantity(beforeFacts.stock.get(key)??0),next=safeResourceQuantity(afterFacts.stock.get(key)??0);if(before===null||next===null||!Number.isSafeInteger(before+(key===original.target.productId?amount:0))||next!==before+(key===original.target.productId?amount:0))return fail('EXACT_HARVEST_NET_INVENTORY_NOT_CONFIRMED');}
+    return {confirmed:true,reason:'同批次单田清空与typed作物数量、完整库存净入共同确认',afterState:copy(after.raw),responseEvidence:{buildingId:parameters.buildingId,productId:original.target.productId,num:amount,critical}};
+  }
   const costs=new Map(original.costs.map(r=>[r.id,r.num])),keys=new Set([...beforeFacts.stock.keys(),...afterFacts.stock.keys()]);
   for(const key of keys){const before=safeResourceQuantity(beforeFacts.stock.get(key)??0),next=safeResourceQuantity(afterFacts.stock.get(key)??0);if(before===null||next===null||before<(costs.get(key)??0)||next!==before-(costs.get(key)??0))return fail('EXACT_SEED_DEBIT_AND_NET_INVENTORY_NOT_CONFIRMED');}
   return {confirmed:true,reason:'新OnWater精确地块/作物与AllItem+AllResource精确种子净扣确认；静默窗口本身不是成功',afterState:copy(after.raw)};

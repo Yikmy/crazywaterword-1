@@ -32,7 +32,7 @@ function publicAction(operation) {
   return Object.fromEntries(fields.filter(key => operation[key] !== undefined).map(key => [key, clone(operation[key])]));
 }
 function evidence(result) {
-  const fields = ['requestStatus', 'beforeState', 'resourceBefore', 'resourceAfter', 'reservation', 'resourceReservation', 'afterState', 'verification', 'nextDecision', 'reason', 'error', 'decision', 'ruleResult', 'dispatched', 'unresolvedWrite', 'beforeInventory', 'afterInventory', 'beforeInventoryReliable', 'afterInventoryReliable', 'collectedProducts', 'receivedReward', 'rewardEvidence'];
+  const fields = ['requestStatus', 'beforeState', 'resourceBefore', 'resourceAfter', 'reservation', 'resourceReservation', 'afterState', 'verification', 'nextDecision', 'reason', 'error', 'decision', 'ruleResult', 'dispatched', 'unresolvedWrite', 'beforeInventory', 'afterInventory', 'beforeInventoryReliable', 'afterInventoryReliable', 'collectedProducts', 'responseEvidence', 'receivedReward', 'rewardEvidence'];
   return Object.fromEntries(fields.filter(key => result[key] !== undefined).map(key => [key, clone(result[key])]));
 }
 
