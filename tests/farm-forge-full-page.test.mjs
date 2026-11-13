@@ -984,7 +984,7 @@ test('parameter fields preserve omitted values separately from zero, false and e
 
 test('primitive forms retain existing formation arrays and nested fields exactly while changing only explicit scalars',async()=>{
  const parameters={presetId:1,heroIds:['A','B'],heroPositions:[{heroId:'A',pos:{x:1,y:2}}],extra:{keep:['exact',0,false]}},h=await parameterPage('formation',parameters);
- parameterSet(h,'presetId','2');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{...parameters,presetId:2});assert.match(h.node('wf-nodes').textContent,/复杂业务参数保持原样/);assert.equal(writes(h).length,0);
+ parameterSet(h,'presetId','2');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{...parameters,presetId:2});assert.equal(nestedControl(h,'heroPositions',['pos','x'],'nested-value',0).value,'1');assert.equal(writes(h).length,0);
 });
 
 test('union types keep large decimal identities as text and reject overflowing integer input atomically',async()=>{
@@ -1136,4 +1136,82 @@ test('list add and row callbacks lock during Workflow requests and running statu
  const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;
  const advanced=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea');advanced.value=JSON.stringify({reqIds:['new']});advanced.onchange();add.click();remove.click();apply.click();assert.deepEqual(businessNode(h).parameters.reqIds,['new']);assert.equal(parameterListControls(h,'reqIds','item').length,1);
  const currentAdd=parameterListButton(h,'reqIds','add');h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-json').value;currentAdd.click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+const nestedControls=(h,key,path,control='nested-value',index)=>parameterListControls(h,key,control).filter(n=>n.dataset.parameterPath===JSON.stringify(path)&&(index===undefined||n.dataset.parameterIndex===String(index)));
+const nestedControl=(h,key,path,control='nested-value',index)=>nestedControls(h,key,path,control,index)[0];
+function nestedSet(h,key,path,value,{type,enabled=true,index}={}) {
+ const include=nestedControl(h,key,path,'nested-enabled',index);assert.ok(include,key+':'+path);include.checked=enabled;include.onchange();
+ if(type){const select=nestedControl(h,key,path,'nested-type',index);assert.ok(select);select.value=type;select.onchange();}
+ if(value!==undefined)nestedControl(h,key,path,'nested-value',index).value=value;
+}
+function parameterEnable(h,key) {const input=parameterControl(h,key,'enabled');input.checked=true;input.onchange();}
+
+test('structured Workflow parameters author explicit formation positions and reuse production domain validation',async()=>{
+ const h=await parameterPage('formation',{presetId:1});parameterEnable(h,'heroPositions');parameterListButton(h,'heroPositions','add').click();
+ nestedSet(h,'heroPositions',['heroId'],'A',{index:0});nestedSet(h,'heroPositions',['pos'],undefined,{index:0});nestedSet(h,'heroPositions',['pos','x'],'0',{index:0});nestedSet(h,'heroPositions',['pos','y'],'-1',{index:0});
+ const before=h.node('wf-json').value;assert.deepEqual(businessNode(h).parameters,{presetId:1});parameterApply(h).click();assert.notEqual(h.node('wf-json').value,before);
+ assert.deepEqual(businessNode(h).parameters,{presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:-1}}]});assert.equal(validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
+});
+
+test('nested coordinate fields preserve missing separately from zero and never infer required fields',async()=>{
+ const h=await parameterPage('naval');parameterEnable(h,'screenCenter');nestedSet(h,'screenCenter',['x'],'0');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.screenCenter,{x:0});
+ assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{naval:GAMEPLAY_MODULES.naval}}));
+ nestedSet(h,'screenCenter',['y'],'0');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.screenCenter,{x:0,y:0});
+ nestedSet(h,'screenCenter',['x'],undefined,{enabled:false});parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.screenCenter,{y:0});assert.equal(writes(h).length,0);
+});
+
+test('nested stage settings retain false, explicit null and optional absence with original typed semantics',async()=>{
+ const h=await parameterPage('stage');parameterEnable(h,'config');
+ nestedSet(h,'config',['enabled'],'false');nestedSet(h,'config',['retryDelaySeconds'],'0');nestedSet(h,'config',['maxAttempts'],undefined,{type:'null'});nestedSet(h,'config',['maxStage'],'0',{type:'integer'});nestedSet(h,'config',['stopOnDefeat'],'true');
+ nestedSet(h,'config',['interStageDelay'],undefined);nestedSet(h,'config',['interStageDelay','minSeconds'],'0');nestedSet(h,'config',['interStageDelay','maxSeconds'],'1.5');
+ nestedSet(h,'config',['formation'],undefined);nestedSet(h,'config',['formation','enabled'],'false');nestedSet(h,'config',['formation','presetId'],undefined,{type:'null'});
+ parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{config:{enabled:false,retryDelaySeconds:0,maxAttempts:null,maxStage:0,stopOnDefeat:true,interStageDelay:{minSeconds:0,maxSeconds:1.5},formation:{enabled:false,presetId:null}}});
+ nestedSet(h,'config',['maxAttempts'],undefined,{enabled:false});nestedSet(h,'config',['formation'],undefined,{enabled:false});parameterApply(h).click();assert.equal(Object.hasOwn(businessNode(h).parameters.config,'maxAttempts'),false);assert.equal(Object.hasOwn(businessNode(h).parameters.config,'formation'),false);assert.equal(writes(h).length,0);
+});
+
+test('nested value errors abort all scalar, list and object parameter mutations atomically',async()=>{
+ const parameters={presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:1}}]},h=await parameterPage('formation',parameters);
+ for(const value of ['','1e3','1.0000000000000001','9007199254740993',' 1','true','null']){
+  parameterSet(h,'presetId','2');nestedSet(h,'heroPositions',['heroId'],'changed',{index:0});nestedSet(h,'heroPositions',['pos','x'],value,{index:0});
+  const source=h.node('wf-json').value;parameterApply(h).click();assert.equal(h.node('wf-json').value,source,value);assert.deepEqual(businessNode(h).parameters,parameters);
+ }assert.equal(writes(h).length,0);
+});
+
+test('object list ordering preserves raw incomplete drafts without forcing parse and removed row callbacks expire',async()=>{
+ const h=await parameterPage('formation',{heroPositions:[{heroId:'A',pos:{x:0,y:1}},{heroId:'B',pos:{x:1,y:2}}]});
+ nestedSet(h,'heroPositions',['pos','x'],'invalid',{index:0});parameterListButton(h,'heroPositions','down',0).click();assert.equal(nestedControl(h,'heroPositions',['pos','x'],'nested-value',1).value,'invalid');
+ parameterListButton(h,'heroPositions','add').click();assert.equal(parameterListControls(h,'heroPositions','remove').length,3);assert.equal(nestedControl(h,'heroPositions',['pos','x'],'nested-value',1).value,'invalid');
+ const removed=parameterListButton(h,'heroPositions','remove',1);removed.click();removed.click();assert.equal(parameterListControls(h,'heroPositions','remove').length,2);
+ parameterListButton(h,'heroPositions','remove',1).click();parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.heroPositions,[{heroId:'B',pos:{x:1,y:2}}]);assert.equal(writes(h).length,0);
+});
+
+test('nested object edits preserve unknown original fields and malformed original leaves for existing validator',async()=>{
+ const original={screenCenter:{x:0,y:1,extra:{keep:[false,'9007199254740995']}},cityIds:[1]},h=await parameterPage('naval',original);
+ nestedSet(h,'screenCenter',['x'],'2');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{...original,screenCenter:{...original.screenCenter,x:2}});
+ const malformed=await parameterPage('formation',{heroPositions:[{heroId:42,pos:{x:'wrong',y:0},opaque:[7]},'legacy-null']});parameterApply(malformed).click();assert.deepEqual(businessNode(malformed).parameters,{heroPositions:[{heroId:42,pos:{x:'wrong',y:0},opaque:[7]},'legacy-null']});
+ assert.throws(()=>validateWorkflow(conditionGraph(malformed),{modules:{formation:GAMEPLAY_MODULES.formation}}));assert.equal(writes(h).length,0);assert.equal(writes(malformed).length,0);
+});
+
+test('structured inputs never resolve conflicting hero lists or duplicate formation positions automatically',async()=>{
+ const h=await parameterPage('formation',{presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:0}}]});parameterListAdd(h,'heroIds','A');parameterApply(h).click();
+ assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能同时提供/);
+ parameterControl(h,'heroIds','enabled').checked=false;parameterControl(h,'heroIds','enabled').onchange();parameterListButton(h,'heroPositions','add').click();nestedSet(h,'heroPositions',['heroId'],'B',{index:1});nestedSet(h,'heroPositions',['pos'],undefined,{index:1});nestedSet(h,'heroPositions',['pos','x'],'0',{index:1});nestedSet(h,'heroPositions',['pos','y'],'0',{index:1});parameterApply(h).click();
+ assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能重复/);
+ nestedSet(h,'heroPositions',['pos','y'],'1',{index:1});parameterApply(h).click();assert.equal(validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
+});
+
+test('nested controls and object list buttons lock during running requests and stale graph or account handlers cannot apply',async()=>{
+ const h=await parameterPage('formation',{heroPositions:[{heroId:'A',pos:{x:0,y:1}}]}),add=parameterListButton(h,'heroPositions','add'),remove=parameterListButton(h,'heroPositions','remove',0),apply=parameterApply(h),input=nestedControl(h,'heroPositions',['pos','x'],'nested-value',0);
+ const reading=h.node('wf-load').click();assert.equal(add.disabled,true);assert.equal(input.disabled,true);add.click();remove.click();assert.equal(parameterListControls(h,'heroPositions','remove').length,1);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:true,status:'AWAITING_AUTHORIZATION'},graphs:[],history:[]});await reading;assert.equal(input.disabled,true);
+ const idle=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{running:false,status:'IDLE'},graphs:[],history:[]});await idle;
+ const advanced=descendants(h.node('wf-nodes')).find(n=>n.tagName==='textarea');advanced.value=JSON.stringify({heroPositions:[{heroId:'B',pos:{x:2,y:3}}]});advanced.onchange();add.click();remove.click();input.value='4';apply.click();assert.equal(businessNode(h).parameters.heroPositions[0].heroId,'B');
+ const latest=parameterListButton(h,'heroPositions','add');h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-json').value;latest.click();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+
+test('object list uses the existing hundred-entry bound and renders identities as literal text',async()=>{
+ const original=Array.from({length:100},(_,i)=>({heroId:'<img-'+i+'>',pos:{x:i,y:0}})),h=await parameterPage('formation',{heroPositions:original});
+ assert.equal(parameterListButton(h,'heroPositions','add').disabled,true);parameterListButton(h,'heroPositions','add').click();assert.equal(parameterListControls(h,'heroPositions','remove').length,100);parameterApply(h).click();assert.deepEqual(businessNode(h).parameters.heroPositions,original);
+ assert.ok(descendants(h.node('wf-nodes')).every(n=>!n.tagName.startsWith('img')));assert.equal(writes(h).length,0);
 });

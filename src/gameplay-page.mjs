@@ -575,7 +575,7 @@ function wfParameterForm(card,node) {
  const live=()=>editable()&&gpSafe(scope,revision)&&wfGraph===graph&&graph.nodes.includes(node)&&node.module===module&&node.type===type&&gpJson(node.parameters)===stored&&Array.from($('wf-nodes').children).includes(card);
  const section=gpEl('div'),note=gpEl('p','明确启用字段后填写业务选择，再应用。未启用字段从声明中移除；复杂参数原样保留。领域资格、成本和 D6 仍由原 Function 校验。');
  section.appendChild(gpEl('h4','业务参数'));section.appendChild(note);card.appendChild(section);
- const labels={packId:'礼包 ID',itemId:'物品 ID',num:'数量',action:'业务操作',buildingId:'建筑 ID',jobIdx:'培育队列索引（含 0）',level:'等级',pageNo:'邮件页号（含 0）',emailId:'精确邮件 ID',kind:'任务种类',taskId:'精确任务 ID',tierId:'活跃奖励档位',uid:'精确目标 UID',cityId:'城市 ID',allowLowerLevel:'允许已授权的较低等级目标',antiqueId:'古董 ID',suitId:'古董套装 ID',heroId:'英雄 ID',pos:'栏位',presetId:'阵容模板 ID',makeId:'制造配方 ID',allowUniversal:'允许万能材料',productId:'产品 ID',mode:'业务模式',raidId:'远征 raidId',season:'赛季',techId:'科技 ID',targetLevel:'目标等级',stageId:'关卡 ID',factor:'培养倍率',exhibitionId:'展览 ID',useNum:'使用数量',payment:'支付方式',caseIndex:'展示栏位',keywordType:'关键词类型',shipIndex:'货船索引',cargoIndex:'货格索引',targetId:'目标 ID',playerId:'精确玩家 ID',minimumPower:'最低战力',maximumPower:'最高战力',skillIdx:'技能索引（含 0）',memberIds:'精确联盟成员 ID 列表',reqIds:'精确联盟求助 ID 列表',itemIds:'物品 ID 列表',heroIds:'英雄 ID 列表',fleetBuildingIds:'舰队建筑 ID 列表',excludeGuildIds:'排除联盟 ID 列表',cityIds:'城市 ID 列表'};
+ const labels={packId:'礼包 ID',itemId:'物品 ID',num:'数量',action:'业务操作',buildingId:'建筑 ID',jobIdx:'培育队列索引（含 0）',level:'等级',pageNo:'邮件页号（含 0）',emailId:'精确邮件 ID',kind:'任务种类',taskId:'精确任务 ID',tierId:'活跃奖励档位',uid:'精确目标 UID',cityId:'城市 ID',allowLowerLevel:'允许已授权的较低等级目标',antiqueId:'古董 ID',suitId:'古董套装 ID',heroId:'英雄 ID',pos:'栏位',presetId:'阵容模板 ID',makeId:'制造配方 ID',allowUniversal:'允许万能材料',productId:'产品 ID',mode:'业务模式',raidId:'远征 raidId',season:'赛季',techId:'科技 ID',targetLevel:'目标等级',stageId:'关卡 ID',factor:'培养倍率',exhibitionId:'展览 ID',useNum:'使用数量',payment:'支付方式',caseIndex:'展示栏位',keywordType:'关键词类型',shipIndex:'货船索引',cargoIndex:'货格索引',targetId:'目标 ID',playerId:'精确玩家 ID',minimumPower:'最低战力',maximumPower:'最高战力',skillIdx:'技能索引（含 0）',memberIds:'精确联盟成员 ID 列表',reqIds:'精确联盟求助 ID 列表',itemIds:'物品 ID 列表',heroIds:'英雄 ID 列表',fleetBuildingIds:'舰队建筑 ID 列表',excludeGuildIds:'排除联盟 ID 列表',cityIds:'城市 ID 列表',heroPositions:'英雄精确站位',screenCenter:'屏幕中心坐标',config:'主线设置',x:'X 坐标',y:'Y 坐标',enabled:'启用',retryDelaySeconds:'失败间隔秒数',maxAttempts:'最多场数',maxStage:'最高关卡',stopOnDefeat:'首败停止',interStageDelay:'场间等待秒数',minSeconds:'最少秒数',maxSeconds:'最多秒数',formation:'阵容设置'};
  const enums={feed:'投喂',claim:'领取',read:'标为已读',main:'主线',branch:'支线',achievement:'成就',daily:'每日任务','daily-activity':'日活跃','daily-gift':'固定免费赠礼',activate:'激活',star:'升星',suit:'套装成长',master:'大师成长',exchange:'碎片兑换','put-on':'穿戴',refine:'精炼',make:'制造',pick:'收取',plant:'播种',harvest:'收取',expedition:'远征',level:'升级',skill:'技能升级','exclusive-level':'专武升级','exclusive-star':'专武升星','fragment-exchange':'万能碎片兑换',ITEM:'自有物品',FREE:'免费',PREMIUM:'钻石（D6 禁止）'};
  const fields=[],values=node.parameters&&typeof node.parameters==='object'&&!Array.isArray(node.parameters)?node.parameters:{};
  const primitiveTypes=spec=>[...new Set((spec.anyOf||[spec]).flatMap(row=>Array.isArray(row.type)?row.type:[row.type]))].filter(type=>['string','integer','number','boolean','null'].includes(type));
@@ -594,7 +594,52 @@ function wfParameterForm(card,node) {
   }
   return value;
  };
+ const plainObject=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+ const objectSupported=spec=>spec?.type==='object'&&Object.values(spec.properties||{}).every(child=>child.type==='object'?objectSupported(child):(child.anyOf||[child]).every(v=>(Array.isArray(v.type)?v.type:[v.type]).every(t=>['string','integer','number','boolean','null'].includes(t))));
+ const objectEditor=(parent,spec,original,key,path=[])=>{
+  const originalObject=plainObject(original)?original:{},parts=[],elements=[];
+  const control=(tagName,control,text='')=>{const input=tag(gpEl(tagName,text),key,control);input.dataset.parameterPath=JSON.stringify(path);elements.push(input);return input;};
+  for(const [name,child]of Object.entries(spec.properties||{})){
+   const childPath=[...path,name],group=gpEl('div'),label=gpEl('label'),enabled=control('input','nested-enabled');enabled.dataset.parameterPath=JSON.stringify(childPath);enabled.type='checkbox';enabled.checked=Object.hasOwn(originalObject,name);label.appendChild(enabled);label.appendChild(document.createTextNode(' '+(labels[name]||name)));group.appendChild(label);parent.appendChild(group);
+   const old=originalObject[name],types=primitiveTypes(child),inferred=valueType(old),part={name,enabled};
+   if(child.type==='object'&&(!enabled.checked||plainObject(old))){part.editor=objectEditor(group,child,old,key,childPath);elements.push(...part.editor.elements);}
+   else if(enabled.checked&&(child.type==='object'||!types.includes(inferred))){part.preserved=true;part.value=old;group.appendChild(gpEl('span','原值保持：'+gpJson(old)));}
+   else {
+    const kind=control('select','nested-type');kind.dataset.parameterPath=JSON.stringify(childPath);for(const type of types){const option=gpEl('option',({string:'文本（精确原文）',integer:'整数',number:'数值',boolean:'布尔',null:'null'})[type]);option.value=type;kind.appendChild(option);}kind.value=types.includes(inferred)?inferred:types[0];if(types.length>1)group.appendChild(kind);
+    const choices=child.enum??(types.length===1&&types[0]==='boolean'?[false,true]:null),input=control(choices?'select':'input','nested-value');input.dataset.parameterPath=JSON.stringify(childPath);
+    if(choices){const empty=gpEl('option','请选择明确值');empty.value='';input.appendChild(empty);for(const value of choices){const option=gpEl('option',enums[value]||String(value));option.value=JSON.stringify(value);if(value==='PREMIUM')option.disabled=true;input.appendChild(option);}input.value=enabled.checked?JSON.stringify(old):'';}
+    else input.value=enabled.checked&&old!==null?String(old):'';
+    group.appendChild(input);Object.assign(part,{key:childPath.join('.'),kind,input,choices,types});kind.onchange=sync;
+   }
+   enabled.onchange=sync;parts.push(part);
+  }
+  return {elements,read:()=>{const next=JSON.parse(JSON.stringify(originalObject));for(const part of parts){if(!part.enabled.checked)delete next[part.name];else next[part.name]=part.editor?part.editor.read():part.preserved?JSON.parse(JSON.stringify(part.value)):readPrimitive(part);}return next;},
+   sync:locked=>{for(const part of parts){part.enabled.disabled=locked;const inactive=locked||!part.enabled.checked;if(part.editor)part.editor.sync(inactive);else if(!part.preserved){part.kind.disabled=inactive;part.input.disabled=inactive||part.kind.value==='null';}}}};
+ };
  for(const [key,spec]of Object.entries(schema.properties||{})){
+  const structured=spec.type==='object'&&objectSupported(spec),objectList=spec.type==='array'&&objectSupported(spec.items);
+  if((structured||objectList)&&(!Object.hasOwn(values,key)||(structured?plainObject(values[key]):Array.isArray(values[key])))){
+   const group=gpEl('div'),label=gpEl('label'),enabled=tag(gpEl('input'),key,'enabled');enabled.type='checkbox';enabled.checked=Object.hasOwn(values,key);label.appendChild(enabled);label.appendChild(document.createTextNode(' '+(labels[key]||key)));group.appendChild(label);section.appendChild(group);
+   const field={key,enabled,structured:true};fields.push(field);
+   if(structured){const editor=objectEditor(group,spec,values[key],key);field.read=editor.read;field.sync=locked=>editor.sync(locked);}
+   else {
+    const box=gpEl('div');group.appendChild(box);const add=tag(gpEl('button','添加一项'),key,'add');add.type='button';group.appendChild(add);const entries=[];
+    const refresh=()=>{gpClear(box);entries.forEach((entry,index)=>{box.appendChild(entry.row);for(const input of [...entry.elements,...entry.buttons.map(b=>b.button)])input.dataset.parameterIndex=String(index);});};
+    const append=value=>{
+     const row=gpEl('div'),entry={row,elements:[],buttons:[]};if(plainObject(value)||value===undefined){entry.editor=objectEditor(row,spec.items,value,key);entry.elements=entry.editor.elements;}else {entry.value=value;row.appendChild(gpEl('span','原复杂值（保持原文）：'+gpJson(value)));}
+     for(const [action,text,delta]of [['up','上移',-1],['down','下移',1],['remove','移除此项',0]]){
+      const button=tag(gpEl('button',text),key,action);button.type='button';row.appendChild(button);entry.buttons.push({button,delta});
+      button.onclick=()=>{if(!live()||!enabled.checked||!entries.includes(entry)||!Array.from(box.children).includes(row))return;const index=entries.indexOf(entry);
+       if(action==='remove')entries.splice(index,1);else {const target=index+delta;if(target<0||target>=entries.length)return;[entries[index],entries[target]]=[entries[target],entries[index]];}refresh();sync();};
+     }entries.push(entry);
+    };
+    for(const value of values[key]||[])append(value);refresh();
+    add.onclick=()=>{if(!live()||!enabled.checked||entries.length>=100)return;append();refresh();sync();};
+    field.read=()=>{if(entries.length>100)throw Error('列表超出原 Function JSON 上限。');return entries.map(entry=>entry.editor?entry.editor.read():JSON.parse(JSON.stringify(entry.value)));};
+    field.sync=locked=>{add.disabled=locked||entries.length>=100;entries.forEach((entry,index)=>{entry.editor?.sync(locked);for(const {button,delta}of entry.buttons)button.disabled=locked||delta!==0&&(index+delta<0||index+delta>=entries.length);});};
+   }
+   enabled.onchange=sync;continue;
+  }
   if(spec.type==='array'&&primitiveTypes(spec.items||{}).length&&(!Object.hasOwn(values,key)||Array.isArray(values[key]))){
    const group=gpEl('div'),label=gpEl('label'),enabled=tag(gpEl('input'),key,'enabled');enabled.type='checkbox';enabled.checked=Object.hasOwn(values,key);
    label.appendChild(enabled);label.appendChild(document.createTextNode(' '+(labels[key]||key)));group.appendChild(label);section.appendChild(group);
@@ -637,10 +682,11 @@ function wfParameterForm(card,node) {
  }
  const apply=gpEl('button','应用业务参数');apply.type='button';apply.dataset.workflowParameterApply=node.id;section.appendChild(apply);
  function sync(){const locked=!editable();for(const field of fields){field.enabled.disabled=locked;const inactive=locked||!field.enabled.checked;
-  if(field.list){field.add.disabled=inactive||field.rows.length>=100;field.rows.forEach((entry,index)=>{if(!entry.preserved){entry.kind.disabled=inactive;entry.input.disabled=inactive||entry.kind.value==='null';}for(const {button,delta}of entry.buttons)button.disabled=inactive||delta!==0&&(index+delta<0||index+delta>=field.rows.length);});}
+  if(field.structured)field.sync(inactive);
+  else if(field.list){field.add.disabled=inactive||field.rows.length>=100;field.rows.forEach((entry,index)=>{if(!entry.preserved){entry.kind.disabled=inactive;entry.input.disabled=inactive||entry.kind.value==='null';}for(const {button,delta}of entry.buttons)button.disabled=inactive||delta!==0&&(index+delta<0||index+delta>=field.rows.length);});}
   else {field.kind.disabled=inactive;field.input.disabled=inactive||field.kind.value==='null';}
  }apply.disabled=locked;}
- for(const field of fields){field.enabled.onchange=sync;if(!field.list)field.kind.onchange=sync;}
+ for(const field of fields){field.enabled.onchange=sync;if(!field.list&&!field.structured)field.kind.onchange=sync;}
  apply.onclick=()=>{
   if(!live())return;
   try{
@@ -648,7 +694,8 @@ function wfParameterForm(card,node) {
    const next=JSON.parse(JSON.stringify(node.parameters||{}));
    for(const field of fields){
     const {key,enabled}=field;if(!enabled.checked){delete next[key];continue;}
-    if(field.list){if(field.rows.length>100)throw Error('列表超出原 Function JSON 上限。');next[key]=field.rows.map(entry=>entry.preserved?JSON.parse(JSON.stringify(entry.value)):readPrimitive({key,kind:entry.kind,input:entry.input,choices:null,types:primitiveTypes(schema.properties[key].items)}));}
+    if(field.structured)next[key]=field.read();
+    else if(field.list){if(field.rows.length>100)throw Error('列表超出原 Function JSON 上限。');next[key]=field.rows.map(entry=>entry.preserved?JSON.parse(JSON.stringify(entry.value)):readPrimitive({key,kind:entry.kind,input:entry.input,choices:null,types:primitiveTypes(schema.properties[key].items)}));}
     else next[key]=readPrimitive(field);
 
    }
