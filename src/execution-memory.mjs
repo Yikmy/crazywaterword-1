@@ -104,13 +104,42 @@ const origin = event => Object.fromEntries(['eventId','module','actionType','run
  */
 export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = () => [], assertWriter = () => {}, fileSystem = fs, wallNow = Date.now } = {}) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || typeof secrets !== 'function' || typeof assertWriter !== 'function' || typeof wallNow !== 'function') throw fail('记忆存储必须使用绝对路径及可信本地依赖');
-  let knownStore = false;
-  const unavailable = () => fail('执行记忆无法读取、版本不支持或已损坏；保留原文件并禁止覆盖', 'MEMORY_UNAVAILABLE');
+  let knownStore = false, anchorObserved = false;
+  const anchor = file + '.anchor';
+  const anchorValue = { version:1, kind:'EXECUTION_MEMORY_EXISTENCE', basename:path.basename(file) };
+  const unavailable = () => fail('执行记忆或存在锚无法读取、已丢失、版本不支持或损坏；保留原文件并禁止覆盖', 'MEMORY_UNAVAILABLE');
+  // Same existence-anchor contract as ExecutionHistory: a restart cannot turn
+  // a lost established store into an empty first run. Legacy reads stay pure.
+  function anchored() {
+    let stat;
+    try { stat=fileSystem.lstatSync(anchor); }
+    catch(cause) { if(cause.code==='ENOENT'&&!anchorObserved)return false;throw unavailable(); }
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.size>1024)throw unavailable();
+    try {
+      const value=JSON.parse(fileSystem.readFileSync(anchor,'utf8'));
+      if(!exact(value,['version','kind','basename'])||Object.keys(value).length!==3||
+        Object.keys(anchorValue).some(key=>value[key]!==anchorValue[key]))throw unavailable();
+      anchorObserved=true;return true;
+    } catch { throw unavailable(); }
+  }
+  function ensureAnchor() {
+    if(anchored())return;
+    assertWriter();let fd;
+    try {
+      fd=fileSystem.openSync(anchor,'wx',0o600);
+      fileSystem.writeFileSync(fd,JSON.stringify(anchorValue)+'\n','utf8');
+      fileSystem.fsyncSync(fd);anchorObserved=true;
+    } catch(cause) {
+      if(cause.code==='EEXIST'&&anchored())return;
+      throw cause;
+    } finally { if(fd!==undefined)fileSystem.closeSync(fd); }
+  }
   const account = id => { if (!text(id)) throw fail('记忆需要精确账号ID'); return id; };
   function read() {
     try {
-      let stat; try { stat=fileSystem.lstatSync(file); } catch(error) { if(error.code==='ENOENT' && !knownStore)return {version:1,accounts:Object.create(null)};throw unavailable(); }
+      let stat; try { stat=fileSystem.lstatSync(file); } catch(error) { if(error.code==='ENOENT' && !knownStore && !anchored())return {version:1,accounts:Object.create(null)};throw unavailable(); }
       knownStore=true;
+      anchored();
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8 * 1024 * 1024) throw unavailable();
       const raw = JSON.parse(fileSystem.readFileSync(file,'utf8'));
       if (!exact(raw,['version','accounts']) || raw.version !== 1 || !plain(raw.accounts)) throw unavailable();
@@ -126,6 +155,7 @@ export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = 
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp'; let fd;
     try {
       fileSystem.mkdirSync(path.dirname(file),{recursive:true});
+      ensureAnchor();
       fd = fileSystem.openSync(temporary,'wx',0o600);
       const serialized=JSON.stringify(raw,null,2)+'\n';if(Buffer.byteLength(serialized,'utf8')>8*1024*1024)throw fail('执行记忆超过安全读取上限；保留原文件','MEMORY_UNAVAILABLE');
       fileSystem.writeFileSync(fd,serialized,'utf8'); fileSystem.fsyncSync(fd);

@@ -321,3 +321,17 @@ test('mixed legacy recovery projects only the truly uncertain action into shared
   assert.equal(owned.unresolved('A'),false);assert.equal(owned.list('A')[0].finalStatus,'UNKNOWN');assert.deepEqual(owned.list('A')[0].resourceBudget,run.resourceBudget);assert.equal(service.executionMemory('A').pendingHistoryProjection.length,1);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
  }finally{await f.cleanup();}
 });
+
+for(const entry of ['tasks','dailies','loop'])test('unified '+entry+' rejects missing durable memory after restart before planning or dispatch',async()=>{
+ const moduleId=entry==='dailies'?'free-gold':'task-rewards',f=fixture({moduleId});let restarted,runner;
+ try{
+  f.store.record('A',f.rejectEvent({module:moduleId,status:'UNKNOWN',unresolvedWrite:true}));
+  await assert.rejects(f.plan(),{code:'MEMORY_ORIGIN_UNRESOLVED'});
+  fs.unlinkSync(f.memoryFile);restarted=fixture({moduleId,file:f.historyFile});
+  restarted.rows.delete('two');runner=unifiedRunner(restarted);
+  await assert.rejects(runner.start('A',compileUnifiedExecution(unifiedIntent(entry,moduleId),{modules:restarted.service.modules}).graph),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(restarted.service.blocked('A'),true);assert.equal(restarted.writes.length,0);
+  assert.equal(restarted.reads.length,0);assert.deepEqual(restarted.history.list('A'),[]);
+  assert.equal(restarted.service.workflowBudget('A'),null);assert.equal(fs.existsSync(f.memoryFile),false);
+ }finally{runner?.stop();await runner?.settle();await restarted?.cleanup();await f.cleanup();}
+});

@@ -33,7 +33,7 @@ test('import and a read-only reopen create no persistence directory, runtime, au
 test('a definite rejection stores exact run/workflow/node/batch/action correlation without request or identity payloads', () => {
   const f = fixture(); try {
     const saved = f.store.record(accountId,event()); assert.equal(saved.status, 'REJECTED'); assert.equal(saved.workflowId,'synthetic-workflow'); assert.equal(saved.nodeId,'repair-node'); assert.equal(saved.batchId,'synthetic-batch'); assert.equal(saved.resumable,false); assert.equal(saved.retryAllowed,false);
-    assert.equal(evaluate(f).status,'BLOCKED_REJECTED'); const bytes=fs.readFileSync(f.file,'utf8'); assert.equal(bytes.includes('synthetic-fleet'),false); assert.equal(bytes.includes('durability'),false); assert.deepEqual(fs.readdirSync(f.dir),['memory.json']);
+    assert.equal(evaluate(f).status,'BLOCKED_REJECTED'); const bytes=fs.readFileSync(f.file,'utf8'); assert.equal(bytes.includes('synthetic-fleet'),false); assert.equal(bytes.includes('durability'),false); assert.deepEqual(fs.readdirSync(f.dir),['memory.json','memory.json.anchor']);
     assert.deepEqual(f.reopen().list(accountId),[saved]); assert.deepEqual(f.store.list(accountId,{runId:'other-run'}),[]);
   } finally { f.cleanup(); }
 });
@@ -41,7 +41,7 @@ test('a definite rejection stores exact run/workflow/node/batch/action correlati
 test('account keys including __proto__ are exact isolated data and cannot become file paths', () => {
   const f=fixture();try {
     for(const id of [accountId,'__proto__','../synthetic-account','constructor'])f.store.record(id,event());
-    assert.equal(f.store.list(accountId).length,1);assert.equal(f.store.list('__proto__').length,1);assert.deepEqual(f.store.list('missing'),[]);assert.equal(f.store.list('constructor')[0].accountId,'constructor');assert.deepEqual(fs.readdirSync(f.dir),['memory.json']);
+    assert.equal(f.store.list(accountId).length,1);assert.equal(f.store.list('__proto__').length,1);assert.deepEqual(f.store.list('missing'),[]);assert.equal(f.store.list('constructor')[0].accountId,'constructor');assert.deepEqual(fs.readdirSync(f.dir),['memory.json','memory.json.anchor']);
   }finally{f.cleanup();}
 });
 
@@ -99,11 +99,11 @@ test('unknown versions, truncated files, foreign linkage and invalid event diges
 });
 
 test('writer fencing happens before mutation and again before rename, retaining the original complete file',()=>{
-  let checks=0,denyAt=Infinity;const f=fixture({assertWriter(){if(++checks>=denyAt)throw Object.assign(Error('owner lost'),{code:'WRITER_OWNERSHIP_LOST'});}});try{f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');denyAt=checks+3;assert.throws(()=>f.store.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'WRITER_OWNERSHIP_LOST'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.deepEqual(fs.readdirSync(f.dir),['memory.json']);const readonly=createExecutionMemory({file:f.file,assertWriter(){throw Error('read must not claim writer');}});assert.equal(readonly.list(accountId).length,1);}finally{f.cleanup();}
+  let checks=0,denyAt=Infinity;const f=fixture({assertWriter(){if(++checks>=denyAt)throw Object.assign(Error('owner lost'),{code:'WRITER_OWNERSHIP_LOST'});}});try{f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');denyAt=checks+3;assert.throws(()=>f.store.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'WRITER_OWNERSHIP_LOST'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.deepEqual(fs.readdirSync(f.dir),['memory.json','memory.json.anchor']);const readonly=createExecutionMemory({file:f.file,assertWriter(){throw Error('read must not claim writer');}});assert.equal(readonly.list(accountId).length,1);}finally{f.cleanup();}
 });
 
 for(const fault of ['writeFileSync','fsyncSync','renameSync'])test('atomic '+fault+' failure preserves prior memory and removes only this write temporary',()=>{
-  const f=fixture();try{f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');fs.writeFileSync(path.join(f.dir,'unrelated.tmp'),'preserve');const fileSystem=new Proxy(fs,{get(target,key){if(key===fault)return()=>{throw Error('synthetic power-loss boundary');};return Reflect.get(target,key);}});const broken=createExecutionMemory({...f.settings,fileSystem});assert.throws(()=>broken.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.reopen().list(accountId).length,1);assert.deepEqual(fs.readdirSync(f.dir).sort(),['memory.json','unrelated.tmp']);}finally{f.cleanup();}
+  const f=fixture();try{f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');fs.writeFileSync(path.join(f.dir,'unrelated.tmp'),'preserve');const fileSystem=new Proxy(fs,{get(target,key){if(key===fault)return()=>{throw Error('synthetic power-loss boundary');};return Reflect.get(target,key);}});const broken=createExecutionMemory({...f.settings,fileSystem});assert.throws(()=>broken.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.reopen().list(accountId).length,1);assert.deepEqual(fs.readdirSync(f.dir).sort(),['memory.json','memory.json.anchor','unrelated.tmp']);}finally{f.cleanup();}
 });
 test('UNKNOWN and definite refusal are immutable separate events even for the same action, with rejection projection available to History owner',()=>{
   const f=fixture();try{f.store.record(accountId,event({status:'UNKNOWN',unresolvedWrite:true}));f.store.record(accountId,event());const result=evaluate(f);assert.equal(result.status,'BLOCKED_UNKNOWN');assert.equal(result.rejection.status,'BLOCKED_REJECTED');assert.equal(result.rejection.blocked,true);assert.equal(result.origins.length,1);assert.equal(f.store.list(accountId).length,2);}finally{f.cleanup();}
@@ -122,7 +122,7 @@ test('persisted cooldown bounds are integrity-checked rather than trusted when e
 });
 
 test('a previously observed store disappearing is a storage failure and cannot silently erase rejections',()=>{
-  const f=fixture();try{f.store.record(accountId,event());fs.unlinkSync(f.file);assert.throws(()=>f.store.list(accountId),{code:'MEMORY_UNAVAILABLE'});assert.throws(()=>f.store.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});assert.deepEqual(fs.readdirSync(f.dir),[]);}finally{f.cleanup();}
+  const f=fixture();try{f.store.record(accountId,event());fs.unlinkSync(f.file);assert.throws(()=>f.store.list(accountId),{code:'MEMORY_UNAVAILABLE'});assert.throws(()=>f.store.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});assert.deepEqual(fs.readdirSync(f.dir),['memory.json.anchor']);}finally{f.cleanup();}
 });
 
 test('known credentials in correlation IDs are rejected before mutation instead of breaking linkage or leaking the credential',()=>{
@@ -134,4 +134,92 @@ test('exact int64 identity values and explicit false/zero remain stable across e
 });
 test('an UNKNOWN-only event has a clear rejection subprojection while still requiring original History reconciliation',()=>{
   const f=fixture();try{f.store.record(accountId,event({status:'UNKNOWN',unresolvedWrite:true}));const result=evaluate(f);assert.equal(result.status,'BLOCKED_UNKNOWN');assert.equal(result.requiresHistoryReconciliation,true);assert.equal(result.rejection.status,'CLEAR');assert.equal(result.rejection.blocked,false);assert.deepEqual(result.rejection.decisions,[]);}finally{f.cleanup();}
+});
+for(const status of ['REJECTED','UNKNOWN'])test('restart cannot forget '+status+' when an established memory file disappears',()=>{
+ const f=fixture();try{
+  f.store.record(accountId,event({status,unresolvedWrite:status==='UNKNOWN'}));
+  fs.unlinkSync(f.file);const restarted=f.reopen();
+  assert.throws(()=>restarted.list(accountId),{code:'MEMORY_UNAVAILABLE'});
+  assert.throws(()=>restarted.evaluate(accountId,query(),{generation}),{code:'MEMORY_UNAVAILABLE'});
+  assert.throws(()=>restarted.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(fs.existsSync(f.file),false);
+ }finally{f.cleanup();}
+});
+test('legacy version-one memory reads without creating an anchor and acquires protection on its next write',()=>{
+ const f=fixture();try{
+  f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');
+  fs.unlinkSync(f.file+'.anchor');const legacy=f.reopen();
+  assert.equal(legacy.list(accountId).length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+  assert.deepEqual(fs.readdirSync(f.dir),['memory.json']);
+  legacy.record(accountId,event({runId:'second-run',batchId:'second-batch'}));
+  assert.equal(f.reopen().list(accountId).length,2);
+  const anchor=fs.readFileSync(f.file+'.anchor','utf8');
+  assert.deepEqual(JSON.parse(anchor),{version:1,kind:'EXECUTION_MEMORY_EXISTENCE',basename:'memory.json'});
+  assert.equal(anchor.includes(accountId),false);assert.equal(anchor.includes('synthetic-run'),false);
+  fs.unlinkSync(f.file);assert.throws(()=>f.reopen().list(accountId),{code:'MEMORY_UNAVAILABLE'});
+ }finally{f.cleanup();}
+});
+
+test('corrupt or foreign memory anchors preserve the original memory bytes and cannot be repaired by a new event',()=>{
+ const f=fixture();try{
+  f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8'),anchor=f.file+'.anchor';
+  const samples=['','{partial',JSON.stringify({version:2,kind:'EXECUTION_MEMORY_EXISTENCE',basename:'memory.json'}),
+   JSON.stringify({version:1,kind:'EXECUTION_HISTORY_EXISTENCE',basename:'memory.json'}),
+   JSON.stringify({version:1,kind:'EXECUTION_MEMORY_EXISTENCE',basename:'foreign.json'}),
+   JSON.stringify({version:1,kind:'EXECUTION_MEMORY_EXISTENCE',basename:'memory.json',accounts:{}}),' '.repeat(1025)];
+  for(const sample of samples){
+   fs.writeFileSync(anchor,sample);const restarted=f.reopen();
+   assert.throws(()=>restarted.list(accountId),{code:'MEMORY_UNAVAILABLE'});
+   assert.throws(()=>restarted.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
+   assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(fs.readFileSync(anchor,'utf8'),sample);
+  }
+  fs.unlinkSync(anchor);fs.mkdirSync(anchor);assert.throws(()=>f.reopen().list(accountId),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+ }finally{f.cleanup();}
+});
+
+test('an observed memory anchor disappearing cannot silently switch the current store to legacy mode',()=>{
+ const f=fixture();try{
+  f.store.record(accountId,event());const bytes=fs.readFileSync(f.file,'utf8');assert.equal(f.store.list(accountId).length,1);
+  fs.unlinkSync(f.file+'.anchor');
+  assert.throws(()=>f.store.list(accountId),{code:'MEMORY_UNAVAILABLE'});
+  assert.throws(()=>f.store.record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(fs.existsSync(f.file+'.anchor'),false);
+ }finally{f.cleanup();}
+});
+
+for(const fault of ['writeFileSync','fsyncSync'])test('interrupted first memory anchor '+fault+' survives restart as a storage failure',()=>{
+ const f=fixture();try{
+  let anchorFd;
+  const fileSystem=new Proxy(fs,{get(target,key){
+   if(key==='openSync')return(name,...args)=>{const fd=fs.openSync(name,...args);if(name===f.file+'.anchor')anchorFd=fd;return fd;};
+   if(key===fault)return(fd,...args)=>{if(fd===anchorFd){if(fault==='writeFileSync')fs.writeFileSync(fd,'{partial');throw Error('synthetic interrupted anchor');}return Reflect.get(target,key)(fd,...args);};
+   return Reflect.get(target,key);
+  }});
+  const broken=createExecutionMemory({...f.settings,fileSystem});
+  assert.throws(()=>broken.record(accountId,event()),{code:'MEMORY_UNAVAILABLE'});
+  const bytes=fs.readFileSync(f.file+'.anchor','utf8');
+  assert.equal(fs.existsSync(f.file),false);
+  assert.throws(()=>f.reopen().list(accountId),{code:'MEMORY_UNAVAILABLE'});
+  assert.throws(()=>f.reopen().record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(fs.readFileSync(f.file+'.anchor','utf8'),bytes);
+  assert.deepEqual(fs.readdirSync(f.dir),['memory.json.anchor']);
+ }finally{f.cleanup();}
+});
+
+for(const fault of ['writeFileSync','fsyncSync','renameSync'])test('interrupted first memory snapshot '+fault+' cannot become an empty store after restart',()=>{
+ const f=fixture();try{
+  let snapshotFd;
+  const fileSystem=new Proxy(fs,{get(target,key){
+   if(key==='openSync')return(name,...args)=>{const fd=fs.openSync(name,...args);if(name.endsWith('.tmp'))snapshotFd=fd;return fd;};
+   if(key===fault)return(...args)=>{if(fault==='renameSync'||args[0]===snapshotFd)throw Error('synthetic interrupted snapshot');return Reflect.get(target,key)(...args);};
+   return Reflect.get(target,key);
+  }});
+  const broken=createExecutionMemory({...f.settings,fileSystem});
+  assert.throws(()=>broken.record(accountId,event()),{code:'MEMORY_UNAVAILABLE'});
+  assert.equal(fs.existsSync(f.file),false);
+  assert.throws(()=>f.reopen().list(accountId),{code:'MEMORY_UNAVAILABLE'});
+  assert.throws(()=>f.reopen().record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
+  assert.deepEqual(fs.readdirSync(f.dir),['memory.json.anchor']);
+ }finally{f.cleanup();}
 });
