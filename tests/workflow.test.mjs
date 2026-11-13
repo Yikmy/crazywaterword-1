@@ -9,11 +9,11 @@ const moduleEntry=id=>({id,survey(){throw Error('static validation must not invo
 const modules={fixture:moduleEntry('fixture'),formation:moduleEntry('formation'),stage:moduleEntry('stage')};
 function graph(){return {version:1,id:'wf-1',name:'Fixture',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'fixture'},{id:'a',type:'ACTION',module:'fixture',selection:{actionId:'operation-1'},parameters:{targetId:'exact'}},{id:'v',type:'VERIFY',module:'fixture'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]}}
 function readOnly(wait=0){return {version:1,id:'readonly',name:'Readonly',nodes:[{id:'s',type:'START'},{id:'w',type:'WAIT',durationMs:wait},{id:'z',type:'STOP'}],edges:[{from:'s',to:'w'},{from:'w',to:'z'}]}}
-function fixture(overrides={}){
+function fixture(overrides={},options={}){
  const session={id:'account-1',generation:1,client:{},abort:new AbortController()},calls=[],runs=[];let released=0;
  const plan={accountId:session.id,module:'fixture',batchId:'batch-1',planHash:'hash-1',actions:[{actionId:'operation-1',costs:[]}],resourceBudget:[]};
  const operations={surveyModule:async(...args)=>{calls.push(['survey',...args]);return {available:true}},plan:async(...args)=>{calls.push(['plan',...args]);return structuredClone(plan)},history:async()=>({runs}),authorize(){throw Error('workflow must not authorize')},execute(){throw Error('workflow must not execute')},...overrides};
- const runner=createWorkflowRunner({operations,getSession:id=>id===session.id?session:null,modules,isCurrent:(value,generation,client)=>value===session&&session.generation===generation&&session.client===client,claim:()=>{calls.push(['claim']);return()=>{released++}},clock:()=>1000});
+ const runner=createWorkflowRunner({operations,getSession:id=>id===session.id?session:null,modules,isCurrent:(value,generation,client)=>value===session&&session.generation===generation&&session.client===client,claim:()=>{calls.push(['claim']);return()=>{released++}},clock:options.clock??(()=>1000),onUpdate:options.onUpdate??(()=>{})});
  function success(changes={}){return {runId:'run-1',accountId:session.id,finalStatus:'SUCCESS',finishedAt:'2026-11-11T00:00:00.000Z',planSummary:{batchId:plan.batchId,planHash:plan.planHash},authorizationSummary:{batchId:plan.batchId},actions:[{actionId:'operation-1',result:'SUCCESS',verification:{confirmed:true}}],...changes}}
  return {runner,session,calls,runs,plan,success,released:()=>released};
 }
@@ -465,4 +465,43 @@ test('a stopped second-round plan and its late reply cannot affect a replacement
 
 for(const entry of ['tasks','dailies','loop'])test(entry+' retains finite outer repetition in the original compiler without expanding or replacing its DAG',()=>{
  const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.maxRounds=3;intent.runPolicy.roundIntervalMs=20;const repeated=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(repeated.graph.nodes,before.graph.nodes);assert.deepEqual(repeated.graph.edges,before.graph.edges);assert.deepEqual(repeated.graph.budget,before.graph.budget);assert.deepEqual(repeated.graph.runPolicy,intent.runPolicy);assert.deepEqual(repeated.graph.preparation,before.graph.preparation);
+});
+
+const onceSchedule=at=>({kind:'ONCE',at:new Date(at).toISOString(),timeZone:'Asia/Shanghai',missedPolicy:'SKIP'});
+const scheduledGraph=(at=1050,g=graph(),policy={})=>boundedGraph(g,{schedule:onceSchedule(at),...policy});
+test('explicit one-time triggers require canonical absolute time, Shanghai zone and skip-on-miss policy',()=>{
+ const g=scheduledGraph();assert.deepEqual(validateWorkflow(g,{modules}).workflow.runPolicy.schedule,g.runPolicy.schedule);for(const change of [s=>s.kind='DAILY',s=>s.timeZone='UTC',s=>s.missedPolicy='RUN_NOW',s=>s.at='2026-02-30T00:00:00.000Z',s=>s.at='2026-11-14T08:00:00+08:00',s=>delete s.at,s=>s.at=1050,s=>s.extra=true]){const bad=structuredClone(g);change(bad.runPolicy.schedule);assert.throws(()=>validateWorkflow(bad,{modules}));}assert.equal(simulateWorkflow(g,{modules}).requestsSent,0);
+});
+
+test('an armed one-time Workflow creates no survey or plan before its declared time, then uses the original manual pause',async()=>{
+ let time=1000;const f=fixture({}, {clock:()=>time});const waiting=await f.runner.start(f.session.id,scheduledGraph());assert.equal(waiting.status,'WAITING');assert.equal(waiting.trigger.state,'WAITING');assert.equal(waiting.actionPlans,0);assert.equal(waiting.plan,null);assert.equal(f.calls.some(row=>['survey','plan'].includes(row[0])),false);time=1050;const result=await f.runner.settle();assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(result.trigger.state,'FIRED');assert.equal(result.trigger.firedAt,new Date(1050).toISOString());assert.equal(f.calls.filter(row=>row[0]==='survey').length,1);assert.equal(f.calls.filter(row=>row[0]==='plan').length,1);f.runner.stop();await f.runner.settle();assert.equal(f.released(),1);
+});
+
+for(const [label,at]of [['missed',1000],['beyond-deadline',11000]])test('one-time '+label+' run never claims a writer or catches up automatically',async()=>{
+ const f=fixture(),result=await f.runner.start(f.session.id,scheduledGraph(at));assert.equal(result.status,'STOPPED');assert.equal(result.trigger.state,label==='missed'?'MISSED':'PENDING');assert.equal(result.actionPlans,0);assert.equal(f.calls.length,0);assert.equal(f.released(),0);assert.equal(result.trace.length,0);
+});
+
+for(const phase of ['STARTING','WAITING'])test('a trigger crossed during '+phase+' persistence is skipped rather than silently caught up',async()=>{
+ let time=1000;const f=fixture({}, {clock:()=>time,onUpdate:state=>{if(state.status===phase&&!state.finishedAt)time=1050;}});const result=await f.runner.start(f.session.id,scheduledGraph());assert.equal(result.status,'STOPPED');assert.equal(result.trigger.state,'MISSED');assert.equal(f.calls.some(row=>['plan','survey'].includes(row[0])),false);assert.equal(f.released(),1);
+});
+
+test('cancelling an armed trigger clears its wait and late time cannot revive it or affect a replacement',async()=>{
+ let time=1000;const f=fixture({}, {clock:()=>time});await f.runner.start(f.session.id,scheduledGraph());f.runner.stop();assert.equal((await f.runner.settle()).status,'CANCELLED');assert.equal(f.released(),1);time=1050;assert.equal((await f.runner.start(f.session.id,readOnly())).status,'COMPLETED');assert.equal(f.calls.some(row=>['survey','plan'].includes(row[0])),false);assert.equal(f.released(),2);
+});
+
+test('trigger waiting keeps the original deadline even when the wall clock remains behind',async()=>{
+ const f=fixture();await f.runner.start(f.session.id,scheduledGraph(1050,readOnly(),{modules:[],maxActions:0,maxDurationMs:80}));const result=await f.runner.settle();assert.equal(result.status,'STOPPED');assert.equal(result.trigger.state,'WAITING');assert.equal(result.trace.length,0);assert.equal(f.released(),1);
+});
+
+test('armed trigger restart is only readable original evidence and does not reconstruct timers or authority',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-scheduled-restart-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),f=fixture({}, {onUpdate:state=>store.record('account-1',state)});try{const pending=await f.runner.start(f.session.id,scheduledGraph(2000));const bytes=fs.readFileSync(file,'utf8'),recovered=createWorkflowStore({file,modules}).history(f.session.id)[0];assert.equal(recovered.status,'RECOVERED_STOPPED');assert.equal(recovered.trigger.state,'WAITING');assert.deepEqual(recovered.runPolicy.schedule,pending.runPolicy.schedule);assert.equal(recovered.resumable,false);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(f.calls.some(row=>['plan','survey'].includes(row[0])),false);}finally{f.runner.stop();await f.runner.settle();}
+});
+
+test('corrupt one-time trigger evidence is rejected without overwriting persisted bytes or reconstructing authority',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-once-corrupt-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=createWorkflowStore({file,modules}),run={accountId:'A',runId:'once-history',workflowId:'wf',status:'COMPLETED',startedAt:new Date(1000).toISOString(),finishedAt:new Date(1100).toISOString(),expiresAt:new Date(2000).toISOString(),runPolicy:{maxDurationMs:1000,maxActions:0,modules:[],schedule:onceSchedule(1050)},actionPlans:0,trace:[],trigger:{state:'FIRED',armedAt:new Date(1000).toISOString(),firedAt:new Date(1050).toISOString(),missedAt:null}};store.record('A',run);const bytes=fs.readFileSync(file,'utf8');
+ for(const change of [r=>delete r.trigger,r=>r.trigger.state='RETRY',r=>r.trigger.armedAt=null,r=>r.trigger.armedAt=new Date(1050).toISOString(),r=>r.trigger.firedAt=new Date(1049).toISOString(),r=>r.trigger.firedAt=new Date(2000).toISOString(),r=>r.trigger.firedAt=1050,r=>r.trigger.firedAt='1970-01-01T00:00:01.050+00:00',r=>r.trigger.missedAt=new Date(1050).toISOString(),r=>delete r.runPolicy.schedule,r=>r.trigger.extra=true,r=>{r.trigger.state='WAITING';r.trigger.firedAt=null;r.trace=[{nodeId:'s',type:'START',result:'START'}];}]){const bad=structuredClone(run);change(bad);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);const raw=JSON.parse(bytes);raw.accounts.A.history[0]=bad;fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8'),restarted=createWorkflowStore({file,modules});assert.throws(()=>restarted.history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.throws(()=>restarted.save('A',graph()));assert.equal(fs.readFileSync(file,'utf8'),damaged);fs.writeFileSync(file,bytes);}
+});
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' carries one explicit trigger through its existing compiler without changing original business nodes',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.schedule=onceSchedule(1050);const scheduled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(scheduled.graph.runPolicy,intent.runPolicy);assert.deepEqual(scheduled.graph.nodes,before.graph.nodes);assert.deepEqual(scheduled.graph.edges,before.graph.edges);assert.deepEqual(scheduled.graph.budget,before.graph.budget);assert.deepEqual(scheduled.graph.preparation,before.graph.preparation);
 });
