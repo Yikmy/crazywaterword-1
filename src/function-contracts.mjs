@@ -74,10 +74,10 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone receipt plus independent AFK and complete inventory reads; unchanged level, interval and unrelated stock'),
     dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg']),
   }),
-  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer},{
-    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('READ_OR_CLAIM','Mail mutation and complete attachment settlement semantics are not yet proven')]},
-    verification:verification('mailModule.verify','src/mail.mjs#mailModule','No mail operation can confirm; a single page is never a complete mailbox snapshot'),
-    dependencyVersions:dependencies(['moduleConfig']),
+  mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim']},emailId:string},{
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('BULK_ENUMERATION_AND_INSTANCE_ATTACHMENTS','Complete mailbox enumeration, bulk claims, attachmentless read and hero/equipment/antique attachments need distinct contracts')]},
+    verification:verification('verifyMailClaim','src/mail.mjs#verifyMailClaim','Exact emailId and immutable attachment, independently read+got with unchanged page peers and complete exact asset net income; a page is never a complete mailbox'),
+    dependencyVersions:dependencies(['moduleConfig','config.ItemCfg']),
   }),
   'task-rewards': contract('task-rewards',['C502','C503'],['P6-2'],['src/task-rewards.mjs#taskRewardsModule','src/tasks.mjs#taskTarget'],{kind:{type:'string',enum:['main','branch','achievement']},taskId:integer},{
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('DAILY_ORDER','Empty daily-order reward request still requires an exact authorization contract')]},

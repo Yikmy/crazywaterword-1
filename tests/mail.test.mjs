@@ -84,7 +84,7 @@ function serviceFixture(){
   return {...f,session,service};
 }
 test('registered shared Service reads with disabled writes and isolates cached account pages',async()=>{
-  const f=serviceFixture(),a=await f.service.surveyModule(f.session,'mail',{pageNo:2});assert.equal(a.view.page.pageNo,2);assert.equal(a.config.enabled,false);assert.equal(a.functions.find(r=>r.id==='mail').metadata.implementation.mode,'OBSERVATION_ONLY');
+  const f=serviceFixture(),a=await f.service.surveyModule(f.session,'mail',{pageNo:2});assert.equal(a.view.page.pageNo,2);assert.equal(a.config.enabled,false);assert.equal(a.functions.find(r=>r.id==='mail').metadata.implementation.mode,'CONTROLLED_WRITE');
   assert.equal(f.service.moduleView('other','mail').view,null);assert.equal(a.view.candidates.length,0);assert.equal(f.session.busy,null);
   await assert.rejects(f.service.plan(f.session,{module:'mail',mode:'Manual',parameters:{pageNo:2},selections:['forged']}));assert.equal(f.writes.length,0);
 });

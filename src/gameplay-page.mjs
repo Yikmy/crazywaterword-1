@@ -110,10 +110,10 @@ function gpRenderDomain(id,view){
   const scope=viewGuard.capture();
   const read=async pageNo=>{if(!viewGuard.current(scope)||gpGet(id).pending)return;if(!Number.isInteger(pageNo)||pageNo<0||pageNo>2147483647){$('gp-mail-hint').textContent='页码须为非负整数';return;}$('gp-mail-parameters').value=gpJson({pageNo});await $('gp-mail-survey').onclick();};
   for(const [label,offset] of [['读取指定页',null],['上一页',-1],['下一页',1]]){const button=gpEl('button',label);button.type='button';button.dataset.mailPage=offset===null?'selected':String(offset);button.onclick=()=>read(offset===null?Number(input.value):(page?.pageNo??0)+offset);button._mailOffset=offset;button.disabled=!snapshot?.connected||(offset===-1&&(page?.pageNo??0)===0);box.appendChild(button);s.mailPageControls??=[];s.mailPageControls.push(button);}
-  table('本页邮件',['邮件 ID','主题','阅读状态','附件状态','已读附件门槛'],(page?.emails||[]).map(row=>[row.emailId,row.subject,row.read===true?'已读':row.read===false?'未读':'未知',row.got===true?'已领':row.got===false?'未领':'未知',row.eligibility===true?'符合已读附件门槛':row.eligibility===false?'未满足':'未知']));
-  box.appendChild(gpEl('p','只读分页；未读、领取及附件结算合同待核实。'));return;
- }
- if(id==='museum'){
+  table('本页邮件',['邮件 ID','主题','阅读状态','领取状态','附件观察'],(page?.emails||[]).map(row=>[row.emailId,row.subject,row.read===true?'已读':row.read===false?'未读':'未知',row.got===true?'已领':row.got===false?'未领':'未知',row.attachment?.hasAttachment===true?'有附件':row.attachment?.hasAttachment===false?'无附件':'未知']));
+  for(const row of page?.emails||[]){if(row.got!==false||row.attachment?.hasAttachment!==true)continue;const button=gpEl('button','准备单封附件 '+row.emailId);button.dataset.mailClaimPrepare=row.emailId;button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!viewGuard.current(scope)||gpGet(id).data?.view!==view)return;$('gp-mail-parameters').value=gpJson({pageNo:page.pageNo,action:'claim',emailId:row.emailId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-mail-hint').textContent='已准备精确单封邮件；请重新探测附件与库存，预览后单独授权。';};s.actionControls.push(button);box.appendChild(button);}
+  box.appendChild(gpEl('p','分页观察不证明全量。仅单封普通道具与资源附件可以独立探测、预览和授权；批量、无附件已读及实例附件继续冻结。'));
+ }else if(id==='museum'){
   const materials=view?.explorationMaterials;
   const reasons={PLAYER_IDENTITY_UNKNOWN:'玩家身份未知',EXPEDITION_STATE_UNKNOWN:'远征列表未知',STAGE_NOT_OBSERVED:'未读到所选远征',EXPEDITION_ALREADY_STARTED:'本次远征已开始',STAGE_LOCKED:'远征未解锁',STAGE_UNLOCK_UNKNOWN:'远征解锁状态未知',TIME_FACTOR_LOCKED_OR_UNKNOWN:'倍率未解锁或无法确认',AUTHORITATIVE_EXPEDITION_COST_UNKNOWN:'本次材料需求未知',INVENTORY_UNKNOWN:'持有量未知'};
   const status={AVAILABLE:'材料足够',SHORTAGE:'材料不足',UNKNOWN:'未知',NOT_APPLICABLE:'不适用'};

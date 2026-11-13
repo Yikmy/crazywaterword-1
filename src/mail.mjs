@@ -1,6 +1,11 @@
-// W16/C511: exact page observations; no mail read/claim mutation is proven yet.
+// W16/C511: exact page observations and explicit single-mail asset attachment claims.
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
-import { createStateFact } from './state-facts.mjs';
+import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
+import { createHash } from 'node:crypto';
+import { toSnapshotJson } from './game.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
+import { ResourceLedger, safeResourceQuantity, RESOURCE_NAMES } from './resource-ledger.mjs';
+import { assertPaymentAllowed } from './actions.mjs';
 import { stableBusinessValue } from './business-functions.mjs';
 
 const moduleId='mail',maxPage=2147483647;
@@ -18,8 +23,11 @@ export function validateMailConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateMailParameters(v={}) {
-  if(!fields(v,['pageNo'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件 pageNo 须为非负 int32 页码');
-  return {pageNo:v.pageNo??0};
+  if(!fields(v,['pageNo','action','emailId'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId；pageNo 须为非负 int32');
+  if(Object.hasOwn(v,'action')&&v.action!=='claim')throw invalid('邮件写操作仅支持单封 action=claim');
+  if(Object.hasOwn(v,'emailId')&&(typeof v.emailId!=='string'||int64(v.emailId,{positive:true})!==v.emailId))throw invalid('emailId 须为精确正 int64 字符串');
+  if(Object.hasOwn(v,'action')!==Object.hasOwn(v,'emailId'))throw invalid('单封领取必须同时指定 action=claim 和 emailId');
+  return {...v,pageNo:v.pageNo??0};
 }
 function int64(v,{positive=false}={}) {
   let value;
@@ -55,8 +63,8 @@ export function mailPage(raw,{pageNo=0}={}) {
   return {pageNo,totalReported,pageCount:valid?emails.length:null,emails,status:valid?'AVAILABLE':'UNKNOWN',reason:valid?null:'MAIL_LIST_OR_ID_UNKNOWN',
     scope:'CURRENT_PAGE_ONLY',allPagesComplete:false,hasNext:null,hasPrevious:pageNo>0};
 }
-export async function surveyMail(client,protocol,{parameters={},player,signal,stop,timeout=15000}={}) {
-  parameters=validateMailParameters(parameters);const context=contextOf(client,player),options={signal,stop},notes=[];
+export async function surveyMail(client,protocol,{config,parameters={},player,signal,stop,timeout=15000}={}) {
+  parameters=validateMailParameters(parameters);if(parameters.action==='claim')return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
   const active=()=>assertExecutionActive(client,options);active();
   let page=mailPage(null,parameters),sourceAt=null;
   const contextKnown=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
@@ -70,13 +78,91 @@ export async function surveyMail(client,protocol,{parameters={},player,signal,st
   const fact=createStateFact(page,{accountId:context.accountId,generation:context.generation,source:'EmailBoxResponse',sourceAt,scope:{kind:'ENTITY',key:'mail-page:'+parameters.pageNo},reliable:contextKnown&&page.status==='AVAILABLE'});
   return {module:moduleId,parameters,context,page,sourceFact:fact,notes,stockReliable:false,stock:null};
 }
-export function viewMail(facts) {
-  return {module:moduleId,page:structuredClone(facts?.page??mailPage(null)),provenance:structuredClone(facts?.sourceFact?.provenance??null),candidates:[],
-    notes:[...(facts?.notes??[]),'只展示所选页；total 原值不证明页数、全量或快照一致性。未读及附件领取写合同待核实。']};
+const hash=value=>createHash('sha256').update(stableBusinessValue(value)).digest('hex');
+const copy=value=>structuredClone(value);
+const privateClaims=new WeakMap();
+const claimQueries=[['page','EmailBoxRequest','EmailBoxResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse']];
+const digest=f=>hash({...f,stock:[...(f.stock??[])]});
+const omitStatus=row=>Object.fromEntries(Object.entries(row).filter(([k])=>!['status','got'].includes(k)));
+function catalog(config){
+ const rows=config?.tables?.ItemCfg?.data;
+ return dense(rows)&&rows.length&&rows.every(r=>identifier(own(r,'id')))&&new Set(rows.map(r=>r.id)).size===rows.length?rows.map(r=>r.id).sort():null;
 }
-export function planMail(_facts,{parameters={},selections=[]}={}) {
-  validateMailParameters(parameters);if(!dense(selections)||selections.length)throw Object.assign(new Error('邮件当前仅支持分页观察'),{code:'MAIL_READ_ONLY',statusCode:400});
-  return {module:moduleId,actions:[],notes:['MAIL_READ_CLAIM_SETTLEMENT_UNVERIFIED']};
+function claimObservation(raw,p,config){
+ const page=mailPage(raw,p),rows=own(raw,'email'),total=own(raw,'total'),cat=catalog(config);
+ if(page.status!=='AVAILABLE'||!uint(total)||!cat)return null;
+ const target=rows.find(row=>int64(own(row,'emailId'),{positive:true})===p.emailId);
+ if(!target)return null;
+ const attachment=own(target,'attachment'),assets=own(own(attachment,'assets'),'asset');
+ if(!dense(assets)||!assets.length||!['heroes','equips','antiques'].every(k=>dense(own(attachment,k))&&own(attachment,k).length===0))return null;
+ const rewards=[];
+ for(const r of assets){
+  const type=own(r,'type'),id=own(r,'id'),num=safeResourceQuantity(own(r,'num'));
+  if(!identifier(id)||num===null||num<=0||!(type===0&&cat.includes(id)&&!Object.values(RESOURCE_NAMES).includes(id)||type===1&&Object.values(RESOURCE_NAMES).includes(id)))return null;
+  rewards.push({id,num});
+ }
+ if(new Set(rewards.map(r=>r.id)).size!==rewards.length||![1,2].includes(own(target,'status'))||typeof own(target,'got')!=='boolean')return null;
+ const normalized=toSnapshotJson(target);
+ return {page,target:page.emails.find(r=>r.emailId===p.emailId),rewards:rewards.sort((a,b)=>a.id.localeCompare(b.id)),
+  immutable:hash(omitStatus(normalized)),others:rows.filter(r=>int64(own(r,'emailId'),{positive:true})!==p.emailId).map(r=>({id:int64(own(r,'emailId'),{positive:true}),hash:hash(toSnapshotJson(r))})).sort((a,b)=>a.id.localeCompare(b.id)),total};
+}
+async function surveyClaim(client,protocol,{config,parameters,player,signal,stop,timeout}){
+ const context=contextOf(client,player),active=()=>assertExecutionActive(client,{signal,stop}),notes=[];active();
+ const known=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
+ const results=await Promise.all(claimQueries.map(async([key,request,response])=>{
+  if(!known||!protocol?.[request]||!protocol?.[response])return [key,null,null];
+  try{active();const raw=await awaitExecution(client.request(request,key==='page'?{pageNo:parameters.pageNo}:{},response,timeout,{signal}),client,{signal,stop});return [key,raw,Date.now()];}
+  catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push('MAIL_CLAIM_'+key.toUpperCase()+'_READ_FAILED');return [key,null,null];}
+ }));active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('邮件调查期间账号或连接改变'),{code:'CANCELLED'});
+ const raw=Object.fromEntries(results.map(([k,v])=>[k,v])),observation=claimObservation(raw.page,parameters,config),inventory=parseOperationInventory(raw.items,raw.resources);
+ const sourceFacts=Object.fromEntries(results.map(([k,v,sourceAt],i)=>[k,createStateFact(k==='page'?observation:{reliable:inventory.stockReliable},{accountId:context.accountId,generation:context.generation,source:claimQueries[i][2],sourceAt,scope:{kind:'ACCOUNT'},reliable:known&&(k==='page'?observation!==null:inventory.stockReliable)})]));
+ const f={module:moduleId,parameters,context,page:mailPage(raw.page,parameters),observation,...inventory,sourceFacts,notes,available:Object.keys(protocol??{}),catalog:catalog(config)};
+ privateClaims.set(f,{client,player,digest:digest(f)});return f;
+}
+function authority(f,config){
+ const live=privateClaims.get(f),c=f?.context;
+ return !!(live&&live.digest===digest(f)&&same(c,contextOf(live.client,live.player))&&identifier(c.accountId)&&identifier(c.connectionId)&&c.generation!==null&&c.playerId&&c.worldId&&f.observation&&f.stockReliable&&same(f.catalog,catalog(config))&&f.catalog&&claimQueries.every(([key,,source])=>f.sourceFacts?.[key]?.provenance.source===source&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,scope:{kind:'ACCOUNT'},maxAgeMs:30000}).status==='FRESH'));
+}
+export function mailDependencyVersions({config,moduleConfig=MAIL_DEFAULT_CONFIG}={}){
+ return {moduleConfig:validateMailConfig(moduleConfig),'config.ItemCfg':copy(config?.tables?.ItemCfg??null)};
+}
+function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
+ const p=validateMailParameters(parameters),enabled=validateMailConfig(moduleConfig).enabled,valid=authority(f,config),o=valid?f.observation:null;
+ let reason=p.action!=='claim'?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
+ if(!reason&&(!f.available.includes('QuickGotReadEmailRequest')||f.available.includes('QuickGotReadEmailResponse')))reason='MAIL_PROTOCOL_UNAVAILABLE';
+ if(!reason&&(!same(f.parameters,p)||o.rewards.some(r=>!Number.isSafeInteger((f.stock.get(r.id)??0)+r.num))))reason='MAIL_PARAMETERS_OR_REWARD_RANGE_INVALID';
+ const action={request:'QuickGotReadEmailRequest',response:null,body:{emailId:[p.emailId],all:false}};
+ if(!reason)try{assertPaymentAllowed({...action,costs:[]});}catch(e){reason=e.code??'MAIL_REQUEST_NOT_ALLOWED';}
+ const target={pageNo:p.pageNo,emailId:p.emailId??null,attachmentFingerprint:o?.immutable??null};
+ return {module:moduleId,actionId:'mail:CLAIM:'+hash(target),actionType:'CLAIM',label:'领取单封邮件附件 '+(p.emailId??'')+(o?'：'+o.rewards.map(r=>r.id+' × '+r.num).join('；'):''),parameters:p,target,
+  executable:reason===null,blockedReason:reason,costs:[],rewards:o?copy(o.rewards):[],costSource:'v76 MailDetailPop._onBtnGotOrDelete; exact EmailDetail.attachment; all=false, one emailId',
+  identity:o?hash({context:f.context,observation:o,dependencies:mailDependencyVersions({config,moduleConfig})}):null,configEvidence:{ItemCfg:copy(config?.tables?.ItemCfg??null)},
+  beforeState:o?copy(o.target):null,expectedState:o?{emailId:p.emailId,read:true,got:true,rewards:copy(o.rewards)}:null,
+  budgetClaims:{resources:[],quotas:[],uids:p.emailId?[{type:'mail',id:p.emailId}]:[]},...(reason===null?{action}:{})};
+}
+export function viewMail(facts,options={}) {
+ const claim=privateClaims.has(facts),candidate=claim?claimCandidate(facts,options):null;
+ return {module:moduleId,page:copy(facts?.page??mailPage(null)),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],
+  notes:[...(facts?.notes??[]),'只展示所选页；total 原值不证明页数、全量或快照一致性。单封普通道具/资源附件可精确授权；全量、批量、无附件已读及实例附件继续冻结。']};
+}
+export function planMail(facts,{parameters={},selections=[],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),...options}={}) {
+ const p=validateMailParameters(parameters);
+ if(!dense(selections)||selections.length>1||selections.some(v=>!identifier(v)))throw invalid('每批仅允许一个明确邮件动作');
+ if(p.action!=='claim'){if(selections.length)throw Object.assign(new Error('分页观察不接受写动作选择'),{code:'MAIL_READ_ONLY',statusCode:400});return {module:moduleId,actions:[],notes:['MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED']};}
+ const c=claimCandidate(facts,{...options,parameters:p});return {module:moduleId,actions:c.executable&&selections.includes(c.actionId)&&ledger.reserve([])?[c]:[],notes:c.blockedReason?[c.blockedReason]:[]};
+}
+export function verifyMailClaim(op,b,a){
+ const fail=reason=>({confirmed:false,reason}),config={tables:op?.configEvidence??{}};
+ if(!authority(b,config)||!authority(a,config)||!same(b.context,a.context))return fail('MAIL_AUTHORITY_OR_CONTEXT_UNKNOWN');
+ let expected;try{expected=claimCandidate(b,{config,moduleConfig:{enabled:true},parameters:op?.parameters});}catch{return fail('MAIL_OPERATION_PARAMETERS_INVALID');}
+ if(!expected.executable||['module','actionId','actionType','parameters','target','identity','costs','rewards','costSource','beforeState','expectedState','budgetClaims','action','configEvidence'].some(k=>!same(op[k],expected[k])))return fail('MAIL_OPERATION_CONTRACT_MISMATCH');
+ if(claimQueries.some(([key])=>a.sourceFacts[key].provenance.sourceAt<b.sourceFacts[key].provenance.sourceAt))return fail('MAIL_POST_READ_PREDATES_BASELINE');
+ const x=b.observation,y=a.observation;
+ if(!same(b.parameters,a.parameters)||x.immutable!==y.immutable||x.total!==y.total||!same(x.others,y.others)||!same(x.rewards,y.rewards)||y.target.read!==true||y.target.got!==true)return fail('MAIL_EXACT_CLAIM_STATE_NOT_CONFIRMED');
+ const income=new Map(x.rewards.map(r=>[r.id,r.num]));
+ if([...new Set([...b.stock.keys(),...a.stock.keys(),...income.keys()])].some(k=>(a.stock.get(k)??0)!==(b.stock.get(k)??0)+(income.get(k)??0)))return fail('MAIL_EXACT_ATTACHMENT_NET_INCOME_NOT_CONFIRMED');
+ if(!authority(b,config)||!authority(a,config))return fail('MAIL_AUTHORITY_EXPIRED_DURING_VERIFICATION');
+ return {confirmed:true,reason:'独立邮件页确认同一邮件已读已领且附件不变，完整库存确认精确附件净入；未领取其他邮件',afterState:copy(y.target)};
 }
 export const mailModule=Object.freeze({id:moduleId,label:'邮件',capabilities:Object.freeze(['C511']),defaultConfig:MAIL_DEFAULT_CONFIG,validateConfig:validateMailConfig,
-  validateParameters:validateMailParameters,survey:surveyMail,view:viewMail,plan:planMail,verify:()=>({confirmed:false,reason:'邮件写操作及附件结算尚未核实'})});
+ validateParameters:validateMailParameters,survey:surveyMail,view:viewMail,plan:planMail,verify:verifyMailClaim,dependencyVersions:mailDependencyVersions});

@@ -315,6 +315,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const activateAntique=request==='ActivateAntiqueRequest',starAntique=request==='AntiqueStarUpRequest';
   if((activateAntique||starAntique)&&(!fields(body,starAntique?['id','universal']:['id'])||!identifier(body.id)||starAntique&&body.universal!==false||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.id+'碎片'))fail('COST_UNKNOWN','藏品成长仅允许明确藏品及其自有专用碎片，禁止万能碎片或购买补齐');
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
+  if(request==='QuickGotReadEmailRequest'&&body.all!==true&&(body.all!==false||!fields(body,['emailId','all'])||!Array.isArray(body.emailId)||body.emailId.length!==1||Reflect.ownKeys(body.emailId).length!==2||!exactUid(body.emailId[0])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','单封邮件领取必须为精确emailId、all=false和明确零支出');
   const sweepPirate=request==='PirateSweepRequest';
   if(request==='DrawAfkLevelRewardRequest'&&(!fields(body,['level'])||!positiveInt32(body.level)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','挂机等级奖励仅允许精确 level 与明确零支出');
   if(request==='TrialRaidChallengeRequest'&&(!fields(body,['raidId','stageId'])||body.raidId!==1||!positiveInt32(body.stageId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','经验试炼只允许精确 raidId=1、stageId 和明确零支出');

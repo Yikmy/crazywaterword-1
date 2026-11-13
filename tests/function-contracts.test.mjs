@@ -63,13 +63,13 @@ test('production adapters require all real contract hooks and retain original cu
 test('observation and protocol-only branches cannot become executable capabilities', () => {
   invalid(() => validateFunctionContract('naval', adapter('naval'), { requireExecutable: true }));
   assert.equal(validateFunctionContract('naval', adapter('naval')).implementation.mode, 'OBSERVATION_ONLY');
-  for (const id of ids.filter(id => !['naval','mail'].includes(id))) assert.equal(validateFunctionContract(id, adapter(id), { requireExecutable: true }).id, id);
+  for (const id of ids.filter(id => id!=='naval')) assert.equal(validateFunctionContract(id, adapter(id), { requireExecutable: true }).id, id);
   for (const value of Object.values(FUNCTION_CONTRACTS)) for (const blocked of value.implementation.blockedCapabilities) {
     assert.equal(blocked.executable, false); assert.ok(blocked.reason.length); assert.ok(!value.implementation.actions.includes(blocked.capability));
   }
   assert.equal(FUNCTION_CONTRACTS.naval.implementation.actions.length, 0);
-  assert.equal(FUNCTION_CONTRACTS.mail.implementation.actions.length,0);
-  invalid(() => validateFunctionContract('mail',adapter('mail'),{requireExecutable:true}));
+  assert.deepEqual(FUNCTION_CONTRACTS.mail.implementation.actions,['CLAIM']);
+  assert.equal(validateFunctionContract('mail',adapter('mail'),{requireExecutable:true}).id,'mail');
   assert.ok(!FUNCTION_CONTRACTS.alliance.implementation.actions.includes('ask'));
   assert.ok(!FUNCTION_CONTRACTS.alliance.implementation.actions.includes('help'));
   assert.ok(!FUNCTION_CONTRACTS.museum.implementation.actions.includes('completeExplore'));
