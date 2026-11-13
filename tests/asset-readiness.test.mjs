@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createAssetManifest, assetReadinessReport, assetRecoveryInstructions, runtimeAssetReadiness, readRuntimeAsset } from '../src/asset-readiness.mjs';
 
+import { loadConfig, loadTables } from '../src/config.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadMapAsset } from '../src/world.mjs';
 
@@ -252,4 +254,49 @@ test('protocol loader executes its checked buffer even when the file changes imm
   fs.statSync=stat;fs.readFileSync=read;
   assert.throws(()=>loadProtocol(file,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
  }finally{fs.statSync=stat;fs.readFileSync=read;delete globalThis.__cwUnexpectedAssetExecution;f.cleanup();}
+});
+
+test('default retained configuration consumes the same manifest bytes and stays independent of a missing map',()=>{
+ const f=fixture();try{
+  const retained=preserveManifest(f);fs.unlinkSync(path.join(f.root,f.assets[2].path));
+  assert.deepEqual(loadTables(path.join(f.root,f.assets[1].path),{root:f.root}),{ResourceCfg:{data:[{id:'GOLD'}]}});
+  const config=loadConfig({file:pathToFileURL(path.join(f.root,f.assets[1].path)),root:f.root});
+  assert.deepEqual(config.names,['ResourceCfg']);assert.equal(config.resourceId(3),'GOLD');
+  f.write(1,JSON.stringify([[1,'ResourceCfg',{data:[{id:'RUBY'}]}]]));
+  assert.throws(()=>loadTables(path.join(f.root,f.assets[1].path),{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
+  assert.equal(fs.readFileSync(retained.file,'utf8'),retained.bytes);
+ }finally{f.cleanup();}
+});
+
+test('runtime config never falls back to enumerating user caches, including an unavailable explicit source',()=>{
+ const f=fixture(),readdir=fs.readdirSync,previous=process.env.CW_CONFIG_PACK;try{
+  preserveManifest(f);delete process.env.CW_CONFIG_PACK;
+  fs.readdirSync=()=>{throw Error('User cache enumeration forbidden');};
+  assert.deepEqual(loadTables(undefined,{root:f.root}),{ResourceCfg:{data:[{id:'GOLD'}]}});
+  process.env.CW_CONFIG_PACK=path.join(f.root,'explicit-missing.json');
+  assert.throws(()=>loadTables(undefined,{root:f.root}),{code:'ENOENT'});
+  delete process.env.CW_CONFIG_PACK;fs.unlinkSync(path.join(f.root,f.assets[1].path));
+  assert.throws(()=>loadTables(undefined,{root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_MISSING'});
+ }finally{fs.readdirSync=readdir;if(previous===undefined)delete process.env.CW_CONFIG_PACK;else process.env.CW_CONFIG_PACK=previous;f.cleanup();}
+});
+
+test('explicit config imports remain available while retained file aliases cannot bypass its digest',()=>{
+ const f=fixture();try{
+  preserveManifest(f);const explicit=path.join(f.root,'explicit-import.json');
+  fs.writeFileSync(explicit,JSON.stringify([[1,'ResourceCfg',{data:[{id:'GOLD',show_name:'Explicit Gold'}]}]]));
+  assert.equal(loadConfig({file:explicit,root:f.root}).resourceName(3),'Explicit Gold');
+  f.write(1,JSON.stringify([[1,'ResourceCfg',{data:[{id:'GOLD',show_name:'Tampered'}]}]]));
+  assert.throws(()=>loadConfig({file:path.join(f.root,'work','cdn','..','cdn','config_cn_pack.json'),root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
+  assert.throws(()=>loadConfig({file:pathToFileURL(path.join(f.root,f.assets[1].path)),root:f.root}),{code:'ASSET_UNAVAILABLE',reason:'ASSET_HASH_MISMATCH'});
+ }finally{f.cleanup();}
+});
+
+test('config consumes a checked buffer without reopening a replaced retained file',()=>{
+ const f=fixture(),stat=fs.statSync,read=fs.readFileSync;try{
+  preserveManifest(f);const file=path.join(f.root,f.assets[1].path);let stats=0,reads=0;
+  fs.readFileSync=function(p,...args){if(p===file)reads++;return read.call(this,p,...args);};
+  fs.statSync=function(p,...args){const value=stat.call(this,p,...args);if(p===file&&++stats===2)fs.writeFileSync(file,JSON.stringify([[1,'ResourceCfg',{data:[{id:'RUBY'}]}]]));return value;};
+  assert.deepEqual(loadTables(file,{root:f.root}),{ResourceCfg:{data:[{id:'GOLD'}]}});
+  assert.equal(reads,1);
+ }finally{fs.statSync=stat;fs.readFileSync=read;f.cleanup();}
 });

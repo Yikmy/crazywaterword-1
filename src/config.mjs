@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readRuntimeAsset } from './asset-readiness.mjs';
 
 // 客户端的配置表不在游戏包里，而是运行时从 CDN 拉取的独立 bundle `config_cn`，
-// 整包被 Cocos 打成单个 JSON。微信小游戏会把它缓存在本地，这里直接读缓存。
-// 缓存失效时用 `node tools/fetch-config.mjs` 重新下载。
+// 整包被 Cocos 打成单个 JSON。运行时消费已校验的保留快照或显式导入来源。
+// 手动同步/恢复使用 `node tools/fetch-config.mjs` 重新下载。
 export const APPID = 'wx2ea52a972ea18e5e';
 export const CONFIG_PACK_PATH = path.resolve(import.meta.dirname, '../work/cdn/config_cn_pack.json');
 
@@ -55,15 +57,23 @@ export function extractTables(pack) {
   return tables;
 }
 
-export function loadTables(file = findConfigPack()) {
-  if (!file) throw new Error('找不到配置表缓存，先运行 node tools/fetch-config.mjs');
-  return extractTables(JSON.parse(fs.readFileSync(file, 'utf8')));
+export function loadTables(file, { root = path.resolve(import.meta.dirname, '..') } = {}) {
+  // Runtime uses the retained installation asset or an explicitly supplied source.
+  // Cache discovery remains available only through the manual sync entry point.
+  const retained = path.join(root, 'work/cdn/config_cn_pack.json');
+  if (file === undefined) file = process.env.CW_CONFIG_PACK ?? retained;
+  if (!file) throw new Error('找不到明确配置来源；请从保留来源恢复配置文件');
+  const resolved = path.resolve(file instanceof URL ? fileURLToPath(file) : file);
+  const bytes = resolved === path.resolve(retained)
+    ? readRuntimeAsset('config', 'work/cdn/config_cn_pack.json', { root })
+    : fs.readFileSync(file);
+  return extractTables(JSON.parse(bytes.toString('utf8')));
 }
 
 const rows = (tables, name) => (Array.isArray(tables[name]?.data) ? tables[name].data : []);
 
-export function loadConfig({ file } = {}) {
-  const tables = loadTables(file);
+export function loadConfig({ file, root } = {}) {
+  const tables = loadTables(file, { root });
   const resourceCfg = new Map(rows(tables, 'ResourceCfg').map((row) => [row.id, row]));
 
   return {
