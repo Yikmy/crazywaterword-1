@@ -78,3 +78,17 @@ test('alliance daily help budget and order counter cannot cross an uncertain gam
 });
 
 test('alliance day rejects dates outside representable range rather than throwing or inventing quota',()=>{assert.equal(allianceBudgetDay(Number.MAX_SAFE_INTEGER),null);assert.equal(allianceBudgetDay(null),null);});
+test('daily alliance order selects only the original exact city candidate among unrelated alliance actions',async()=>{
+ const {allianceOrderSelection}=await import('../src/alliance.mjs'),facts={...await read(fake()),season:2};
+ const candidate=view(facts).candidates.find(a=>a.actionType==='finishOrder'&&a.target.cityId===2);assert.ok(view(facts).candidates.some(a=>a.actionType!=='finishOrder'));
+ const selection=allianceOrderSelection({cityId:2});assert.equal(selection.actionId,candidate.actionId);
+ const planned=planAlliance(facts,{config,moduleConfig,parameters:{cityId:2},selections:[selection.actionId]});
+ assert.equal(planned.actions.length,1);assert.equal(planned.actions[0].actionType,'finishOrder');assert.deepEqual(planned.actions[0].action.body,{cityId:2});assert.deepEqual(planned.actions[0].costs,[{id:'小麦',num:2}]);
+ assert.throws(()=>planAlliance({...facts,cities:[{cityId:1}]},{config,moduleConfig,parameters:{cityId:2},selections:[selection.actionId]}));
+ assert.notEqual(allianceOrderSelection({cityId:1}).actionId,selection.actionId);
+});
+test('daily alliance order rejects absent invalid and unrelated business declarations',async()=>{
+ const {allianceOrderSelection}=await import('../src/alliance.mjs');
+ for(const p of [undefined,{},null,[],{cityId:0},{cityId:-1},{cityId:1.5},{cityId:'1'},{cityId:2147483648},{cityId:1,season:1},{cityId:1,itemIds:['小麦']},{cityId:1,reqIds:['1']},{cityId:1,techId:1,targetLevel:2},{cityId:1,itemId:'小麦',num:1},{cityId:1,request:'FinishGuildOrderRequest'}])assert.throws(()=>allianceOrderSelection(p));
+ assert.deepEqual(allianceOrderSelection({cityId:2147483647}),{actionId:'alliance:finishOrder:'+encodeURIComponent(JSON.stringify({cityId:2147483647}))});
+});

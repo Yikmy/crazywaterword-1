@@ -10,6 +10,7 @@ const rows = (c,n) => c?.tables?.[n]?.data ?? [];
 const text = (s) => typeof s === 'string' && s.trim().length > 0;
 const stable = (v) => JSON.stringify(v, (_,x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])) : x);
 const copy = (v) => JSON.parse(JSON.stringify(v));
+const actionIdOf=(type,target)=>'alliance:'+type+':'+encodeURIComponent(stable(target));
 const unique = (a,key) => Array.isArray(a) && new Set(a.map(key)).size === a.length;
 // Preserve int64 identifiers rather than passing them through display normalization.
 export function allianceId(v) {
@@ -75,6 +76,13 @@ function parametersOf(p={}) {
   for(const k of ['techId','targetLevel'])if(p[k]!==undefined){if(!Number.isSafeInteger(p[k])||p[k]<=0||p[k]>2147483647)throw Error('联盟科技或目标等级无效');out[k]=p[k];}
   if((p.techId===undefined)!==(p.targetLevel===undefined))throw Error('联盟科技必须同时指定精确科技ID和目标等级');
   return out;
+}
+// Pure daily selection; original survey and executor still own eligibility,
+// costs, authorization and settlement. Other alliance actions cannot be selected.
+export function allianceOrderSelection(input) {
+  const p=parametersOf(input);
+  if(Object.keys(p).length!==1||!Number.isSafeInteger(p.cityId)||p.cityId<1||p.cityId>2147483647)throw Error('联盟订单需要唯一明确的cityId，不接受其他联盟动作参数');
+  return {actionId:actionIdOf('finishOrder',{cityId:p.cityId})};
 }
 const field=(o,k)=>o&&Object.hasOwn(o,k)?o[k]:undefined;
 const assetsValid = a => Array.isArray(a)&&a.every(x=>text(x?.id)&&quantity(x.num)!==null);
@@ -159,7 +167,7 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
   const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{
     if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);
     if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);
-    candidates.push({actionId:'alliance:'+type+':'+encodeURIComponent(stable(target)),actionType:type,target,costs,costSource,beforeState:copy(beforeState),identity:stable({guildId:f.guildId,playerId:f.playerId,beforeState}),expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'联盟 '+type});};
+    candidates.push({actionId:actionIdOf(type,target),actionType:type,target,costs,costSource,beforeState:copy(beforeState),identity:stable({guildId:f.guildId,playerId:f.playerId,beforeState}),expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'联盟 '+type});};
   if(!f.guildId||!f.playerId)return {candidates,blocked:[{blockedReason:'ALLIANCE_IDENTITY_UNKNOWN'}],notes,guildId:f.guildId,playerId:f.playerId,members:f.members??[],technologies:tech.technologies,techState:tech.state,dailyLimits:{ask:null,help:null}};
   const time=gameTimeBounds(f),own=f.ownReliable?f.ownAids:[],nowKnown=time.now!==null,dayKnown=allianceBudgetDay(time.earliest)!==null&&allianceBudgetDay(time.earliest)===allianceBudgetDay(time.latest);
   const helpRules=allianceHelpRules(f,{moduleConfig,parameters});

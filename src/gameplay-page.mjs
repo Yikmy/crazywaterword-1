@@ -643,7 +643,7 @@ const wfTypes=['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRA
 const WF_UNIFIED_KINDS = {
  main:'主线任务领奖',branch:'支线任务领奖',achievement:'成就领奖',daily:'每日任务领奖',
  'daily-activity':'日活跃单档领奖','daily-gift':'固定免费赠礼','weekly-lottery-gift':'周转盘免费礼包1000','weekly-unique-lottery-gift':'周翻牌免费礼包1000','weekly-chip-gift':'周芯片免费礼包1000','weekly-chip-task':'周芯片当前轮次任务领奖',
- 'free-recruit':'普通免费英雄招募',museum:'博物馆探险出发',stage:'有限主线战斗（不自动领奖）','free-gold':'普通免费点金','trial-challenge':'英雄经验试炼首通','pirate-sweep':'单目标海面扫荡'
+ 'free-recruit':'普通免费英雄招募','alliance-order':'联盟城市募兵订单',museum:'博物馆探险出发',stage:'有限主线战斗（不自动领奖）','free-gold':'普通免费点金','trial-challenge':'英雄经验试炼首通','pirate-sweep':'单目标海面扫荡'
 };
 const wfUnifiedEditable = () => Boolean(current && !wfPending && !wfData?.status?.running);
 function wfUnifiedNumber(value,min,max,label) {
@@ -661,7 +661,7 @@ function wfUnifiedData() {
 }
 function wfUnifiedKinds() {
  const select=$('wf-unified-kind'),previous=select.value,phase=$('wf-unified-phase').value;
- const choices=phase==='tasks'?['main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task']:['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','free-recruit','stage','free-gold','trial-challenge','pirate-sweep','museum'];
+ const choices=phase==='tasks'?['main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task']:['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','free-recruit','stage','free-gold','trial-challenge','pirate-sweep','alliance-order','museum'];
  gpClear(select);for(const kind of choices){const option=gpEl('option',WF_UNIFIED_KINDS[kind]);option.value=kind;select.appendChild(option);}
  select.value=choices.includes(previous)?previous:choices[0];wfUnifiedControls();
 }
@@ -673,7 +673,7 @@ function wfUnifiedControls() {
  $('wf-unified-target').disabled=locked||!needsId;
  $('wf-unified-chip-round').disabled=locked||kind!=='weekly-chip-task';
  for(const field of ['museum-heroes','museum-factor'])$('wf-unified-'+field).disabled=locked||kind!=='museum';
- $('wf-unified-target-label').textContent=kind==='museum'?'精确博物馆探险关卡 ID':kind==='stage'?'本节点最多尝试（1–200，战败停止）':kind==='pirate-sweep'?'精确海盗 UID':kind==='daily-activity'?'精确日活跃档位 ID':kind==='weekly-chip-gift'?'固定礼包：1000（当前周芯片）':kind==='weekly-unique-lottery-gift'?'固定礼包：1000（当前周翻牌）':kind==='weekly-lottery-gift'?'固定礼包：1000（当前周转盘）':kind==='daily-gift'?'固定礼包：赠礼':'精确任务 ID';
+ $('wf-unified-target-label').textContent=kind==='alliance-order'?'精确联盟城市 ID':kind==='museum'?'精确博物馆探险关卡 ID':kind==='stage'?'本节点最多尝试（1–200，战败停止）':kind==='pirate-sweep'?'精确海盗 UID':kind==='daily-activity'?'精确日活跃档位 ID':kind==='weekly-chip-gift'?'固定礼包：1000（当前周芯片）':kind==='weekly-unique-lottery-gift'?'固定礼包：1000（当前周翻牌）':kind==='weekly-lottery-gift'?'固定礼包：1000（当前周转盘）':kind==='daily-gift'?'固定礼包：赠礼':'精确任务 ID';
  const uid=$('wf-unified-budget-kind').value==='uids';$('wf-unified-budget-type').disabled=locked||!uid;$('wf-unified-budget-num').disabled=locked||uid;wfUnifiedBoundaryControls();
 }
 
@@ -731,8 +731,8 @@ function wfUnifiedRender() {
  const live=()=>wfUnifiedEditable()&&current===account&&gpRevision===revision&&$('wf-unified-intent').value===source;
  const steps=gpClear($('wf-unified-steps'));
  for(const phase of ['tasks','dailies','world'])data[phase].forEach((row,index)=>{
-  const card=gpEl('div'),kind=phase==='world'?row?.module:row?.kind||(phase==='dailies'?(row?.action==='claim'?'daily':({1002:'free-recruit',1003:'stage',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep',1016:'museum'})[row?.taskId]):'');
-  const target=row?.packId??row?.tierId??(kind==='pirate-sweep'?row?.parameters?.uid:kind==='museum'?row?.parameters?.stageId:row?.taskId)??'';
+  const card=gpEl('div'),kind=phase==='world'?row?.module:row?.kind||(phase==='dailies'?(row?.action==='claim'?'daily':({1002:'free-recruit',1003:'stage',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance-order',1016:'museum'})[row?.taskId]):'');
+  const target=row?.packId??row?.tierId??(kind==='pirate-sweep'?row?.parameters?.uid:kind==='museum'?row?.parameters?.stageId:kind==='alliance-order'?row?.parameters?.cityId:row?.taskId)??'';
   card.appendChild(gpEl('span',phase+' 第 '+(index+1)+' 项 · '+(WF_UNIFIED_KINDS[kind]||kind||'待核对业务')+(target!==''?' · '+target:'')));
   if(kind==='museum'&&phase==='dailies')gpDetails(card,'明确探险队伍与倍率',row?.parameters);
   if(kind==='stage'&&phase==='dailies')gpDetails(card,'明确主线运行边界',row?.parameters?.config);
@@ -758,10 +758,11 @@ $('wf-unified-add').onclick=()=>wfUnifiedEdit(data=>{
  const phase=$('wf-unified-phase').value,kind=$('wf-unified-kind').value;
  if(!['tasks','dailies'].includes(phase)||data.entry!=='loop'&&phase!==data.entry)throw Error('步骤分组与已应用的入口不匹配');
  if(data[phase].length>=48)throw Error('每组最多48项步骤');
- const rewards=['main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'],dailyDrivers={'free-recruit':1002,'stage':1003,'free-gold':1006,'trial-challenge':1009,'pirate-sweep':1010,'museum':1016};let row;
+ const rewards=['main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'],dailyDrivers={'free-recruit':1002,'stage':1003,'free-gold':1006,'trial-challenge':1009,'pirate-sweep':1010,'alliance-order':1012,'museum':1016};let row;
  if(phase==='tasks'&&!rewards.includes(kind)||phase==='dailies'&&!['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...Object.keys(dailyDrivers)].includes(kind))throw Error('该分组不支持所选业务');
  if(kind==='weekly-chip-task')row={kind,round:wfUnifiedNumber($('wf-unified-chip-round').value,1,2147483647,'周芯片当前轮次'),taskId:wfUnifiedNumber($('wf-unified-target').value,1,2147483647,'任务ID'),...(phase==='dailies'?{action:'claim'}:{})};
  else if(['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(kind))row={kind,packId:'1000',...(phase==='dailies'?{action:'claim'}:{})};
+ else if(kind==='alliance-order')row={taskId:1012,action:'perform',parameters:{cityId:wfUnifiedNumber($('wf-unified-target').value,1,2147483647,'联盟城市ID')}};
  else if(kind==='museum'){
   const heroIds=$('wf-unified-museum-heroes').value.split(/\r?\n/);
   if(!heroIds.length||heroIds.length>100||heroIds.some(id=>!id||id!==id.trim()||id.length>200)||new Set(heroIds).size!==heroIds.length)throw Error('探险英雄需每行一个唯一且无首尾空格的ID，最多100项');

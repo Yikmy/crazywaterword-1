@@ -641,3 +641,12 @@ test('restarted Workflow missing evidence stops before survey plan authorization
  const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>{released++;},operations:{history:()=>({runs:[]}),...Object.fromEntries(['surveyModule','plan','authorize','execute'].map(name=>[name,()=>{calls.push(name);throw Error('must not reach '+name);} ]))},onUpdate:status=>fresh.record('A',status)});
  await assert.rejects(runner.start('A',graph()),{code:'WORKFLOW_STORE_UNAVAILABLE'});await runner.settle();assert.equal(runner.getStatus().status,'FAILED');assert.deepEqual(calls,[]);assert.equal(released,1);assert.equal(fs.existsSync(file),false);
 });
+for(const entry of ['dailies','loop'])test('unified '+entry+' daily alliance order compiles exact city selection and keeps claiming separate',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),{allianceOrderSelection}=await import('../src/alliance.mjs'),registry={...unifiedRegistry,alliance:GAMEPLAY_MODULES.alliance};
+ const input={entry,dailies:[{taskId:1012,action:'perform',parameters:{cityId:2}}],budget:unifiedBudget,...(entry==='loop'?{rounds:2}:{})};
+ const result=compileUnifiedExecution(input,{modules:registry}),actions=result.graph.nodes.filter(n=>n.type==='ACTION');assert.deepEqual(result.blocked,[]);assert.equal(actions.length,entry==='loop'?2:1);
+ for(const node of actions){assert.equal(node.module,'alliance');assert.deepEqual(node.parameters,{cityId:2});assert.deepEqual(node.selection,allianceOrderSelection({cityId:2}));}
+ assert.equal(simulateWorkflow(result.graph,{modules:registry}).requestsSent,0);
+ const claim=compileUnifiedExecution({...input,dailies:[{taskId:1012,action:'claim'}]},{modules:registry}).graph.nodes.find(n=>n.type==='ACTION');assert.equal(claim.module,'task-rewards');assert.deepEqual(claim.parameters,{kind:'daily',taskId:1012});
+ for(const parameters of [{},{cityId:0},{cityId:'1'},{cityId:2147483648},{cityId:1,season:1},{cityId:1,request:'FinishGuildOrderRequest'}])assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1012,parameters}]},{modules:registry}),{code:'WORKFLOW_INVALID'});
+});

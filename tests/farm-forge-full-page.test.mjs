@@ -2202,3 +2202,13 @@ test('unified museum team identifiers remain text in the assembled page',async()
  assert.equal(descendants(h.node('wf-unified-steps')).some(n=>n.tagName.toLowerCase()==='img'),false);
  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
 });
+for(const entry of ['dailies','loop'])test('unified '+entry+' alliance order form binds exact city and keeps daily claim independent',async()=>{
+ const h=await unifiedForm(entry),before=h.requests.length;unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ unifiedAdd(h,'dailies','alliance-order','2');assert.deepEqual(unifiedDraft(h).dailies,[{taskId:1012,action:'perform',parameters:{cityId:2}}]);
+ assert.match(h.node('wf-unified-target-label').textContent,/联盟城市/);assert.match(h.node('wf-unified-steps').textContent,/联盟城市募兵订单.*2/);
+ assert.equal(h.node('wf-unified-museum-heroes').disabled,true);assert.equal(h.node('wf-unified-museum-factor').disabled,true);
+ unifiedAdd(h,'dailies','daily','1012');assert.deepEqual(unifiedDraft(h).dailies[1],{taskId:1012,action:'claim'});
+ for(const value of ['','0','-1','1.5','1e2','2147483648','<img src=x onerror=alert(1)>']){const source=h.node('wf-unified-intent').value;unifiedAdd(h,'dailies','alliance-order',value);assert.equal(h.node('wf-unified-intent').value,source);}
+ assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const stale=h.node('wf-unified-add').onclick;h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-unified-intent').value;stale();assert.equal(h.node('wf-unified-intent').value,source);
+});
