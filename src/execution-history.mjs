@@ -67,10 +67,10 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
       copy.interruptedFinalStatus=copy.finalStatus;copy.finalStatus='CANCELLED';copy.recovered=true;copy.resumable=false;copy.recoveryDisposition='RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS';
       copy.stopReason='所有动作已有权威确认，仅批次终态未落盘；保留原证据，停止且不恢复执行';return copy;
     }
-    if (unfinished.has(copy.finalStatus) || copy.actions.some(action => action.unresolvedWrite === true || ['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus))) {
+    if (unfinished.has(copy.finalStatus) || copy.actions.some(originallyUncertain)) {
       copy.finalStatus = 'UNKNOWN'; copy.recovered = true; copy.resumable = false;
       copy.stopReason = '进程退出时存在未完成操作；仅恢复历史，禁止自动重发，等待权威复核';
-      for (const action of copy.actions) if (['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus)) { action.result = 'UNKNOWN'; action.requestStatus = 'UNKNOWN'; }
+      for (const action of copy.actions) if (originallyUncertain(action) && ['DISPATCHING', 'EXECUTING', 'VERIFY'].includes(action.requestStatus)) { action.result = 'UNKNOWN'; action.requestStatus = 'UNKNOWN'; }
     }
     return copy;
   }

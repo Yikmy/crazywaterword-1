@@ -310,3 +310,14 @@ test('shared memory projects interrupted legacy UNKNOWN despite another account 
   assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.existsSync(f.memoryFile),false);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
  }finally{await f.cleanup();}
 });
+
+test('mixed legacy recovery projects only the truly uncertain action into shared memory and retains original confirmation',async()=>{
+ const f=fixture();try{
+  const {run}=await seedIncompleteRefusal(f,(run,row)=>{run.finalStatus='EXECUTING';row.requestStatus='VERIFY';row.result='SUCCESS';row.verification={status:'CONFIRMED'};row.dispatched=true;row.unresolvedWrite=false;});
+  const pending={...structuredClone(run.actions[0]),actionId:'two',target:{id:'two'},result:'EXECUTING',requestStatus:'DISPATCHING',unresolvedWrite:true};delete pending.verification;run.actions.push(pending);run.resourceBudget=[{id:'wood',num:8}];f.history.put(run);
+  const owned=createExecutionHistory({file:f.historyFile}),service=createOperationService({history:owned,memory:f.memory}),bytes=fs.readFileSync(f.historyFile,'utf8'),shown=service.executionMemory('A',{runId:run.runId});
+  assert.equal(shown.pendingHistoryProjection.length,1);assert.equal(shown.pendingHistoryProjection[0].actionId,'two');assert.equal(shown.pendingHistoryProjection[0].status,'UNKNOWN');assert.deepEqual(owned.list('A')[0].actions[0],run.actions[0]);assert.equal(owned.unresolved('A'),true);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.existsSync(f.memoryFile),false);
+  owned.appendReconciliation('A',run.runId,'two',{status:'APPLIED',timestamp:'2026-11-14T00:00:00.000Z',evidence:{version:1,reasonCode:'SYNTHETIC_ONLY'}});
+  assert.equal(owned.unresolved('A'),false);assert.equal(owned.list('A')[0].finalStatus,'UNKNOWN');assert.deepEqual(owned.list('A')[0].resourceBudget,run.resourceBudget);assert.equal(service.executionMemory('A').pendingHistoryProjection.length,1);assert.equal(f.writes.length,0);assert.equal(f.reads.length,0);
+ }finally{await f.cleanup();}
+});

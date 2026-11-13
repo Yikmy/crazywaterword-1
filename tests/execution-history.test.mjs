@@ -243,3 +243,34 @@ test('same legacy runId cannot borrow another account live ownership after all o
   assert.equal(restored.finalStatus,'CANCELLED');assert.equal(restored.recoveryDisposition,'RECOVERED_STOPPED_AFTER_CONFIRMED_ACTIONS');assert.equal(restored.resumable,false);assert.deepEqual(restored.actions,interrupted.actions);assert.deepEqual(restored.resourceBudget,interrupted.resourceBudget);assert.equal(store.unresolved('A'),false);assert.equal(store.list('B')[0].finalStatus,'EXECUTING');assert.equal(fs.readFileSync(file,'utf8'),bytes);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+for(const priorStatus of ['DISPATCHING','EXECUTING','VERIFY','UNKNOWN'])test('mixed interrupted batch keeps independently confirmed '+priorStatus+' action while reconciling only its pending sibling',()=>{
+ const {dir,file}=fixture();try{
+  const record=run('A','EXECUTING');Object.assign(record.actions[0],{requestStatus:priorStatus,result:'SUCCESS',verification:{status:'CONFIRMED'},dispatched:true,unresolvedWrite:false});
+  record.actions.push({actionId:'two',requestStatus:'DISPATCHING',result:'EXECUTING',dispatched:true,unresolvedWrite:true,resourceReservation:[{id:'wood',num:3}]});record.resourceBudget=[{id:'wood',num:8}];
+  createExecutionHistory({file}).put(record);const bytes=fs.readFileSync(file,'utf8'),store=createExecutionHistory({file}),restored=store.list('A')[0];
+  assert.equal(restored.finalStatus,'UNKNOWN');assert.equal(restored.resumable,false);assert.deepEqual(restored.actions[0],record.actions[0]);assert.equal(restored.actions[1].result,'UNKNOWN');assert.equal(restored.actions[1].requestStatus,'UNKNOWN');assert.deepEqual(restored.resourceBudget,record.resourceBudget);assert.equal(store.unresolved('A'),true);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+  assert.throws(()=>store.appendReconciliation('A',record.runId,'one',reconciliation('APPLIED')),{code:'HISTORY_UNAVAILABLE'});
+  store.appendReconciliation('A',record.runId,'two',reconciliation('APPLIED'));
+  assert.equal(store.list('A')[0].finalStatus,'UNKNOWN','original batch remains UNKNOWN');assert.equal(store.unresolved('A'),false,'only the actually uncertain action requires reconciliation');
+  assert.deepEqual(store.list('A')[0].actions[0],record.actions[0]);assert.equal(createExecutionHistory({file}).unresolved('A'),false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')).accounts.A[0].actions[0],record.actions[0]);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('apparent confirmation never hides an explicit unresolved write in a mixed interrupted batch',()=>{
+ const {dir,file}=fixture();try{
+  const record=run('A','EXECUTING');Object.assign(record.actions[0],{requestStatus:'VERIFY',result:'SUCCESS',verification:{status:'CONFIRMED'},dispatched:true,unresolvedWrite:true});
+  record.actions.push({actionId:'two',requestStatus:'SUCCESS',result:'SUCCESS',verification:{status:'CONFIRMED'},dispatched:true,unresolvedWrite:false});
+  createExecutionHistory({file}).put(record);const bytes=fs.readFileSync(file,'utf8'),store=createExecutionHistory({file}),restored=store.list('A')[0];
+  assert.equal(restored.finalStatus,'UNKNOWN');assert.equal(restored.actions[0].result,'UNKNOWN');assert.equal(restored.actions[0].unresolvedWrite,true);assert.deepEqual(restored.actions[1],record.actions[1]);assert.equal(store.unresolved('A'),true);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+for(const finalStatus of ['SUCCESS','FAILED','CANCELLED'])test('terminal '+finalStatus+' with a confirmed action retains its original audit despite stale transport status',()=>{
+ const {dir,file}=fixture();try{
+  const record=run('A',finalStatus);Object.assign(record.actions[0],{requestStatus:'VERIFY',result:'SUCCESS',verification:{status:'CONFIRMED'},unresolvedWrite:false});
+  createExecutionHistory({file}).put(record);const bytes=fs.readFileSync(file,'utf8'),store=createExecutionHistory({file}),restored=store.list('A')[0];
+  assert.equal(restored.finalStatus,finalStatus);assert.equal(restored.recovered,undefined);assert.deepEqual(restored.actions,record.actions);assert.equal(store.unresolved('A'),false);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
