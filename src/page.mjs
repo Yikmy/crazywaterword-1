@@ -1,3 +1,4 @@
+import { compareStageBattles } from './stage-history.mjs';
 import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT, CORE_GAMEPLAY_HTML } from './gameplay-page.mjs';
 // This same guard is embedded in the browser and exercised by the offline tests.
 export function createAccountViewGuard() {
@@ -322,6 +323,10 @@ export const PAGE = `<!doctype html>
     <div id="stages-delay-policy" class="dim"></div>
     <h2>历史闯关记录</h2>
     <div id="stages-history" class="dim">尚无记录。</div>
+    <h2>战报历史比较</h2>
+    <p class="dim">读取运行状态时载入本账号已保存的主线分析。选择同角色、世界及关卡的两份战报查看差异。</p>
+    <div class="bar"><label>基准战报 <select id="stages-battle-before" aria-label="基准战报"></select></label><label>对照战报 <select id="stages-battle-after" aria-label="对照战报"></select></label></div>
+    <div id="stages-battle-comparison" class="dim" aria-live="polite">尚无可比较战报。</div>
   </section>
   <section id="tab-idle" class="hidden">
     <div class="bar">
@@ -440,6 +445,7 @@ ${GAMEPLAY_HTML}
 
 <script>
 const createAccountViewGuard = ${createAccountViewGuard.toString()};
+const compareStageBattles = ${compareStageBattles.toString()};
 const $ = (id) => document.getElementById(id);
 let current = null;
 let accounts = [];
@@ -1296,6 +1302,7 @@ function resetStages() {
   $('stages-status').textContent = '选择账号后读取已有运行状态。';
   $('stages-countdown').textContent = ''; $('stages-history').textContent = '尚无记录。';
   $('stages-delay-policy').textContent = '';
+  clear($('stages-battle-before')); clear($('stages-battle-after')); $('stages-battle-comparison').textContent='尚无可比较战报。';
 }
 function stageConfig() {
   const integer = (id, optional = false) => {
@@ -1326,6 +1333,30 @@ function updateStageCountdown() {
   $('stages-countdown').textContent = (waitingNext || runner?.state === 'WAIT_RETRY') && Number.isFinite(timestamp)
     ? (waitingNext ? '下一关：约 ' : '下一次重试：约 ') + Math.max(0, Math.ceil((timestamp - Date.now()) / 1000)) + ' 秒（每 3 秒更新状态）'
     : '';
+}
+function renderStageBattleComparison() {
+  const reports=stagesData?.battleHistory?.reports||[],before=reports.find(row=>row.reportId===$('stages-battle-before').value),after=reports.find(row=>row.reportId===$('stages-battle-after').value);
+  const result=compareStageBattles(before,after),box=clear($('stages-battle-comparison'));
+  if(result.status!=='COMPARED'){box.textContent=result.reason;return;}
+  const number=value=>value??'未知',outcome=value=>value==='SUCCESS'?'胜利':'战败',pos=value=>value?'('+value.x+', '+value.y+')':'未知';
+  box.appendChild(el('div',null,'同关卡 '+result.stage+' · '+outcome(result.before.outcome)+' → '+outcome(result.after.outcome)));
+  box.appendChild(el('div',null,'我方总伤害：'+number(result.damage.before)+' → '+number(result.damage.after)+'；变化 '+number(result.damage.delta)));
+  box.appendChild(table(['英雄','基准站位','对照站位','基准伤害','对照伤害','伤害变化','基准剩余生命','对照剩余生命','生命变化'],result.heroes.map(row=>[row.heroId,pos(row.before?.pos),pos(row.after?.pos),number(row.before?.damage),number(row.after?.damage),number(row.damageDelta),number(row.before?.hp),number(row.after?.hp),number(row.hpDelta)])));
+  for(const gap of result.gaps)box.appendChild(el('div','warn',gap));
+  box.appendChild(el('div','dim',result.limitation));
+}
+$('stages-battle-before').onchange=renderStageBattleComparison;
+$('stages-battle-after').onchange=renderStageBattleComparison;
+function renderStageBattleHistory(data) {
+  const reports=data?.reports||[];
+  for(const [id,index] of [['stages-battle-before',1],['stages-battle-after',0]]) {
+    const select=$(id),previous=select.value;clear(select);
+    for(const row of reports)select.appendChild(new Option('关卡 '+row.stage+' · '+row.outcome+' · 角色 '+row.scope.playerId+' / 世界 '+row.scope.worldId+' · '+(row.at||row.runId),row.reportId));
+    select.value=reports.some(row=>row.reportId===previous)?previous:reports[index]?.reportId||'';
+    select.disabled=reports.length<2;
+  }
+  if(reports.length<2){$('stages-battle-comparison').textContent='至少需要两份已保存且身份完整的主线战报；旧记录缺少分析时保持未知。';return;}
+  renderStageBattleComparison();
 }
 function renderStages(data) {
   const initial = stagesData === null;
@@ -1366,6 +1397,7 @@ function renderStages(data) {
     history.appendChild(row);
   }
   if (!history.childElementCount) history.textContent = '尚无记录。';
+  renderStageBattleHistory(data.battleHistory);
   updateStageCountdown(); stageControls(); renderAccountSelect();
 }
 async function refreshStages() {

@@ -8,7 +8,7 @@ import { createExecutionMemory } from './execution-memory.mjs';
 import { createNamedFormationStore } from './named-formations.mjs';
 import { GAMEPLAY_MODULES, registerBusinessFunction } from './function-registry.mjs';
 import { createStageFunction } from './stage-function.mjs';
-import { createStandaloneStageJournal } from './stage-history.mjs';
+import { createStandaloneStageJournal, projectStageBattleHistory } from './stage-history.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -654,7 +654,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   const stageUnavailableReason = 'SIDE_UNVERIFIED：当前没有已授权的主线阵营适配器；开战已阻止';
   function stageView(id, session) {
     return { accountId: id, available: stageSideAvailable, unavailableReason: stageSideAvailable ? null : stageUnavailableReason,
-      csrfToken: operationCsrf, battleMode: MAINLINE_CHALLENGE,
+      csrfToken: operationCsrf, battleMode: MAINLINE_CHALLENGE, battleHistory: projectStageBattleHistory(id,history.list(id)),
       sideAuthorization: stageSideResolver === resolveMainlineChallengeSide ? MAINLINE_SIDE_AUTHORIZATION : null,
       defaults: { ...defaultStageConfig(), interStageDelay: { minSeconds: 10, maxSeconds: 11 } },
       runner: session?.stageRunner?.getStatus() ?? { runId: null, state: 'IDLE', running: false,

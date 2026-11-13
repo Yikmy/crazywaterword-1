@@ -16,6 +16,8 @@
 | W06 PARTIAL | 英雄显式 fragment-exchange 接入原 heroes Function/Registry/OperationService/API/专业页/Workflow；对应品质自有万能碎片按明确数量1:1兑换目标专属碎片，所有英雄及其他库存不变，兑换与升星分别授权；自动混用万能碎片升星仍冻结 | 继续原碎片/背包剩余兑换合同及其他依赖已满足分支 | 其他兑换需各自明确身份、成本与结算证据；无 dedicated Response 的兑换只凭新完整库存净入确认，缺失或迟到均 UNKNOWN，无自动重放 | 本行所在提交（父ac64891）；古董目标ID纠正ac64891 | 2026-11-13：英雄领域/Service/专武回归、D6、合同/注册/设置、HTTP/完整页面九文件478/478 PASS，0 fail/cancel/skip/todo，9.60秒；覆盖四品质固定配置、零初始库存、篡改、父预算、持久意图、重启/隔离/迟到、表单编辑及既有扫荡控件回归。仅本地Codec/合成传输，REAL_UNVERIFIED |
 | W07 PARTIAL | 保留原成长及红装/红徽章升星；新增 BIZ-R08 Pet 单次 feed，明确 buildingId/jobIdx（含0）及完整培育批次，仅明确auto=false的真实培育室，当前 feedRequirements 精确自有材料，配置减时无默认值；完整队列、AllPet与库存独立确认减时或成熟转移；复用 Registry/Service/API/专业页/Workflow、授权预算与持久历史，不自动领取 | 继续 Pet 培育及成熟领取的精确队列与结算合同，再推进其他依赖已满足分支 | EquipReplace/BadgeReplace 成长转移、旧物归属和材料返还规则仍缺证；专武可靠未激活状态、PetBreed 新队列恢复合同及 GetMaturePet 空请求领取身份仍缺证，仅冻结对应操作；R7/R8未执行 | Pet42a85e7；写前隔离为本行所在提交（父42a85e7）；红徽章63a4e9e；红装a200362 | 2026-11-13：Pet领域/Service恢复/Workflow、Registry/合同/设置、D6、共享HTTP与完整页面七文件375/375 PASS，0 fail/cancel/skip/todo，7.31秒；覆盖固定14400秒配置、材料净扣、成熟转移、零idx、缺字段/篡改、身份隔离、持久化失败、重启UNKNOWN、取消/迟到、父资源及同批次二次投喂零发送。页面测试修复Pet专业渲染遗漏，Registry补齐BIZ-R08；追加auto缺失/开启及非培育室伪队列负例。固定客户端PetModel另有SCBreedLevelUpdate，PetBreed仍需新队列身份和培育经验结算合同；仅本地Codec/配置/合成传输，REAL_UNVERIFIED |
 
+| W08 PARTIAL | 保留阵容保存/普通图纸解锁/具名队伍/极限来源/主线首败停止；新增原StageRunner逐场分析持久化到共享History，原GET /api/stages只读投影最多100份分析（内部上限200），重启无需连接；专业页按两份同账号/角色/世界/主线关卡战报比较英雄站位、精确累计伤害和剩余生命差异，不推断因果或自动换阵/续跑；旧记录缺分析或角色世界保持缺口 | 继续原其他模式阵容/战斗及可解释推荐后的受控续跑分支，按各模式权威合同施工 | 其他模式SIDE/票次数/身份仍需逐模式证据；本批仅主线历史观察比较，不替代其他模式或真实验收；R7/R8未执行 | 战报比较为本行所在提交（父0995401）；此前原有阵容/极限成果保留 | 2026-11-13：stage-history、stages-api/view、stage-function、stages、execution-stages、formation、stages-formation/mainline-release/stop-on-defeat/cooldown、execution-history、gameplay-api、farm-forge-full-page十四文件479/479 PASS，0 fail/cancel/skip/todo，8.50秒；覆盖精确大整数/负差/缺统计/错站位/重复英雄/跨角色世界关卡、旧格式缺口、UNKNOWN批次内已解析场次不等于批次完成、持久化重启字节不变、HTTP零连接/零额外采集、完整页面本地比较/切号迟到、分析异常不改变已解析胜负，以及原磁盘失败/取消/首败保护；仅合成账号与传输，REAL_UNVERIFIED |
+
 R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的独立真实操作授权。
 
 ## 1. 结论、计数与范围
@@ -318,7 +320,7 @@ CrazyWater Platform
 | P2-9 | 钓鱼 | NOT_IMPLEMENTED | C152；W13 |
 | P3-1 | 主线运行 | PARTIAL：已有运行/倒计时，stopOnDefeat只透传无独立开关 | C201/C204/C205；W08 |
 | P3-2 | 阵容对比 | EXISTING_UI：原战报details | C206/C207；W08 |
-| P3-3 | 战斗分析 | EXISTING_UI：保守统计，长期比较待扩展 | C208；W08 |
+| P3-3 | 战斗分析 | EXISTING_UI：保守统计与同角色/世界/关卡持久历史差异比较；缺分析保持未知 | C208；W08 |
 | P3-4 | 自动换阵 | PARTIAL：职业布局建议，无自动闭环开关 | C209；W08 |
 | P3-5 | 阵容管理 | PARTIAL：保存/模板/恢复有，极限复制缺 | C211–215；W08 |
 | P3-6 | 英雄列表 | PARTIAL：基础等级/星级/技能有，专武纹章装备视图缺 | C221–230；W06/W07 |

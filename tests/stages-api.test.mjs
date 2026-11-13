@@ -471,3 +471,22 @@ test('disk failure writing standalone result stops the next battle and retains t
     assert.equal((await app.call('/api/operations')).data.status.blocked, true);
   } finally { await app.close(); }
 });
+
+test('mainline battle analyses survive HTTP restart reads without a connection, writes or cross-account projection',async()=>{
+ const app=await harness({productionSide:true});let expected;
+ const battle=(win,damage)=>({initialData:{mainlineStage:41,battleType:1,leftTeam:{members:[{hero:{heroId:'synthetic-hero'},pos:{x:1,y:2}}]},rightTeams:[{members:[{hero:{heroId:'enemy'},pos:{x:2,y:2}}]}]},stats:{isLeftWin:win,leftHeroDamages:[{heroId:'synthetic-hero',pos:{x:1,y:2},leftHp:win?10:0,statBar:{damage:{physical:damage,magic:0,true:0}}}]},token});
+ try {
+  await app.connect('A');Object.assign(app.sessions.get('A').player,{playerId:'9007199254740993',worldId:'17'});
+  await app.start('A',{maxAttempts:2,retryDelaySeconds:0});const runner=app.sessions.get('A').stageRunner,client=app.clients[0];
+  client.requests[0].resolve(battle(false,'9007199254740993'));
+  for(let i=0;i<30&&client.requests.length<2;i++)await new Promise(resolve=>setTimeout(resolve,2));
+  assert.equal(client.requests.length,2);client.requests[1].resolve(battle(true,'9007199254740998'));await runner.completion;
+  const before=fs.readFileSync(app.historyFile,'utf8'),read=await app.call('/api/stages');expected=read.data.battleHistory;
+  assert.equal(expected.reports.length,2);assert.equal(expected.reports[0].analysis.leftHeroDamages[0].damage,'9007199254740998');
+  assert.equal(expected.reports[1].analysis.leftHeroDamages[0].damage,'9007199254740993');assert.equal(expected.reports[0].scope.playerId,'9007199254740993');
+  assert.equal((await app.call('/api/stages',{id:'B'})).data.battleHistory.reports.length,0);assert.equal(client.requests.length,2);assert.equal(app.collections,0);assert.equal(fs.readFileSync(app.historyFile,'utf8'),before);assert.equal(before.includes(token),false);
+ }finally{await app.close();}
+ const next=await harness({historyFile:app.historyFile,productionSide:true});try {
+  const bytes=fs.readFileSync(app.historyFile,'utf8'),read=await next.call('/api/stages');assert.deepEqual(read.data.battleHistory,expected);assert.equal(next.clients.length,0);assert.equal(next.sessions.size,0);assert.equal(next.collections,0);assert.equal(fs.readFileSync(app.historyFile,'utf8'),bytes);
+ }finally{await next.close();}
+});

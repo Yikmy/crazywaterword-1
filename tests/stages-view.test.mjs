@@ -166,3 +166,26 @@ test('owner can explicitly disable a retained first-defeat policy for a newly au
  const h=await boot();await load(h,fixture('A',{config:{enabled:false,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true}}));assert.equal(h.node('stages-stop-on-defeat').checked,true);enable(h);h.node('stages-stop-on-defeat').checked=false;
  const pending=h.node('stages-start').onclick();assert.equal(JSON.parse(h.pending('/api/stages/start','A').options.body).config.stopOnDefeat,false);h.respond('/api/stages/start','A',fixture('A',{state:'WAITING_RESULT',running:true,inFlight:true}));await pending;
 });
+
+function historicalBattles(){
+ const row=(reportId,damage,outcome)=>({reportId,runId:'historical-'+reportId,stage:41,at:'2026-11-13T00:00:00Z',outcome,scope:{accountId:'A',playerId:'9007199254740993',worldId:'17',battleMode:'MAINLINE_CHALLENGE'},analysis:{status:'ANALYZED',stage:41,playerSide:'LEFT',outcome,leftTeam:{members:[{heroId:'hero',pos:{x:1,y:2}}]},leftHeroDamages:[{heroId:'hero',pos:{x:1,y:2},damage,leftHp:'0'}]}});
+ return {reports:[row('after','9007199254740998','SUCCESS'),row('before','9007199254740993','FAILED')]};
+}
+test('historical battle comparison uses the existing read and local controls without any mutation or extra request',async()=>{
+ const h=await boot(),data={...fixture(),battleHistory:historicalBattles()};await load(h,data);
+ assert.equal(h.node('stages-battle-before').value,'before');assert.equal(h.node('stages-battle-after').value,'after');
+ assert.match(h.node('stages-battle-comparison').textContent,/9007199254740993 → 9007199254740998；变化 5/);assert.match(h.node('stages-battle-comparison').textContent,/不能证明改阵因果/);
+ const count=h.requests.length;h.node('stages-battle-before').value='after';h.node('stages-battle-before').onchange();assert.match(h.node('stages-battle-comparison').textContent,/两份不同/);
+ h.node('stages-battle-before').value='before';h.node('stages-battle-before').onchange();assert.equal(h.requests.length,count);assert.equal(h.confirmations.length,0);
+ await load(h,data);assert.equal(h.node('stages-battle-before').value,'before');
+ h.run("selectAccount('B')");assert.equal(h.node('stages-battle-before').childElementCount,0);assert.doesNotMatch(h.node('stages-battle-comparison').textContent,/9007199254740993/);
+});
+test('history comparison displays unknown statistics and refuses a foreign world instead of assuming a damage gain',async()=>{
+ const h=await boot(),data={...fixture(),battleHistory:historicalBattles()};data.battleHistory.reports[0].analysis.leftHeroDamages[0].damage=null;await load(h,data);assert.match(h.node('stages-battle-comparison').textContent,/变化 未知/);
+ data.battleHistory.reports[0].scope.worldId='18';await load(h,data);assert.match(h.node('stages-battle-comparison').textContent,/世界或战斗模式不一致/);
+ await load(h,fixture());assert.match(h.node('stages-battle-comparison').textContent,/旧记录缺少分析时保持未知/);assert.equal(h.node('stages-battle-before').disabled,true);
+});
+test('late historical battle read cannot populate the next selected account',async()=>{
+ const h=await boot(),pending=h.node('stages-load').onclick();h.run("selectAccount('B')");h.respond('/api/stages','A',{...fixture(),battleHistory:historicalBattles()});await pending;
+ assert.equal(h.node('stages-battle-before').childElementCount,0);assert.doesNotMatch(h.node('stages-battle-comparison').textContent,/9007199254740993/);
+});

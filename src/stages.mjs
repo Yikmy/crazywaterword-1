@@ -268,10 +268,13 @@ export function createStageRunner({ client, player, protocol, resolvePlayerSide,
         assertActive(run);
         const result = parseStageResult(answer.body, { stage: progress, player, resolvePlayerSide, battleMode });
         assertActive(run);
-        run.journal?.settle({ runId: run.id, stage: progress, attempt, at: new Date(now()).toISOString(), result });
         let formationContext = null, moduleSettings = null;
         try { formationContext = typeof formationFacts === 'function' ? formationFacts() : formationFacts; moduleSettings = typeof formationModuleConfig === 'function' ? formationModuleConfig() : formationModuleConfig; } catch { /* Missing recommendation facts do not trigger another battle or a formation write. */ }
-        const analysis = battleAnalysis(answer.body, { stage: progress, player, battleMode, formationFacts: moduleSettings?.mainlineEnabled === true ? formationContext : null, moduleConfig: moduleSettings ?? undefined });
+        let analysis;
+        try { analysis = battleAnalysis(answer.body, { stage: progress, player, battleMode, formationFacts: moduleSettings?.mainlineEnabled === true ? formationContext : null, moduleConfig: moduleSettings ?? undefined }); }
+        catch { analysis = {stage:progress,status:'ANALYSIS_UNAVAILABLE',outcome:result.outcome,playerSide:result.playerSide,recommendations:[],automaticSwitch:false,resumeAllowed:false,gaps:['可选战报分析不可用；已解析胜负保持原证据']}; }
+        assertActive(run);
+        run.journal?.settle({ runId: run.id, stage: progress, attempt, at: new Date(now()).toISOString(), result, analysis });
         view.battleAnalysis = analysis;
         view.recommendations = analysis.recommendations;
         view.lastResult = { ...result, at: new Date(now()).toISOString(), battleAnalysis: analysis };
