@@ -195,7 +195,7 @@ const refineRun=(client,operation,config=refineCfg(),extra={})=>executeBusinessO
 
 test('explicit refine selector alone extends the strict parameter whitelist and preserves omitted LEVEL',async()=>{
  assert.deepEqual(validateEquipmentGrowthParameters(refineParameters()),refineParameters());assert.deepEqual(validateEquipmentGrowthParameters({}),{});assert.equal(Object.hasOwn(validateEquipmentGrowthParameters(parameters()),'action'),false);
- for(const action of ['level','REFINE','star','replace',null,undefined,{},1])assert.throws(()=>validateEquipmentGrowthParameters({...parameters(),action}),{code:'INVALID_PARAMETERS'});
+ for(const action of ['level','REFINE','star-bulk','replace',null,undefined,{},1])assert.throws(()=>validateEquipmentGrowthParameters({...parameters(),action}),{code:'INVALID_PARAMETERS'});
  for(const extra of [{request:'EquipRefineRequest'},{count:2},{targetRefineLv:1},{universal:false},{decomposeUid:[]}])assert.throws(()=>validateEquipmentGrowthParameters({...refineParameters(),...extra}),{code:'INVALID_PARAMETERS'});
  const inherited=Object.create({action:'refine'});inherited.heroId='A';inherited.uid=uid;assert.throws(()=>validateEquipmentGrowthParameters(inherited));
  const getter={...parameters()};Object.defineProperty(getter,'action',{enumerable:true,get(){throw Error('must not access');}});assert.throws(()=>validateEquipmentGrowthParameters(getter),{code:'INVALID_PARAMETERS'});
@@ -327,4 +327,75 @@ test('fixed actual REFINE config selects exact first cost cap and refuses nonRED
  for(const row of [client.pool[0],client.heroes[0].equips[0]])row.refineLv=10;assert.equal(refinePlan(await refineSurvey(client,config),config).actions.length,0);
  for(const row of [client.pool[0],client.heroes[0].equips[0]]){row.star=1;row.refineLv=10;}const next=refinePlan(await refineSurvey(client,config),config).actions[0];assert.ok(next===undefined,'next star permits cap but stock cannot afford 108500 iron');
  client.stock.set('精铁',200000);assert.deepEqual(refinePlan(await refineSurvey(client,config),config).actions[0].costs,[{id:'精铁',num:108500},{id:'精炼石',num:120}]);
+});
+const starParameters=(heroId='A',value=uid)=>({action:'star',heroId,uid:value});
+const starCfg=()=>({tables:{EquipCfg:{data:[{id:'红武器1',type:'武器',quality:'RED'}]},EquipAttrCfg:{data:[0,1,2,3,4,5].map(star=>({id:'红武器1',star,maxLv:135+star*10,maxRefineLv:10+star}))},EquipUpStarCfg:{data:[1,2,3,4,5].map(star=>({star,upCosts:[['装备升星石',star],['精铁',star*4]]}))}}});
+function starFake({apply=true,derived=true,afterWrite,wireMode=true}={}){
+ const client=fake({wireMode}),config=starCfg();client.factContext.connectionId='equipment-connection';client.config=config;client.stock.set('装备升星石',20);
+ for(const item of [...client.pool,...client.heroes.flatMap(h=>h.equips)]){item.equipId='红武器1';item.level=5;}
+ client.mutate=function(name,body){assert.equal(name,'EquipStarUpRequest');wire(name,body);this.writes.push({name,body:structuredClone(body)});if(apply){const item=this.pool.find(row=>row.uid===body.uid),owner=this.heroes.find(h=>h.equips.some(row=>row.uid===body.uid)),row=config.tables.EquipUpStarCfg.data.find(row=>row.star===item.star+1);item.star++;if(derived){item.attr.push({attr:2,value:2.5,rating:3});owner.power='9007199254740999';owner.attributes[0].value=12;}owner.equips[owner.equips.findIndex(row=>row.uid===body.uid)]=structuredClone(item);for(const [id,num]of row.upCosts)this.stock.set(id,this.stock.get(id)-num);}afterWrite?.(this);};
+ return client;
+}
+const starSurvey=(client,p=starParameters(),config=client.config)=>survey(client,p,config);
+const starPlan=(facts,config=starCfg(),p=starParameters(),extra={})=>plan(facts,p,config,extra);
+async function starPrepared(input={}){const client=starFake(input),facts=await starSurvey(client),operation=starPlan(facts,client.config).actions[0];assert.ok(operation);return {client,facts,operation,config:client.config};}
+function starBudget(op,limits=op.budgetClaims){const scope={accountId:'account-A',generation:1,connectionId:'equipment-connection',runId:'equipment-star-run'};return {scope,runBudget:createRunBudgetContext({scope,limits}),batchId:'star-batch',limits:op.budgetClaims,ledger:null};}
+const starRun=(client,op,extra={})=>executeBusinessOperation(client,protocol,op,{adapter:equipmentGrowthModule,...options(op.parameters,client.config),allowMutate:true,budget:starBudget(op),...extra});
+test('RED STAR uses explicit next-star config and exact UID with no dedicated or preview response',async()=>{
+ const {client,facts,operation}=await starPrepared();assert.deepEqual(operation.parameters,starParameters());assert.equal(operation.actionType,'STAR');assert.deepEqual(operation.action,{request:'EquipStarUpRequest',response:null,body:{uid}});assert.equal(protocol.EquipStarUpResponse,undefined);assert.deepEqual(operation.costs,[{id:'装备升星石',num:1},{id:'精铁',num:4}]);assert.deepEqual(operation.budgetClaims,{resources:operation.costs,quotas:[],uids:[{type:'equipment',id:uid}]});assert.equal(operation.expectedState.level,5);assert.equal(operation.expectedState.star,1);
+ const view=viewEquipmentGrowth(facts,options({action:'star'},client.config));assert.ok(view.candidates.every(row=>row.actionType==='STAR'&&row.parameters.action==='star'));
+ const result=await starRun(client,operation);assert.equal(result.status,'SUCCESS');assert.equal(client.pool[0].level,5);assert.equal(client.pool[0].star,1);assert.equal(client.pool[0].attr.length,2);assert.deepEqual(client.pool[0],client.heroes[0].equips[0]);assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,0);
+});
+test('STAR requires RED worn target, reliable context, exact source config and enough of both materials',async()=>{
+ for(const change of [
+  c=>c.factContext.connectionId='',c=>c.factContext.accountId='',c=>c.config.tables.EquipCfg.data[0].quality='ORANGE',
+  c=>c.stock.set('装备升星石',0),c=>c.stock.set('精铁',3),c=>c.pool.push(structuredClone(c.pool[0])),
+  c=>{c.pool[0].star=5;c.heroes[0].equips[0].star=5;},c=>{c.pool[0].level=0;c.heroes[0].equips[0].level=0;},
+  c=>delete c.config.tables.EquipUpStarCfg,c=>c.config.tables.EquipUpStarCfg.data[0].upCosts[0][0]='RUBY',
+  c=>c.config.tables.EquipUpStarCfg.data[0].upCosts[1][1]=0,c=>c.config.tables.EquipUpStarCfg.data[0].upCosts.reverse(),
+  c=>c.config.tables.EquipUpStarCfg.data.push(c.config.tables.EquipUpStarCfg.data[0]),
+  c=>c.config.tables.EquipUpStarCfg.data[0].upCosts[0][1]=1.5,c=>c.config.tables.EquipAttrCfg.data.splice(1,1),
+  c=>c.config.tables.EquipAttrCfg.data[0].maxRefineLv=-1
+ ]){const client=starFake();change(client);assert.equal(starPlan(await starSurvey(client),client.config).actions.length,0);assert.equal(client.writes.length,0);}
+ const {client,facts}=await starPrepared();for(const p of [starParameters('B'),starParameters('A',idleUid),{action:'star'}])assert.equal(starPlan(facts,client.config,p).actions.length,0);assert.equal(starPlan(facts,client.config,starParameters(),{moduleConfig:{enabled:false}}).actions.length,0);
+ const bad=structuredClone(facts);bad.catalog.stars[0].upCosts[0][1]=-1;assert.equal(starPlan(bad,client.config).actions.length,0);
+});
+test('STAR verifier rejects preview-only effect, extra growth, reroll changes, wrong owner and exact cost mismatch',async()=>{
+ const noEffect=await starPrepared({apply:false});noEffect.client.sendWatch=async(n,b)=>{noEffect.client.mutate(n,b);return {status:'SUCCESS',equip:{...structuredClone(noEffect.client.pool[0]),star:1}};};assert.equal((await starRun(noEffect.client,noEffect.operation)).status,'UNKNOWN');
+ for(const afterWrite of [
+  c=>{c.pool[0].star++;c.heroes[0].equips[0].star++;},c=>{c.pool[0].level++;c.heroes[0].equips[0].level++;},
+  c=>{c.pool[0].refineLv++;c.heroes[0].equips[0].refineLv++;},c=>{c.pool[0].rerollAttrs=[{attr:3,value:1}];c.heroes[0].equips[0].rerollAttrs=[{attr:3,value:1}];},
+  c=>c.heroes[0].equips[0].attr[0].value++,c=>c.heroes[1].power='1',c=>c.stock.set('精铁',25),
+  c=>c.stock.set('装备升星石',18),c=>c.stock.set('GOLD',101),c=>c.heroes[1].equips.push(c.heroes[0].equips.pop()),
+  c=>delete c.heroes[0].attributes
+ ]){const {client,operation}=await starPrepared({afterWrite});const result=await starRun(client,operation);assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(client.writes.length,1);}
+});
+test('STAR config, action, budget and fresh source ordering remain independently verified',async()=>{
+ const {client,facts,operation,config}=await starPrepared();client.mutate(operation.action.request,operation.action.body);const after=await starSurvey(client);assert.equal(verifyEquipmentGrowth(operation,facts,after).confirmed,true);
+ for(const change of [o=>o.actionId='fake',o=>o.action.body.uid=otherUid,o=>o.action.response='EquipPreviewStarUpResponse',o=>o.costs[0].num++,o=>o.budgetClaims.uids=[],o=>o.expectedState.level++,o=>o.configEvidence.EquipUpStarCfg.data[0].upCosts[0][1]++,o=>o.costSource='fake']){const op=structuredClone(operation);change(op);assert.equal(verifyEquipmentGrowth(op,facts,after).confirmed,false);}
+ const older=structuredClone(after);older.sourceFacts.equips.provenance.sourceAt=facts.sourceFacts.equips.provenance.sourceAt-1;assert.equal(verifyEquipmentGrowth(operation,facts,older).confirmed,false);
+ const stale=structuredClone(facts);stale.sourceFacts.heroes.provenance.sourceAt-=31000;assert.equal(starPlan(stale,config).actions.length,0);
+ const deps=equipmentGrowthDependencyVersions(options(starParameters(),config));assert.deepEqual(Object.keys(deps),['moduleConfig','config.EquipCfg','config.EquipAttrCfg','config.EquipUpStarCfg']);
+ for(const name of ['EquipCfg','EquipAttrCfg','EquipUpStarCfg']){const changed=structuredClone(config);changed.tables[name].revision=2;assert.notDeepEqual(equipmentGrowthDependencyVersions(options(starParameters(),changed)),deps);}
+});
+test('STAR shared budget reserves both materials and same equipment UID, never retries UNKNOWN',async()=>{
+ for(const limits of [{resources:[{id:'装备升星石',num:0},{id:'精铁',num:4}],quotas:[],uids:[{type:'equipment',id:uid}]},{resources:[{id:'装备升星石',num:1},{id:'精铁',num:3}],quotas:[],uids:[{type:'equipment',id:uid}]},{resources:[{id:'装备升星石',num:1},{id:'精铁',num:4}],quotas:[],uids:[]}]){
+  const {client,operation}=await starPrepared();assert.equal((await starRun(client,operation,{budget:starBudget(operation,limits)})).status,'NOT_EXECUTED');assert.equal(client.writes.length,0);
+ }
+ const {client,operation}=await starPrepared({apply:false}),budget=starBudget(operation);assert.equal((await starRun(client,operation,{budget})).status,'UNKNOWN');assert.deepEqual(budget.runBudget.snapshot().reserved,operation.budgetClaims);assert.equal((await starRun(client,operation,{budget})).status,'NOT_EXECUTED');assert.equal(client.writes.length,1);
+});
+test('fixed actual red equipment star config selects first cost and cap without requiring maximum level',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))},client=starFake();client.config=config;client.stock.set('精铁',1000000);const op=starPlan(await starSurvey(client),config).actions[0];assert.ok(op);assert.deepEqual(op.costs,[{id:'装备升星石',num:1},{id:'精铁',num:100000}]);assert.equal(op.expectedState.level,5);
+});
+
+test('STAR source and dependency changes before transport stop with zero dispatch',async()=>{
+ for(const change of [c=>c.factContext.connectionId+='new',c=>c.factContext.generation++,c=>c.factContext.accountId='other',c=>c.config.tables.EquipUpStarCfg.data[0].upCosts[0][1]++,c=>c.config.tables.EquipAttrCfg.data[1].maxLv++,c=>{c.pool[0].star++;c.heroes[0].equips[0].star++;},c=>c.stock.set('装备升星石',0)]){const {client,operation}=await starPrepared();change(client);assert.equal((await starRun(client,operation)).status,'NOT_EXECUTED');assert.equal(client.writes.length,0);}
+});
+test('STAR evidence expiry after resource await or persisted intent never dispatches',async t=>{
+ let now=1800000000000;t.mock.method(Date,'now',()=>now);
+ for(const boundary of ['resource','intent']){now=1800000000000;const {client,operation}=await starPrepared(),budget=starBudget(operation),result=await starRun(client,operation,{budget,onStage(stage){if(boundary==='resource'&&stage==='RESOURCE_PREFLIGHT'||boundary==='intent'&&stage==='DISPATCH_INTENT')now+=30001;}});assert.equal(result.status,'NOT_EXECUTED');assert.equal(client.writes.length,0);if(boundary==='intent')assert.deepEqual(budget.runBudget.snapshot().reserved,operation.budgetClaims);}
+});
+test('STAR post-read failure and non-target rewards cannot confirm by preview or typed hints',async()=>{
+ const {client,operation}=await starPrepared(),request=client.request.bind(client);client.request=async(name,...args)=>client.writes.length&&name==='EquipsRequest'?Promise.reject(Error('post authority unavailable')):request(name,...args);assert.equal((await starRun(client,operation)).status,'UNKNOWN');assert.equal(client.writes.length,1);
+ const other=await starPrepared({afterWrite:c=>c.stock.set('new-reward',1)});assert.equal((await starRun(other.client,other.operation)).status,'UNKNOWN');
 });

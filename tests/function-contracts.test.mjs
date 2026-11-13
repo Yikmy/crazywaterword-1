@@ -205,3 +205,7 @@ test('PRO-007 uses an independent antique contract rather than remapping Museum 
  assert.deepEqual(c.inputSchema.properties.action.enum,['activate','star','suit','master','exchange']);
  assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='DIRECT_UNIVERSAL_STAR'&&!row.executable));
 });
+
+test('equipment STAR contract is explicit RED single growth and keeps replacement blocked',()=>{
+ const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.implementation.actions.includes('STAR'));assert.ok(c.inputSchema.properties.action.enum.includes('star'));assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=star').keys,['config.EquipAttrCfg','config.EquipUpStarCfg']);assert.ok(c.implementation.blockedCapabilities.some(row=>row.capability==='STAR_REPLACE'&&row.reason.includes('Replacement')));assert.match(c.verification.scope,/RED STAR\+1/);
+});

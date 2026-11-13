@@ -309,3 +309,7 @@ test('antique modes bind exact price, gate and item tables without invalidating 
  }
  noExecution(f);
 });
+
+test('equipment STAR registry declares precisely the adapter star dependencies',()=>{
+ const f=fixture(),module=f.modules['equipment-growth'],options=f.options('equipment-growth');options.parameters={action:'star'};options.config.tables.EquipUpStarCfg={revision:1,data:[{star:1,upCosts:[['装备升星石',1],['精铁',100000]]}]};const versions=module.dependencyVersions(options);assert.deepEqual(versions,equipmentGrowthModule.dependencyVersions(options));assert.equal(Object.hasOwn(versions,'config.EquipRefineCfg'),false);assert.equal(Object.hasOwn(versions,'config.EquipUpDecomposeCfg'),false);assert.ok(Object.hasOwn(versions,'config.EquipUpStarCfg'));const unrelated=clone(options);unrelated.config.tables.EquipRefineCfg={revision:9};assert.deepEqual(module.dependencyVersions(unrelated),versions);noExecution(f);
+});

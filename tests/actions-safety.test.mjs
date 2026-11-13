@@ -284,3 +284,8 @@ test('hero fragment D6 contract accepts only target fragment and matching owned 
  for(const change of [a=>a.body.fragItemId='蓝卡万能碎片',a=>a.body.fragItemId='B碎片',a=>a.body.num=0,a=>a.body.num=2147483648,a=>a.body.universal=true,a=>a.costs[0].num=6,a=>a.costs[0].id='RUBY',a=>a.costs[0].id='蓝藏万能碎片',a=>a.costs=[]]){const bad=structuredClone(action);change(bad);assert.throws(()=>assertPaymentAllowed(bad));}
  const codec=protocol.HeroFragExchangeRequest;const decoded=codec.decode(codec.encode(action.body).finish());assert.equal(decoded.fragItemId,'A碎片');assert.equal(decoded.num,7);
 });
+
+test('red equipment STAR D6 requires exact UID and two owned normal material costs',()=>{
+ const action={request:'EquipStarUpRequest',body:{uid:'9007199254740993'},costs:[{id:'装备升星石',num:1},{id:'精铁',num:100000}]};assert.deepEqual(assertPaymentAllowed(action),action);assert.equal(protocol.EquipStarUpRequest.decode(protocol.EquipStarUpRequest.encode(action.body).finish()).uid.toString(),action.body.uid);
+ for(const change of [a=>a.body.uid=9007199254740992,a=>a.body.uid='01',a=>a.body.universal=false,a=>a.costs.pop(),a=>a.costs[0].num=0,a=>a.costs[0].id='RUBY',a=>a.costs.push({id:'GOLD',num:1})]){const bad=structuredClone(action);change(bad);assert.throws(()=>assertPaymentAllowed(bad));}
+});
