@@ -1593,6 +1593,62 @@ test('naval observation callbacks expire on parameter edits, replacement views a
 test('naval pending, UNKNOWN, running, disconnect and busy states lock professional filters',async()=>{
  const h=await navalEditorPage(),apply=navalEditorApply(h),reading=h.node('gp-naval-load').click();assert.equal(apply.disabled,true);apply.click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;
  for(const status of [{blocked:true,running:false,state:'UNKNOWN'},{blocked:false,running:true}]){const data=navalEditorData();data.status=status;const read=h.node('gp-naval-load').click();h.respond('/api/gameplay',data,{module:'naval'});await read;assert.equal(navalEditorApply(h).disabled,true);navalEditorApply(h).click();}
- for(const state of ["snapshot.connected=false","snapshot.busy='other-operation'"]){const other=await navalEditorPage();other.run(state);navalEditorApply(other).click();assert.equal(writes(other).length,0);}
+ for(const state of ["snapshot={...snapshot,connected:false}","snapshot={...snapshot,busy:'other-operation'}"]){const other=await navalEditorPage();other.run(state);navalEditorApply(other).click();assert.equal(writes(other).length,0);}
  assert.equal(writes(h).length,0);
+});
+
+
+const navalRuleNodes=h=>descendants(h.node('gp-naval-rules'));
+const navalRuleButton=(h,key)=>navalRuleNodes(h).find(n=>n.dataset.navalRuleAction===key);
+const navalRuleField=(h,index,key)=>navalRuleNodes(h).find(n=>n.dataset.navalRuleIndex===String(index)&&n.dataset.navalRuleField===key);
+function navalRuleEdit(h,index,key,value) {const input=navalRuleField(h,index,key);assert.ok(input,'missing rule field '+index+':'+key);input.value=value;(input.oninput||input.onchange)();}
+function navalRuleAdd(h,id,type,value) {navalRuleButton(h,'add').click();const index=navalRuleNodes(h).filter(n=>n.dataset.navalRuleField==='id').length-1;navalRuleEdit(h,index,'id',id);navalRuleEdit(h,index,'type',type);navalRuleEdit(h,index,'value',value);}
+
+test('naval ordered rule form keeps exact target text and explicit false and zero values on the original configuration save path',async()=>{
+ const h=await navalEditorPage(),source=h.node('gp-naval-config').value;navalRuleAdd(h,'target','targetId','9007199254740995:<img onerror=alert(1)>');navalRuleAdd(h,'guild','sameGuild','false');navalRuleAdd(h,'fuel','minPetrol','0');assert.equal(h.node('gp-naval-config').value,source);assert.equal(writes(h).length,0);
+ navalRuleButton(h,'apply').click();const config=JSON.parse(h.node('gp-naval-config').value);assert.deepEqual(config.rules,[{id:'target',type:'targetId',value:'9007199254740995:<img onerror=alert(1)>'},{id:'guild',type:'sameGuild',value:false},{id:'fuel',type:'minPetrol',value:0}]);assert.deepEqual(GAMEPLAY_MODULES.naval.validateConfig(config),config);assert.equal(h.node('gp-naval-plan').disabled,true);assert.equal(h.node('gp-naval-survey').disabled,false);assert.match(h.node('gp-naval-hint').textContent,/保存配置后重新探测/);
+ const save=h.node('gp-naval-config-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:'naval',config});assert.equal(navalRuleButton(h,'apply').disabled,true);const data=navalEditorData({},(_f,c)=>Object.assign(c,config));h.respond('/api/gameplay/config',data);await save;assert.deepEqual(JSON.parse(h.node('gp-naval-config').value),config);assert.deepEqual(writes(h).map(r=>new URL(r.url,'http://localhost').pathname),['/api/gameplay/config']);assert.ok(navalRuleNodes(h).every(n=>n.tagName!=='img'));
+});
+
+test('naval ordered rules preserve draft values while reordering and invalidate detached callbacks',async()=>{
+ const h=await navalEditorPage(navalEditorData({},(_f,c)=>{c.rules=[{id:'first',type:'minPetrol',value:7},{id:'second',type:'targetState',value:1}];})),oldApply=navalRuleButton(h,'apply');navalRuleEdit(h,0,'value','123');const oldValue=navalRuleField(h,0,'value');navalRuleButton(h,'down:0').click();oldValue.value='999';oldValue.oninput();oldApply.click();assert.equal(JSON.parse(h.node('gp-naval-config').value).rules[0].value,7);assert.equal(navalRuleField(h,1,'value').value,'123');navalRuleButton(h,'apply').click();assert.deepEqual(JSON.parse(h.node('gp-naval-config').value).rules,[{id:'second',type:'targetState',value:1},{id:'first',type:'minPetrol',value:123}]);
+ navalRuleButton(h,'remove:0').click();navalRuleButton(h,'up:0').click();navalRuleButton(h,'apply').click();assert.deepEqual(JSON.parse(h.node('gp-naval-config').value).rules,[{id:'first',type:'minPetrol',value:123}]);navalRuleEdit(h,0,'value','5');navalRuleButton(h,'discard').click();assert.equal(navalRuleField(h,0,'value').value,'123');assert.equal(writes(h).length,0);
+});
+
+test('naval rule type changes require a new explicit value and never coerce numeric zero to boolean false',async()=>{
+ const h=await navalEditorPage();navalRuleAdd(h,'x','minPetrol','0');navalRuleEdit(h,0,'type','sameGuild');assert.equal(navalRuleField(h,0,'value').value,'');const source=h.node('gp-naval-config').value;navalRuleButton(h,'apply').click();assert.equal(h.node('gp-naval-config').value,source);navalRuleEdit(h,0,'value','true');navalRuleButton(h,'apply').click();assert.deepEqual(JSON.parse(h.node('gp-naval-config').value).rules,[{id:'x',type:'sameGuild',value:true}]);assert.equal(writes(h).length,0);
+});
+
+for(const [label,id,type,value]of [['empty ID','','minPetrol','1'],['empty target','id','targetId',''],['negative','id','minDurability','-1'],['fraction','id','fleetState','1.2'],['exponent','id','targetState','1e2'],['unsafe integer','id','freshTarget','9007199254740992'],['empty integer','id','freshTarget',''],['implicit boolean','id','sameGuild','']])test('naval rule form rejects '+label+' without mutating configuration',async()=>{
+ const h=await navalEditorPage(),source=h.node('gp-naval-config').value;navalRuleAdd(h,id,type,value);navalRuleButton(h,'apply').click();assert.equal(h.node('gp-naval-config').value,source);assert.match(h.node('gp-naval-hint').textContent,/规则未应用/);assert.equal(writes(h).length,0);
+});
+
+test('naval rule form refuses duplicate IDs and respects the existing 100-rule limit',async()=>{
+ const h=await navalEditorPage(),source=h.node('gp-naval-config').value;navalRuleAdd(h,'same','minPetrol','1');navalRuleAdd(h,'same','targetState','1');navalRuleButton(h,'apply').click();assert.equal(h.node('gp-naval-config').value,source);assert.match(h.node('gp-naval-hint').textContent,/不重复/);
+ const max=await navalEditorPage(navalEditorData({},(_f,c)=>{c.rules=Array.from({length:100},(_,i)=>({id:'r'+i,type:'minPetrol',value:0}));}));assert.equal(navalRuleButton(max,'add').disabled,true);navalRuleButton(max,'add').click();assert.equal(navalRuleNodes(max).filter(n=>n.dataset.navalRuleField==='id').length,100);navalRuleButton(max,'apply').click();assert.equal(GAMEPLAY_MODULES.naval.validateConfig(JSON.parse(max.node('gp-naval-config').value)).rules.length,100);assert.equal(writes(max).length,0);
+});
+
+test('naval malformed or unsupported old rules are retained for explicit JSON repair rather than dropped',async()=>{
+ for(const rules of [null,[{id:'x',type:'playerSide',value:'LEFT'}],[{id:'x',type:'minPetrol',value:1,request:'untrusted'}]]){
+  const data=navalEditorData();data.config.rules=rules;const h=await navalEditorPage(data),source=h.node('gp-naval-config').value;assert.match(h.node('gp-naval-rules').textContent,/高级配置JSON修正/);assert.equal(navalRuleButton(h,'apply'),undefined);assert.equal(h.node('gp-naval-config').value,source);assert.equal(writes(h).length,0);
+  h.node('gp-naval-config').value=JSON.stringify({...data.config,rules:[]});h.node('gp-naval-config').oninput();assert.ok(navalRuleButton(h,'apply'));navalRuleAdd(h,'repaired','freshTarget','0');navalRuleButton(h,'apply').click();assert.equal(JSON.parse(h.node('gp-naval-config').value).rules[0].value,0);
+ }
+});
+
+test('naval applying no rules keeps empty-rule UNKNOWN semantics and never invents default permissions',async()=>{
+ const h=await navalEditorPage(navalEditorData({},(_f,c)=>{c.rules=[{id:'fuel',type:'minPetrol',value:1}];}));navalRuleButton(h,'remove:0').click();navalRuleButton(h,'apply').click();assert.deepEqual(JSON.parse(h.node('gp-naval-config').value).rules,[]);assert.match(h.node('gp-naval-rules').textContent,/缺事实保持UNKNOWN/);assert.equal(h.node('gp-naval-authorize').disabled,true);assert.equal(writes(h).length,0);
+});
+
+test('naval saved rule traces use original FAIL and UNKNOWN authority without borrowing mainline sides or a local clock',async()=>{
+ const data=navalEditorData({},(f,c)=>{f.gameTime={status:'UNKNOWN',reliable:false};c.rules=[{id:'fuel',type:'minPetrol',value:600},{id:'age',type:'freshTarget',value:10}];}),h=await navalEditorPage(data);assert.deepEqual(data.view.targets.map(r=>r.status),['FAIL','FAIL','FAIL']);assert.ok(data.view.targets.every(r=>r.ruleTrace.find(t=>t.id==='age').status==='UNKNOWN'));assert.match(h.node('gp-naval-observations').textContent,/权威事实不符合规则/);assert.match(h.node('gp-naval-observations').textContent,/UNKNOWN/);assert.equal(h.node('gp-naval-plan').disabled,true);assert.equal(writes(h).length,0);
+});
+
+test('naval unsaved rule drafts survive same-source refresh but old callbacks cannot edit the new account-bound form',async()=>{
+ const h=await navalEditorPage();navalRuleAdd(h,'keep','minPetrol','23');const oldApply=navalRuleButton(h,'apply'),oldField=navalRuleField(h,0,'value'),reading=h.node('gp-naval-load').click();assert.equal(oldApply.disabled,true);oldApply.click();h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await reading;assert.equal(navalRuleField(h,0,'value').value,'23');oldField.value='999';oldField.oninput();oldApply.click();assert.deepEqual(JSON.parse(h.node('gp-naval-config').value).rules,[]);navalRuleButton(h,'apply').click();assert.equal(JSON.parse(h.node('gp-naval-config').value).rules[0].value,23);
+ const apply=navalRuleButton(h,'apply'),late=h.node('gp-naval-load').click();h.run("selectAccount('B');selectAccount('A')");h.respond('/api/gameplay',navalEditorData(),{module:'naval'});await late;apply.click();assert.equal(h.node('gp-naval-rules').textContent,'');assert.equal(writes(h).length,0);
+});
+
+test('naval config edits expire old rule drafts and pending or UNKNOWN never saves them implicitly',async()=>{
+ const h=await navalEditorPage();navalRuleAdd(h,'old','minPetrol','1');const old=navalRuleButton(h,'apply');h.node('gp-naval-config').value=JSON.stringify({...navalEditorData().config,rules:[{id:'new',type:'targetState',value:2}]});h.node('gp-naval-config').oninput();old.click();assert.equal(navalRuleField(h,0,'id').value,'new');assert.equal(JSON.parse(h.node('gp-naval-config').value).rules[0].id,'new');
+ const data=navalEditorData();data.status={running:false,blocked:true,state:'UNKNOWN'};const read=h.node('gp-naval-load').click();h.respond('/api/gameplay',data,{module:'naval'});await read;assert.equal(navalRuleButton(h,'apply').disabled,true);navalRuleButton(h,'apply').click();assert.equal(writes(h).length,0);
 });

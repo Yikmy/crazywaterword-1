@@ -43,3 +43,12 @@ test('D6 premium block remains absolute for verified business requests and unkno
  assert.throws(()=>assertPaymentAllowed({request:'UnregisteredRequest',body:{},costs:[]}),{code:'COST_UNKNOWN'});
  assert.doesNotThrow(()=>assertPaymentAllowed({request:'SaveFormationRequest',body:{module:1},costs:[]}));
 });
+
+
+test('shared naval rule metadata retains the original exact type and 100-rule boundaries',async()=>{
+ const { NAVAL_RULE_CONTRACT,validateModuleConfig }=await import('../src/gameplay-settings.mjs');assert.equal(Object.isFrozen(NAVAL_RULE_CONTRACT),true);assert.equal(Object.isFrozen(NAVAL_RULE_CONTRACT.types),true);assert.equal(NAVAL_RULE_CONTRACT.maxRules,100);
+ const check=rules=>validateModuleConfig({rules},GAMEPLAY_MODULES.naval.defaultConfig);
+ for(const type of [['targetId'],['minPetrol'],new String('minPetrol'),{},'__proto__','constructor','playerSide'])assert.throws(()=>check([{id:'x',type,value:1}]));
+ for(const [type,kind]of Object.entries(NAVAL_RULE_CONTRACT.types)){const value=kind==='text'?'exact-key':kind==='boolean'?false:0;assert.deepEqual(check([{id:'x',type,value}]).rules,[{id:'x',type,value}]);}
+ const rules=Array.from({length:100},(_,i)=>({id:'r'+i,type:'freshTarget',value:0}));assert.equal(check(rules).rules.length,100);assert.throws(()=>check([...rules,{id:'overflow',type:'freshTarget',value:0}]));
+});
