@@ -3,6 +3,7 @@
 import { validateWorkflow } from './workflow.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
+import { validateMailParameters } from './mail.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorld } from './world.mjs';
@@ -138,6 +139,12 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
+      if(phase==='tasks'&&row?.kind==='mail'){
+        exact(row,['kind','pageNo','emailId','action']);
+        if(!['claim','read'].includes(row.action))invalid('Tasks邮件仅支持明确单封claim/read');
+        try{parameters=validateMailParameters({pageNo:row.pageNo,emailId:row.emailId,action:row.action});}catch{invalid('Tasks邮件须明确来源页和精确正int64邮件ID');}
+        steps.push({phase,index,module:'mail',parameters,selection});continue;
+      }
       if(['tasks','dailies'].includes(phase)&&row?.kind==='weekly-chip-task'){
         exact(row,phase==='tasks'?['kind','round','taskId']:['kind','round','taskId','action']);
         if(!['round','taskId'].every(k=>Number.isSafeInteger(row[k])&&row[k]>=1&&row[k]<=2147483647)||phase==='dailies'&&row.action!=='claim')invalid('周芯片任务须明确当前轮次、任务ID及日常action=claim');

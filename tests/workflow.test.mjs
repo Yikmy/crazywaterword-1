@@ -650,3 +650,14 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' daily alliance ord
  const claim=compileUnifiedExecution({...input,dailies:[{taskId:1012,action:'claim'}]},{modules:registry}).graph.nodes.find(n=>n.type==='ACTION');assert.equal(claim.module,'task-rewards');assert.deepEqual(claim.parameters,{kind:'daily',taskId:1012});
  for(const parameters of [{},{cityId:0},{cityId:'1'},{cityId:2147483648},{cityId:1,season:1},{cityId:1,request:'FinishGuildOrderRequest'}])assert.throws(()=>compileUnifiedExecution({...input,dailies:[{taskId:1012,parameters}]},{modules:registry}),{code:'WORKFLOW_INVALID'});
 });
+
+for(const entry of ['tasks','loop'])test('unified '+entry+' exact mail intents reuse native mail Function and remain static',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),tasks=['claim','read'].map((action,index)=>({kind:'mail',pageNo:index,emailId:String(9007199254740995n+BigInt(index)),action}));
+ const input={entry,tasks,budget:{resources:[],quotas:[],uids:tasks.map(row=>({type:'mail',id:row.emailId}))},...(entry==='loop'?{rounds:2,everyMs:100}:{})},before=structuredClone(input),compiled=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES}),actions=compiled.graph.nodes.filter(n=>n.type==='ACTION');
+ assert.deepEqual(input,before);assert.deepEqual(compiled.blocked,[]);assert.equal(actions.length,entry==='loop'?4:2);for(const [index,node] of actions.entries()){const {kind,...parameters}=tasks[index%2];assert.equal(node.module,'mail');assert.deepEqual(node.parameters,parameters);assert.deepEqual(node.selection,{unique:true});}assert.equal(simulateWorkflow(compiled.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
+});
+test('unified mail declarations require exact page/ID and can never compile enumeration, bulk or raw transport into writes',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),row={kind:'mail',pageNo:0,emailId:'9007199254740995',action:'claim'},input={entry:'tasks',tasks:[row],budget:{resources:[],quotas:[],uids:[]}};
+ for(const change of [r=>delete r.pageNo,r=>delete r.emailId,r=>delete r.action,r=>r.pageNo=-1,r=>r.pageNo='0',r=>r.pageNo=2147483648,r=>r.emailId=9007199254740992,r=>r.emailId='01',r=>r.emailId='0',r=>r.emailId='9223372036854775808',r=>r.emailId=['1'],r=>r.action='enumerate',r=>r.all=true,r=>r.maxPages=2,r=>r.parameters={},r=>r.request='QuickGotReadEmailRequest']){const bad=structuredClone(row);change(bad);assert.throws(()=>compileUnifiedExecution({...input,tasks:[bad]},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});}
+ assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[row],budget:input.budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});

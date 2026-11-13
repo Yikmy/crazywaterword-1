@@ -25,7 +25,7 @@ const {saveStore}=await import('../src/accounts.mjs');
 test.after(()=>{assert.equal(path.dirname(path.resolve(isolation)),path.resolve(os.tmpdir()));fs.rmSync(isolation,{recursive:true,force:true});});
 const protocol=loadProtocol(),wire=(name,body)=>protocol[name].decode(protocol[name].encode(body).finish());
 const account='mail-account',emailId='9007199254740995',parameters={pageNo:2,action:'claim',emailId},claims={resources:[],quotas:[],uids:[{type:'mail',id:emailId}]};
-function fixture(t,{apply=true,shared=false,http=false,watchStatus='UNKNOWN',unread=false,action='claim'}={}){
+function fixture(t,{apply=true,shared=false,http=false,watchStatus='UNKNOWN',unread=false,action='claim',expectedMailIds=null}={}){
  const parameters={pageNo:2,action,emailId};
  const config={tables:{ItemCfg:{data:[{id:'抽卡券'},{id:'其他'}]}}};
  const row={emailId,subject:'synthetic mail',content:'private-content-should-not-escape',sender:'private-sender',sendTime:900,status:unread?2:1,got:false,attachment:{assets:{asset:[{type:0,id:'抽卡券',num:2},{type:1,id:'GOLD',num:5},{type:1,id:'RUBY',num:3}]},heroes:[],equips:[],antiques:[]}};
@@ -37,9 +37,9 @@ function fixture(t,{apply=true,shared=false,http=false,watchStatus='UNKNOWN',unr
   async request(name,body,response,_timeout,opts={}){assert.notEqual(opts.mutate,true);wire(name,body);state.reads.push({name,body});await state.onRead?.(name);
    const values={EmailBoxRequest:()=>{assert.equal(body.pageNo,2);return state.raw;},AllItemRequest:()=>({items:[...state.stock].filter(([id])=>!['GOLD','RUBY'].includes(id)).map(([itemId,num])=>({itemId,num}))}),AllResourceRequest:()=>({list:[{res:3,amount:state.stock.get('GOLD')},{res:4,amount:state.stock.get('RUBY')}]})};
    assert.ok(values[name],name);const decoded=wire(response,values[name]());return state.onResponse?state.onResponse(name,decoded):decoded;},
-  async sendWatch(name,body,{beforeDispatch}={}){beforeDispatch?.();assert.equal(name,'QuickGotReadEmailRequest');assert.deepEqual(toSnapshotJson(wire(name,body)),{emailId:[emailId],all:false});
+  async sendWatch(name,body,{beforeDispatch}={}){beforeDispatch?.();assert.equal(name,'QuickGotReadEmailRequest');assert.deepEqual(toSnapshotJson(wire(name,body)),{emailId:[expectedMailIds?expectedMailIds[state.writes.length]:emailId],all:false});
    const durable=file?JSON.parse(fs.readFileSync(file,'utf8')).accounts[account][0]:null;state.writes.push({name,body:structuredClone(body),durable});
-   if(apply){row.status=1;row.got=true;for(const r of row.attachment.assets.asset)state.stock.set(r.id,(state.stock.get(r.id)??0)+Number(r.num));}
+   if(apply){const target=expectedMailIds?state.raw.email.find(r=>r.emailId===body.emailId[0]):row;assert.ok(target);target.status=1;target.got=true;for(const r of target.attachment.assets.asset)state.stock.set(r.id,(state.stock.get(r.id)??0)+Number(r.num));}
    state.afterWrite?.();await state.onWatch?.();return {status:watchStatus};},
  };
  const session={id:account,client,state:'READY',generation:1,connectionId:'offline-mail-claim',player:{playerId:'17',worldId:'9'},abort:new AbortController(),busy:null,loop:{running:false,stop:{aborted:false}},log:[],snapshot:{ok:{},failed:{}}};
@@ -223,4 +223,42 @@ for(const action of ['claim','read'])test('W19 mail '+action+' unified Loop reta
 });
 test('W19 mail changed explicit business state allows a fresh plan and retains original refusal',async t=>{
  const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'});await f.execute(await f.displayed());reconnectMail(f);f.row.status=2;assert.equal((await replanMail(f,f.newService())).actions.length,1);assert.equal(f.state.writes.length,1);assert.equal(f.service.executionMemory(account).events.length,1);
+});
+
+const {compileUnifiedExecution}=await import('../src/loop.mjs');
+function mailIntent(entry='tasks',rows=[{kind:'mail',...parameters}],budget=claims){return compileUnifiedExecution({entry,tasks:rows,budget},{modules:GAMEPLAY_MODULES}).graph;}
+for(const action of ['claim','read'])test('Tasks exact '+action+' mail uses native independent settlement and shared Workflow/History ownership',async t=>{
+ const f=fixture(t,{shared:true,action}),runner=f.runner(),graph=mailIntent('tasks',[{kind:'mail',...f.options().parameters}]),paused=await runner.start(account,graph);assert.equal(paused.status,'AWAITING_AUTHORIZATION');assert.equal(paused.plan.actions[0].actionType,action==='claim'?'CLAIM':'READ');assert.equal(f.state.writes.length,0);
+ const {record}=await f.execute(paused.plan);assert.equal(record.finalStatus,'SUCCESS');assert.equal(record.actions[0].verification.status,'CONFIRMED');assert.equal(record.workflowNodeId,'tasks-0-1');assert.ok(record.workflowId);assert.equal((await runner.resume()).status,'COMPLETED');assert.deepEqual(f.state.writes[0].body,{emailId:[emailId],all:false});assert.equal(f.state.writes.length,1);
+});
+test('Tasks exact two-mail sequence independently plans and authorizes each native target and preserves cumulative UID reservation',async t=>{
+ const ids=[emailId,'9007199254740996'],f=fixture(t,{shared:true,expectedMailIds:ids}),rows=ids.map(id=>({kind:'mail',pageNo:2,emailId:id,action:'claim'})),budget={resources:[],quotas:[],uids:ids.map(id=>({type:'mail',id}))},runner=f.runner();
+ let paused=await runner.start(account,mailIntent('tasks',rows,budget));assert.equal(f.state.writes.length,0);const first=await f.execute(paused.plan);paused=await runner.resume();assert.equal(paused.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,1);assert.deepEqual(paused.plan.actions[0].target.emailId,ids[1]);assert.notEqual(paused.plan.batchId,first.record.planSummary.batchId);
+ const second=await f.execute(paused.plan);assert.equal(second.record.finalStatus,'SUCCESS');assert.equal(first.record.workflowId,second.record.workflowId);assert.equal(second.record.workflowNodeId,'tasks-1-1');assert.deepEqual(second.record.runBudget.reserved.uids,budget.uids);assert.equal((await runner.resume()).status,'COMPLETED');assert.equal(f.state.writes.length,2);assert.equal(f.state.stock.get('GOLD'),110);assert.equal(f.state.stock.get('RUBY'),15);assert.equal(f.state.stock.get('抽卡券'),4);
+});
+for(const entry of ['tasks','loop'])test('unified '+entry+' UNKNOWN mail stops siblings and a new Service cannot replay it',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'SUCCESS'}),runner=f.runner(),g=mailIntent(entry,[{kind:'mail',...parameters},{kind:'mail',...parameters,emailId:'9007199254740996'}],{resources:[],quotas:[],uids:[...claims.uids,{type:'mail',id:'9007199254740996'}]});
+ const paused=await runner.start(account,g),{record}=await f.execute(paused.plan);assert.equal(record.finalStatus,'UNKNOWN');assert.equal((await runner.resume()).status,'UNKNOWN');assert.equal(f.state.writes.length,1);const next=f.newService();reconnectMail(f);await assert.rejects(replanMail(f,next),{code:'RESPONSE_UNCERTAIN'});f.session.client={...f.client,uncertainWrites:new Map(),pending:[],watchers:[],lateResponses:new Map()};await assert.rejects(replanMail(f,next),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);
+});
+test('Tasks mail parent missing UID and write-intent persistence failure both prevent dispatch',async t=>{
+ for(const failure of ['parent','intent']){const f=fixture(t,{shared:true}),runner=f.runner(),g=mailIntent('tasks',[{kind:'mail',...parameters}],failure==='parent'?{resources:[],quotas:[],uids:[]}:claims);const paused=await runner.start(account,g);
+  if(failure==='parent'){assert.equal(paused.status,'AWAITING_AUTHORIZATION');try{await f.execute(paused.plan);}catch{}assert.equal(f.state.writes.length,0);assert.notEqual(f.service.status(account).finalStatus,'SUCCESS');continue;}
+  assert.equal(paused.status,'AWAITING_AUTHORIZATION');f.failPersist(r=>r.actions?.some(a=>a.dispatchEvidence?.state==='MAY_HAVE_DISPATCHED'));try{await f.execute(paused.plan);}catch{}finally{f.failPersist(()=>false);}assert.equal(f.state.writes.length,0);assert.notEqual(f.service.status(account).finalStatus,'SUCCESS');
+ }
+});
+test('Tasks refusal memory remains authoritative through reconnect and new Service',async t=>{
+ const f=fixture(t,{shared:true,apply:false,watchStatus:'REJECTED'}),runner=f.runner(),g=mailIntent(),paused=await runner.start(account,g);assert.equal((await f.execute(paused.plan)).record.finalStatus,'REJECTED');assert.notEqual((await runner.resume()).status,'COMPLETED');runner.stop();await runner.settle();reconnectMail(f);await assert.rejects(replanMail(f,f.newService()),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,1);
+});
+test('HTTP Tasks mail prepare is static, scoped and CSRF protected, then starts the original single-batch authorization path',async t=>{
+ const f=fixture(t,{http:true});await f.call('/api/gameplay?module=mail');const input={entry:'tasks',tasks:[{kind:'mail',...parameters}],budget:claims},before=f.state.reads.length;
+ assert.equal((await f.call('/api/workflows/prepare',{body:input,authorized:false})).status,403);const prepared=await f.call('/api/workflows/prepare',{body:input});assert.equal(prepared.status,200);assert.equal(prepared.data.graph.nodes.find(n=>n.type==='ACTION').module,'mail');assert.equal(f.state.reads.length,before);assert.equal(f.state.writes.length,0);
+ const started=await f.call('/api/workflows/start',{body:{graph:prepared.data.graph}});assert.equal(started.status,200);let status=started.data;for(let i=0;i<100&&status.status.status!=='AWAITING_AUTHORIZATION';i++){await new Promise(setImmediate);status=(await f.call('/api/workflows')).data;}assert.equal(status.status.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.deepEqual(f.counts(),{clients:0,collections:0});
+});
+
+test('unified Tasks mail cancellation with a late response retains UNKNOWN and stops the next exact target',async t=>{
+ const f=fixture(t,{shared:true}),runner=f.runner(),g=mailIntent('tasks',[{kind:'mail',...parameters},{kind:'mail',...parameters,emailId:'9007199254740996'}],{resources:[],quotas:[],uids:[...claims.uids,{type:'mail',id:'9007199254740996'}]}),paused=await runner.start(account,g);let release;
+ f.state.onWatch=()=>new Promise(resolve=>release=resolve);f.service.execute(f.session,f.authorize(paused.plan));for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.service.stop(account);release();await f.service.settle(account);const record=f.durable.list(account)[0];assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.workflowNodeId,'tasks-0-1');assert.deepEqual(record.runBudget.reserved,claims);assert.equal((await runner.resume()).status,'UNKNOWN');assert.equal(f.state.writes.length,1);await assert.rejects(replanMail(f,f.newService()));assert.equal(f.state.writes.length,1);
+});
+test('unified Loop mail never reclaims an already confirmed email in its next declared round',async t=>{
+ const f=fixture(t,{shared:true}),runner=f.runner(),compiled=compileUnifiedExecution({entry:'loop',tasks:[{kind:'mail',...parameters}],rounds:2,budget:claims},{modules:GAMEPLAY_MODULES}),paused=await runner.start(account,compiled.graph);assert.equal((await f.execute(paused.plan)).record.finalStatus,'SUCCESS');const next=await runner.resume();assert.equal(next.status,'COMPLETED');const blocked=next.trace.find(row=>row.nodeId==='tasks-0-2');assert.equal(blocked.result,'BLOCKED_NO_EXECUTABLE_CANDIDATE');assert.ok(blocked.blockedReasons.length);assert.match(next.reason,/阻塞/);assert.equal(f.state.writes.length,1);assert.equal(f.row.got,true);
 });
