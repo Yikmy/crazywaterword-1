@@ -140,7 +140,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         exact(row,['kind','taskId']);
         if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
         if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED'});continue;}
-        if(!['main','branch','achievement'].includes(row.kind))invalid('任务种类无效');
+        if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
         module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
       } else if(phase==='dailies'){
         exact(row,['taskId','parameters']);

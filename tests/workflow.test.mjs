@@ -220,3 +220,6 @@ for(const field of ['playerId','worldId'])test('workflow cannot consume old conf
 test('workflow role scope preserves exact int64 identity across equivalent Long and string representations',async()=>{
  const f=fixture();f.session.player={playerId:{low:1,high:2097152,unsigned:false},worldId:'9'};await f.runner.start(f.session.id,graph());f.session.player.playerId='9007199254740993';f.runs.push(f.success());assert.equal((await f.runner.resume()).status,'COMPLETED');assert.equal(f.released(),1);
 });
+test('unified Tasks/Loop preserve explicit daily reward ID through the original Registry path',()=>{
+ for(const entry of['tasks','loop']){const result=compileUnifiedExecution({entry,tasks:[{kind:'daily',taskId:1001}],budget:unifiedBudget},{modules:unifiedRegistry});assert.equal(result.blocked.length,0);const action=result.graph.nodes.find(n=>n.type==='ACTION');assert.equal(action.module,'task-rewards');assert.deepEqual(action.parameters,{kind:'daily',taskId:1001});assert.deepEqual(action.selection,{unique:true});assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);}
+});

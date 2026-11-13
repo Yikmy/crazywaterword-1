@@ -1,5 +1,6 @@
 // W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
+import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions } from './daily-task-rewards.mjs';
 import { taskTarget } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
@@ -54,7 +55,7 @@ export function validateTaskRewardsConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateTaskRewardsParameters(v={}) {
-  if (!fields(v,['kind','taskId']) || own(v,'kind') && !['main','branch','achievement'].includes(v.kind) || own(v,'taskId') && !positive(v.taskId) || own(v,'kind') !== own(v,'taskId')) throw invalid('任务奖励须同时指定 kind(main/branch/achievement) 与正整数 taskId，或留空读取候选');
+  if (!fields(v,['kind','taskId']) || own(v,'kind') && !['main','branch','achievement','daily'].includes(v.kind) || own(v,'taskId') && !positive(v.taskId) || own(v,'kind') !== own(v,'taskId')) throw invalid('任务奖励须同时指定 kind(main/branch/achievement/daily) 与正整数 taskId，或留空读取候选');
   return own(v,'taskId') ? {kind:v.kind,taskId:v.taskId} : {};
 }
 function roleId(value) {
@@ -88,6 +89,7 @@ function snapshot(inputs,context,parameters) {
 }
 export async function surveyTaskRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateTaskRewardsParameters(parameters);
+  if(parameters.kind==='daily')return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
   const options={signal,stop},context=contextOf(client,player),notes=[],readSources=sourcesFor(parameters);
   const active=()=>assertExecutionActive(client,options); active();
   const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
@@ -153,7 +155,9 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
     ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId}}}:{})};
 }
 export function viewTaskRewards(f,options={}) {
-  const p=validateTaskRewardsParameters(options.parameters??{}),choices=own(p,'taskId')?[p]:[
+  const p=validateTaskRewardsParameters(options.parameters??{});
+  if(p.kind==='daily')return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
+  const choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
   ];
   return {module:moduleId,tasks:copy(f?.tasks??null),candidates:choices.map(p=>candidate(f,p,options)),notes:[...(f?.notes??[]),'主线仅确认同任务明确已领及精确奖励净入；任务前移不推定成功。成就请指定 kind=achievement 与精确 taskId，复读仅接受同 ID 已领及配置奖励净入；每日订单空请求尚未接入。']};
@@ -161,11 +165,13 @@ export function viewTaskRewards(f,options={}) {
 export function planTaskRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
   parameters=validateTaskRewardsParameters(parameters);
   if(!dense(selections)||selections.length>1||selections.some(id=>!identifier(id)))throw invalid('任务奖励每批仅允许一个精确 actionId');
+  if(parameters.kind==='daily')return planDailyTaskReward(f,{...options,parameters,selections,ledger,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const rows=viewTaskRewards(f,{...options,parameters}).candidates,selected=rows.find(row=>row.executable&&selections.includes(row.actionId));
   return {module:moduleId,actions:selected&&ledger.reserve(selected.costs)?[selected]:[],notes:[]};
 }
 export function verifyTaskReward(operation,before,after,response) {
   const no=reason=>({confirmed:false,reason});
+  if(operation?.parameters?.kind==='daily')return verifyDailyTaskReward(operation,before,after,response);
   if(response!==null&&response!==undefined)return no('任务领取没有专用成功响应');
   if(!authority(before)||!authority(after)||!same(before.context,after.context))return no('前后账号、库存或任务权威不可靠');
   const p=operation?.parameters;
@@ -178,7 +184,9 @@ export function verifyTaskReward(operation,before,after,response) {
   if(!same(after.state,canonical.expectedState))return no('未同时确认单任务已领与完整库存的精确奖励净入');
   return {confirmed:true,afterState:copy(after.state),reason:'独立复读确认精确任务领取状态与奖励净入'};
 }
-export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
+export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {
+  parameters=validateTaskRewardsParameters(parameters);
+  if(parameters.kind==='daily')return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig)});
   return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))};
 }
 export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,

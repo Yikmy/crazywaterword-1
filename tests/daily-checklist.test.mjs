@@ -187,6 +187,6 @@ test('cached recruit/trial objectives point to existing controlled Functions wit
  for(const snapshot of[false,true]){
   const s=fixture({snapshot});s.raw.DailyTaskInfoRequest= snapshot?toSnapshotJson(typed('DailyTaskInfoRequest',{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]})):typed('DailyTaskInfoRequest',{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]});
   const view=dailyChecklist(s,{config});assert.deepEqual(view.tasks.rows.map(r=>r.functionId),['free-recruit','trial-challenge']);
-  assert.ok(view.tasks.rows.every(r=>!r.executable&&!Object.hasOwn(r,'action')&&r.blockedReason==='DAILY_TASK_CLAIM_CONTRACT_UNVERIFIED'));
+  assert.ok(view.tasks.rows.every(r=>!r.executable&&!Object.hasOwn(r,'action')&&r.blockedReason==='CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION'&&r.claimFunctionId==='task-rewards'&&r.claimParameters.kind==='daily'&&r.claimParameters.taskId===r.taskId));
  }
 });

@@ -1827,8 +1827,12 @@ function renderDailyChecklist(data) {
     const driver=(data.tasks||[]).find(entry=>entry.task.id===row.taskId);
     return [row.title,known(row.progress)+'/'+known(row.targetProgress),labels[row.status]||'未知',
       driver?(DAILY_LABEL[driver.status]||'未知')+(driver.reason?' · '+driver.reason:''):'前置状态未知',
-      (row.configuredReward?'活跃 '+row.configuredReward.activity+' / 经验 '+row.configuredReward.experience:'奖励配置未知')+'；领取合同待核实'];
+      (row.configuredReward?'活跃 '+row.configuredReward.activity+' / 经验 '+row.configuredReward.experience:'奖励配置未知')+'；任务奖励中指定日常 ID 后重新探测、预览与授权'];
   })));
+  if(view.tasks.rows.length){
+    const scope=viewGuard.capture(),link=el('button','','打开日常任务奖励');link.type='button';
+    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
+  }
   if(!view.tasks.rows.length)box.appendChild(el('div','dim',view.tasks.counts.total===0?'本次缓存的每日任务列表为空':'每日任务列表未知'));
   if(view.tasks.rows.some(row=>row.functionId==='pirate-sweep')){
     const scope=viewGuard.capture(),link=el('button','','打开海面扫荡');link.type='button';

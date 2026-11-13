@@ -71,7 +71,7 @@ const cases = [
   {module:'free-recruit',actionId:'free-recruit:0:synthetic',actionType:'CLAIM',parameters:{},costs:[],facts:{recruit:{hero:{freeEndTimeSeconds:0,recruitTimes:1}},broadcast:{level:1}},blockedReason:'FREE_RECRUIT_COOLDOWN'},
   {module:'free-gold',actionId:'free-gold:2000:1:synthetic',actionType:'CLAIM',parameters:{},costs:[],facts:{gold:{freeTimes:0,paidTimes:0,resetTime:2000,minGold:7500,maxPaidTimes:10}},blockedReason:'FREE_GOLD_EXHAUSTED'},
   {module:'afk-level-rewards',actionId:'afk-level-rewards:2:synthetic-exact',actionType:'CLAIM',parameters:{level:2},costs:[],facts:{afk:{level:5,rewardedLevel:0}},blockedReason:'AFK_LEVEL_TOO_LOW'},
-  ...['main','branch','achievement'].map(kind=>({module:'task-rewards',actionId:'task-rewards:'+kind+':synthetic-exact',actionType:'CLAIM',parameters:{kind,taskId:kind==='achievement'?1001:kind==='main'?1:8001},costs:[],facts:{},blockedReason:'TASK_INCOMPLETE'})),
+  ...['main','branch','achievement','daily'].map(kind=>({module:'task-rewards',actionId:'task-rewards:'+kind+':synthetic-exact',actionType:'CLAIM',parameters:{kind,taskId:kind==='achievement'?1001:kind==='main'?1:8001},costs:[],facts:{},blockedReason:'TASK_INCOMPLETE'})),
   pirateCase,
   ...[
    {actionType:'SUIT',parameters:{action:'suit',suitId:1001},costs:[],facts:{antiques:[],suits:[{suitId:1001,name:'测试套装',color:'BLUE',level:0,ownedMembers:3,requiredMembers:3,maximumLevel:200,unlockedLevel:0,effectiveNum:0,advEffectValue:0}]}},
@@ -590,4 +590,14 @@ test('material packs professional form requires exact quantity and fresh survey,
  num.value='3';button.click();assert.deepEqual(JSON.parse(h.node('gp-material-packs-parameters').value),{packId:'原料自选包',itemId:'木材',num:3});assert.equal(h.node('gp-material-packs-plan').disabled,true);assert.equal(h.node('gp-material-packs-authorize').disabled,true);assert.equal(writes(h).length,0);
  const survey=h.node('gp-material-packs-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'material-packs',parameters:{packId:'原料自选包',itemId:'木材',num:3}});h.respond('/api/gameplay/survey',data(spec));await survey;
  h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");button.click();assert.equal(h.node('gp-material-packs-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);assert.match(PAGE,/id=\"gp-material-packs-section\"/);
+});
+
+test('daily reward professional prepare validates exact ID and invalidates old preview before a new survey',async()=>{
+ const spec=cases.find(s=>s.module==='task-rewards'&&s.parameters.kind==='daily'),h=await loaded(spec),box=h.node('gp-task-rewards-facts');
+ const controls=descendants(box),input=controls.find(n=>n.dataset.dailyRewardId),prepare=controls.find(n=>n.dataset.dailyRewardPrepare);assert.ok(input&&prepare);
+ const before=h.requests.length;
+ for(const value of['','0','-1','1.5','2147483648']){input.value=value;prepare.click();assert.equal(h.requests.length,before);assert.equal(h.node('gp-task-rewards-parameters').value,'{}');}
+ input.value='1001';prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),{kind:'daily',taskId:1001});assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
+ const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'daily',taskId:1001}});h.respond('/api/gameplay/survey',data(spec));await survey;
+ h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");input.value='1002';prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
