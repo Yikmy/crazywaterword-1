@@ -132,7 +132,7 @@ export function planTrade(f,{parameters=f?.parameters??{},selections=[],ledger=n
 }
 export function verifyTrade(operation,before,after,result){
  const no=reason=>({confirmed:false,reason});
- if(!tradeAuthority(before,{settlement:true})||!tradeAuthority(after,{settlement:true})||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence))return no('贸易写前/写后事实、当前连接或活动来源不可靠');
+ if(!tradeAuthority(before,{settlement:true})||!tradeAuthority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence))return no('贸易写前/写后事实、当前连接或活动来源不可靠');
  const canonical=saleCandidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}},observationTrade(before),true);
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(operation?.[k],canonical[k])))return no('贸易合同与写前事实不一致');
  const receipt=own(result,'player')?infoOf({player:result.player}):null;
