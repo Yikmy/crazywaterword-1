@@ -220,15 +220,16 @@ export function createRunBudgetContext(input) {
   return context;
 }
 
-// Keep the existing two preflight queries. Parent budgets add finite quota/UID
-// declarations; their business eligibility must still come from adapter survey.
+// Normal resources retain the original two queries. An explicit adapter survey
+// may supply domain stock through the same finite parent/child reservation.
 export async function validateResources(client, protocol, entries, {
-  timeout = 15000, budget = { ledger: null }, claims, assertActive = () => {}, signal, stop,
+  timeout = 15000, budget = { ledger: null }, claims, assertActive = () => {}, signal, stop, readStock,
 } = {}) {
   assertExecutionActive(client, { signal, stop });
   const notExecuted = message => Object.assign(new Error(message), { code: 'NOT_EXECUTED' });
   let costs, declaration, parent, expectedLimits, expectedBatchId, executionLedger;
   try {
+    if (readStock !== undefined && typeof readStock !== 'function') throw budgetError('资源调查必须来自当前执行器的明确回调');
     costs = resourceCosts(entries);
     declaration = claims === undefined ? { resources: costs, quotas: [], uids: [] } : normalizeBudgetClaims(claims);
     const ordered = rows => JSON.stringify([...rows].sort((a, b) => a.id.localeCompare(b.id)));
@@ -263,9 +264,18 @@ export async function validateResources(client, protocol, entries, {
       if (!body || typeof body !== 'object') throw notExecuted('执行前资源余额响应无效');
       return body;
     };
-    const items = await get('AllItemRequest', 'AllItemResponse'), resources = await get('AllResourceRequest', 'AllResourceResponse');
-    if (!Array.isArray(items.items) || !Array.isArray(resources.list)) throw notExecuted('执行前资源余额数据缺失');
-    const stock = stockFromResponses(items, resources);
+    let stock;
+    if (readStock) {
+      assertActive(); assertExecutionActive(client, { signal, stop });
+      try { stock = await awaitExecution(readStock(), client, { signal, stop }); }
+      catch (error) { if (error.code === 'CANCELLED') throw error; throw notExecuted('执行前独立业务资源调查失败'); }
+      assertActive(); assertExecutionActive(client, { signal, stop }); assertParentBinding();
+      if (!(stock instanceof Map)) throw notExecuted('独立业务资源调查必须返回可靠库存 Map');
+    } else {
+      const items = await get('AllItemRequest', 'AllItemResponse'), resources = await get('AllResourceRequest', 'AllResourceResponse');
+      if (!Array.isArray(items.items) || !Array.isArray(resources.list)) throw notExecuted('执行前资源余额数据缺失');
+      stock = stockFromResponses(items, resources);
+    }
     if (!new ResourceLedger(stock).canReserve(costs)) throw notExecuted('执行前资源余额不足或不可靠');
     assertParentBinding();
     if (!budget.ledger) {

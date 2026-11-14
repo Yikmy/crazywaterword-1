@@ -30,7 +30,7 @@ function harness(kind,{boundary=null,change=null,effect=true,sendFailure=false}=
  }};
  const facts=()=>({stock:new Map(stock),stockReliable:true,sourceAt:now,state:{applied}});
  const adapter={async survey(){return facts();},plan(f){return {actions:now-f.sourceAt<=30000?[operation]:[]};},verify(_candidate,_before,after){return {confirmed:after.state.applied,afterState:after.state};},view(f){return f.state;}};
- return {client,operation,budget,writes,reads,frames,run:()=>executeBusinessOperation(client,protocol,operation,{adapter,allowMutate:true,budget,signal:controller.signal,assertCurrent(){if(!authority)throw Object.assign(Error('synthetic identity/config changed'),{code:'NOT_EXECUTED'});},timeout:100,window:0}),restore(){Date.now=originalNow;client.stop();},get now(){return now;}};
+ return {client,adapter,operation,budget,writes,reads,frames,run:()=>executeBusinessOperation(client,protocol,operation,{adapter,allowMutate:true,budget,signal:controller.signal,assertCurrent(){if(!authority)throw Object.assign(Error('synthetic identity/config changed'),{code:'NOT_EXECUTED'});},timeout:100,window:0}),restore(){Date.now=originalNow;client.stop();},get now(){return now;}};
 }
 function cleanTransport(f){assert.deepEqual(f.client.pending,[]);assert.deepEqual(f.client.watchers,[]);assert.equal(f.client.uncertainWrites.size,0);assert.equal(f.client.lateResponses.size,0);assert.equal(f.client.promptUncertain,false);}
 for(const kind of ['typed','silent'])for(const boundary of ['encoding','frame','assertTransport']){
@@ -110,4 +110,9 @@ test('W19 History rejection projection preserves business/role facts without mut
  for(const change of [v=>v.beforeState.level=2,v=>v.expectedState.level=3,v=>v.costs[0].num=4,v=>v.budgetClaims.uids[0].id='9007199254740994',v=>v.parameters.action='star',v=>v.costSource='another rule']){const next=structuredClone(op);change(next);assert.notDeepEqual(project(next,{context}),original);}
  for(const key of ['beforeState','expectedState','parameters','costs','costSource','budgetClaims']){const next=structuredClone(op);delete next[key];assert.equal(project(next,{context}),null);}
  assert.equal(project(op),null);for(const key of Object.keys(context)){const prior={...context};delete prior[key];assert.equal(project(op,{context:prior}),null);}
+});
+
+
+for(const mode of ['same','unreliable','changed','throw'])test('shared executor adapter resource survey retains exact original contract '+mode,async()=>{
+ const f=harness('silent');try{f.adapter.resourcePreflight='SURVEY';const survey=f.adapter.survey;let surveys=0;f.adapter.survey=async(...args)=>{const facts=await survey(...args);if(++surveys===2){if(mode==='unreliable')facts.stockReliable=false;if(mode==='changed')facts.sourceAt=0;if(mode==='throw')throw Error('unavailable');}return facts;};const result=await f.run();assert.equal(result.status,mode==='same'?'SUCCESS':'NOT_EXECUTED');assert.equal(f.writes.length,mode==='same'?1:0);assert.deepEqual(f.reads,[]);assert.deepEqual(f.budget.runBudget.snapshot().reserved,mode==='same'?f.operation.budgetClaims:{resources:[],quotas:[],uids:[]});}finally{f.restore();}
 });

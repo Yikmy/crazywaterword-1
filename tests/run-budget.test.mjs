@@ -208,3 +208,14 @@ test('shared budget identity length metadata stays frozen at the existing three-
  assert.deepEqual(normalizeBudgetClaims(claims([resource(id,1)],[resource(id,1)],[uid(id,id)])),claims([resource(id,1)],[resource(id,1)],[uid(id,id)]));
  for(const input of [claims([resource(id+'x',1)]),claims([],[resource(id+'x',1)]),claims([],[],[uid('mail',id+'x')]),claims([],[],[uid(id+'x','7')])])assert.throws(()=>normalizeBudgetClaims(input),{code:'RUN_BUDGET_INVALID'});
 });
+
+
+test('original resource preflight accepts fresh adapter stock without recreating or expanding the parent budget',async()=>{
+ const limits=claims([resource('TRADE_COINS:7',20)]),context=make(limits),stock=new Map([['TRADE_COINS:7',100]]),budget=batch(context,'trade',limits,{stock}),client=runtime();let reads=0;
+ await validateResources(client,{},limits.resources,{budget,claims:limits,readStock:async()=>{reads++;return new Map([['TRADE_COINS:7',1000]]);}});assert.equal(reads,1);assert.deepEqual(client.reads,[]);assert.deepEqual(reserved(context),limits);assert.deepEqual(context.snapshot().limits,limits);
+ await assert.rejects(validateResources(client,{},limits.resources,{budget,claims:limits,readStock:async()=>stock}),{code:'NOT_EXECUTED'});assert.deepEqual(reserved(context),limits);
+});
+for(const kind of ['missing','malformed','error','insufficient','cancel','parent-change'])test('adapter stock preflight refuses '+kind+' without any partial reservation',async()=>{
+ const limits=claims([resource('TRADE_COINS:7',20)]),context=make(limits),stock=new Map([['TRADE_COINS:7',100]]),budget=batch(context,'trade',limits,{stock}),client=runtime(),controller=new AbortController();const readStock=kind==='missing'?null:async()=>{if(kind==='error')throw Error('source unavailable');if(kind==='cancel')controller.abort();if(kind==='parent-change')budget.batchId='different';return kind==='malformed'?{stock:[['TRADE_COINS:7',100]]}:new Map([['TRADE_COINS:7',kind==='insufficient'?19:100]]);};
+ await assert.rejects(validateResources(client,{},limits.resources,{budget,claims:limits,signal:controller.signal,readStock}),{code:kind==='cancel'?'CANCELLED':'NOT_EXECUTED'});assert.deepEqual(reserved(context),empty());assert.deepEqual(client.reads,[]);
+});
