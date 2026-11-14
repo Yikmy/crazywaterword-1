@@ -1,3 +1,4 @@
+import { compileUnifiedExecution } from '../src/loop.mjs';
 import test from 'node:test';
 import { GameClient, readVipLevelEvent } from '../src/client.mjs';
 import { loadProtocol } from '../src/proto.mjs';
@@ -678,4 +679,28 @@ for(const fault of ['generation','account','connection','abort'])test('Service d
   if(fault==='generation')f.session.generation++;if(fault==='account')f.session.client.factContext={accountId:'B',generation:1};if(fault==='connection')f.session.connectionId='other';if(fault==='abort')f.session.abort.abort();
   release();await assert.rejects(pending,{code:'CANCELLED'});assert.equal(f.service.moduleView('A','orders').view,null);assert.equal(f.service.moduleView('B','orders').view,null);assert.equal(f.writes.length,0);
  }finally{release?.();await f.cleanup();}
+});
+
+for(const entry of ['tasks','loop'])test('compiled '+entry+' daily-order observation uses real Service cache and original durable Workflow history without planning',async()=>{
+ const f=fixture({stock:100,orderWait:true});let runner;
+ try{
+  const file=path.join(path.dirname(f.history.storagePath),'order-observe-workflows.json'),store=createWorkflowStore({file,modules:CORE_OPERATION_MODULES});
+  const input={entry,tasks:[{kind:'orderDaily',action:'observe'}],...(entry==='loop'?{rounds:2}:{}),budget:claims(0)},compiled=compileUnifiedExecution(input,{modules:CORE_OPERATION_MODULES});store.save('A',compiled.graph);
+  runner=createWorkflowRunner({operations:f.service,modules:CORE_OPERATION_MODULES,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),onUpdate:status=>store.record('A',status)});
+  const done=await runner.start('A',compiled.graph);await runner.settle();assert.equal(done.status,'COMPLETED');assert.equal(done.plan,null);assert.equal(done.runAuthorization,undefined);
+  const count=entry==='loop'?2:1;assert.equal(done.trace.filter(row=>row.module==='orders'&&row.type==='SURVEY'&&row.result==='SURVEYED').length,count);
+  const cached=f.service.moduleView('A','orders');assert.equal(cached.view.progress.completed.value,7);assert.equal(cached.view.progress.period.status,'UNKNOWN');assert.equal(cached.view.orders[0].productionWait.status,'IN_STOCK');assert.ok(cached.view.candidates.some(row=>row.executable===true));assert.equal(cached.lastPlan,null);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);assert.equal(f.service.moduleView('B','orders').view,null);assert.equal(f.reads.filter(row=>row.name==='OnWaterRequest').length,count);assert.equal(f.reads.filter(row=>row.name==='GameEffectRequest').length,count);
+  const bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules:CORE_OPERATION_MODULES}),saved=reopened.history('A').find(row=>row.runId===done.runId);
+  assert.equal(saved.resumable,false);assert.equal(saved.runAuthorization,undefined);assert.equal(saved.trace.filter(row=>row.module==='orders'&&row.type==='SURVEY').length,count);assert.equal(projectWorkflowExecutionHistory('A',saved,[]).surveys.length,count);assert.deepEqual(reopened.history('B'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(f.writes.length,0);
+ }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+for(const fault of ['stop','account','generation','connection'])test('compiled daily-order read cancels '+fault+' before accepting late survey evidence or continuing a Loop',async()=>{
+ const f=fixture({stock:100,orderWait:true});let runner,entered,release;const start=new Promise(r=>entered=r);
+ try{
+  f.state().beforeRead=async name=>{if(name==='GameEffectRequest'){entered();await new Promise(r=>release=r);}};
+  const graph=compileUnifiedExecution({entry:'loop',tasks:[{kind:'orderDaily',action:'observe'}],rounds:2,budget:claims(0)},{modules:CORE_OPERATION_MODULES}).graph;
+  runner=createWorkflowRunner({operations:f.service,modules:CORE_OPERATION_MODULES,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+  const pending=runner.start('A',graph);await start;if(fault==='stop')runner.stop();if(fault==='account')f.session.client.factContext={accountId:'B',generation:1};if(fault==='generation')f.session.generation++;if(fault==='connection')f.session.connectionId='other';release();const done=await pending;await runner.settle();
+  assert.equal(done.status,'CANCELLED');assert.equal(done.plan,null);assert.equal(done.trace.some(row=>row.result==='SURVEYED'),false);assert.equal(f.service.moduleView('A','orders').view,null);assert.equal(f.service.moduleView('B','orders').view,null);assert.equal(f.reads.filter(row=>row.name==='GameEffectRequest').length,1);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);
+ }finally{release?.();runner?.stop();await runner?.settle();await f.cleanup();}
 });

@@ -682,6 +682,7 @@ const wfTypes=['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRA
 const WF_UNIFIED_KINDS = {
  'free-recruit-cooldown':'具名免费招募冷却等待',
  'trade-leg-clock':'具名贸易航段时钟等待',
+ 'orderDaily-observe':'每日订单进度只读观察',
  'main-observe':'主线任务只读观察','branch-observe':'支线任务只读观察','achievement-observe':'成就只读观察','daily-observe':'每日任务只读观察',
  main:'主线任务领奖',branch:'支线任务领奖',achievement:'成就领奖',daily:'每日任务领奖','mail-claim':'单封邮件附件','mail-read':'单封空附件邮件已读','mail-enumeration':'只读邮箱有界枚举','afk-level-reward':'挂机单档等级奖励',
  'daily-activity':'日活跃单档领奖','daily-gift':'固定免费赠礼','weekly-lottery-gift':'周转盘免费礼包1000','weekly-unique-lottery-gift':'周翻牌免费礼包1000','weekly-chip-gift':'周芯片免费礼包1000','weekly-chip-task':'周芯片当前轮次任务领奖',
@@ -703,7 +704,7 @@ function wfUnifiedData() {
 }
 function wfUnifiedKinds() {
  const select=$('wf-unified-kind'),previous=select.value,phase=$('wf-unified-phase').value;
- const choices=phase==='tasks'?['main','branch','achievement','daily','main-observe','branch-observe','achievement-observe','daily-observe','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','mail-claim','mail-read','mail-enumeration','afk-level-reward','free-recruit-cooldown','trade-leg-clock']:['daily','daily-observe','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','free-recruit','stage','free-gold','trial-challenge','pirate-sweep','cargo-fill','alliance-order','museum','free-recruit-cooldown','trade-leg-clock'];
+ const choices=phase==='tasks'?['main','branch','achievement','daily','main-observe','branch-observe','achievement-observe','daily-observe','orderDaily-observe','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','mail-claim','mail-read','mail-enumeration','afk-level-reward','free-recruit-cooldown','trade-leg-clock']:['daily','daily-observe','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','free-recruit','stage','free-gold','trial-challenge','pirate-sweep','cargo-fill','alliance-order','museum','free-recruit-cooldown','trade-leg-clock'];
  gpClear(select);for(const kind of choices){const option=gpEl('option',WF_UNIFIED_KINDS[kind]);option.value=kind;select.appendChild(option);}
  select.value=choices.includes(previous)?previous:choices[0];wfUnifiedControls();
 }
@@ -719,7 +720,7 @@ function wfUnifiedControls() {
  $('wf-unified-cargo-index').disabled=locked||kind!=='cargo-fill';
  for(const field of ['trade-city','trade-destination'])$('wf-unified-'+field).disabled=locked||kind!=='trade-leg-clock';
  for(const field of ['museum-heroes','museum-factor'])$('wf-unified-'+field).disabled=locked||kind!=='museum';
- $('wf-unified-target-label').textContent=['free-recruit-cooldown','trade-leg-clock'].includes(kind)?'最多等待毫秒（1–60000）':kind==='mail-enumeration'?'邮箱枚举页数上限（1–100，从0页开始）':kind==='afk-level-reward'?'精确挂机奖励等级（按配置下一档）':['mail-claim','mail-read'].includes(kind)?'精确邮件 ID（正int64字符串）':kind==='cargo-fill'?'精确港口货轮编号（从1开始）':kind==='alliance-order'?'精确联盟城市 ID':kind==='museum'?'精确博物馆探险关卡 ID':kind==='stage'?'本节点最多尝试（1–200，战败停止）':kind==='pirate-sweep'?'精确海盗 UID':kind==='daily-activity'?'精确日活跃档位 ID':kind==='weekly-chip-gift'?'固定礼包：1000（当前周芯片）':kind==='weekly-unique-lottery-gift'?'固定礼包：1000（当前周翻牌）':kind==='weekly-lottery-gift'?'固定礼包：1000（当前周转盘）':kind==='daily-gift'?'固定礼包：赠礼':'精确任务 ID';
+ $('wf-unified-target-label').textContent=kind==='orderDaily-observe'?'本账号全部每日订单进度（无需任务 ID）':['free-recruit-cooldown','trade-leg-clock'].includes(kind)?'最多等待毫秒（1–60000）':kind==='mail-enumeration'?'邮箱枚举页数上限（1–100，从0页开始）':kind==='afk-level-reward'?'精确挂机奖励等级（按配置下一档）':['mail-claim','mail-read'].includes(kind)?'精确邮件 ID（正int64字符串）':kind==='cargo-fill'?'精确港口货轮编号（从1开始）':kind==='alliance-order'?'精确联盟城市 ID':kind==='museum'?'精确博物馆探险关卡 ID':kind==='stage'?'本节点最多尝试（1–200，战败停止）':kind==='pirate-sweep'?'精确海盗 UID':kind==='daily-activity'?'精确日活跃档位 ID':kind==='weekly-chip-gift'?'固定礼包：1000（当前周芯片）':kind==='weekly-unique-lottery-gift'?'固定礼包：1000（当前周翻牌）':kind==='weekly-lottery-gift'?'固定礼包：1000（当前周转盘）':kind==='daily-gift'?'固定礼包：赠礼':'精确任务 ID';
  const uid=$('wf-unified-budget-kind').value==='uids';$('wf-unified-budget-type').disabled=locked||!uid;$('wf-unified-budget-num').disabled=locked||uid;wfUnifiedBoundaryControls();
 }
 
@@ -805,6 +806,7 @@ function wfUnifiedRender() {
   if(kind==='cargo-fill')card.appendChild(gpEl('p','精确货格编号：'+String(row?.parameters?.cargoIndex??'UNKNOWN')+'；仅装自有材料，不补购。装货不证明日常完成，进度及领奖须另行核实。'));
   if(kind==='pirate-sweep')card.appendChild(gpEl('p','精确城市 ID：'+String(row?.parameters?.cityId??'UNKNOWN')+'；下级目标确认：'+(row?.parameters?.allowLowerLevel===true?'已明确':'未确认')+'。'));
   if(['mail-claim','mail-read'].includes(kind))card.appendChild(gpEl('p','精确来源页：'+String(row.pageNo??'UNKNOWN')+'；重新调查后逐项授权，UNKNOWN停止后续步骤。'));
+  if(kind==='orderDaily-observe')card.appendChild(gpEl('p','只读调查本账号订单完成计数、已领奖阈值和等待投影；周期未知，不生成动作、领取奖励或提供免费刷新资格。'));
   if(['main-observe','branch-observe','achievement-observe','daily-observe'].includes(kind))card.appendChild(gpEl('p','原任务Function只读SURVEY；不完成任务、不领取奖励、不生成动作或授权。后续写操作须另行明确声明并重新调查。'));
   if(kind==='trade-leg-clock')card.appendChild(gpEl('p','明确港口 '+row.cooldown.cityId+' → '+row.cooldown.mvToCityId+'；最多等待 '+row.cooldown.maxWaitMs+' 毫秒，同航段独立复读只确认时钟到期，不证明到达或收益，不解除拒绝或UNKNOWN。'));
   if(kind==='free-recruit-cooldown')card.appendChild(gpEl('p','原WAIT具名冷却等待；明确上限内同目标独立复读，不证明可招募，不解除拒绝或UNKNOWN，重启只读。'));
@@ -833,10 +835,11 @@ $('wf-unified-add').onclick=()=>wfUnifiedEdit(data=>{
  const phase=$('wf-unified-phase').value,kind=$('wf-unified-kind').value;
  if(!['tasks','dailies'].includes(phase)||data.entry!=='loop'&&phase!==data.entry)throw Error('步骤分组与已应用的入口不匹配');
  if(data[phase].length>=48)throw Error('每组最多48项步骤');
- const observations=['main-observe','branch-observe','achievement-observe','daily-observe'],rewards=[...observations,'free-recruit-cooldown','trade-leg-clock','mail-enumeration','afk-level-reward','mail-claim','mail-read','main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'],dailyDrivers={'free-recruit':1002,'stage':1003,'free-gold':1006,'cargo-fill':1008,'trial-challenge':1009,'pirate-sweep':1010,'alliance-order':1012,'museum':1016};let row;
+ const observations=['main-observe','branch-observe','achievement-observe','daily-observe'],rewards=[...observations,'orderDaily-observe','free-recruit-cooldown','trade-leg-clock','mail-enumeration','afk-level-reward','mail-claim','mail-read','main','branch','achievement','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'],dailyDrivers={'free-recruit':1002,'stage':1003,'free-gold':1006,'cargo-fill':1008,'trial-challenge':1009,'pirate-sweep':1010,'alliance-order':1012,'museum':1016};let row;
  if(phase==='tasks'&&!rewards.includes(kind)||phase==='dailies'&&!['free-recruit-cooldown','trade-leg-clock','daily-observe','daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...Object.keys(dailyDrivers)].includes(kind))throw Error('该分组不支持所选业务');
  if(kind==='trade-leg-clock'){for(const id of ['target','trade-city','trade-destination'])if(!/^[1-9][0-9]*$/.test($('wf-unified-'+id).value))throw Error('航段港口与等待上限须为明确正整数');const cityId=wfUnifiedNumber($('wf-unified-trade-city').value,1,2147483647,'当前港口'),mvToCityId=wfUnifiedNumber($('wf-unified-trade-destination').value,1,2147483647,'目的地港口');if(cityId===mvToCityId)throw Error('航段起点与目的地须不同');row={type:'WAIT',cooldown:{kind:'TRADE_LEG_END',cityId,mvToCityId,maxWaitMs:wfUnifiedNumber($('wf-unified-target').value,1,60000,'航段等待上限')}};}
  else if(kind==='free-recruit-cooldown'){const value=$('wf-unified-target').value;if(!/^[1-9][0-9]*$/.test(value))throw Error('冷却等待须填写1–60000的明确整数上限');row={type:'WAIT',cooldown:{kind:'FREE_RECRUIT',maxWaitMs:wfUnifiedNumber(value,1,60000,'冷却等待上限')}};}
+ else if(kind==='orderDaily-observe')row={kind:'orderDaily',action:'observe'};
  else if(observations.includes(kind)){const taskId=wfUnifiedNumber($('wf-unified-target').value,1,2147483647,'只读任务ID');row=phase==='tasks'?{kind:kind.slice(0,-8),taskId,action:'observe'}:{taskId,action:'observe'};}
  else if(kind==='mail-enumeration')row={kind,maxPages:wfUnifiedNumber($('wf-unified-target').value,1,100,'邮箱枚举页数上限')};
  else if(kind==='afk-level-reward')row={kind,level:wfUnifiedNumber($('wf-unified-target').value,1,2147483647,'挂机奖励等级')};

@@ -928,3 +928,22 @@ for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK
  for(const change of [r=>delete r.taskId,r=>r.taskId=0,r=>r.taskId='71',r=>r.taskId=2147483648,r=>delete r.progress,r=>r.progress=1,r=>r.progress='01',r=>r.progress='-1',r=>r.progress='9223372036854775808',r=>r.eligible=true,r=>r.rewardClaimed=false]){const bad=structuredClone(rule);change(bad);assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:bad}),{modules}),{code:'WORKFLOW_INVALID'});}
  for(const entry of ['tasks','dailies','loop']){const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger=rule;const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.runPolicy.eventTrigger,rule);}
 });
+
+for(const entry of ['tasks','loop'])test('unified '+entry+' daily-order observation compiles only the original Orders SURVEY with no invented task identity',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const input={entry,tasks:[{kind:'orderDaily',action:'observe'}],...(entry==='loop'?{rounds:2,everyMs:0}:{}),budget:{resources:[],quotas:[],uids:[]}},before=structuredClone(input);
+ const result=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES}),nodes=result.graph.nodes.filter(n=>n.type==='SURVEY');
+ assert.deepEqual(input,before);assert.deepEqual(result.blocked,[]);assert.equal(nodes.length,entry==='loop'?2:1);assert.ok(nodes.every(n=>n.module==='orders'));assert.ok(nodes.every(n=>JSON.stringify(n.parameters)==='{}'));assert.ok(nodes.every(n=>!Object.hasOwn(n,'selection')));assert.equal(result.graph.nodes.some(n=>n.type==='ACTION'),false);assert.equal(simulateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);assert.deepEqual(result.graph.budget,input.budget);
+ const claim=compileUnifiedExecution({entry,tasks:[{kind:'orderDaily',taskId:6}],budget:input.budget},{modules:GAMEPLAY_MODULES});assert.equal(claim.graph,null);assert.equal(claim.blocked[0].reason,'DAILY_ORDER_CONTRACT_UNVERIFIED');
+});
+test('daily-order observation accepts only an explicit account observation and cannot carry claims or transport authority',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),budget={resources:[],quotas:[],uids:[]},row={kind:'orderDaily',action:'observe'};
+ for(const extra of [{taskId:6},{tierId:6},{index:0},{parameters:{}},{selection:{unique:true}},{request:'GetNextOrderOTDRewardRequest'},{body:{}},{period:'today'},{eligible:true},{allowPaid:true},{budget},{claim:true}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{...row,...extra}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ for(const action of ['observe-and-claim','claim','',null])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{...row,action}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[row],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ const missing={...GAMEPLAY_MODULES};delete missing.orders;assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[row],budget},{modules:missing}),{code:'WORKFLOW_INVALID'});
+});
+test('mixed unified daily-order observation preserves separate blocked reward intent and independent task business',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),input={entry:'loop',tasks:[{kind:'orderDaily',action:'observe'},{kind:'orderDaily',taskId:6},{kind:'main',taskId:1,action:'observe'},{kind:'main',taskId:1}],budget:{resources:[],quotas:[],uids:[]}},result=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(result.blocked,[{phase:'tasks',index:1,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED',taskId:6}]);assert.deepEqual(result.graph.nodes.filter(n=>n.module).map(n=>[n.type,n.module]),[['SURVEY','orders'],['SURVEY','task-rewards'],['ACTION','task-rewards']]);assert.deepEqual(result.graph.nodes.find(n=>n.type==='ACTION').parameters,{kind:'main',taskId:1});assert.deepEqual(result.graph.preparation.blocked,result.blocked);
+});

@@ -148,6 +148,13 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         exact(row,['type','cooldown']);if(!Object.hasOwn(row,'cooldown'))invalid('统一等待须明确具名冷却来源及等待上限');
         steps.push({type:'WAIT',phase,index,cooldown:structuredClone(row.cooldown)});continue;
       }
+      // The daily-order counter is account observation, not a task/reward ID.
+      // Keep the legacy claim below blocked; only the explicit read intent maps
+      // to the existing Orders Function and its unchanged survey contract.
+      if(phase==='tasks'&&row?.kind==='orderDaily'&&row.action==='observe'){
+        exact(row,['kind','action']);
+        steps.push({type:'SURVEY',phase,index,module:'orders',parameters:{}});continue;
+      }
       // Explicit observation reuses the native survey; no plan, selection or claim is generated.
       if(['tasks','dailies'].includes(phase)&&row?.action==='observe'){
         exact(row,phase==='tasks'?['kind','taskId','action']:['taskId','action']);
