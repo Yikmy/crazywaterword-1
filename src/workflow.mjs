@@ -19,6 +19,22 @@ import { summarizeNavalObservation, validateNavalObservationSummary } from './na
 export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072, runDurationMs: 86400000, actionPlans: 200, rounds: 200 });
 const TYPES = new Set(['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP']);
 const ACTIVE = new Set(['STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION']);
+const historyIdentity = value => typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 512 || Number.isSafeInteger(value) && value >= 0;
+function captureWorkflowContext(session) {
+  const player = session.player, own = (value, key) => value && Object.hasOwn(value, key) ? toSnapshotJson(value[key]) : null;
+  const playerId = own(player, 'playerId'), worldId = own(player, 'worldId');
+  return { accountId: session.id, playerId: historyIdentity(playerId) ? playerId : null, worldId: historyIdentity(worldId) ? worldId : null,
+    generation: Number.isSafeInteger(session.generation) && session.generation >= 0 && Object.hasOwn(session, 'generation') ? session.generation : null,
+    connectionId: Object.hasOwn(session, 'connectionId') && typeof session.connectionId === 'string' && historyIdentity(session.connectionId) ? session.connectionId : null };
+}
+function validateWorkflowContext(value, accountId) {
+  const keys = ['accountId','playerId','worldId','generation','connectionId'];
+  if (!plain(value) || Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key)) || value.accountId !== accountId ||
+      ['playerId','worldId'].some(key => value[key] !== null && !historyIdentity(value[key])) ||
+      value.generation !== null && (!Number.isSafeInteger(value.generation) || value.generation < 0) ||
+      value.connectionId !== null && !(typeof value.connectionId === 'string' && historyIdentity(value.connectionId))) throw fail('工作流原始身份记录无效');
+  return copy(value);
+}
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype,null].includes(Object.getPrototypeOf(value));
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const copy = value => structuredClone(value);
@@ -273,7 +289,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
   let context = null, task = null, starting = false, resuming = false, finishing = false, authorizing = false;
   const now = () => new Date(clock()).toISOString();
-  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), ...(context.authorizationOffer?{authorizationOffer:context.authorizationOffer}:{}),...(context.runAuthorization?{runAuthorization:context.runAuthorization}:{}),...(context.trigger?{trigger:context.trigger}:{}),...(context.eventTrigger?{eventTrigger:context.eventTrigger}:{}), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(context.graph.runPolicy?{runPolicy:context.graph.runPolicy,expiresAt:context.expiresAt,actionPlans:context.actionPlans,...(context.graph.runPolicy.maxRounds!==undefined?{round:context.round,completedRounds:context.completedRounds}:{})}:{}), ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
+  function getStatus() { if (!context) return { status: 'IDLE', running: false }; const parent=operations.workflowBudget?.(context.accountId); if(parent?.scope.runId===context.runId)context.runBudget=parent; return copy({ runId: context.runId, accountId: context.accountId, executionContext: context.executionContext, workflowId: context.graph.id, ...(context.graph.preparation ? {preparation:copy(context.graph.preparation)} : {}), status: context.status, running: ACTIVE.has(context.status), ...(context.authorizationOffer?{authorizationOffer:context.authorizationOffer}:{}),...(context.runAuthorization?{runAuthorization:context.runAuthorization}:{}),...(context.trigger?{trigger:context.trigger}:{}),...(context.eventTrigger?{eventTrigger:context.eventTrigger}:{}), currentNode: context.nodeId, steps: context.steps, startedAt: context.startedAt, finishedAt: context.finishedAt, reason: context.reason, plan: context.waitingPlan, lastRun: context.lastRun ? { runId: context.lastRun.runId, finalStatus: context.lastRun.finalStatus, finishedAt: context.lastRun.finishedAt } : null, trace: context.trace, ...(context.graph.runPolicy?{runPolicy:context.graph.runPolicy,expiresAt:context.expiresAt,actionPlans:context.actionPlans,...(context.graph.runPolicy.maxRounds!==undefined?{round:context.round,completedRounds:context.completedRounds}:{})}:{}), ...(operations.workflowBudget ? {runBudget:context.runBudget??null} : {}) }); }
   // Capture both owners: the Console session and the existing client's live
   // connection facts. Reusing a client must never inherit an old workflow.
   const identityScope = player => [player?.playerId, player?.worldId].map(value => { const normalized=toSnapshotJson(value); return typeof normalized==='number'||typeof normalized==='string'?String(normalized):JSON.stringify(normalized); });
@@ -405,7 +421,7 @@ function repeatAfterStop(ctx,node){
     const validated = validateWorkflow(graph, { modules }); starting = true;
     try {
       const session = await getSession(accountId); if (!session || session.id !== accountId) throw fail('工作流账号会话不存在');
-      const ctx = { accountId, session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
+      const ctx = { accountId, executionContext: captureWorkflowContext(session), session, generation: session.generation, client: session.client, connectionScope: connectionScope(session), roleScope: roleScope(session), sessionSignal: session.abort?.signal, runId: randomUUID(), graph: validated.workflow, nodeId: validated.workflow.nodes.find(node => node.type === 'START').id, status: 'STARTING', steps: 0, startedAt: now(), finishedAt: null, reason: null, trace: [], waitingPlan: null, lastRun: null, lastPlan: null, cancel: new AbortController(), claimed: false };
       if(ctx.graph.runPolicy){ctx.expiresAt=new Date(Date.parse(ctx.startedAt)+ctx.graph.runPolicy.maxDurationMs).toISOString();ctx.actionPlans=0;if(ctx.graph.runPolicy.maxRounds!==undefined){ctx.round=1;ctx.completedRounds=0;}}
       if(ctx.graph.runPolicy?.schedule){const schedule=ctx.graph.runPolicy.schedule;ctx.trigger={state:'PENDING',armedAt:null,firedAt:null,missedAt:null};if(schedule.kind!=='ONCE'){const identity=toSnapshotJson(session.player??{});if(['playerId','worldId'].some(key=>!(typeof identity[key]==='string'&&identity[key].trim()===identity[key]&&identity[key].length>0||Number.isSafeInteger(identity[key])&&identity[key]>=0)))throw fail('日周触发必须绑定明确角色与世界');Object.assign(ctx.trigger,{scheduledAt:workflowScheduledAt(schedule,ctx.startedAt),playerId:String(identity.playerId),worldId:String(identity.worldId)});}}
       if(ctx.graph.runPolicy?.eventTrigger)ctx.eventTrigger={state:'PENDING',baseline:workflowEventCursor(session,ctx.graph.runPolicy.eventTrigger),armedAt:null,firedAt:null,observedAt:null,event:null};
@@ -564,8 +580,23 @@ function workflowRunAuthorizationLink(workflowRun,run){
  return{status:'MATCHED',...expected};
 }
 
-// Audit the records already present in the two stores. The current graph can
-// have been edited since the run, so only its persisted ACTION trace is used.
+// Original workflow observations remain separate from recovery display state and
+// Operation results. Missing legacy identity is never filled from a live Session.
+function workflowReasonAudit(run) {
+  const original = plain(run.originalState) ? run.originalState : run.recovered === true || run.status === 'RECOVERED_STOPPED' ? null : { status: run.status, reason: run.reason };
+  const recoveryOnly = !original || original.status === 'RECOVERED_STOPPED';
+  const reason = !recoveryOnly && Object.hasOwn(original, 'reason') && typeof original.reason === 'string' && original.reason.trim().length > 0 && original.reason.length <= 4000 ? original.reason : null;
+  const trace = Array.isArray(run.trace) && run.trace.length <= WORKFLOW_LIMITS.steps ? run.trace : [];
+  return { source: 'Workflow.original-reasons.v1', accountId: run.accountId, workflowRunId: run.runId, workflowDefinitionId: run.workflowId,
+    readOnly: true, coverage: 'recorded-fields-only', originalStatus: recoveryOnly ? null : original.status,
+    executionContext: run.executionContext === undefined ? null : validateWorkflowContext(run.executionContext, run.accountId),
+    reason: { source: 'Workflow.run.reason', coverage: recoveryOnly ? 'RECOVERY_ONLY' : reason === null ? 'UNKNOWN' : 'RECORDED', text: reason },
+    events: trace.map((row, index) => ({ index, nodeId: row.nodeId, type: row.type, result: row.result,
+      timestamp: row.timestamp ?? null, round: row.round ?? null, source: 'Workflow.run.trace',
+      ...(row.blockedReasons ? { blockedReasons: copy(traceEvidence(row).blockedReasons) } : {}) })) };
+}
+
+// Link only persisted ACTION traces; the current graph may have changed.
 export function projectWorkflowExecutionHistory(accountId, workflowRun, operationRuns) {
   if (workflowRun?.accountId !== accountId || !historyId(workflowRun?.runId) || !text(workflowRun?.workflowId) ||
       !Array.isArray(operationRuns)) throw fail('缺少精确的账号与工作流历史');
@@ -616,7 +647,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
   return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.runAuthorization?{runAuthorization:copy(workflowRun.runAuthorization)}:{}),...(workflowRun.trigger?{trigger:copy(workflowRun.trigger)}:{}),...(workflowRun.eventTrigger?{eventTrigger:copy(workflowRun.eventTrigger)}:{}), ...(workflowRun.runPolicy?{runPolicy:validateRunPolicy(workflowRun.runPolicy),expiresAt:workflowRun.expiresAt,actionPlans:workflowRun.actionPlans,...(workflowRun.runPolicy.maxRounds!==undefined?{round:workflowRun.round,completedRounds:workflowRun.completedRounds}:{})}:{}), ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
     currentNode: workflowRun.currentNode ?? null, reason: workflowRun.reason ?? null,
-    readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
+    readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount, reasonAudit: workflowReasonAudit(workflowRun),
     waits: trace.filter(row=>row?.type==='WAIT'||row?.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result)).map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
     surveys: trace.filter(row=>row?.type==='SURVEY'&&row.result==='SURVEYED').map(row=>({nodeId:row.nodeId,timestamp:row.timestamp??null,...traceEvidence(row)})),
     nodes: [...nodes.values()] };
@@ -653,7 +684,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
         || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
-    try { validateCooldownWaitHistory(run);validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit(run,modules);if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
+    try { if(run.executionContext!==undefined)validateWorkflowContext(run.executionContext,accountId);validateCooldownWaitHistory(run);validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit(run,modules);if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
     if (run.trace === undefined) return true;
     if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
@@ -710,8 +741,9 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function list(accountId) { const raw = read(); return copy(Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].workflows : []); }
   function save(accountId, graph) { const validated = validateWorkflow(graph, { modules }).workflow, raw = read(), account = entry(raw, accountId); account.workflows = [validated, ...account.workflows.filter(existing => existing.id !== validated.id)]; write(raw); return copy(validated); }
   function record(accountId, run) {
-    const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans','runAuthorization','round','completedRounds','trigger','eventTrigger'];
+    const allowed = ['executionContext','runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans','runAuthorization','round','completedRounds','trigger','eventTrigger'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
+    if(run.executionContext!==undefined)validateWorkflowContext(run.executionContext,accountId);
     validateCooldownWaitHistory(run);validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit({...run,accountId},modules);
     if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');}
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
@@ -727,10 +759,12 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
     // An active snapshot is only live if the current server-owned runner still
     // holds that exact run. Neither the saved snapshot nor the caller can resume it.
     const entries = Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId].history : [];
-    return copy(runId === null ? entries : entries.filter(run => run.runId === runId)).map(run =>
-      ACTIVE.has(run.status) && run.runId !== liveRunId
-        ? { ...run, status: 'RECOVERED_STOPPED', recovered: true, resumable: false, reason: '恢复历史仅供查看；必须重新显式启动与逐批授权' }
-        : { ...run, resumable: false });
+    return copy(runId === null ? entries : entries.filter(run => run.runId === runId)).map(run => {
+      const originalState = { status: run.status, reason: run.reason ?? null };
+      return ACTIVE.has(run.status) && run.runId !== liveRunId
+        ? { ...run, originalState, status: 'RECOVERED_STOPPED', recovered: true, resumable: false, reason: '恢复历史仅供查看；必须重新显式启动与逐批授权' }
+        : { ...run, originalState, resumable: false };
+    });
   }
   function remove(accountId, workflowId) { const raw = read(), account = entry(raw, accountId); account.workflows = account.workflows.filter(graph => graph.id !== workflowId); write(raw); return list(accountId); }
   return { list, load: list, save, remove, record, history };

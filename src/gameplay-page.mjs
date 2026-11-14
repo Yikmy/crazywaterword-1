@@ -1019,11 +1019,41 @@ function wfHistoryList(rows) {
   if (select.value !== previous) wfHistoryChanged();
   wfHistoryControls();
 }
+function wfOriginalHistory(data) {
+  const audit = data.reasonAudit;
+  if (audit === undefined) return null;
+  const txt = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 4000;
+  const identity = value => value === null || typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 512 || Number.isSafeInteger(value) && value >= 0;
+  if (!audit || audit.source !== 'Workflow.original-reasons.v1' || audit.accountId !== data.accountId || audit.workflowRunId !== data.workflowRunId || audit.workflowDefinitionId !== data.workflowDefinitionId || audit.readOnly !== true || audit.coverage !== 'recorded-fields-only' ||
+      audit.originalStatus !== null && !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED'].includes(audit.originalStatus) ||
+      !audit.reason || audit.reason.source !== 'Workflow.run.reason' || !['RECORDED','UNKNOWN','RECOVERY_ONLY'].includes(audit.reason.coverage) ||
+      (audit.reason.coverage === 'RECORDED' ? !txt(audit.reason.text) : audit.reason.text !== null) ||
+      !Array.isArray(audit.events) || audit.events.length > 200) throw Error('工作流原始原因归属不匹配');
+  const ctx = audit.executionContext;
+  if (ctx !== null && (!ctx || ctx.accountId !== data.accountId || !identity(ctx.playerId) || !identity(ctx.worldId) ||
+      ctx.generation !== null && (!Number.isSafeInteger(ctx.generation) || ctx.generation < 0) || ctx.connectionId !== null && !(typeof ctx.connectionId === 'string' && identity(ctx.connectionId)))) throw Error('工作流原始身份不匹配');
+  for (let i = 0; i < audit.events.length; i++) {
+    const row = audit.events[i];
+    if (!row || row.index !== i || row.source !== 'Workflow.run.trace' || !txt(row.nodeId) || !txt(row.result) ||
+        !['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP'].includes(row.type) ||
+        row.timestamp !== null && !txt(row.timestamp) || row.round !== null && (!Number.isSafeInteger(row.round) || row.round < 1 || row.round > 200) ||
+        row.blockedReasons !== undefined && (!Array.isArray(row.blockedReasons) || row.blockedReasons.length > 50 || Array.from(row.blockedReasons).some(value => !txt(value)))) throw Error('工作流原始节点原因无效');
+  }
+  return audit;
+}
 function wfHistoryRender(data) {
   const box = gpClear($('wf-history-detail'));
   box.appendChild(gpEl('p', '运行 ' + data.workflowRunId + ' · 流程 ' + data.workflowDefinitionId + ' · ' + data.status + (data.recovered ? ' · 已恢复的只读记录' : '')));
   if(data.currentNode)box.appendChild(gpEl('p','原运行位置：'+data.currentNode+'；位置记录不证明该节点完成或业务成功。'));
   if(data.reason)box.appendChild(gpEl('p','运行说明：'+data.reason));
+  const original = wfOriginalHistory(data);
+  if (!original) box.appendChild(gpEl('p', '原始工作流原因与身份摘要不可用。'));
+  else {
+    const ctx = original.executionContext, known = value => value === null || value === undefined ? '未知' : String(value);
+    box.appendChild(gpEl('p', '原始记录状态：' + known(original.originalStatus) + ' · 角色 ' + known(ctx?.playerId) + ' · 世界 ' + known(ctx?.worldId) + ' · 代次 ' + known(ctx?.generation) + '；仅原运行归属，不能恢复执行。'));
+    box.appendChild(gpEl('p', '原始运行原因：' + (original.reason.coverage === 'RECORDED' ? original.reason.text : original.reason.coverage === 'RECOVERY_ONLY' ? '未知（仅有恢复提示）' : '未知（未记录）')));
+    for (const row of original.events) box.appendChild(gpEl('p', '原节点记录 ' + row.nodeId + ' · ' + row.type + ' · ' + row.result + (row.round === null ? '' : ' · 第 ' + row.round + ' 轮') + (row.blockedReasons?.length ? ' · 原因 ' + row.blockedReasons.join('、') : '') + '；原始观察，不证明动作已派发或结算。'));
+  }
   if (data.preparation) {
     box.appendChild(gpEl('p', '原声明入口：' + data.preparation.entry + '；编译未纳入 ' + data.preparation.blocked.length + ' 项。此信息仅供审计，不证明游戏资格或已执行。'));
     if(data.preparation.source)gpDetails(box,'原准备来源引用（仅审计，不证明当前资格）',data.preparation.source);
@@ -1098,6 +1128,7 @@ async function wfReadHistory() {
     const data = await call('/api/workflows/history?workflowRunId=' + encodeURIComponent(runId), undefined, scope);
     if (!live()) return;
     if (data.accountId !== scope.account || data.workflowRunId !== runId || data.readOnly !== true || data.resumable !== false || !Array.isArray(data.nodes)) throw Error('工作流历史归属不匹配');
+    wfOriginalHistory(data);
     wfHistoryRender(data);
   } catch (error) {
     if (live()) { gpClear($('wf-history-detail')); $('wf-history-hint').textContent = '历史读取失败：' + error.message; }

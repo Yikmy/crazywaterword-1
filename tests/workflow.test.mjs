@@ -974,3 +974,64 @@ test('factory clock persisted completed and pending waits reopen read-only and r
 for(const fault of ['stop','generation','client'])test('factory clock WAIT discards a late persisted start after '+fault,async t=>{
  const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),session={id:'A',generation:1,client:{},abort:new AbortController()};let entered,release,reads=0;const gate=new Promise(r=>release=r),waiting=new Promise(r=>entered=r);const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,getSession:()=>session,isCurrent:(s,g,c)=>s===session&&g===session.generation&&c===session.client,claim:()=>()=>{},operations:{async surveyModule(){reads++;return {accountId:'A',module:'production',view:{queueClocks:[await factoryClockObserved()]}};},plan(){assert.fail('no plan');},history:()=>({runs:[]})},async onUpdate(row){if(row.trace.some(r=>r.result==='WAIT_STARTED')){entered();await gate;}}});t.after(async()=>{release();runner.stop();await runner.settle();});const run=runner.start('A',factoryClockGraph());await waiting;if(fault==='stop')runner.stop();if(fault==='generation')session.generation++;if(fault==='client')session.client={};release();await run;await runner.settle();assert.equal(runner.getStatus().status,'CANCELLED');assert.equal(reads,1);assert.equal(runner.getStatus().trace.some(r=>r.result==='WAITED'),false);
 });
+
+test('original no-operation Workflow audit captures start identity and survives readonly restart',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-origin-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules}),f=fixture({}, {onUpdate:state=>store.record('account-1',state)});
+ f.session.player={playerId:'9007199254740993',worldId:0};f.session.connectionId='original-connection';
+ const pending=await f.runner.start(f.session.id,graph());
+ assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(f.runs.length,0);
+ const expected={accountId:'account-1',playerId:'9007199254740993',worldId:0,generation:1,connectionId:'original-connection'};
+ assert.deepEqual(pending.executionContext,expected);
+ pending.executionContext.playerId='mutated-copy';
+ f.session.player.playerId='different-role';f.session.player.worldId=99;f.session.connectionId='new-connection';f.session.generation++;
+ assert.deepEqual(f.runner.getStatus().executionContext,expected);
+ const bytes=fs.readFileSync(file,'utf8'),restored=createWorkflowStore({file,modules}),[run]=restored.history('account-1');
+ const audit=projectWorkflowExecutionHistory('account-1',run,[]).reasonAudit;
+ assert.equal(run.status,'RECOVERED_STOPPED');assert.equal(audit.originalStatus,'AWAITING_AUTHORIZATION');assert.deepEqual(audit.executionContext,expected);
+ assert.deepEqual(audit.reason,{source:'Workflow.run.reason',coverage:'RECORDED',text:pending.reason});assert.equal(audit.reason.text,'须由用户单次授权并执行当前具体计划');
+ assert.ok(audit.events.some(row=>row.type==='ACTION'&&row.result==='AWAITING_AUTHORIZATION'));
+ assert.deepEqual(restored.history('foreign-account'),[]);audit.executionContext.worldId=999;
+ assert.deepEqual(restored.history('account-1')[0].executionContext,expected);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ f.runner.stop();await f.runner.settle();assert.equal(f.calls.some(row=>['execute','authorize'].includes(row[0])),false);
+});
+
+test('condition failure and missed calendar retain original no-action reasons',async()=>{
+ const f=fixture({surveyModule:async()=>({eligible:false})});f.session.player={playerId:'role',worldId:7};
+ const g={version:1,id:'condition-skip',name:'condition skip',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'fixture'},{id:'c',type:'CONDITION',condition:{source:'survey',path:['eligible'],operator:'EQ',value:true}},{id:'b',type:'BRANCH'},{id:'a',type:'ACTION',module:'fixture',selection:'operation-1'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'c'},{from:'c',to:'b'},{from:'b',to:'a',when:'PASS'},{from:'b',to:'z',when:'FAIL'},{from:'a',to:'z'}]};
+ const result=await f.runner.start(f.session.id,g),audit=projectWorkflowExecutionHistory(f.session.id,result,[]).reasonAudit;
+ assert.equal(result.status,'COMPLETED');assert.ok(audit.events.some(row=>row.nodeId==='c'&&row.result==='FAIL'));assert.ok(audit.events.some(row=>row.nodeId==='b'&&row.result==='FAIL'));
+ assert.equal(audit.events.some(row=>row.nodeId==='a'),false);assert.equal(f.calls.some(row=>row[0]==='plan'),false);assert.equal(audit.reason.text,result.reason);
+ const missed=await f.runner.start(f.session.id,scheduledGraph(999,readOnly(),{modules:[],maxActions:0}));
+ const missedAudit=projectWorkflowExecutionHistory(f.session.id,missed,[]).reasonAudit;
+ assert.equal(missed.status,'STOPPED');assert.equal(missed.trigger.state,'MISSED');assert.equal(missedAudit.reason.text,missed.reason);assert.match(missedAudit.reason.text,/错过/);assert.deepEqual(missedAudit.events,[]);
+ assert.equal(missedAudit.executionContext.playerId,'role');
+});
+
+test('legacy and recovery-only Workflow reasons never borrow identity or synthetic reasons',()=>{
+ const base={accountId:'A',runId:'legacy',workflowId:'legacy-graph',status:'RECOVERED_STOPPED',recovered:true,reason:'synthetic recovery only',trace:[]};
+ const audit=projectWorkflowExecutionHistory('A',base,[]).reasonAudit;
+ assert.equal(audit.executionContext,null);assert.equal(audit.originalStatus,null);assert.deepEqual(audit.reason,{source:'Workflow.run.reason',coverage:'RECOVERY_ONLY',text:null});
+ for(const reason of [undefined,null,'', ' '.repeat(2),'x'.repeat(4001),{text:'not recorded text'}]){
+  const old=projectWorkflowExecutionHistory('A',{...base,recovered:false,status:'STOPPED',reason},[]).reasonAudit;
+  assert.equal(old.originalStatus,'STOPPED');assert.equal(old.reason.text,null);assert.equal(old.reason.coverage,'UNKNOWN');assert.equal(old.executionContext,null);
+ }
+});
+
+test('Workflow provenance rejects unsafe or foreign stored contexts without overwriting evidence',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-workflow-context-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules}),executionContext={accountId:'A',playerId:'p',worldId:0,generation:1,connectionId:'c'},base={accountId:'A',runId:'run',workflowId:'workflow',status:'COMPLETED',trace:[],executionContext};
+ store.record('A',base);const bytes=fs.readFileSync(file,'utf8');
+ for(const ctx of [{...executionContext,accountId:'B'},{...executionContext,playerId:9007199254740992},{...executionContext,worldId:' 0'},{...executionContext,generation:-1},{...executionContext,connectionId:''},{...executionContext,token:'secret'},{}]){
+  assert.throws(()=>store.record('A',{...base,executionContext:ctx}),{code:'WORKFLOW_INVALID'});assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }
+ const raw=JSON.parse(bytes);raw.accounts.A.history[0].executionContext.worldId=1.5;const corrupt=JSON.stringify(raw);fs.writeFileSync(file,corrupt);
+ assert.throws(()=>createWorkflowStore({file,modules}).history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),corrupt);
+});
+
+test('Workflow provenance leaves missing and inherited start identity fields unknown',async()=>{
+ const f=fixture();f.session.player=Object.create({playerId:'inherited',worldId:1});
+ const result=await f.runner.start(f.session.id,readOnly());
+ assert.deepEqual(result.executionContext,{accountId:f.session.id,playerId:null,worldId:null,generation:1,connectionId:null});
+ const audit=projectWorkflowExecutionHistory(f.session.id,result,[]).reasonAudit;assert.equal(audit.executionContext.playerId,null);assert.equal(audit.executionContext.worldId,null);
+});

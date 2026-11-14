@@ -448,3 +448,27 @@ test('Orders original history HTTP returns only captured counts without game rea
  const {observeOrderProgress,summarizeOrderProgress}=await import('../src/order-execution.mjs'),f=fixture('orders-observation-http');t.after(()=>f.close());const orderProgress=summarizeOrderProgress({progress:observeOrderProgress(null,{orderOfTheDay:{orderNum:0,rewardedNum:0}})});
  f.workflowStore.record('A',{runId:'orders-http',workflowId:'orders-graph',status:'COMPLETED',trace:[{nodeId:'q',type:'SURVEY',module:'orders',result:'SURVEYED',orderProgress}]});const bytes=fs.readFileSync(workflowFile,'utf8'),response=await f.request(historyUrl('A','orders-http'));assert.equal(response.status,200);assert.deepEqual(response.data.surveys[0].orderProgress,orderProgress);assert.equal(response.data.readOnly,true);assert.equal(response.data.resumable,false);assert.deepEqual(response.data.nodes,[]);assert.deepEqual(f.sent,[]);assert.equal((await f.request(historyUrl('B','orders-http'))).status,404);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
 });
+
+test('existing Workflow HTTP history preserves original no-action causes without Session or Operation evidence',async t=>{
+ const f=fixture('no-operation-original-causes');t.after(()=>f.close());
+ const executionContext={accountId:'A',playerId:'9007199254740993',worldId:0,generation:12,connectionId:'original-connection'};
+ const cases=[
+  {runId:'original-pause',status:'AWAITING_AUTHORIZATION',reason:null,trace:[{nodeId:'action',type:'ACTION',result:'AWAITING_AUTHORIZATION'}]},
+  {runId:'original-condition',status:'COMPLETED',reason:'工作流到达 STOP',trace:[{nodeId:'condition',type:'CONDITION',result:'FAIL'},{nodeId:'branch',type:'BRANCH',result:'FAIL'},{nodeId:'stop',type:'STOP',result:'STOP'}]},
+  {runId:'original-calendar',status:'STOPPED',reason:'明确触发时间已错过，按SKIP跳过且不补跑',trace:[]},
+  {runId:'original-unknown',status:'UNKNOWN',reason:'条件事实缺失',trace:[]}
+ ];
+ for(const row of cases)f.workflowStore.record('A',{accountId:'A',workflowId:'no-operation',executionContext,...row});
+ f.workflowStore.record('B',{accountId:'B',workflowId:'no-operation',runId:'foreign-original',status:'STOPPED',reason:'foreign reason'});
+ const bytes=fs.readFileSync(workflowFile,'utf8');
+ for(const row of cases){
+  const result=await f.request(historyUrl('A',row.runId));assert.equal(result.status,200);
+  const audit=result.data.reasonAudit;assert.equal(audit.source,'Workflow.original-reasons.v1');assert.equal(audit.readOnly,true);assert.deepEqual(audit.executionContext,executionContext);assert.equal(audit.originalStatus,row.status);assert.equal(audit.reason.text,row.reason);assert.deepEqual(audit.events.map(e=>[e.nodeId,e.type,e.result]),row.trace.map(e=>[e.nodeId,e.type,e.result]));
+  assert.ok(result.data.nodes.every(node=>node.batches.length===0));assert.equal(result.data.resumable,false);assert.equal((await f.request(historyUrl('B',row.runId))).status,404);
+ }
+ assert.equal(f.sessions.size,0);assert.deepEqual(f.sent,[]);assert.deepEqual(f.history.list('A'),[]);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
+ const legacyRunId='legacy-no-context';f.workflowStore.record('A',{runId:legacyRunId,workflowId:'legacy',status:'WAITING',reason:'original wait',trace:[]});
+ const session=f.ready();session.player={playerId:'unrelated-current-role',worldId:55};
+ const legacy=(await f.request(historyUrl('A',legacyRunId))).data;
+ assert.equal(legacy.reasonAudit.executionContext,null);assert.equal(legacy.reasonAudit.originalStatus,'WAITING');assert.equal(legacy.reasonAudit.reason.text,'original wait');assert.notEqual(legacy.reason,legacy.reasonAudit.reason.text);assert.deepEqual(f.sent,[]);
+});

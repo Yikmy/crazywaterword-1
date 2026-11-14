@@ -468,3 +468,26 @@ for(const status of ['PROJECTED_WAIT','ELAPSED_UNCONFIRMED','OBSERVED_NO_MARKER'
  assert.equal(card.children.find(e=>e.dataset.workflowSelection==='a').children[1].disabled,true);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/plan'),undefined);
  h.select('B');assert.doesNotMatch(h.node('wf-nodes').textContent,/观察完成 12 单/);
 });
+
+function originalWorkflowAudit(){return {source:'Workflow.original-reasons.v1',accountId:'A',workflowRunId:'run/one',workflowDefinitionId:'definition',readOnly:true,coverage:'recorded-fields-only',originalStatus:'AWAITING_AUTHORIZATION',executionContext:{accountId:'A',playerId:'9007199254740993',worldId:0,generation:1,connectionId:'original-connection'},reason:{source:'Workflow.run.reason',coverage:'UNKNOWN',text:null},events:[{index:0,nodeId:'<condition>',type:'CONDITION',result:'FAIL',timestamp:null,round:null,source:'Workflow.run.trace'},{index:1,nodeId:'action',type:'ACTION',result:'AWAITING_AUTHORIZATION',timestamp:null,round:null,source:'Workflow.run.trace'}]};}
+
+test('existing Workflow history page renders original no-operation reasons and identity without authority',async()=>{
+ const h=await historyBoot(),task=h.node('wf-history-read').onclick(),detail=workflowHistoryDetail();detail.nodes=[];detail.workflowDefinitionId='definition';detail.reasonAudit=originalWorkflowAudit();
+ h.respond(workflowHistoryPath('run/one'),detail);await task;const text=h.node('wf-history-detail').textContent;
+ for(const value of ['原始记录状态：AWAITING_AUTHORIZATION','角色 9007199254740993','世界 0','原始运行原因：未知（未记录）','<condition>','FAIL','不能恢复执行','不证明动作已派发或结算'])assert.ok(text.includes(value),value);
+ assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.ok(h.requests.every(row=>row.body===null));
+});
+
+test('Workflow history rejects mismatched original provenance and cannot display stale causes',async()=>{
+ for(const mutate of [a=>a.accountId='B',a=>a.workflowRunId='other',a=>a.workflowDefinitionId='other',a=>a.executionContext.accountId='B',a=>a.executionContext.playerId=9007199254740992,a=>a.events[0].index=9,a=>a.events[0].source='Operation.action',a=>a.reason.text='invented',a=>a.events[0].blockedReasons=Array(1)]){
+  const h=await historyBoot(),task=h.node('wf-history-read').onclick(),detail=workflowHistoryDetail();detail.workflowDefinitionId='definition';detail.reasonAudit=originalWorkflowAudit();mutate(detail.reasonAudit);
+  h.respond(workflowHistoryPath('run/one'),detail);await task;assert.equal(h.node('wf-history-detail').textContent,'');assert.match(h.node('wf-history-hint').textContent,/历史读取失败/);assert.equal(h.node('wf-authorize').disabled,true);
+ }
+ const h=await historyBoot(),task=h.node('wf-history-read').onclick(),detail=workflowHistoryDetail();detail.workflowDefinitionId='definition';detail.reasonAudit=originalWorkflowAudit();h.select('B');h.select('A');h.respond(workflowHistoryPath('run/one'),detail);await task;assert.equal(h.node('wf-history-detail').textContent,'');
+});
+
+test('Workflow legacy history displays unavailable provenance and keeps recovery-only reasons unknown',async()=>{
+ const h=await historyBoot();let task=h.node('wf-history-read').onclick();h.respond(workflowHistoryPath('run/one'),workflowHistoryDetail());await task;assert.match(h.node('wf-history-detail').textContent,/原始工作流原因与身份摘要不可用/);
+ task=h.node('wf-history-read').onclick();const detail=workflowHistoryDetail();detail.workflowDefinitionId='definition';detail.reasonAudit={...originalWorkflowAudit(),originalStatus:null,executionContext:null,reason:{source:'Workflow.run.reason',coverage:'RECOVERY_ONLY',text:null},events:[]};h.respond(workflowHistoryPath('run/one'),detail);await task;
+ assert.match(h.node('wf-history-detail').textContent,/角色 未知 · 世界 未知/);assert.match(h.node('wf-history-detail').textContent,/未知（仅有恢复提示）/);
+});
