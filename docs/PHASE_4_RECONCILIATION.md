@@ -1,6 +1,6 @@
 # PHASE 4 — Roadmap Reconciliation & System Integration（历史报告）
 
-日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文保留当时版本的历史增量；不改写原Master、原Inventory或历史验收。当前唯一进度基线为[ROADMAP_RECONCILIATION](ROADMAP_RECONCILIATION.md)，本报告旧状态表和审批表不覆盖其当前状态。
+日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文保留当时版本的历史增量；不改写原Master、原Inventory或历史验收。当前唯一进度基线为[ROADMAP_RECONCILIATION](ROADMAP_RECONCILIATION.md)，本报告旧状态表和审批表不覆盖其当前状态。以下§2–7及附录中的“当前”“本轮”“下一步”均限定2026-11-11历史版本；旧NOT_STARTED、NEEDS_OWNER_DECISION和阶段审批措辞不构成现行施工指令。2026-11-15按已提交源码1495e48重新对齐，当前进度、未提交改动和下一批工作仅维护在ROADMAP。
 
 ## 1. 权威路线图与Git基线
 
@@ -12,7 +12,7 @@
 
 原未跟踪6份输入全部保留且不混入功能提交：CAPABILITY_INVENTORY.md、docs/baseline.md、docs/blueprint.md、docs/标准三维度拆分表单.md、docs/PHASE_2_REAL_E2E_ACCEPTANCE.md、docs/ROADMAP_RECONCILIATION.md。保留data/work/E2E，不读真实凭证、不连接游戏、不改代理/CA、不修改main、不reset/clean/强制覆盖、不推送。
 
-PHASE3本轮可明确实施的离线功能完成，仍待Owner阶段验收。提前交付原PHASE4/5/6/8的部分能力，不等于这些原阶段通过。本轮已批准推进PHASE4，但未授权真实游戏写入。
+当时PHASE3可明确实施的离线功能完成，曾登记待Owner阶段验收。提前交付原PHASE4/5/6/8的部分能力，不等于这些原阶段通过。后续Owner已授权按原DAG连续离线施工，旧阶段审批不再阻塞独立开发；真实游戏操作仍须另行授权。
 
 后续源码已补齐本报告当时标缺的科技单升、极限来源复制、Stage逐场持久历史、共享拒绝记忆、父预算、唯一Console写所有者、有限日周/可信事件和原生拖拽等子集。此说明仅纠正历史适用范围，不另建当前账本；完整程度、API/UI/Workflow/测试及真实边界统一见ROADMAP的M/C/P/S/Inventory表。原测试数量、失败和真实业务写0帧保持历史原义，不能作为当前重新执行结果。
 
@@ -118,9 +118,9 @@ flowchart TD
 
 科技本地客户端证据：GuildTechPop:1525、GuildTechUtil:1527、GuildModel:1473、WorldIdRule:3603、SeasonTaskModel:2821、LoginProxy:1925，静态main game.js哈希a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54。科技Upgrade只有techId，不把目标等级塞进协议；目标由前态level+1和新读确认。真实season来自Session player.worldId，stage来自SeasonTaskStageResponse.stage，不接调用者伪造。
 
-互助缺可信限额/冷却不解禁；DonateFort独立堡垒建设，不是任意成员转物；帮助每reqId一件不包装成任意数量转账。科技reset不在原4.4，不扩展。D6继续硬拒。D1/D2/D4需要未来Owner架构决定，不阻塞本轮既有单进程、单批、离线科技适配和历史细分。
+互助缺可信限额/冷却不解禁；DonateFort独立堡垒建设，不是任意成员转物；帮助每reqId一件不包装成任意数量转账。科技reset不在本历史报告的原4.4实施批次；它仍属于当前W10完整目标，缺证操作单独冻结。D6继续硬拒。当时D1/D2/D4的待决记录仅为历史；现已沿用唯一Console所有者、原父预算和有限调度，按原DAG推进，不要求再次选择已完成架构。
 
-## 7. 本轮实施结果与验收边界
+## 7. 2026-11-11历史实施结果与验收边界
 
 已在路线图对齐后从a505019创建独立分支codex/phase-4-alliance-integration。原PHASE4范围明确，因此继续完成证据充分的离线实现；原阶段仍PARTIAL，不把帮助/求助阻塞和真实验收缺口改成通过。
 
@@ -169,7 +169,7 @@ API/UI：复用GET /api/gameplay?module=alliance、POST /api/gameplay/survey、/
 
 仍待证据/验收：Alliance帮助配额/日用量/冷却与Ask完整链，Museum Complete/Reward pending身份，Treasure抵达/战斗/掠夺/奖励链，Fleet允许加速/真实攻城/敌对移动成本/持续监听跟随。PHASE2真实订单/建设/生产、写后复读、真实历史/UNKNOWN恢复均未通过；原已批准升级心跳超时、业务写0次记录原样保留。本轮没有连接真实游戏或真实业务写。
 
-下一步先由Owner验收本轮离线结果；D1跨进程owner建议先决定唯一服务进程还是租约方案，D2父预算/持续调度需单独合同，D4是否重排R1–R8仍未决定，不以本轮开发自动授权。需要真实验证时再给精确目标、成本、风险和权威复读方案并单独获批。保持原PHASE4的阻塞项明示，不自动进入PHASE5。
+上述为当时的交付与测试记录，不作为当前停工或重复审批依据。当前依照ROADMAP的R1–R8/W01–W22原DAG连续施工；各具体缺证操作保留BLOCKED_EVIDENCE，R7在全范围冻结后统一执行，R8另列具体授权清单。历史887/887及29组selftest不计为当前HEAD重跑或真实验收通过。
 
 ## 附录：95项原Cxxx起点账本
 
