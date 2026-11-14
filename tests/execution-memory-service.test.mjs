@@ -359,3 +359,15 @@ for(const selection of ['one',{actionId:'one'}])test('explicit remembered refusa
   assert.equal(projected.nodes.find(row=>row.nodeId==='blocked').batches.length,0);assert.equal(projected.nodes.find(row=>row.nodeId==='independent').batches.length,1);
  }finally{runner?.stop();await runner?.settle();await next?.cleanup();await f.cleanup();}
 });
+
+for(const mode of ['workflow','node','generation','capability'])test('W19 UNKNOWN reconciliation cannot inherit mismatched original linkage '+mode,async()=>{
+ const f=fixture({outcome:'UNKNOWN'});let restarted;
+ try{
+  const executed=await f.execute(await f.plan()),original=f.history.list('A')[0],event=f.service.executionMemory('A').events[0];
+  const changed=structuredClone(original);if(mode==='workflow')changed.workflowId='another-workflow-run';if(mode==='node')changed.workflowNodeId='another-node';if(mode==='generation')changed.executionContext.generation++;if(mode==='capability')changed.actions[0].capabilityId='another-capability';
+  f.history.put(changed);f.history.appendReconciliation('A',executed.started.runId,'one',{status:'NOT_APPLIED',timestamp:new Date().toISOString(),evidence:{method:'synthetic exact original row reconciliation'}});
+  restarted=fixture({file:f.historyFile});const historyBytes=fs.readFileSync(f.historyFile,'utf8'),memoryBytes=fs.readFileSync(f.memoryFile,'utf8'),audit=restarted.service.executionMemory('A');
+  assert.equal(audit.events[0].eventId,event.eventId);assert.equal(audit.events[0].historyOrigin.status,'ORIGIN_MISMATCH');assert.equal(audit.events[0].historyOrigin.resolved,false);assert.equal(audit.events[0].status,'UNKNOWN');
+  assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memoryBytes);await assert.rejects(restarted.plan(),{code:'MEMORY_ORIGIN_UNRESOLVED'});assert.equal(restarted.writes.length,0);assert.equal(restarted.reads.length,0);assert.deepEqual(restarted.service.executionMemory('B').events,[]);
+ }finally{await restarted?.cleanup();await f.cleanup();}
+});

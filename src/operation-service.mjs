@@ -95,7 +95,9 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       .flatMap(run=>run.actions.filter(row=>row.actionId===event.actionId&&(row.module??run.module)===event.module&&row.actionType===event.actionType).map(row=>({run,row})));
     if(matches.length!==1)return {status:'ORIGIN_UNAVAILABLE',resolved:false,workflowDefinitionId:null};
     const {run,row}=matches[0],input=memoryInput(run,row);
-    if(!input||input.status!==event.status||executionMemoryKey({module:input.module,actionType:input.actionType,target:input.target})!==event.key||operationDigest(toSnapshotJson(input.identity))!==event.identityDigest)return {status:'ORIGIN_MISMATCH',resolved:false,workflowDefinitionId:null};
+    // A same action digest cannot transfer reconciliation across original
+    // Workflow/node, execution generation or capability ownership.
+    if(!input||input.status!==event.status||['workflowId','nodeId','generation','capabilityId'].some(key=>input[key]!==event[key])||executionMemoryKey({module:input.module,actionType:input.actionType,target:input.target})!==event.key||operationDigest(toSnapshotJson(input.identity))!==event.identityDigest)return {status:'ORIGIN_MISMATCH',resolved:false,workflowDefinitionId:null};
     const last=row.reconciliations?.at(-1),resolved=['APPLIED','NOT_APPLIED'].includes(last?.status)&&!actionNeedsReconciliation(run,row);
     return {status:resolved?last.status:actionNeedsReconciliation(run,row)?'STILL_UNKNOWN':row.result,resolved,workflowDefinitionId:run.workflowDefinitionId??null,operationRunId:run.runId,workflowRunId:run.workflowId??null,nodeId:run.workflowNodeId??null};
   }
