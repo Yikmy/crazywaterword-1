@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -398,4 +398,28 @@ for(const mode of ['gap','zero','role','world','connection','stop'])test('mercha
  else if(mode==='zero')socket.receive('SCGuildShipReset',{shipId:[41]},0);
  else {if(mode==='role')f.client.factContext.playerId='2';if(mode==='world')f.client.factContext.worldId='18';if(mode==='connection')f.client.factContext.connectionId='new';if(mode==='stop')f.client.stop();socket.receive('SCGuildShipReset',{shipId:[41]},2);}
  assert.equal(read(f.client).status,'UNKNOWN');assert.equal(read(f.client).reliable,false);
+});
+
+const progressTask=(id=1001,progress=0)=>({id,progress,targetProgress:5,rewardClaimed:false});
+test('daily progress source uses exact private typed push after successful login and never grants claim eligibility',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);const socket=await f.ready({result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:'9'}}),baseline=readDailyTaskProgressEvent(f.client);
+ assert.equal(baseline.reliable,true);assert.equal(baseline.cursor,0);assert.equal(baseline.event,null);f.client.emit('message',{name:'SCDailyTaskUpdate',seq:1,body:{task:progressTask()}});assert.equal(readDailyTaskProgressEvent(f.client).cursor,0);
+ f.client.readDailyTaskProgressEvent=()=>({reliable:true});assert.equal(readDailyTaskProgressEvent({readDailyTaskProgressEvent:()=>baseline}).reliable,false);
+ socket.receive('SCDailyTaskUpdate',{task:progressTask()},1);const observed=readDailyTaskProgressEvent(f.client);assert.equal(observed.source,'SCDailyTaskUpdate.task');assert.equal(observed.playerId,'9007199254740993');assert.equal(observed.event.progress,0);assert.equal(observed.event.targetProgress,5);assert.equal(observed.event.rewardClaimed,false);assert.equal(observed.cursor,1);assert.equal(observed.streamId,baseline.streamId);assert.notEqual(observed.streamId,readDailyResetEvent(f.client).streamId);assert.equal(readDailyResetEvent(f.client).cursor,0);
+ observed.event.progress=999;assert.equal(readDailyTaskProgressEvent(f.client).event.progress,0);assert.equal(Object.hasOwn(observed,'eligibility'),false);
+});
+test('daily progress deduplicates unchanged progress and claimed-only updates but resets its baseline on new daily reset',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login());socket.receive('SCDailyTaskUpdate',{task:progressTask()},1);const source=readDailyTaskProgressEvent(f.client);socket.receive('SCDailyTaskUpdate',{task:progressTask()},1);socket.receive('SCDailyTaskUpdate',{task:{...progressTask(),rewardClaimed:true}},2);assert.equal(readDailyTaskProgressEvent(f.client).cursor,1);
+ socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,1)},3);assert.equal(readDailyTaskProgressEvent(f.client).cursor,2);socket.receive('SCDailyWeeklyReset',{},4);assert.equal(readDailyTaskProgressEvent(f.client).streamId,source.streamId);socket.receive('SCDailyTaskReset',{dailyResetTime:1000},5);const reset=readDailyTaskProgressEvent(f.client);assert.notEqual(reset.streamId,source.streamId);assert.equal(reset.cursor,0);assert.equal(reset.event,null);socket.receive('SCDailyTaskUpdate',{task:progressTask()},6);assert.equal(readDailyTaskProgressEvent(f.client).event.progress,0);
+});
+for(const field of ['id','progress','targetProgress','rewardClaimed'])test('daily progress never fills missing wire scalar '+field,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login()),task=progressTask();delete task[field];socket.receive('SCDailyTaskUpdate',{task},1);assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);assert.equal(readDailyResetEvent(f.client).reliable,true);assert.equal(readDailyResetEvent(f.client).cacheRevision,1);socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,1)},2);assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);
+});
+for(const fault of ['rollback','zero-id','negative','gap','decode','account','generation','connection','terminal','zero-seq'])test('daily progress retains source isolation and fails closed on '+fault,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login());socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,1)},1);
+ if(fault==='rollback')socket.receive('SCDailyTaskUpdate',{task:progressTask()},2);if(fault==='zero-id')socket.receive('SCDailyTaskUpdate',{task:progressTask(0,2)},2);if(fault==='negative')socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,-1)},2);if(fault==='gap')socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,2)},3);if(fault==='decode')socket.onmessage({data:Buffer.from([0])});if(fault==='account')f.client.factContext.accountId='B';if(fault==='generation')f.client.factContext.generation++;if(fault==='connection')f.client.factContext.connectionId='other';if(fault==='terminal')socket.receive('SCChannelExpired',{reason:'synthetic'},2);if(fault==='zero-seq')socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,2)},0);
+ assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);
+});
+test('daily progress keeps bounded event history and old connections cannot publish or restore new sources',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login()),receive=socket.onmessage;for(let seq=1;seq<=201;seq++)socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,seq)},seq);assert.equal(readDailyTaskProgressEvent(f.client,{cursor:1}).reliable,false);assert.equal(readDailyTaskProgressEvent(f.client,{cursor:2}).event.progress,2);const old=readDailyTaskProgressEvent(f.client);f.client.stop();assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);await f.ready(login());const fresh=readDailyTaskProgressEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);receive({data:codec.encode('SCDailyTaskUpdate',202,{task:progressTask(1001,202)})});assert.equal(readDailyTaskProgressEvent(f.client).cursor,0);
 });

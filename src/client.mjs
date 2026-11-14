@@ -153,7 +153,7 @@ function seedDailyResets(client,body,socket) {
  const state=liveDailyResets.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
  if(state?.invalid)return;
  if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateDailyResets(client,'DAILY_RESET_LOGIN_OR_CONTEXT_UNKNOWN');return;}
- Object.assign(state,{seeded:true,reason:null,identity:{playerId,worldId},streamId:randomUUID(),cursor:0,events:[],cacheRevision:0});
+ Object.assign(state,{seeded:true,reason:null,identity:{playerId,worldId},streamId:randomUUID(),cursor:0,events:[],cacheRevision:0,progressStreamId:randomUUID(),progressCursor:0,progressEvents:[],progressTasks:new Map(),progressInvalid:null});
 }
 function observeDailyReset(client,body,seq,receivedAt) {
  const state=liveDailyResets.get(client);if(!state||state.invalid)return;
@@ -162,12 +162,33 @@ function observeDailyReset(client,body,seq,receivedAt) {
  if(state.marker!==null&&marker<state.marker){invalidateDailyResets(client,'DAILY_RESET_MARKER_ROLLBACK');return;}
  if(marker===state.marker)return;
  if(!Number.isSafeInteger(state.cursor)||state.cursor>=Number.MAX_SAFE_INTEGER){invalidateDailyResets(client,'DAILY_RESET_CURSOR_EXHAUSTED');return;}
+ state.progressStreamId=randomUUID();state.progressCursor=0;state.progressEvents=[];state.progressTasks.clear();
  const cursor=++state.cursor;state.marker=marker;state.events.push({eventId:state.streamId+':'+cursor,streamId:state.streamId,cursor,seq,dailyResetTime:marker,receivedAt:new Date(receivedAt).toISOString()});if(state.events.length>200)state.events.shift();
 }
 function observeDailyCacheChange(client,seq) {
  const state=liveDailyResets.get(client);if(!state||state.invalid)return;
  if(!state.seeded||!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)||!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isSafeInteger(state.cacheRevision)||state.cacheRevision>=Number.MAX_SAFE_INTEGER){invalidateDailyResets(client,'DAILY_CACHE_CONTINUITY_UNKNOWN');return;}
  state.cacheRevision++;
+}
+// Task progress is a separate cursor over the existing private daily stream.
+// Its events start a fresh survey only; neither targets nor claimed flags grant eligibility.
+function observeDailyTaskProgress(client,body,seq,receivedAt) {
+ const state=liveDailyResets.get(client);if(!state||state.invalid||!state.seeded||state.progressInvalid)return;
+ const task=vipValue(body,'task'),id=vipValue(task,'id'),progress=vipValue(task,'progress'),targetProgress=vipValue(task,'targetProgress'),rewardClaimed=vipValue(task,'rewardClaimed');
+ if(!client.connected||state.socket!==client.socket||!vipCurrentContext(client,state)||!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isInteger(id)||id<1||id>2147483647||!vipLevel(progress)||!vipLevel(targetProgress)||typeof rewardClaimed!=='boolean') {state.progressInvalid='DAILY_TASK_PROGRESS_SOURCE_UNKNOWN';return;}
+ const previous=state.progressTasks.get(id);
+ if(previous!==undefined&&progress<previous){state.progressInvalid='DAILY_TASK_PROGRESS_ROLLBACK';return;}
+ if(previous===progress)return;
+ if(!Number.isSafeInteger(state.progressCursor)||state.progressCursor>=Number.MAX_SAFE_INTEGER||previous===undefined&&state.progressTasks.size>=200){state.progressInvalid='DAILY_TASK_PROGRESS_LIMIT';return;}
+ state.progressTasks.set(id,progress);const cursor=++state.progressCursor;
+ state.progressEvents.push({eventId:state.progressStreamId+':'+cursor,streamId:state.progressStreamId,cursor,seq,taskId:id,progress,targetProgress,rewardClaimed,receivedAt:new Date(receivedAt).toISOString()});if(state.progressEvents.length>200)state.progressEvents.shift();
+}
+export function readDailyTaskProgressEvent(client,{cursor}={}) {
+ const current=readDailyResetEvent(client),state=liveDailyResets.get(client);
+ if(!current.reliable||!state||state.progressInvalid)return {status:'UNKNOWN',reliable:false,reason:state?.progressInvalid??current.reason};
+ const event=cursor===undefined?state.progressEvents.at(-1)??null:state.progressEvents.find(row=>row.cursor===cursor);
+ if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'DAILY_TASK_PROGRESS_CURSOR_UNAVAILABLE'};
+ return {...current,source:'SCDailyTaskUpdate.task',streamId:state.progressStreamId,cursor:state.progressCursor,event:event?structuredClone(event):null};
 }
 export function readDailyResetEvent(client,{cursor}={}) {
  const state=liveDailyResets.get(client);
@@ -850,6 +871,7 @@ export class GameClient extends EventEmitter {
     if (name === 'SCPlayerExpUpdate') updatePlayerLevel(this, body, seq, receivedAt);
     if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
     if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
+    if(name==='SCDailyTaskUpdate')observeDailyTaskProgress(this,body,seq,receivedAt);
     if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
     if (name === 'SCGuildShipActivity') updateGuildShipActivity(this,body,seq,receivedAt);
     if (['SCGuildShipLeader','SCGuildShipOrder','SCGuildShipMove','SCGuildShipReset'].includes(name)) {

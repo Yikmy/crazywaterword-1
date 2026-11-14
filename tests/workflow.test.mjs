@@ -807,3 +807,12 @@ for(const mode of ['permit','policy','blocked','hash','reference','bound'])test(
  const preparation={entry:'stage-recommendation',blocked:[],source:recommendationAuditSource()};if(mode==='permit')preparation.source.permitId='no';if(mode==='policy')preparation.source.declarativeOnly=false;if(mode==='blocked')preparation.blocked.push({reason:'skip'});if(mode==='hash')preparation.source.analysisHash='invalid';if(mode==='reference')preparation.source.reportId='other';if(mode==='bound')preparation.source.maxAttempts=201;
  assert.throws(()=>validateWorkflow({...graph(),preparation},{modules}));
 });
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' compiles daily progress events with exact task and threshold without changing business nodes',()=>{
+ const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger={kind:'DAILY_TASK_PROGRESS',taskId:1001,progress:0};const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.edges,before.graph.edges);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.preparation,before.graph.preparation);assert.deepEqual(result.graph.runPolicy,intent.runPolicy);assert.equal(simulateWorkflow(result.graph,{modules:unifiedRegistry}).requestsSent,0);
+});
+test('daily progress rule requires explicit bounded scalar identity and rejects inferred eligibility or transport authority',()=>{
+ const rule={kind:'DAILY_TASK_PROGRESS',taskId:1001,progress:0};for(const progress of [0,2,2147483647])assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:{...rule,progress}}),{modules}).valid,true);
+ for(const change of [r=>delete r.taskId,r=>delete r.progress,r=>r.taskId=0,r=>r.taskId=-1,r=>r.taskId='1001',r=>r.taskId=2147483648,r=>r.progress='0',r=>r.progress=-1,r=>r.progress=0.5,r=>r.progress=2147483648,r=>r.progress=null,r=>r.targetProgress=5,r=>r.rewardClaimed=false,r=>r.eligible=true,r=>r.request='SCDailyTaskUpdate',r=>r.retry=true,r=>r.timeZone='Asia/Shanghai',r=>r.allowPaid=true,r=>r.level=0]){const bad=structuredClone(rule);change(bad);assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:bad}),{modules}),{code:'WORKFLOW_INVALID'});}
+ assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:rule,schedule:onceSchedule(1050)}),{modules}),{code:'WORKFLOW_INVALID'});
+});
