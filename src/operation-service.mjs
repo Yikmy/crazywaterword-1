@@ -291,21 +291,22 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function prepareExtremeFormationSource(session,payload) {const parameters=validateExtremeFormationParameters(payload);return withExtremeFormationRead(session,'PREPARE',parameters);}
 
   async function prepareStageRecommendationSource(session,payload){
-    exact(payload,['reportId','presetId','maxAttempts','presetIds','maxDurationMs']);
+    exact(payload,['reportId','presetId','maxAttempts','presetIds','maxDurationMs','selectionRule','minSamples']);
     validateStageRecommendationSequence(payload);
     if(typeof payload.reportId!=='string'||!payload.reportId||payload.reportId.trim()!==payload.reportId||payload.reportId.length>1000||!Number.isSafeInteger(payload.presetId)||payload.presetId<1||payload.presetId>2147483647||!Number.isSafeInteger(payload.maxAttempts)||payload.maxAttempts<1||payload.maxAttempts>200)throw error('须明确原战报ID、阵型模板及1至200次上限','INVALID_INPUT',400);
     const release=acquire(session,'operations:STAGE_RECOMMENDATION'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
       plans.delete(session.id);
-      const source=()=>{const result=projectStageBattleHistory(session.id,history.list(session.id),{limit:200}).reports.filter(row=>row.reportId===payload.reportId);if(result.length!==1)throw error('所选持久主线战报不存在或不唯一','STAGE_RECOMMENDATION_UNAVAILABLE');return result[0];};
+      const reports=()=>projectStageBattleHistory(session.id,history.list(session.id),{limit:200}).reports,historyReports=reports(),historyHash=payload.selectionRule?operationDigest(historyReports):null;
+      const source=()=>{const result=reports().filter(row=>row.reportId===payload.reportId);if(result.length!==1)throw error('所选持久主线战报不存在或不唯一','STAGE_RECOMMENDATION_UNAVAILABLE');return result[0];};
       const report=source(),sourceHash=operationDigest(report),adapter=adapterFor('formation'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'formation').config;
       adapterFor('stage');if(moduleSettings.get(session.id,'stage').config.enabled!==true)throw error('须启用原有限主线Function','STAGE_RECOMMENDATION_UNAVAILABLE');
       const dependencies=()=>operationDigest(adapter.dependencyVersions?adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'formation').config,player:session.player}):{config:getConfig(),moduleConfig:moduleSettings.get(session.id,'formation').config});const dependency=dependencies();
       const options={config,moduleConfig,player:session.player,signal:session.abort.signal,parameters:{presetId:payload.presetId}},facts=await adapter.survey(client,protocol,options);current(session,generation,client);
-      if(identity!==observationIdentity(session,client)||dependency!==dependencies()||sourceHash!==operationDigest(source()))throw error('建议准备期间身份、配置或来源战报已变化','CANCELLED');
+      if(identity!==observationIdentity(session,client)||dependency!==dependencies()||sourceHash!==operationDigest(source())||historyHash!==null&&historyHash!==operationDigest(reports()))throw error('建议准备期间身份、配置或来源战报已变化','CANCELLED');
       const runner=session.stageClient===client?session.stageRunner?.getStatus():null,progress=runner?.nextStage??session.player?.mainlineStage;
       if(runner?.running||runner?.inFlight||runner?.uncertain)throw error('旧主线运行尚未确定停止','STAGE_RECOMMENDATION_UNAVAILABLE');
-      const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,...(Object.hasOwn(payload,'presetIds')?{presetIds:payload.presetIds}:{}),...(Object.hasOwn(payload,'maxDurationMs')?{maxDurationMs:payload.maxDurationMs}:{}),moduleConfig,now:clock()});
+      const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,...(Object.hasOwn(payload,'presetIds')?{presetIds:payload.presetIds}:{}),...(Object.hasOwn(payload,'maxDurationMs')?{maxDurationMs:payload.maxDurationMs}:{}),...(payload.selectionRule?{selectionRule:payload.selectionRule,minSamples:payload.minSamples,reports:historyReports}:{}),moduleConfig,now:clock()});
       const graph=validateWorkflow(result.graph,{modules}).workflow;cacheModule(session.id,'formation',facts,options);
       return {accountId:session.id,...result,graph};
     }finally{release();}

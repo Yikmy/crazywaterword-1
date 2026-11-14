@@ -828,7 +828,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (stageRoute) { /* Original Runner uses the common Origin/CSRF gate. */ } else {
         const payload = jsonBody();
         const fields = keys => {if(!payload || typeof payload!=='object' || Array.isArray(payload) || Object.keys(payload).some(key=>!keys.includes(key)))throw Object.assign(new Error('玩法请求包含未知字段'),{statusCode:400});};
-        if(stageRecommendationRoute)fields(['reportId','presetId','maxAttempts','presetIds','maxDurationMs']);
+        if(stageRecommendationRoute)fields(['reportId','presetId','maxAttempts','presetIds','maxDurationMs','selectionRule','minSamples']);
         if(extremeFormationRoute){fields(route.endsWith('/survey')?[]:['stage','playerId','worldId','replayId']);}
         if(namedFormationRoute){fields(route.endsWith('/save')?['name']:route.endsWith('/rename')?['id','name','expectedRevision']:['id','expectedRevision']);}
         if(route==='POST /api/formations/named/rename'){json(operations.renameNamedFormation(id,payload));return;}
