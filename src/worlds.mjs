@@ -18,20 +18,42 @@ export function normalize(value) {
   return out;
 }
 
+// Preserve exact signed int64 identities without changing legacy numeric views.
+// Missing/inherited protobuf defaults are unknown, never an existing identity.
+const own = (value,key) => value !== null && typeof value === 'object' && Object.hasOwn(value,key);
+function exactIdentity(value) {
+  let id;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) id=BigInt(value);
+  else if (typeof value === 'bigint') id=value;
+  else if (typeof value === 'string' && /^[1-9][0-9]*$/.test(value) && value.length<=19) id=BigInt(value);
+  else if (own(value,'low') && own(value,'high') && ['low','high'].every(key=>Number.isInteger(value[key])&&value[key]>=-2147483648&&value[key]<=2147483647)
+    && (value.unsigned===undefined||typeof value.unsigned==='boolean') && Object.keys(value).every(key=>['low','high','unsigned'].includes(key))) {
+    const bits=(BigInt(value.high>>>0)<<32n)|BigInt(value.low>>>0);
+    id=value.unsigned===true?bits:BigInt.asIntN(64,bits);
+  }
+  return id>0n && id<=9223372036854775807n ? id<=BigInt(Number.MAX_SAFE_INTEGER)?Number(id):id.toString() : null;
+}
+function exactRoleId(info) {
+  const keys=['id','playerId'].filter(key=>own(info,key));
+  if(!keys.length)return null;
+  const ids=keys.map(key=>exactIdentity(info[key]));
+  return ids.some(id=>id===null)||ids.some(id=>id!==ids[0])?null:ids[0];
+}
+
 // AccountRoleInfo (world list) and PlayerInfo (login) carry the same identity fields
 // under different names, so accept either.
 export function describeRole(info) {
   if (!info) return null;
   const role = normalize(info);
   return {
-    id: role.id ?? role.playerId,
+    id: exactRoleId(info),
     nickname: role.nickname,
     level: role.level,
     power: role.power,
     appId: role.appId,
     channelId: role.channelId,
-    worldId: role.worldId,
-    bornWorldId: role.bornWorldId,
+    worldId: own(info,'worldId') ? exactIdentity(info.worldId) : null,
+    bornWorldId: own(info,'bornWorldId') ? exactIdentity(info.bornWorldId) : null,
     roleCreateTime: role.roleCreateTime,
     lastLoginTime: role.lastLoginTime,
     ...(role.newRole === undefined ? {} : { newRole: role.newRole }),
@@ -43,23 +65,25 @@ export function describeRole(info) {
 // world merge the two differ, and the server resolves the requested key to the successor.
 export function describeWorld(world) {
   const value = normalize(world);
-  return { worldId: value.worldId, tag: value.tag, role: describeRole(value.roleInfo) };
+  return { worldId: own(world,'worldId') ? exactIdentity(world.worldId) : null, tag: value.tag, role: describeRole(world.roleInfo) };
 }
 
 // Pure query. Returns the worlds this account has roles on, which is exactly what the
 // game's server-select screen renders.
 export async function listWorlds(client, timeout = 10000) {
-  const body = normalize(await client.request('GameWorldListRequest', {}, 'GameWorldListResponse', timeout));
+  const body = await client.request('GameWorldListRequest', {}, 'GameWorldListResponse', timeout);
+  if (!body || !Object.hasOwn(body,'recentWorlds') || !Array.isArray(body.recentWorlds)) throw Object.assign(new Error('区服列表来源缺失或无效'),{code:'WORLD_LIST_UNKNOWN',statusCode:409});
   return {
-    latestGroupId: body.latestGroupId,
-    recentWorlds: (body.recentWorlds || []).map(describeWorld),
+    latestGroupId: Object.hasOwn(body,'latestGroupId') ? body.latestGroupId : null,
+    recentWorlds: body.recentWorlds.map(describeWorld),
   };
 }
 
 // All worlds inside a group, not just the ones this account has visited.
 export async function listGroup(client, groupId, timeout = 10000) {
-  const body = normalize(await client.request('GameWorldGroupListRequest', { groupId }, 'GameWorldGroupListResponse', timeout));
-  return (body.worlds || []).map(describeWorld);
+  const body = await client.request('GameWorldGroupListRequest', { groupId }, 'GameWorldGroupListResponse', timeout);
+  if (!body || !Object.hasOwn(body,'worlds') || !Array.isArray(body.worlds)) throw Object.assign(new Error('区服分组来源缺失或无效'),{code:'WORLD_LIST_UNKNOWN',statusCode:409});
+  return body.worlds.map(describeWorld);
 }
 
 // Entering a world is just a login that names it. `newRole` in the returned PlayerInfo

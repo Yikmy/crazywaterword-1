@@ -1145,10 +1145,26 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           json({ error: '自动闯关或未决战斗期间不能查询区服；已有缓存仍可浏览', code: 'STAGE_BUSY' }, 409); return;
         }
         const instance = await ensureConnected(session, account);
-        json({ ...(await listWorlds(instance)), currentPlayer: describeRole(session.player) });
+        const generation=session.generation,connectionId=session.connectionId,player=describeRole(session.player),readOwner='worlds:READ:'+randomUUID();
+        const current=()=>{
+          const observed=describeRole(session.player);
+          if(closed||session.id!==account.id||sessions.get(account.id)!==session||session.client!==instance||session.generation!==generation||session.connectionId!==connectionId||session.state!=='READY'||!instance.connected
+            ||instance.factContext?.accountId!==account.id||instance.factContext?.generation!==generation||instance.factContext?.connectionId!==connectionId
+            ||observed?.id!==player?.id||observed?.worldId!==player?.worldId)throw Object.assign(new Error('区服查询期间账号会话或角色世界已变化'),{code:'SESSION_CHANGED',statusCode:409});
+          const activeStage=session.stageRunner?.getStatus();
+          if(session.busy&&session.busy!==readOwner||session.workflowOwner||session.collectionPromise||session.loop?.running||activeStage?.running||activeStage?.inFlight)throw Object.assign(new Error('账号任务运行期间不能查询区服'),{code:'ACCOUNT_BUSY',statusCode:409});
+        };
+        current();
+        session.busy=readOwner;
+        try {
+          const worlds=await activeTask(session.abort.signal,listWorlds(instance));
+          current();
+          json({ accountId:account.id,...worlds,currentPlayer:player });
+        } catch(cause) { current();throw cause; }
+        finally { if(sessions.get(account.id)===session&&session.generation===generation&&session.client===instance&&session.busy===readOwner)session.busy=null; }
         return;
       }
-      // 进服自己开一条短连接，所以不会打扰控制台这边正在跑的会话。
+      // 历史切服实现由上方白名单禁用；独立连接尚未满足现存角色目标与恢复合同。
       if (route === 'POST /api/worlds/enter') {
         const payload = jsonBody();
         needConfirm(payload);

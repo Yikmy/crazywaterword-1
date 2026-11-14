@@ -280,3 +280,9 @@ test('server error leaves import uncertain without reading or resubmitting autom
   assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-import').disabled, true);
   assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-import-json').value, '');
 });
+
+test('worlds PAGE displays exact recorded identities as readonly facts and clears pending old rows',async()=>{
+ const h=await boot(),data={accountId:'A',recentWorlds:[{worldId:'9007199254740995',role:{id:'9007199254740993',bornWorldId:'9007199254740995',worldId:'9007199254740997',nickname:'<synthetic role>',level:1}}]};
+ let work=h.node('load-worlds').onclick();h.respond('/api/worlds','A',data);await work;assert.match(h.node('worlds').textContent,/列表区服键 9007199254740995.*角色 9007199254740993.*出生服 9007199254740995.*当前世界 9007199254740997/);assert.match(h.node('worlds').textContent,/不授予切服或创建角色权限/);assert.equal(h.node('enter-world').disabled,true);assert.equal(h.node('world-input').disabled,true);
+ work=h.node('load-worlds').onclick();assert.equal(h.node('worlds').textContent,'');h.respond('/api/worlds','A',{accountId:'B',recentWorlds:data.recentWorlds});await work;assert.match(h.node('worlds-hint').textContent,/账号不匹配/);assert.doesNotMatch(h.node('worlds').textContent,/9007199254740993/);assert.equal(h.requests.filter(row=>(row.options.method||'GET')==='POST').length,0);
+});

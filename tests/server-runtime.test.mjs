@@ -468,3 +468,47 @@ test('lost writer ownership blocks local import before persistence', async () =>
     assert.equal(response.status, 409); assert.equal(response.data.code, 'WRITER_LOST'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before); assert.equal(app.clients.length, 0);
   } finally { await app.close(); }
 });
+
+const worldBits=(low,high=0)=>({low,high,unsigned:false});
+const rawWorldList=()=>({latestGroupId:3,recentWorlds:[{worldId:worldBits(3,2097152),roleInfo:{id:worldBits(1,2097152),nickname:'synthetic exact role',bornWorldId:worldBits(3,2097152),worldId:worldBits(5,2097152),level:10}}]});
+test('world identity descriptions preserve real Codec int64 role/birth/merged keys through both original list functions',async()=>{
+ const {describeRole,describeWorld,listWorlds,listGroup}=await import('../src/worlds.mjs'),codec=createCodec(loadProtocol());
+ const response=codec.decode(codec.encode('GameWorldListResponse',1,rawWorldList())).body,world=response.recentWorlds[0];
+ const describe=describeWorld(world);assert.equal(describe.worldId,'9007199254740995');assert.equal(describe.role.id,'9007199254740993');assert.equal(describe.role.bornWorldId,'9007199254740995');assert.equal(describe.role.worldId,'9007199254740997');assert.equal(describeRole({playerId:world.roleInfo.id,worldId:world.roleInfo.worldId}).id,'9007199254740993');
+ const requests=[],client={async request(...args){requests.push(args);return args[0]==='GameWorldListRequest'?response:codec.decode(codec.encode('GameWorldGroupListResponse',2,{worlds:[world]})).body;}};
+ assert.deepEqual((await listWorlds(client)).recentWorlds,[describe]);assert.deepEqual(await listGroup(client,3),[describe]);assert.deepEqual(requests.map(row=>row.slice(0,3)),[['GameWorldListRequest',{},'GameWorldListResponse'],['GameWorldGroupListRequest',{groupId:3},'GameWorldGroupListResponse']]);
+});
+test('world identities reject missing/default/unsafe/conflicting IDs without altering legacy numeric facts',async()=>{
+ const {describeRole,describeWorld,listWorlds,listGroup,normalize}=await import('../src/worlds.mjs');
+ for(const value of [undefined,0,-1,Number.MAX_SAFE_INTEGER+1,'01','0','9223372036854775808',worldBits(-1,-1),Object.create({low:1,high:0})])assert.equal(describeRole({id:value,worldId:value,bornWorldId:value}).id,null);
+ assert.equal(describeRole(Object.create({id:7,worldId:9,bornWorldId:7})).id,null);assert.equal(describeRole({id:1,playerId:2}).id,null);assert.equal(describeRole({id:1,playerId:'1'}).id,1);assert.equal(describeWorld({}).worldId,null);
+ const missing=describeRole({id:1});assert.equal(missing.worldId,null);assert.equal(missing.bornWorldId,null);assert.deepEqual(normalize({num:worldBits(5)}),{num:5});
+ for(const body of [{},null,{recentWorlds:null},{recentWorlds:{}}])await assert.rejects(listWorlds({request:async()=>body}),{code:'WORLD_LIST_UNKNOWN'});
+ await assert.rejects(listWorlds({request:async()=>Object.create({recentWorlds:[]})}),{code:'WORLD_LIST_UNKNOWN'});await assert.rejects(listGroup({request:async()=>({})},1),{code:'WORLD_LIST_UNKNOWN'});assert.deepEqual(await listWorlds({request:async()=>({recentWorlds:[]})}),{latestGroupId:null,recentWorlds:[]});
+});
+async function worldsHarness({gate=null}={}) {
+ const reads=[];const app=await harness({clientFactory:()=>{const client=new FakeClient(),connect=client.connect.bind(client);client.connect=async login=>({...await connect(login),playerInfo:{playerId:worldBits(1,2097152),worldId:worldBits(5,2097152),bornWorldId:worldBits(3,2097152),nickname:'synthetic exact role'}});client.request=async(...args)=>{reads.push(args);assert.equal(args[0],'GameWorldListRequest');return gate?gate.promise:rawWorldList();};return client;}});return {...app,reads};
+}
+test('original worlds HTTP exposes exact identities without opening implicit login or world writes',async()=>{
+ const app=await worldsHarness();try{
+  assert.equal((await app.call('/api/worlds')).status,409);assert.equal(app.clients.length,0);await app.connect();const bytes=fs.readFileSync(ACCOUNTS_PATH,'utf8');
+  const response=await app.call('/api/worlds');assert.equal(response.status,200);assert.equal(response.data.accountId,'account-A');assert.equal(response.data.currentPlayer.id,'9007199254740993');assert.equal(response.data.recentWorlds[0].role.id,'9007199254740993');assert.equal(response.data.recentWorlds[0].worldId,'9007199254740995');assert.equal(response.data.recentWorlds[0].role.worldId,'9007199254740997');assert.equal(app.reads.length,1);assert.equal(app.sessions.get('account-A').busy,null);
+  assert.equal((await app.call('/api/worlds',{account:'account-B'})).status,409);assert.equal(app.clients.length,1);assert.equal(app.collects,0);assert.equal((await app.call('/api/worlds/enter',{method:'POST',body:{worldId:'9007199254740995',confirm:true}})).status,403);assert.equal(app.reads.length,1);assert.equal(fs.readFileSync(ACCOUNTS_PATH,'utf8'),bytes);for(const secret of [token,sign,frame])assert.ok(!response.text.includes(secret));
+ }finally{await app.close();}
+});
+for(const change of ['account','role','world','generation','connection','client-account','client-generation','client-connection','disconnected'])test('worlds HTTP rejects late original read after '+change+' change',async()=>{
+ const gate=deferred(),app=await worldsHarness({gate});try{
+  await app.connect();const session=app.sessions.get('account-A'),client=app.clients[0],old={id:session.id,player:session.player,generation:session.generation,connectionId:session.connectionId,context:{...client.factContext}};
+  const pending=app.call('/api/worlds');await until(()=>app.reads.length===1);assert.match(session.busy,/worlds:READ:/);
+  if(change==='account')session.id='foreign';if(change==='role')session.player={...session.player,playerId:worldBits(2,2097152)};if(change==='world')session.player={...session.player,worldId:worldBits(6,2097152)};if(change==='generation')session.generation++;if(change==='connection')session.connectionId='other';if(change==='client-account')client.factContext.accountId='foreign';if(change==='client-generation')client.factContext.generation++;if(change==='client-connection')client.factContext.connectionId='other';if(change==='disconnected')client.connected=false;
+  gate.resolve(rawWorldList());const response=await pending;assert.equal(response.status,409);assert.equal(response.data.code,'SESSION_CHANGED');assert.equal(response.data.recentWorlds,undefined);assert.equal(app.reads.length,1);assert.equal(app.clients.length,1);assert.equal(app.collects,0);
+  session.id=old.id;session.player=old.player;session.generation=old.generation;session.connectionId=old.connectionId;client.factContext=old.context;
+ }finally{await app.close();}
+});
+test('worlds HTTP shares the original busy lock and cancellation cannot release a successor owner',async()=>{
+ const gate=deferred(),app=await worldsHarness({gate});try{
+  await app.connect();const session=app.sessions.get('account-A');for(const key of ['busy','workflowOwner','collectionPromise']){session[key]='synthetic-active';const response=await app.call('/api/worlds');assert.equal(response.status,409);assert.equal(response.data.code,'ACCOUNT_BUSY');session[key]=null;}assert.equal(app.reads.length,0);
+  const pending=app.call('/api/worlds');await until(()=>app.reads.length===1);assert.equal((await app.call('/api/worlds')).data.code,'ACCOUNT_BUSY');assert.equal(app.reads.length,1);
+  const oldClient=app.clients[0];assert.equal((await app.call('/api/disconnect',{method:'POST'})).status,200);assert.equal((await pending).status,409);await app.connect();const current=app.sessions.get('account-A');current.busy='successor-owner';gate.resolve(rawWorldList());await flush();assert.equal(current.busy,'successor-owner');assert.equal(current.client,app.clients[1]);assert.equal(app.reads.length,1);assert.equal(oldClient.connected,false);
+ }finally{await app.close();}
+});

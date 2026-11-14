@@ -1875,14 +1875,17 @@ $('cred-hide').onclick = () => {
   clear($('cred')).appendChild(el('span', 'dim', '已收起脱敏信息'));
 };
 function renderWorlds(data) {
+  if(data.accountId!==undefined&&data.accountId!==current)throw new Error('区服列表账号不匹配');
   const box = clear($('worlds'));
+  box.appendChild(el('div','dim','区服列表只读；角色 ID、列表区服键、角色出生服和当前世界分别显示，不授予切服或创建角色权限。'));
   for (const world of data.recentWorlds || []) {
     const role = world.role || {};
-    box.appendChild(el('div', 'acct', String(world.worldId) + ' ' + (role.nickname || '') + ' lv' + (role.level ?? '?') + ' 战力' + fmt(role.power)));
+    box.appendChild(el('div', 'acct', '列表区服键 '+String(world.worldId??'未知')+' · 角色 '+(role.id??'未知')+' · 出生服 '+(role.bornWorldId??'未知')+' · 当前世界 '+(role.worldId??'未知')+' · '+(role.nickname||'')+' lv'+(role.level??'?')+' 战力'+fmt(role.power)));
   }
-  if (!box.childElementCount) box.appendChild(el('div', 'dim', '本次查询未返回区服'));
+  if (!data.recentWorlds?.length) box.appendChild(el('div', 'dim', '本次查询未返回区服'));
+
 }
-$('load-worlds').onclick = () => readView('worlds', '/api/worlds', renderWorlds, 'worlds-hint');
+$('load-worlds').onclick = () => {clear($('worlds'));return readView('worlds', '/api/worlds', renderWorlds, 'worlds-hint');};
 for (const id of ['loot-run', 'loop-start', 'loop-stop', 'loop-rounds', 'loop-every', 'world-speedup', 'world-reroll', 'tasks-run', 'world-run', 'hero-run', 'dailies-run', 'dailies-paid', 'enter-world', 'world-input', 'cap-start', 'cap-stop']) {
   $(id).disabled = true; $(id).classList.add('mvp-disabled'); $(id).onclick = null;
 }
