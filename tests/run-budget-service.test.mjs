@@ -667,7 +667,7 @@ test('original Workflow SURVEY consumes Orders projection through the same Servi
   runner=createWorkflowRunner({operations:f.service,modules:CORE_OPERATION_MODULES,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
   const result=await runner.start('A',graph);await runner.settle();
   assert.equal(result.status,'COMPLETED');assert.ok(result.trace.some(row=>row.nodeId==='q'&&row.result==='SURVEYED'));
-  const view=f.service.moduleView('A','orders');assert.equal(view.view.orders[0].productionWait.leadSeconds,80);assert.equal(view.lastPlan,null);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);assert.equal(f.reads.filter(row=>row.name==='GameEffectRequest').length,1);
+  const view=f.service.moduleView('A','orders');assert.equal(view.view.orders[0].productionWait.leadSeconds,80);assert.equal(view.view.progress.completed.value,7);assert.equal(view.view.progress.clientLimit.value,null);assert.equal(view.view.progress.period.status,'UNKNOWN');assert.equal(view.view.orders[0].refreshTiming.status,'OBSERVED_NO_MARKER');assert.equal(view.lastPlan,null);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);assert.equal(f.reads.filter(row=>row.name==='GameEffectRequest').length,1);
  }finally{runner?.stop();await runner?.settle();await f.cleanup();}
 });
 for(const fault of ['generation','account','connection','abort'])test('Service discards Orders projection after '+fault+' changes while effects are pending',async()=>{

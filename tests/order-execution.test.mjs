@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
+import { observeOrderProgress, observeOrderRefreshTiming, decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { surveyWorld } from '../src/world.mjs';
 
@@ -296,4 +296,54 @@ test('a lower executor NOT_EXECUTED outcome after entering dispatch cannot relea
   assert.equal(result.status, 'UNKNOWN'); assert.equal(result.requestStatus, 'NOT_EXECUTED');
   assert.equal(result.unresolvedWrite, true); assert.equal(result.reservation.held, true);
   assert.equal(client.uncertain.size, 1); assert.equal(budget.ledger.available('wood'), 0); assert.equal(client.writes.length, 1);
+});
+
+const progressConfig={tables:{OrderParamCfg:{data:[{paramName:'订单每日上限',paramValue:40}]}}};
+const progressInput=()=>({orderOfTheDay:{orderNum:12,rewardedNum:6},effects:{effects:[{id:18,value:5}]}});
+test('order progress observes completed and claimed-through threshold separately from client limit and period authority',()=>{
+ const input=progressInput(),before=structuredClone(input),view=observeOrderProgress(progressConfig,input);
+ assert.deepEqual(input,before);assert.equal(view.completed.status,'OBSERVED');assert.equal(view.completed.value,12);assert.equal(view.rewardedThrough.value,6);
+ assert.deepEqual([view.clientLimit.status,view.clientLimit.base,view.clientLimit.extra,view.clientLimit.value],['PROJECTED',40,5,45]);assert.equal(view.remainingProjection.value,33);
+ assert.equal(view.executable,false);assert.equal(view.remainingProjection.executable,false);assert.deepEqual(view.period,{status:'UNKNOWN',reason:'ORDER_PERIOD_ID_AND_RESET_UNAVAILABLE',gameDay:null,resetsAt:null});
+});
+test('explicit zero progress and zero order bonus survive while omitted fields remain unknown',()=>{
+ const input={orderOfTheDay:{orderNum:0,rewardedNum:0},effects:{effects:[{id:18,value:0}]}};
+ const view=observeOrderProgress(progressConfig,input);assert.equal(view.completed.value,0);assert.equal(view.rewardedThrough.value,0);assert.equal(view.clientLimit.value,40);assert.equal(view.remainingProjection.value,40);
+ delete input.orderOfTheDay.orderNum;const missing=observeOrderProgress(progressConfig,input);assert.equal(missing.completed.status,'UNKNOWN');assert.equal(missing.remainingProjection.value,null);assert.equal(missing.clientLimit.value,40);
+ delete input.effects.effects[0].value;assert.equal(observeOrderProgress(progressConfig,input).clientLimit.value,null);
+});
+for(const value of [-1,1.5,2147483648,NaN,Infinity,'12',null])test('order progress rejects malformed wire count '+String(value),()=>{
+ const input=progressInput();input.orderOfTheDay.orderNum=value;input.orderOfTheDay.rewardedNum=value;
+ const view=observeOrderProgress(progressConfig,input);assert.equal(view.completed.status,'UNKNOWN');assert.equal(view.rewardedThrough.status,'UNKNOWN');assert.equal(view.remainingProjection.value,null);assert.equal(view.clientLimit.value,45);
+});
+for(const change of ['config-missing','config-duplicate','config-fraction','effect-missing','effect-duplicate','effect-fraction','effect-negative','overflow'])test('order client limit keeps '+change+' unknown without erasing observed count',()=>{
+ const cfg=structuredClone(progressConfig),input=progressInput();
+ if(change==='config-missing')delete cfg.tables.OrderParamCfg;
+ if(change==='config-duplicate')cfg.tables.OrderParamCfg.data.push({...cfg.tables.OrderParamCfg.data[0]});
+ if(change==='config-fraction')cfg.tables.OrderParamCfg.data[0].paramValue=40.5;
+ if(change==='effect-missing')input.effects.effects=[];
+ if(change==='effect-duplicate')input.effects.effects.push({id:18,value:0});
+ if(change==='effect-fraction')input.effects.effects[0].value=0.5;
+ if(change==='effect-negative')input.effects.effects[0].value=-1;
+ if(change==='overflow')input.effects.effects[0].value=Number.MAX_SAFE_INTEGER;
+ const view=observeOrderProgress(cfg,input);assert.equal(view.clientLimit.status,'UNKNOWN');assert.equal(view.remainingProjection.value,null);assert.equal(view.completed.value,12);assert.equal(view.executable,false);
+});
+test('count at or above a projected client limit stays an observation, never a refresh quota or server period',()=>{
+ for(const orderNum of [45,46]){const input=progressInput();input.orderOfTheDay.orderNum=orderNum;input.gameDay='untrusted';const view=observeOrderProgress(progressConfig,input);assert.equal(view.remainingProjection.value,0);assert.equal(view.executable,false);assert.equal(view.period.gameDay,null);assert.equal(view.refreshEligibility,undefined);}
+});
+test('actual Codec distinguishes absent scalar defaults from explicit zero for order counts, effects and wait marker',async()=>{
+ const {loadProtocol}=await import('../src/proto.mjs'),p=loadProtocol(),wire=(type,body)=>p[type].decode(p[type].encode(body).finish());
+ assert.equal(p.GameEffectId.WORKER_ORDER_INC,18);
+ const absent=wire('OrderOfTheDay',{}),zero=wire('OrderOfTheDay',{orderNum:0,rewardedNum:0});assert.equal(absent.orderNum,0);assert.equal(observeOrderProgress(progressConfig,{orderOfTheDay:absent}).completed.value,null);assert.equal(observeOrderProgress(progressConfig,{orderOfTheDay:zero}).completed.value,0);
+ const effects=wire('GameEffectResponse',{effects:[{id:18}]}),view=observeOrderProgress(progressConfig,{orderOfTheDay:zero,effects});assert.equal(view.clientLimit.value,null);
+ assert.equal(observeOrderRefreshTiming(wire('DispWorkerOrder',{})).status,'UNKNOWN');assert.equal(observeOrderRefreshTiming(wire('DispWorkerOrder',{refreshTime:0})).status,'OBSERVED_NO_MARKER');
+});
+test('order wait marker uses captured server time, preserves fractions and never turns an elapsed marker into readiness',()=>{
+ const order={refreshTime:120},view=observeOrderRefreshTiming(order,{serverTimeMs:100500});assert.equal(view.status,'PROJECTED_WAIT');assert.equal(view.remainingSeconds,20);assert.equal(view.markerSeconds,120);assert.equal(view.serverTimeMs,100500);assert.equal(view.executable,false);
+ for(const serverTimeMs of [120000,120001,130000]){const elapsed=observeOrderRefreshTiming(order,{serverTimeMs});assert.equal(elapsed.status,'ELAPSED_UNCONFIRMED');assert.equal(elapsed.remainingSeconds,0);assert.equal(elapsed.reason,'FRESH_ORDER_REREAD_REQUIRED');assert.equal(elapsed.executable,false);}
+ assert.equal(observeOrderRefreshTiming({refreshTime:0}).status,'OBSERVED_NO_MARKER');assert.equal(order.refreshTime,120);
+});
+test('missing, malformed and inherited wait markers or captured clocks cannot become zero waits',()=>{
+ for(const order of [null,{},Object.create({refreshTime:0}),{refreshTime:-1},{refreshTime:1.5},{refreshTime:'120'},{refreshTime:2147483648}])assert.equal(observeOrderRefreshTiming(order,{serverTimeMs:100000}).status,'UNKNOWN');
+ for(const serverTimeMs of [null,undefined,-1,NaN,Infinity,100.5,'100000']){const view=observeOrderRefreshTiming({refreshTime:120},{serverTimeMs});assert.equal(view.status,'UNKNOWN');assert.equal(view.remainingSeconds,null);assert.equal(view.executable,false);}
 });

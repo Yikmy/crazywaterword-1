@@ -459,3 +459,12 @@ for(const change of ['account','edit'])test('Workflow Orders wait drops late '+c
  h.respond('/api/gameplay/survey',ordersWaitData());await pending;
  assert.doesNotMatch(h.node('wf-nodes').textContent,/生产等待估计|CAPTURED_SERVER_TIME_PROJECTION/);assert.equal(h.pending('/api/operations/authorize'),undefined);
 });
+
+for(const status of ['PROJECTED_WAIT','ELAPSED_UNCONFIRMED','OBSERVED_NO_MARKER','UNKNOWN'])test('Workflow Orders explains '+status+' and captured progress without changing blocked candidates',async()=>{
+ const h=await workflows(),{pending}=await ordersWaitEditor(h),value=ordersWaitData();
+ value.view.progress={completed:{value:12},rewardedThrough:{value:6},clientLimit:{value:45},remainingProjection:{value:33},period:{status:'UNKNOWN'}};value.view.orders[0].refreshTiming={status,remainingSeconds:30};h.respond('/api/gameplay/survey',value);await pending;
+ const card=h.node('wf-nodes').children[1],text=card.textContent;assert.match(text,/观察完成 12 单.*已领奖阈值 6.*客户端上限投影 45.*差额投影 33.*不是可执行额度.*周期标识和重置时间未知/);
+ if(status==='PROJECTED_WAIT')assert.match(text,/预计还需 30 秒.*不代表免费刷新资格/);if(status==='ELAPSED_UNCONFIRMED')assert.match(text,/等待时点已过，需独立复读，资格未知/);if(status==='OBSERVED_NO_MARKER')assert.match(text,/本次观察无等待标记/);if(status==='UNKNOWN')assert.match(text,/等待标记或采集时服务器时间未知/);
+ assert.equal(card.children.find(e=>e.dataset.workflowSelection==='a').children[1].disabled,true);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/plan'),undefined);
+ h.select('B');assert.doesNotMatch(h.node('wf-nodes').textContent,/观察完成 12 单/);
+});

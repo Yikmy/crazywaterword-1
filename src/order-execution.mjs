@@ -74,6 +74,44 @@ function actionFor(actionType, state, costs) {
     label: `${actionType === 'SUBMIT' ? '提交' : '刷新'}居民订单 #${state.index}` };
 }
 
+// Observations for rule explanations only. Fixed v76 WorkerOrderUtil.maxOrders
+// reads OrderParamCfg; WorkerOrderDaily adds explicit GameEffectId 18. Neither
+// response exposes a period identity/reset time or a free-refresh allowance.
+export function observeOrderProgress(config, { orderOfTheDay, effects } = {}) {
+  const count = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  const scalar = key => {
+    const value = own(orderOfTheDay, key) && count(orderOfTheDay[key]) && orderOfTheDay[key] <= 2147483647 ? orderOfTheDay[key] : null;
+    return { status: value === null ? 'UNKNOWN' : 'OBSERVED', value, source: 'OnWaterResponse.orderOfTheDay.' + key };
+  };
+  const completed = scalar('orderNum'), rewardedThrough = scalar('rewardedNum');
+  const params = config?.tables?.OrderParamCfg?.data;
+  const baseRows = Array.isArray(params) ? params.filter(row => row?.paramName === '订单每日上限') : [];
+  const base = baseRows.length === 1 && own(baseRows[0], 'paramValue') && count(baseRows[0].paramValue) ? baseRows[0].paramValue : null;
+  const values = Array.isArray(effects?.effects) ? effects.effects : [];
+  const extraRows = values.filter(row => row?.id === 18);
+  const extra = new Set(values.map(row => row?.id)).size === values.length && extraRows.length === 1
+    && own(extraRows[0], 'value') && count(extraRows[0].value) ? extraRows[0].value : null;
+  const total = base !== null && extra !== null && count(base + extra) ? base + extra : null;
+  return { scope: 'CAPTURED_ORDER_PROGRESS', executable: false, completed, rewardedThrough,
+    clientLimit: { status: total === null ? 'UNKNOWN' : 'PROJECTED', value: total, base, extra, effectId: 18,
+      source: 'OrderParamCfg.订单每日上限+GameEffectResponse.effects[18]', reason: total === null ? 'ORDER_LIMIT_SOURCE_INCOMPLETE' : null },
+    remainingProjection: { status: total === null || completed.value === null ? 'UNKNOWN' : 'PROJECTED',
+      value: total === null || completed.value === null ? null : Math.max(0, total - completed.value), executable: false },
+    period: { status: 'UNKNOWN', reason: 'ORDER_PERIOD_ID_AND_RESET_UNAVAILABLE', gameDay: null, resetsAt: null } };
+}
+// WorkerOrderPop displays refreshTime - captured server time. Reaching zero in
+// that countdown does not remove the marker or establish eligibility; reread it.
+export function observeOrderRefreshTiming(order, { serverTimeMs = null } = {}) {
+  const marker = own(order, 'refreshTime') && Number.isInteger(order.refreshTime) && order.refreshTime >= 0 && order.refreshTime <= 2147483647 ? order.refreshTime : null;
+  const base = { scope: 'CAPTURED_SERVER_TIME_PROJECTION', executable: false, source: 'OnWaterResponse.workerOrder.refreshTime',
+    markerSeconds: marker, serverTimeMs: Number.isSafeInteger(serverTimeMs) && serverTimeMs >= 0 ? serverTimeMs : null, remainingSeconds: null };
+  if (marker === null) return { ...base, status: 'UNKNOWN', reason: 'ORDER_REFRESH_MARKER_UNKNOWN' };
+  if (marker === 0) return { ...base, status: 'OBSERVED_NO_MARKER', remainingSeconds: 0, reason: null };
+  if (base.serverTimeMs === null) return { ...base, status: 'UNKNOWN', reason: 'CAPTURED_SERVER_TIME_UNAVAILABLE' };
+  const remainingSeconds = Math.max(0, Math.ceil(marker - base.serverTimeMs / 1000));
+  return { ...base, remainingSeconds, status: remainingSeconds > 0 ? 'PROJECTED_WAIT' : 'ELAPSED_UNCONFIRMED', reason: remainingSeconds > 0 ? null : 'FRESH_ORDER_REREAD_REQUIRED' };
+}
+
 // Capture facts from the same surveyWorld read. An omitted order list/counter must
 // not become an authoritative empty list/zero via surveyWorld's display defaults.
 export function decorateOrderSurvey(survey, responses, config = null) {

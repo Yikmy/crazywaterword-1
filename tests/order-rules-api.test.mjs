@@ -16,6 +16,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
     { itemId: 'GOLD', reward: [['EXP', 1]] },
   ] }],
   [1, 'ResourceCfg', { data: [{ id: 'GOLD', show_name: '金币' }] }],
+  [4, 'OrderParamCfg', { data: [{ paramName:'订单每日上限',paramValue:40 }] }],
   [2, 'BuildingCfg', { data: [{ buildingType: '食品厂' }] }],
   [3, 'BuildingProduceCfg', { data: [
     { buildType:'食品厂',itemId:'item/wood',unlockLevel:1,produceTime:100,costItem:[['item/bread',1]] },
@@ -284,5 +285,31 @@ test('two account previews retain their own captured server times and inventory,
   app.sessions.set('A',cached(a));app.sessions.set('B',cached(b));const [ra,rb]=await Promise.all([preview(app,policy(),'A'),preview(app,policy(),'B')]);
   assert.equal(ra.data.orders[0].productionWait.leadSeconds,200);assert.equal(rb.data.orders[0].productionWait.leadSeconds,190);
   const restarted=cached(structuredClone(a));restarted.generation=1;app.sessions.set('A',restarted);assert.equal((await preview(app)).data.orders[0].productionWait.status,'UNKNOWN');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+function progressSnapshot(id='A'){
+ const s=waitingSnapshot(id);s.ok.OnWaterRequest.orderOfTheDay={orderNum:12,rewardedNum:6};s.ok.OnWaterRequest.workerOrder[0].refreshTime=1030;s.ok.GameEffectRequest.effects.push({id:18,value:5});s.raw=structuredClone(s.ok);for(const name of Object.keys(s.facts))s.facts[name].value=structuredClone(s.raw[name]);return s;
+}
+test('cached rules API reuses progress and wait-marker observations without inferring a server day or refresh permission',async()=>{
+ const app=await harness();try{
+  const data=progressSnapshot(),before=structuredClone(data);app.sessions.set('A',cached(data));const r=await preview(app);assert.equal(r.status,200);
+  assert.equal(r.data.progress.completed.value,12);assert.equal(r.data.progress.rewardedThrough.value,6);assert.equal(r.data.progress.clientLimit.value,45);assert.equal(r.data.progress.remainingProjection.value,33);assert.equal(r.data.progress.period.status,'UNKNOWN');assert.equal(r.data.progress.executable,false);
+  assert.equal(r.data.orders[0].refreshTiming.status,'PROJECTED_WAIT');assert.equal(r.data.orders[0].refreshTiming.remainingSeconds,30);assert.equal(r.data.orders[0].refreshTiming.executable,false);assert.deepEqual(data,before);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+test('cached order progress does not accept foreign, failed, changed or restarted water facts and never substitutes wall time',async()=>{
+ const app=await harness();try{
+  for(const change of [s=>s.facts.OnWaterRequest.provenance.accountId='B',s=>s.facts.OnWaterRequest.provenance.generation=1,s=>s.outcomes.OnWaterRequest.status='FAILED',s=>s.failed.OnWaterRequest='failed',s=>s.facts.OnWaterRequest.value.orderOfTheDay.orderNum=99]){
+   const data=progressSnapshot();change(data);app.sessions.set('A',cached(data));const r=await preview(app);if(r.data.status==='SUCCESS'){assert.equal(r.data.progress.completed.value,null);assert.equal(r.data.orders[0].refreshTiming.status,'UNKNOWN');}else assert.equal(r.data.status,'UNKNOWN');
+  }
+  const data=progressSnapshot();data.facts.OnWaterRequest.provenance.serverTime=null;app.sessions.set('A',cached(data));const r=await preview(app);assert.equal(r.data.progress.completed.value,12);assert.equal(r.data.orders[0].refreshTiming.status,'UNKNOWN');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+test('two accounts and generation changes keep cached order counts and markers isolated',async()=>{
+ const app=await harness();try{
+  const a=progressSnapshot('A'),b=progressSnapshot('B');b.ok.OnWaterRequest.orderOfTheDay.orderNum=20;b.raw.OnWaterRequest.orderOfTheDay.orderNum=20;b.facts.OnWaterRequest.value.orderOfTheDay.orderNum=20;b.facts.OnWaterRequest.provenance.serverTime=1040000;
+  app.sessions.set('A',cached(a));app.sessions.set('B',cached(b));const [ra,rb]=await Promise.all([preview(app,policy(),'A'),preview(app,policy(),'B')]);assert.equal(ra.data.progress.completed.value,12);assert.equal(rb.data.progress.completed.value,20);assert.equal(rb.data.orders[0].refreshTiming.status,'ELAPSED_UNCONFIRMED');
+  const restarted=cached(structuredClone(a));restarted.generation=1;app.sessions.set('A',restarted);const result=await preview(app);assert.equal(result.data.progress.completed.value,null);assert.equal(result.data.orders[0].refreshTiming.status,'UNKNOWN');
  }finally{await app.close();}
 });

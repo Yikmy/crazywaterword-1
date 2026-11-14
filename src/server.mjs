@@ -1,3 +1,4 @@
+import { observeOrderProgress, observeOrderRefreshTiming } from './order-execution.mjs';
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { runtimeAssetReadiness } from './asset-readiness.mjs';
@@ -546,10 +547,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       && new Set(itemData.raw.items.map(row => row.itemId ?? row.id)).size === itemData.raw.items.length
       && new Set(resourceData.raw.list.map(row => row.res)).size === resourceData.raw.list.length ? stockFromResponses(itemData.raw, resourceData.raw) : null;
     return { ...base, status: 'SUCCESS', error: null,
+      progress: observeOrderProgress(waitConfig, { orderOfTheDay: waterFact?.value?.orderOfTheDay, effects: effectFact?.value }),
       orders: orders.map((order, index) => {
         const totals = new Map();
         for (const need of order.requirements ?? []) totals.set(need.id, (totals.get(need.id) ?? 0) + need.num);
-        return { order, result: results[index], productionWait: orderProductionWait(waitConfig, { requirements: order.requirements, stock: estimateStock, buildings: factoryRows, effects: effectFact?.value ?? null, serverTimeMs }), inventoryFacts: [...totals].map(([id, required]) => {
+        return { order, result: results[index], refreshTiming: observeOrderRefreshTiming(waterFact?.value?.workerOrder?.[index], { serverTimeMs }), productionWait: orderProductionWait(waitConfig, { requirements: order.requirements, stock: estimateStock, buildings: factoryRows, effects: effectFact?.value ?? null, serverTimeMs }), inventoryFacts: [...totals].map(([id, required]) => {
           const available = inventory.has(id) ? inventory.get(id) : 0;
           return { id, required: Number.isSafeInteger(required) ? required : null, available,
             missing: available === null || !Number.isSafeInteger(required) ? null : Math.max(0, required - available) };

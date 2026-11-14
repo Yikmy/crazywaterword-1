@@ -1185,18 +1185,19 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' HTTP prepare binds
 test('Orders Function HTTP survey returns the shared captured wait without granting writes or crossing accounts',async()=>{
  const saved=Object.fromEntries(['GameEffectRequest','GameEffectResponse'].map(name=>[name,protocol[name]]));
  protocol.GameEffectRequest={};protocol.GameEffectResponse={};
- const config={tables:{BuildingCfg:{data:[{buildingType:'材料厂'}]},BuildingProduceCfg:{data:[{buildType:'材料厂',itemId:'cloth',produceTime:30,unlockLevel:1,costItem:[['wood',1]]}]},WorkerOrderCfg:{data:[{itemId:'cloth',reward:[['EXP',1]]}]},WorkerSpecOrderCfg:{data:[]}}};
+ const config={tables:{OrderParamCfg:{data:[{paramName:'订单每日上限',paramValue:40}]},BuildingCfg:{data:[{buildingType:'材料厂'}]},BuildingProduceCfg:{data:[{buildType:'材料厂',itemId:'cloth',produceTime:30,unlockLevel:1,costItem:[['wood',1]]}]},WorkerOrderCfg:{data:[{itemId:'cloth',reward:[['EXP',1]]}]},WorkerSpecOrderCfg:{data:[]}}};
  const app=await harness({includeOrders:true,configOverride:config}),reads=[];
  try{
   const session=app.ready('A');
   session.client.request=async(name,body,response,_timeout,options)=>{
    assert.notEqual(options?.mutate,true);reads.push(name);assert.deepEqual(body,{});
-   const bodies={OnWaterRequest:{building:[{buildingId:'1材料厂',level:1,buildFinishTime:0,factory:{autoProductId:'',factoryQ:[],finishedProducts:[]}}],workerOrder:[{index:0,workerId:'synthetic-worker',textId:1,isSpecial:false,refreshTime:0,requirements:[{id:'cloth',num:2}]}],orderOfTheDay:{orderNum:0}},AllItemRequest:{items:[{itemId:'wood',num:4}]},AllResourceRequest:{list:[]},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]},GameEffectRequest:{effects:[{id:1,value:0},{id:2,value:0}]}};
+   const bodies={OnWaterRequest:{building:[{buildingId:'1材料厂',level:1,buildFinishTime:0,factory:{autoProductId:'',factoryQ:[],finishedProducts:[]}}],workerOrder:[{index:0,workerId:'synthetic-worker',textId:1,isSpecial:false,refreshTime:0,requirements:[{id:'cloth',num:2}]}],orderOfTheDay:{orderNum:0,rewardedNum:0}},AllItemRequest:{items:[{itemId:'wood',num:4}]},AllResourceRequest:{list:[]},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]},GameEffectRequest:{effects:[{id:1,value:0},{id:2,value:0},{id:18,value:5}]}};
    assert.ok(Object.hasOwn(bodies,name));return heroWire(response,bodies[name]);
   };
   assert.equal((await app.call('/api/gameplay?module=orders')).status,200);
   const result=await app.call('/api/gameplay/survey',{body:{module:'orders',parameters:{}}});assert.equal(result.status,200,JSON.stringify(result.data));
   assert.equal(result.data.view.orders[0].productionWait.status,'PROJECTED');assert.equal(result.data.view.orders[0].productionWait.leadSeconds,60);assert.equal(result.data.view.orders[0].productionWait.executable,false);assert.equal(result.data.view.candidates[0].executable,false);assert.equal(result.data.lastPlan,null);
+  assert.equal(result.data.view.progress.completed.value,0);assert.equal(result.data.view.progress.rewardedThrough.value,0);assert.equal(result.data.view.progress.clientLimit.value,45);assert.equal(result.data.view.progress.remainingProjection.value,45);assert.equal(result.data.view.progress.period.status,'UNKNOWN');assert.equal(result.data.view.orders[0].refreshTiming.status,'OBSERVED_NO_MARKER');assert.equal(result.data.view.candidates[0].refreshTiming,undefined);
   const cached=await app.call('/api/gameplay?module=orders');assert.equal(cached.data.view.orders[0].productionWait.leadSeconds,60);assert.equal(reads.length,6);assert.equal(reads.filter(name=>name==='GameEffectRequest').length,1);
   const other=await app.call('/api/gameplay?module=orders',{id:'B'});assert.equal(other.status,200);assert.equal(other.data.accountId,'B');assert.equal(other.data.view,null);
   assert.equal((await app.call('/api/operations/history')).data.runs.length,0);assert.equal(app.counts().clients,0);assert.equal(app.counts().collections,0);

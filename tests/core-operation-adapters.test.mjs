@@ -394,3 +394,18 @@ test('Orders cancellation does not accept a late effects response or carry it in
 test('City and Production do not acquire the new Orders effects read',async()=>{
   for(const adapter of [cityModule,productionModule]){const f=waitFixture();await adapter.survey(f.client,waitProtocol,options());assert.equal(f.reads.includes('GameEffectRequest'),false);assert.equal(f.writes.length,0);}
 });
+
+test('Orders Function observes raw progress and wait markers without adding either to write candidates or fixing missing fields',async()=>{
+ const f=waitFixture(),cfg={tables:{...config.tables,OrderParamCfg:{data:[{paramName:'订单每日上限',paramValue:40}]}}};
+ f.raw.orderOfTheDay={orderNum:12,rewardedNum:6};f.raw.workerOrder[0].refreshTime=120;f.effects.effects.push({id:18,value:5});
+ const facts=await ordersModule.survey(f.client,waitProtocol,options({config:cfg})),view=ordersModule.view(facts,options({config:cfg}));
+ assert.equal(view.progress.completed.value,12);assert.equal(view.progress.rewardedThrough.value,6);assert.equal(view.progress.clientLimit.value,45);assert.equal(view.progress.remainingProjection.value,33);assert.equal(view.progress.period.status,'UNKNOWN');
+ assert.equal(view.orders[0].refreshTiming.remainingSeconds,20);assert.equal(view.orders[0].refreshTiming.executable,false);assert.equal(view.candidates[0].refreshTiming,undefined);assert.equal(f.reads.length,6);assert.equal(f.writes.length,0);
+ delete f.raw.workerOrder[0].refreshTime;delete f.raw.orderOfTheDay.orderNum;
+ const next=await ordersModule.survey(f.client,waitProtocol,options({config:cfg})),missing=ordersModule.view(next,options({config:cfg}));
+ assert.equal(next.rawOrderMetadata.orders[0].refreshTime,0);assert.equal(missing.orders[0].refreshTiming.status,'UNKNOWN');assert.equal(missing.progress.completed.status,'UNKNOWN');assert.equal(missing.progress.remainingProjection.value,null);
+});
+test('duplicate raw order indexes cannot lend a waiting marker to another observation',async()=>{
+ const f=waitFixture();f.raw.workerOrder[0].refreshTime=120;f.raw.workerOrder.push({...f.raw.workerOrder[0],refreshTime:130});
+ const facts=await ordersModule.survey(f.client,waitProtocol,options()),view=ordersModule.view(facts,options());assert.ok(view.orders.every(row=>row.refreshTiming.status==='UNKNOWN'));assert.equal(f.writes.length,0);
+});

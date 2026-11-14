@@ -905,10 +905,23 @@ async function saveOrderRules() {
     installOrderRulesData({ ...orderRulesData, ...data }); $('order-rules-hint').textContent = data.warning || '已保存当前账号规则；游戏状态未改变。';
   } catch (error) { if (orderRulesCurrent(scope, revision)) $('order-rules-hint').textContent = '保存失败：' + error.message; }
 }
+function orderProgressSummary(progress) {
+  const value = field => field?.value ?? '未知';
+  return '观察完成 ' + value(progress?.completed) + ' 单；已领奖阈值 ' + value(progress?.rewardedThrough)
+    + '；客户端上限投影 ' + value(progress?.clientLimit) + '；差额投影 ' + value(progress?.remainingProjection)
+    + '（不是可执行额度）；周期标识和重置时间未知。';
+}
+function orderRefreshSummary(timing) {
+  if (timing?.status === 'OBSERVED_NO_MARKER') return '本次观察无等待标记；资格仍须原执行链检查。';
+  if (timing?.status === 'PROJECTED_WAIT') return '据采集时服务器时间，预计还需 ' + timing.remainingSeconds + ' 秒；不代表免费刷新资格。';
+  if (timing?.status === 'ELAPSED_UNCONFIRMED') return '等待时点已过，需独立复读，资格未知。';
+  return '等待标记或采集时服务器时间未知。';
+}
 function renderOrderPreview(data) {
   const box = clear($('order-preview-list'));
   $('order-preview-meta').textContent = '只读模拟 · ' + data.status + ' · ' + (data.orders?.length || 0) + ' 个缓存订单 · 快照时间：' + (when(data.updatedAt) || '未知')
     + (data.stale ? '（缓存已过期）' : '') + (data.error ? ' · ' + data.error : '');
+  $('order-preview-meta').textContent += ' · ' + orderProgressSummary(data.progress);
   const decisions = { RECOMMEND_SUBMIT: '建议提交', RECOMMEND_REFRESH: '建议刷新', RECOMMEND_KEEP: '建议保留', NEEDS_REVIEW: '需要人工检查' };
   const inventoryStatus = { PASS: '充足', FAIL: '不足', UNKNOWN: '未知', SKIPPED: '未进行最终库存判断' };
   for (const row of data.orders || []) {
@@ -920,6 +933,7 @@ function renderOrderPreview(data) {
     if (Array.isArray(row.inventoryFacts)) for (const fact of row.inventoryFacts) {
       card.appendChild(el('div', 'dim', orderItemText(fact.id) + '：需求 ' + (fact.required ?? '未知') + ' / 持有 ' + (fact.available ?? '未知') + ' / 缺口 ' + (fact.missing ?? '未知')));
     }
+    card.appendChild(el('div', 'dim', '订单等待：' + orderRefreshSummary(row.refreshTiming)));
     const wait = row.productionWait;
     if (wait) {
       const reason = {ORDER_OR_STOCK_UNKNOWN:'订单或库存来源不完整',FACTORY_OR_RECIPE_UNKNOWN:'工厂或配方来源不完整',PRODUCTION_EFFECT_UNKNOWN:'生产效果来源不完整',FACTORY_QUEUE_UNKNOWN:'队列或采集时服务器时间不完整',NO_OBSERVED_PRODUCTION_PATH:'本快照未见可用生产路径',PRODUCTION_INPUT_OR_TIME_UNKNOWN:'现有材料不足或生产时长未知',PROJECTION_LIMIT:'本订单超出有限估计范围'}[wait.reason] || '来源不完整';

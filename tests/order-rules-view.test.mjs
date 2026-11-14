@@ -247,3 +247,12 @@ test('cached wait projection shows full queue allocation, UNKNOWN and uncollecte
  const text=h.node('order-preview-list').textContent;assert.match(text,/200 秒（至预计生产完成，尚须收取）/);assert.match(text,/队尾新排 · 预计完成 200 秒/);assert.match(text,/未知 · 生产效果来源不完整/);assert.match(text,/现有库存已覆盖/);assert.match(text,/不代表当前到账、最短工期或免费刷新资格/);assert.match(text,/<img onerror=bad>/);
  const walk=node=>[node,...node.children.flatMap(walk)];assert.equal(walk(h.node('order-preview-list')).some(node=>node.tagName==='img'),false);assert.ok(h.requests.every(r=>!r.url.includes('/authorize')&&!r.url.includes('/execute')));
 });
+
+test('cached order preview explains observed counts, client ceiling and unconfirmed wait without granting a daily quota',async()=>{
+ const h=await boot();await load(h);const body=previewFixture();body.progress={completed:{value:12},rewardedThrough:{value:6},clientLimit:{value:45},remainingProjection:{value:33},period:{status:'UNKNOWN'}};
+ body.orders[0].refreshTiming={status:'PROJECTED_WAIT',remainingSeconds:30};body.orders[1].refreshTiming={status:'ELAPSED_UNCONFIRMED',remainingSeconds:0};body.orders[2].refreshTiming={status:'OBSERVED_NO_MARKER'};
+ await preview(h,body);assert.match(h.node('order-preview-meta').textContent,/观察完成 12 单.*已领奖阈值 6.*客户端上限投影 45.*差额投影 33.*不是可执行额度.*周期标识和重置时间未知/);
+ const text=h.node('order-preview-list').textContent;assert.match(text,/采集时服务器时间，预计还需 30 秒.*不代表免费刷新资格/);assert.match(text,/等待时点已过，需独立复读，资格未知/);assert.match(text,/本次观察无等待标记/);
+ assert.ok(h.requests.every(r=>!r.url.includes('/authorize')&&!r.url.includes('/execute')));
+ const missing=previewFixture();missing.progress={completed:{value:null},clientLimit:{value:null},remainingProjection:{value:null}};await preview(h,missing);assert.match(h.node('order-preview-meta').textContent,/观察完成 未知 单/);assert.match(h.node('order-preview-list').textContent,/等待标记或采集时服务器时间未知/);
+});

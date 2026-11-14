@@ -1,6 +1,6 @@
 // Static wrappers over the existing core functions. Transport, resource algorithms,
 // authoritative verification, account locking and durable history stay with their owners.
-import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from './order-execution.mjs';
+import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming } from './order-execution.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
@@ -120,7 +120,11 @@ function productionPlanningView(facts,view,config) {
 }
 export function viewCoreOrders(facts, options = {}) {
   const args = context(options), result = planOrderExecution(facts, { ...args, ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null), selections: [] });
-  return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated({ ...row, productionWait: ordersProductionView(facts, args.config, row.beforeState?.requirements) }, args)), candidates: result.rows.map(row => gated({ ...row, parameters: {} }, args)), notes: result.notes };
+  const refreshTiming = row => {
+    const matches = Array.isArray(facts.rawOnWater?.workerOrder) ? facts.rawOnWater.workerOrder.filter(order => order?.index === row.target.index) : [];
+    return observeOrderRefreshTiming(matches.length === 1 ? matches[0] : null, facts.orderProductionObservation);
+  };
+  return { module: 'orders', mode: args.mode, progress: observeOrderProgress(args.config, { orderOfTheDay: facts.rawOnWater?.orderOfTheDay, effects: facts.orderProductionObservation?.effects }), orders: result.rows.map(({ action, ...row }) => gated({ ...row, productionWait: ordersProductionView(facts, args.config, row.beforeState?.requirements), refreshTiming: refreshTiming(row) }, args)), candidates: result.rows.map(row => gated({ ...row, parameters: {} }, args)), notes: result.notes };
 }
 export function planCoreOrders(facts, options = {}) {
   const args = context(options), ids = selections(options.selections, args.mode);
