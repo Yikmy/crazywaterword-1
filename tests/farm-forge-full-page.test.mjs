@@ -2356,3 +2356,27 @@ test('workflow history shows interrupted location and reason as safe text withou
  const late=h.node('wf-history-read').click();await tick();h.run("selectAccount('B')");h.respond('/api/workflows/history',history);await late;assert.equal(h.node('wf-history-detail').textContent,'');
  assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+async function workflowMemoryPage(){
+ const h=await boot(),loading=h.node('wf-load').click();await tick();
+ const runId='workflow/?x=1&编号',data={accountId:'A',workflowRunId:runId,workflowDefinitionId:'definition-not-run',status:'UNKNOWN',readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[],surveys:[]};
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId,workflowId:'definition-not-run',status:'UNKNOWN'}]});await loading;
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',data);await reading;
+ const button=descendants(h.node('wf-history-detail')).find(n=>n.dataset.workflowMemory===runId);assert.ok(button);return {h,runId,data,button};
+}
+test('Workflow history opens shared memory using exact workflow run instead of definition or stale operation filter',async()=>{
+ const {h,runId,button}=await workflowMemoryPage();h.node('ops-memory-run-id').value='previous-operation';h.node('ops-memory-run-id').oninput();
+ const reading=button.click(),request=h.pending('/api/operations/memory');assert.ok(request);const query=new URL(request.url,'http://local').searchParams;
+ assert.equal(query.get('workflowId'),runId);assert.equal(query.get('runId'),null);assert.equal(query.get('account'),'A');assert.equal(request.options.method,undefined);assert.equal(request.options.body,undefined);
+ assert.equal(h.node('ops-memory-run-id').value,'');assert.equal(h.node('ops-memory-workflow-id').value,runId);
+ h.respond('/api/operations/memory',{accountId:'A',available:true,coverage:'UNTIL_IDENTITY_CHANGE_AND_UNKNOWN_AUDIT',events:[{eventId:'shared-original',workflowId:runId,runId:'original-operation',status:'UNKNOWN',historyOrigin:{status:'STILL_UNKNOWN',resolved:false}}],pendingHistoryProjection:[],resumable:false,retryAllowed:false,policyCoverage:{identityChange:true,cooldown:false,gameDay:false}});await reading;
+ assert.match(h.node('ops-memory').textContent,/shared-original.*原始 UNKNOWN.*仍未解除/s);assert.equal(writes(h).length,0);
+});
+for(const change of ['selection','replacement','account-return'])test('Workflow memory shortcut rejects retired history callback after '+change,async()=>{
+ const {h,data,button}=await workflowMemoryPage();
+ if(change==='selection'){h.node('wf-history-selected').value='other';h.node('wf-history-selected').onchange();}
+ if(change==='replacement'){const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',data);await reading;}
+ if(change==='account-return')h.run("selectAccount('B');selectAccount('A')");
+ const before=h.requests.length,filter=h.node('ops-memory-workflow-id').value;await button.click();
+ assert.equal(h.requests.length,before);assert.equal(h.node('ops-memory-workflow-id').value,filter);assert.equal(writes(h).length,0);
+});

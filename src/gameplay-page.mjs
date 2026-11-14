@@ -992,6 +992,14 @@ function wfHistoryRender(data) {
       box.appendChild(table);
     }
   }
+  const memoryScope=viewGuard.capture(),memoryRevision=gpRevision,historyRevision=wfHistoryRevision,memoryButton=gpEl('button','查看此流程的拒绝与 UNKNOWN 记忆');
+  memoryButton.type='button';memoryButton.dataset.workflowMemory=data.workflowRunId;
+  memoryButton.onclick=()=>{
+    if(!gpSafe(memoryScope,memoryRevision)||historyRevision!==wfHistoryRevision||$('wf-history-selected').value!==data.workflowRunId)return;
+    $('ops-memory-run-id').value='';$('ops-memory-workflow-id').value=data.workflowRunId;$('ops-memory-workflow-id').oninput();
+    document.querySelector?.('#tabs button[data-tab="operations-history"]')?.click();$('ops-memory-workflow-id').scrollIntoView?.({block:'start'});
+    return refreshOperationMemory();
+  };box.appendChild(memoryButton);
   $('wf-history-hint').textContent = '只读历史；原始 UNKNOWN 保留，读取不会继续或重发动作。';
 }
 async function wfReadHistory() {

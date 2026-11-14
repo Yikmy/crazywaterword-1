@@ -278,7 +278,7 @@ export const PAGE = `<!doctype html>
     <div id="ops-history">尚未读取历史。</div>
     <h2>只读执行记忆</h2>
     <p class="dim">记忆是原始执行历史的补充审计，不代表当前游戏状态。原始 UNKNOWN 永远保留；当前是否已复核仅以原始历史追加证据为准。此处不提供清除、重试或执行授权。</p>
-    <div class="bar"><label>操作运行 ID（留空查看全部）<input id="ops-memory-run-id" type="text" maxlength="512"></label><button id="ops-memory-load">读取只读执行记忆</button><span id="ops-memory-hint" class="warn" role="status"></span></div>
+    <div class="bar"><label>操作运行 ID（留空查看全部）<input id="ops-memory-run-id" type="text" maxlength="512"></label><label>工作流运行 ID（可选，与操作运行 ID 同时筛选）<input id="ops-memory-workflow-id" type="text" maxlength="512"></label><button id="ops-memory-load">读取只读执行记忆</button><span id="ops-memory-hint" class="warn" role="status"></span></div>
     <div id="ops-memory-coverage" class="dim">尚未读取覆盖范围。</div>
     <div id="ops-memory-pending"></div>
     <div id="ops-memory">尚未读取执行记忆。</div>
@@ -1278,6 +1278,7 @@ $('ops-history-load').onclick = refreshOperationHistory;
 
 function resetOperationMemory() {
   $('ops-memory-run-id').value = '';
+  $('ops-memory-workflow-id').value = '';
   $('ops-memory').textContent = '尚未读取执行记忆。';
   $('ops-memory-coverage').textContent = '尚未读取覆盖范围。';
   clear($('ops-memory-pending')); $('ops-memory-hint').textContent = '';
@@ -1307,21 +1308,25 @@ function renderOperationMemory(data) {
 }
 async function refreshOperationMemory() {
   if(!current)return;
-  const scope=viewGuard.begin('operations-memory'),runId=$('ops-memory-run-id').value;
+  const scope=viewGuard.begin('operations-memory'),runId=$('ops-memory-run-id').value,workflowId=$('ops-memory-workflow-id').value;
+  const live=()=>viewGuard.current(scope)&&$('ops-memory-run-id').value===runId&&$('ops-memory-workflow-id').value===workflowId;
   clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));
   $('ops-memory-hint').textContent='正在读取本账号只读执行记忆 ...';
   try {
     if(runId&&(runId.trim()!==runId||runId.length>512))throw new Error('请输入无首尾空格且不超过512字符的精确操作运行 ID。');
-    const data=await call('/api/operations/memory'+(runId?'?runId='+encodeURIComponent(runId):''),undefined,scope);
-    if($('ops-memory-run-id').value!==runId)return;
+    if(workflowId&&(workflowId.trim()!==workflowId||workflowId.length>512))throw new Error('请输入无首尾空格且不超过512字符的精确工作流运行 ID。');
+    const filters=[...(runId?['runId='+encodeURIComponent(runId)]:[]),...(workflowId?['workflowId='+encodeURIComponent(workflowId)]:[])];
+    const data=await call('/api/operations/memory'+(filters.length?'?'+filters.join('&'):''),undefined,scope);
+    if(!live())return;
     if(data.accountId!==scope.account)throw new Error('执行记忆账号不匹配');
     if(runId&&[data.events,data.pendingHistoryProjection].some(rows=>Array.isArray(rows)&&rows.some(row=>row?.runId!==runId)))throw new Error('执行记忆运行不匹配');
+    if(workflowId&&[data.events,data.pendingHistoryProjection].some(rows=>Array.isArray(rows)&&rows.some(row=>row?.workflowId!==workflowId)))throw new Error('执行记忆工作流运行不匹配');
     renderOperationMemory(data);$('ops-memory-hint').textContent='';
   } catch(error) {
-    if(viewGuard.current(scope)&&$('ops-memory-run-id').value===runId) {clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));$('ops-memory-hint').textContent='读取失败：'+error.message;}
+    if(live()) {clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));$('ops-memory-hint').textContent='读取失败：'+error.message;}
   }
 }
-$('ops-memory-run-id').oninput=()=>{
+for(const id of ['ops-memory-run-id','ops-memory-workflow-id'])$(id).oninput=()=>{
   viewGuard.begin('operations-memory');clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));$('ops-memory-hint').textContent='筛选已更改，请读取只读执行记忆。';
 };
 $('ops-memory-load').onclick=refreshOperationMemory;

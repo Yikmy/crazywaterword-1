@@ -691,3 +691,33 @@ test('full PAGE memory filter edits retire delayed success and errors while a ne
  h.node('ops-memory-run-id').value='edited';h.node('ops-memory-run-id').oninput();assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');
  h.run("selectAccount('B')");assert.equal(h.node('ops-memory-run-id').value,'');await loadMemory(h,memoryFixture('B'));assert.deepEqual([...new URL(h.requests.at(-1).url,'http://local').searchParams],[['account','B']]);
 });
+
+for(const combined of [false,true])test('memory workflow run filter uses original GET with exact encoded scope '+combined,async()=>{
+ const h=await boot(),workflowId='workflow/?x=1&编号',runId=combined?'operation-A':'';
+ h.node('ops-memory-workflow-id').value=workflowId;h.node('ops-memory-workflow-id').oninput();h.node('ops-memory-run-id').value=runId;h.node('ops-memory-run-id').oninput();
+ const loading=h.node('ops-memory-load').onclick(),request=h.pending('/api/operations/memory','A'),query=new URL(request.url,'http://local').searchParams;
+ assert.equal(query.get('workflowId'),workflowId);assert.equal(query.get('runId'),runId||null);assert.equal(query.get('account'),'A');assert.equal(request.options.method,undefined);assert.equal(request.options.body,undefined);
+ h.respond('/api/operations/memory','A',memoryFixture('A',{events:[memoryEvent({workflowId,...(runId?{runId}:{})})],pendingHistoryProjection:[{workflowId,...(runId?{runId}:{}),status:'REJECTED',projectable:false}]}));await loading;
+ assert.match(memoryText(h),/编号/);assert.equal(h.node('ops-memory-hint').textContent,'');assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+test('invalid workflow memory scope refuses fallback and account switch clears both filters',async()=>{
+ const h=await boot();for(const value of [' leading','trailing ','x'.repeat(513)]){
+  h.node('ops-memory-workflow-id').value=value;h.node('ops-memory-workflow-id').oninput();const count=h.requests.length;await h.node('ops-memory-load').onclick();assert.equal(h.requests.length,count);assert.match(h.node('ops-memory-hint').textContent,/精确工作流运行 ID/);
+ }
+ h.node('ops-memory-run-id').value='operation';h.run("selectAccount('B')");assert.equal(h.node('ops-memory-workflow-id').value,'');assert.equal(h.node('ops-memory-run-id').value,'');
+});
+for(const field of ['events','pendingHistoryProjection'])test('workflow memory scope rejects unrelated '+field+' without rendering evidence',async()=>{
+ const h=await boot();h.node('ops-memory-workflow-id').value='expected';h.node('ops-memory-workflow-id').oninput();const reading=h.node('ops-memory-load').onclick();
+ const row=field==='events'?memoryEvent({workflowId:'foreign',reason:'unrelated-evidence'}):{workflowId:'foreign',reason:'unrelated-evidence'};
+ h.respond('/api/operations/memory','A',memoryFixture('A',{[field]:[row]}));await reading;assert.match(h.node('ops-memory-hint').textContent,/工作流运行不匹配/);assert.doesNotMatch(memoryText(h),/unrelated-evidence/);assert.equal(h.node('ops-memory').textContent,'');assert.equal(h.node('ops-memory-pending').textContent,'');
+});
+test('workflow memory scope edits discard late success and failure without reviving old account filters',async()=>{
+ const h=await boot(),reads=[];
+ for(const workflowId of ['old-success','old-error','current']){
+  h.node('ops-memory-workflow-id').value=workflowId;h.node('ops-memory-workflow-id').oninput();
+  const promise=h.node('ops-memory-load').onclick(),request=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);reads.push({promise,request});
+ }
+ settleMemoryRequest(reads[2].request,memoryFixture('A',{events:[memoryEvent({workflowId:'current',reason:'current-evidence'})]}));await reads[2].promise;const shown=memoryText(h);
+ settleMemoryRequest(reads[0].request,memoryFixture('A',{events:[memoryEvent({workflowId:'old-success',reason:'late-evidence'})]}));await reads[0].promise;
+ settleMemoryRequest(reads[1].request,{error:'late-error'},false);await reads[1].promise;assert.equal(memoryText(h),shown);assert.match(shown,/current-evidence/);
+});
