@@ -291,6 +291,20 @@ for (const [kind,wheat,expected] of [['seed',0,2],['surplus',55,3]]) test('regis
  }finally{await f.cleanup();}
 });
 
+
+
+test('Loop world action uses the registered production Function and shared workflow history',async()=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs');const {createWorkflowRunner}=await import('../src/workflow.mjs');
+ const f=await integratedProduction({registered:true});let runner;try{
+  const surveyed=await f.operations.surveyModule(f.account,'production'),actionId=surveyed.view.productionRecommendations[0];assert.ok(actionId);
+  const graph=compileUnifiedExecution({entry:'loop',world:[{module:'production',parameters:{},selection:{actionId}}],budget:{resources:[{id:'木材',num:1}],quotas:[],uids:[]}}, {modules:f.operations.modules}).graph;
+  runner=createWorkflowRunner({operations:f.operations,modules:f.operations.modules,getSession:()=>f.account,claim:(_id,runId,options)=>f.operations.claimWorkflow(f.account,runId,options)});
+  const pending=await runner.start(f.account.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(pending.plan.module,'production');assert.equal(f.writes.length,0);
+  const record=await f.execute(pending.plan);assert.equal(record.finalStatus,'SUCCESS');assert.equal(record.workflowId,pending.runId);assert.equal(f.writes.length,1);
+  const done=await runner.resume();assert.equal(done.status,'COMPLETED');assert.equal(f.history.list(f.account.id).length,1);
+ }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+
 test('registered production binds crop policy and recipe dependencies before authorization and execution',async()=>{
  for(const change of ['policy','recipe']){
   const f=await integratedProduction({registered:true});try{
