@@ -1,6 +1,7 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
 import { validateWorkflow } from './workflow.mjs';
+import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
 import { validateMailParameters } from './mail.mjs';
@@ -140,6 +141,14 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
+      // Explicit observation reuses the native survey; no plan, selection or claim is generated.
+      if(['tasks','dailies'].includes(phase)&&row?.action==='observe'){
+        exact(row,phase==='tasks'?['kind','taskId','action']:['taskId','action']);
+        const kind=phase==='tasks'?row.kind:'daily';
+        if(!['main','branch','achievement','daily'].includes(kind))invalid('只读任务观察仅支持明确主线、支线、成就或每日任务');
+        try{parameters=validateTaskRewardsParameters({kind,taskId:row.taskId});}catch{invalid('只读任务观察须明确正int32任务ID');}
+        steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
+      }
       if(phase==='tasks'&&row?.kind==='afk-level-reward'){
         exact(row,['kind','level']);
         try{parameters=validateAfkLevelRewardsParameters({level:row.level});}catch{invalid('Tasks挂机等级奖励须明确正int32等级');}
