@@ -7,7 +7,7 @@ import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { createModuleSettings } from '../src/gameplay-settings.mjs';
 import { createOperationService } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
-import { createWorkflowRunner } from '../src/workflow.mjs';
+import { createWorkflowRunner, createWorkflowStore } from '../src/workflow.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 
 // The real registered Function, OperationService and Workflow are used with local
@@ -67,7 +67,7 @@ function fixture({ enabled = true, apply = true, historyFile, serviceClock = Dat
   }
   function authorize(target, planned) { return service.authorize(target, { batchId: planned.batchId, planHash: planned.planHash, approvedActionIds: planned.actions.map(row => row.actionId), resourceBudget: planned.resourceBudget, confirm: true }); }
   async function execute(target, planned) { const permit = authorize(target, planned), started = service.execute(target, permit); await service.settle(target.id); return { permit, started, record: durable.list(target.id).find(row => row.planSummary.batchId === planned.batchId), status: service.status(target.id) }; }
-  function runner(target) { const result = createWorkflowRunner({ operations: service, modules: GAMEPLAY_MODULES, getSession: id => sessions.get(id), claim: (id, runId, opts) => service.claimWorkflow(sessions.get(id), runId, opts), isCurrent: (session, generation, client) => session === target && session.generation === generation && session.client === client }); runners.push(result); return result; }
+  function runner(target, onUpdate = () => {}) { const result = createWorkflowRunner({ onUpdate, operations: service, modules: GAMEPLAY_MODULES, getSession: id => sessions.get(id), claim: (id, runId, opts) => service.claimWorkflow(sessions.get(id), runId, opts), isCurrent: (session, generation, client) => session === target && session.generation === generation && session.client === client }); runners.push(result); return result; }
   async function cleanup() { for (const runner of runners) runner.stop(); await Promise.all(runners.map(runner => runner.settle())); for (const target of sessions.values()) target.abort.abort(); await Promise.all([...sessions.keys()].map(id => service.settle(id))); assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir())); fs.rmSync(dir, { recursive: true, force: true }); }
   return { dir, file, service, durable, journal, moduleSettings, session, displayed, authorize, execute, runner, cleanup, config: mutate => mutate(gameConfig), failPersist: predicate => { failPersist = predicate; } };
 }
@@ -257,4 +257,57 @@ for(const age of [300000,300001])test('W19 changed world needs authoritative pla
 for(const missing of ['beforeState','expectedState','budgetClaims'])test('W19 changed world cannot clear hero refusal missing original '+missing,async()=>{
  const f=fixture({apply:false}),a=f.session();let next;try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};await f.execute(a,await f.displayed(a));const r=f.durable.list(a.id)[0];delete r.actions[0][missing];f.durable.put(r);next=fixture({apply:false,historyFile:f.file});const b=next.session();b.player.worldId=2;await assert.rejects(next.displayed(b),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
  }finally{await next?.cleanup();await f.cleanup();}
+});
+
+const combinedParameters={heroId:'A',num:3,maxDurationMs:60000};
+function combinedSetup(f,t){configureFragments(f,t);t.synthetic.heroes[0].star=1;t.synthetic.stock.set('A碎片',2);}
+for(const wholeRun of [false,true])test('hero combination uses original '+(wholeRun?'finite-run':'per-batch')+' authorization and exact parent budget',async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);
+ try{
+  const prepared=await f.service.prepareHeroStarSource(t,combinedParameters);assert.deepEqual(t.synthetic.writes,[]);assert.deepEqual(f.durable.list(t.id),[]);assert.equal(f.service.workflowBudget(t.id),null);
+  const file=path.join(f.dir,'workflow.json'),store=createWorkflowStore({file,modules:GAMEPLAY_MODULES});store.save(t.id,prepared.graph);
+  const runner=f.runner(t,run=>store.record(t.id,run)),first=await runner.start(t.id,prepared.graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.deepEqual(first.plan.resourceBudget,[{id:'蓝卡万能碎片',num:3}]);assert.equal(t.synthetic.writes.length,0);
+  let final,permit;
+  if(wholeRun){final=await runner.authorizeRun({offer:first.authorizationOffer,batchId:first.plan.batchId,planHash:first.plan.planHash,confirm:true});}
+  else{const exchange=await f.execute(t,first.plan);permit=exchange.permit;assert.equal(exchange.record.finalStatus,'SUCCESS');assert.equal(t.synthetic.heroes[0].star,1);const next=await runner.resume();assert.equal(next.status,'AWAITING_AUTHORIZATION');assert.deepEqual(next.plan.resourceBudget,[{id:'A碎片',num:5}]);assert.equal((await f.execute(t,next.plan)).record.finalStatus,'SUCCESS');final=await runner.resume();}
+  assert.equal(final.status,'COMPLETED');assert.equal(t.synthetic.heroes[0].star,2);assert.equal(t.synthetic.stock.get('A碎片'),0);assert.equal(t.synthetic.stock.get('蓝卡万能碎片'),17);
+  assert.deepEqual(t.synthetic.writes.map(w=>w.name),['HeroFragExchangeRequest','HeroStarUpRequest']);assert.deepEqual(t.synthetic.writes[1].body,{heroId:'A',universal:false});for(const w of t.synthetic.writes)assert.equal(w.durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+  assert.deepEqual(final.runBudget.reserved.resources,[{id:'蓝卡万能碎片',num:3},{id:'A碎片',num:5}]);assert.equal(final.runBudget.state,'CLOSED');assert.equal(f.durable.list(t.id).every(run=>run.actions[0].verification.status==='CONFIRMED'),true);
+  const bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules:GAMEPLAY_MODULES});assert.equal(reopened.history(t.id)[0].resumable,false);assert.deepEqual(reopened.history('account-B'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);if(permit)assert.throws(()=>f.service.execute(t,permit));
+ }finally{await f.cleanup();}
+});
+for(const step of ['exchange','star'])test('hero combination '+step+' UNKNOWN freezes remaining actions and restart replay',async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);let restarted;
+ try{
+  const prepared=await f.service.prepareHeroStarSource(t,combinedParameters),file=path.join(f.dir,'workflow.json'),store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),runner=f.runner(t,run=>store.record(t.id,run));let state=await runner.start(t.id,prepared.graph);
+  if(step==='star'){await f.execute(t,state.plan);state=await runner.resume();}
+  t.synthetic.apply=false;const result=await f.execute(t,state.plan),final=await runner.resume();assert.equal(result.record.finalStatus,'UNKNOWN');assert.equal(final.status,'UNKNOWN');assert.equal(t.synthetic.writes.length,step==='star'?2:1);assert.equal(final.runBudget.state,'CLOSED');
+  const bytes=fs.readFileSync(file,'utf8'),saved=createWorkflowStore({file,modules:GAMEPLAY_MODULES}).history(t.id)[0];assert.equal(saved.resumable,false);assert.equal(saved.status,'UNKNOWN');assert.equal(fs.readFileSync(file,'utf8'),bytes);
+  restarted=fixture({historyFile:f.file});const b=restarted.session();combinedSetup(restarted,b);await assert.rejects(restarted.service.prepareHeroStarSource(b,combinedParameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(b.synthetic.writes.length,0);assert.throws(()=>restarted.service.execute(b,result.permit));
+ }finally{await restarted?.cleanup();await f.cleanup();}
+});
+for(const change of ['star','balance','cost','world','generation','connection'])test('hero combination fresh preflight stops changed '+change,async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);
+ try{
+  const prepared=await f.service.prepareHeroStarSource(t,combinedParameters),runner=f.runner(t),first=await runner.start(t.id,prepared.graph),permit=f.authorize(t,first.plan);
+  if(change==='star')t.synthetic.heroes[0].star=0;
+  if(change==='balance')t.synthetic.stock.set('A碎片',3);
+  if(change==='cost')f.config(c=>{c.tables.HeroStarCfg.data[2].consumeBlue=6;});
+  if(change==='world')t.player.worldId=2;
+  if(change==='generation'){t.generation++;t.client.factContext.generation++;}
+  if(change==='connection'){t.connectionId+='changed';t.client.factContext.connectionId=t.connectionId;}
+  try{f.service.execute(t,permit);await f.service.settle(t.id);}catch{}await runner.resume();assert.equal(t.synthetic.writes.length,0);assert.notEqual(runner.getStatus().status,'COMPLETED');
+ }finally{await f.cleanup();}
+});
+for(const change of ['star','balance'])test('hero combination never converts again when '+change+' changes after confirmed exchange',async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);
+ try{const prepared=await f.service.prepareHeroStarSource(t,combinedParameters),runner=f.runner(t),first=await runner.start(t.id,prepared.graph);assert.equal((await f.execute(t,first.plan)).record.finalStatus,'SUCCESS');if(change==='star')t.synthetic.heroes[0].star=0;else t.synthetic.stock.set('A碎片',6);const final=await runner.resume();assert.notEqual(final.status,'AWAITING_AUTHORIZATION');assert.notEqual(final.status,'COMPLETED');assert.equal(t.synthetic.writes.length,1);}finally{await f.cleanup();}
+});
+test('hero combination late exchange response after cancellation remains UNKNOWN and never stars',async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);let finish;
+ try{const prepared=await f.service.prepareHeroStarSource(t,combinedParameters),runner=f.runner(t),first=await runner.start(t.id,prepared.graph);t.client.sendWatch=async(name,body)=>{t.client.mutate(name,body);return new Promise(resolve=>{finish=resolve;});};f.service.execute(t,f.authorize(t,first.plan));for(let i=0;i<200&&!finish;i++)await new Promise(r=>setImmediate(r));assert.ok(finish);runner.stop();finish({status:'SUCCESS'});await f.service.settle(t.id);await runner.settle();assert.equal(f.durable.list(t.id)[0].finalStatus,'UNKNOWN');assert.equal(t.synthetic.writes.length,1);assert.equal(t.synthetic.heroes[0].star,1);}finally{finish?.({status:'UNKNOWN'});await f.cleanup();}
+});
+for(const change of ['world','config'])test('hero combination preparation discards '+change+' race without creating a plan or write',async()=>{
+ const f=fixture(),t=f.session();combinedSetup(f,t);
+ try{let changed=false;t.synthetic.onRead=()=>{if(!changed){changed=true;if(change==='world')t.player.worldId=2;else f.config(c=>{c.tables.HeroStarCfg.revision=2;});}};await assert.rejects(f.service.prepareHeroStarSource(t,combinedParameters),{code:'CANCELLED'});assert.deepEqual(t.synthetic.writes,[]);assert.deepEqual(f.durable.list(t.id),[]);}finally{await f.cleanup();}
 });

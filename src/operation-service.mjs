@@ -1,3 +1,4 @@
+import {prepareHeroStarWorkflow} from './hero-operations.mjs';
 import {projectStageBattleHistory,prepareStageRecommendation,validateStageRecommendationSequence} from './stage-history.mjs';
 import { confirmedStageDefeat, validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent, projectWorkflowReasonHistory } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
@@ -311,6 +312,19 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       return {accountId:session.id,...result,graph};
     }finally{release();}
   }
+  async function prepareHeroStarSource(session,payload) {
+    exact(payload,['heroId','num','maxDurationMs']);
+    const release=acquire(session,'operations:HERO_STAR_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
+    try {
+      plans.delete(session.id);
+      const adapter=adapterFor('heroes'),parameters={heroId:payload.heroId,action:'fragment-exchange',num:payload.num},config=getConfig(),moduleConfig=moduleSettings.get(session.id,'heroes').config;
+      const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters:{action:'star'}}))+operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters})),dependency=dependencies();
+      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters,signal:session.abort.signal});current(session,generation,client);
+      if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('组合准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+      const result=prepareHeroStarWorkflow(facts,{config,moduleConfig,...payload});
+      return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
+    } finally {release();}
+  }
   function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
   function assertWorkflowDeadline(session, runId) {
     const parent = workflowBudgets.get(session.id);
@@ -623,7 +637,7 @@ function authorizeWorkflowPlan(session,payload){
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions } from '../src/hero-operations.mjs';
+import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions, prepareHeroStarWorkflow } from '../src/hero-operations.mjs';
 import { planHeroes, buildHeroBody, buildHeroAction } from '../src/heroes.mjs';
 import { ResourceLedger, createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -494,4 +494,26 @@ test('fragment fixed config maps actual hero qualities and target IDs without in
  for(const quality of ['BLUE','PURPLE','ORANGE','RED']){
   const hc=cfg.tables.HeroCfg.data.find(row=>row.type==='英雄'&&row.quality===quality);assert.ok(hc);const client=exchangeFake({quality});client.config=cfg;client.heroes=[hero(hc.id)];client.stock=new Map([[hc.universalItemId,20]]);const p=exchangeParams(hc.id),op=exchangePlan(await exchangeSurvey(client,p),client,p).actions[0];assert.ok(op);assert.deepEqual(op.action.body,{heroId:hc.id,fragItemId:hc.id+'碎片',num:7});assert.deepEqual(op.costs,[{id:hc.universalItemId,num:7}]);
  }
+});
+
+function combinedClient(quality='BLUE') {
+ const client=exchangeFake({quality});client.stock.set('A碎片',2);
+ client.config.tables.HeroStarCfg={data:[{star:0},{star:1},{star:2}].map((row,i)=>({...row,consumeBlue:i===2?5:0,consumePur:i===2?5:0,consumeOra:i===2?5:0,consumeRed:i===2?5:0}))};return client;
+}
+for(const quality of ['BLUE','PURPLE','ORANGE','RED'])test('single-star composition declares exact two-step guarded graph for '+quality,async()=>{
+ const c=combinedClient(quality),facts=await exchangeSurvey(c),result=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,heroId:'A',num:3,maxDurationMs:60000});
+ assert.equal(result.fromStar,1);assert.equal(result.toStar,2);assert.equal(result.starCost,5);assert.equal(result.ownedFragments,2);assert.equal(result.requiresAuthorization,true);assert.equal(result.resumable,false);assert.deepEqual(c.writes,[]);
+ const [exchange,star]=result.graph.nodes.filter(n=>n.type==='ACTION');assert.equal(exchange.parameters.expectedFragmentBalance,2);assert.equal(star.parameters.expectedFragmentBalance,5);assert.equal(star.parameters.allowUniversal,false);assert.equal(result.graph.runPolicy.maxActions,2);
+ const op=plan(facts,exchange.parameters,c.config).actions[0];assert.ok(op);assert.deepEqual(op.costs,[{id:c.config.tables.HeroCfg.data[0].universalItemId,num:3}]);assert.ok(op.configEvidence.HeroStarCfg);assert.ok(heroDependencyVersions({config:c.config,parameters:exchange.parameters})['config.HeroStarCfg']);
+ assert.equal(plan(facts,star.parameters,c.config).actions.length,0); // projected receipt is not current inventory
+ c.stock.set('A碎片',5);c.stock.set(op.costs[0].id,17);const after=await exchangeSurvey(c,exchange.parameters);const verified=verifyHeroOperation(op,facts,after,null);assert.equal(verified.confirmed,true,verified.reason);assert.equal(plan(after,star.parameters,c.config).actions.length,1);
+ for(const change of [f=>{f.stock.set('A碎片',3);},f=>{f.heroes[0].star++;f.heroes[0].raw.star++;}]){const changed=structuredClone(facts);change(changed);assert.equal(plan(changed,exchange.parameters,c.config).actions.length,0);}
+});
+test('composition refuses guessed quantities, unavailable costs, capacity and missing protocol',async()=>{
+ const c=combinedClient(),facts=await exchangeSurvey(c),base={config:c.config,moduleConfig:enabled,heroId:'A',num:3,maxDurationMs:60000};
+ for(const patch of [{num:0},{num:2},{num:4},{num:2147483648},{num:'3'},{maxDurationMs:0},{maxDurationMs:86400001},{maxDurationMs:1.1},{heroId:'B'}])assert.throws(()=>prepareHeroStarWorkflow(facts,{...base,...patch}));
+ for(const change of [f=>{f.stockReliable=false;},f=>{f.heroes[0].star=2;f.heroes[0].raw.star=2;},f=>{f.stock.set('A碎片',5);},f=>{f.stock.set('蓝卡万能碎片',2);},f=>{f.available=f.available.filter(n=>n!=='HeroStarUpResponse');}]){const f=structuredClone(facts);change(f);assert.throws(()=>prepareHeroStarWorkflow(f,base));}
+ const cfg=structuredClone(c.config);cfg.tables.HeroStarCfg.data[2].consumeBlue=6;assert.throws(()=>prepareHeroStarWorkflow(facts,{...base,config:cfg}));
+ const guards={expectedStar:1,expectedFragmentBalance:2,expectedStarCost:5};for(const patch of [{expectedStar:undefined},{expectedStar:-1},{expectedFragmentBalance:1.5},{expectedStarCost:0},{action:'level'},{expectedStarCost:'5'}])assert.throws(()=>validateHeroParameters({...exchangeParams('A',3),...guards,...patch}));
+ const p={...exchangeParams('A',3),...guards};const op=plan(facts,p,c.config).actions[0];c.stock.set('A碎片',5);c.stock.set('蓝卡万能碎片',17);const after=await exchangeSurvey(c,p);assert.equal(verifyHeroOperation(op,facts,after,null).confirmed,true);op.configEvidence.HeroStarCfg.data[2].consumeBlue=6;assert.equal(verifyHeroOperation(op,facts,after,null).reason,'HERO_FRAGMENT_PLAN_OR_IDENTITY_MISMATCH');
 });

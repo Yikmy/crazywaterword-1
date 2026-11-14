@@ -106,7 +106,7 @@ test('input fields match seventeen existing domain parameter interfaces without 
   const expected = { 'material-packs':['packId','itemId','num'], 'pirate-sweep':['uid','cityId','allowLowerLevel'], 'antique-growth':['antiqueId','action','suitId','num'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions','mode','raidId'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num','action','shipId','crewId'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
-    treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config','expectedStage'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal','num'],
+    treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config','expectedStage'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal','num','expectedStar','expectedFragmentBalance','expectedStarCost'],
   };
   for (const [id, keys] of Object.entries(expected)) assert.deepEqual(Object.keys(FUNCTION_CONTRACTS[id].inputSchema.properties), keys);
 });
@@ -218,3 +218,9 @@ test('task rewards retain C capability identity with explicit daily inventory re
 test('equipment initial-level is explicit within C229 with the same level config dependencies',()=>{
  const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.inputSchema.properties.action.enum.includes('initial-level'));assert.ok(c.implementation.actions.includes('INITIAL_LEVEL'));assert.equal(c.implementation.blockedCapabilities.some(row=>row.capability==='LEVEL_ZERO'),false);assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=initial-level').keys,['config.EquipAttrCfg','config.EquipUpDecomposeCfg']);assert.match(c.verification.scope,/INITIAL_LEVEL 0 to 1 with unchanged inventory/);
 });
+
+ test('hero star composition guards remain business parameters and pin the star configuration',()=>{
+  const c=FUNCTION_CONTRACTS.heroes;
+  for(const key of ['expectedStar','expectedFragmentBalance','expectedStarCost'])assert.equal(c.inputSchema.properties[key].type,'integer');
+  assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.expectedStar=present').keys,['config.HeroStarCfg']);
+ });
