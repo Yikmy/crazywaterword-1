@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appointEffectValue, appointProduceReduce, produceFinalTime, orderProductionWait, packCoverPlan, cropSupplyPlan, MATERIAL_PACKS, CROP_SUPPLY_POLICY } from '../src/production-planning.mjs';
+import { observeProductionQueueClocks, validateProductionQueueClockObservation, appointEffectValue, appointProduceReduce, produceFinalTime, orderProductionWait, packCoverPlan, cropSupplyPlan, MATERIAL_PACKS, CROP_SUPPLY_POLICY } from '../src/production-planning.mjs';
 
 const table = data => ({ data });
 const effect = () => ({ effectId: '生产时间', viewType: '数值', heroAdd: [10, 20, 150, 200], starAdd: [1, 2, 12, 20] });
@@ -192,4 +192,17 @@ test('fixed retained protocol effect IDs and absent wire scalar do not fabricate
  assert.equal(p.GameEffectId.PRODUCE_SPEED_UP,1);assert.equal(p.GameEffectId.PRODUCE_TIME_REDUCTION,2);
  f.input.effects=codec.decode(codec.encode('GameEffectResponse',0,{effects:[{id:1,value:1},{id:2,value:20}]})).body;assert.equal(orderWait(f).leadSeconds,120);
  f.input.effects=codec.decode(codec.encode('GameEffectResponse',0,{effects:[{id:1},{id:2,value:20}]})).body;assert.equal(f.input.effects.effects[0].value,0);assert.equal(Object.hasOwn(f.input.effects.effects[0],'value'),false);assert.equal(orderWait(f).reason,'PRODUCTION_EFFECT_UNKNOWN');
+});
+
+const queueClockInput=()=>({buildings:[{buildingId:'1材料厂',factory:{autoProductId:'',factoryQ:[{idx:0,productId:'cloth',finishTime:101},{idx:1,productId:'fuel',finishTime:0}],finishedProducts:[{id:'cloth',num:99}]}}],sourceAt:1000,serverBounds:{earliestMs:100000,latestMs:100001}});
+test('production queue clock binds the explicit running tuple, not future tails, projections or collected output',()=>{
+ const input=queueClockInput(),before=structuredClone(input),observed=observeProductionQueueClocks(input);assert.equal(observed.length,1);const v=observed[0];assert.deepEqual(v.target,{buildingId:'1材料厂',index:0,productId:'cloth',finishTime:101});assert.equal(v.readiness,'WAITING_BY_CLOCK');assert.equal(v.collectionConfirmed,false);assert.equal(v.executable,false);assert.equal(v.eligibility,null);assert.deepEqual(input,before);assert.deepEqual(validateProductionQueueClockObservation(JSON.parse(JSON.stringify(v))),v);
+ input.serverBounds={earliestMs:101000,latestMs:101001};assert.equal(observeProductionQueueClocks(input)[0].readiness,'READY_BY_CLOCK');input.serverBounds={earliestMs:100999,latestMs:101001};assert.equal(observeProductionQueueClocks(input)[0].readiness,'UNKNOWN');delete input.serverBounds;assert.equal(observeProductionQueueClocks(input)[0].readiness,'UNKNOWN');
+});
+for(const fault of ['missing-id','duplicate-building','sparse-building','auto','missing-auto','duplicate-idx','sparse-queue','missing-idx','inherited-time','zero-time','bad-time','bad-product','bad-source'])test('production queue clock does not invent target or deadline for '+fault,()=>{
+ const input=queueClockInput(),b=input.buildings[0],q=b.factory.factoryQ;q.length=1;
+ if(fault==='missing-id')delete b.buildingId;if(fault==='duplicate-building')input.buildings.push(structuredClone(b));if(fault==='sparse-building')delete input.buildings[0];if(fault==='auto')b.factory.autoProductId='cloth';if(fault==='missing-auto')delete b.factory.autoProductId;if(fault==='duplicate-idx')q.push(structuredClone(q[0]));if(fault==='sparse-queue')delete q[0];if(fault==='missing-idx')delete q[0].idx;if(fault==='inherited-time'){const job=q[0];q[0]=Object.assign(Object.create({finishTime:job.finishTime}),{idx:job.idx,productId:job.productId});}if(fault==='zero-time')q[0].finishTime=0;if(fault==='bad-time')q[0].finishTime='101';if(fault==='bad-product')q[0].productId='';if(fault==='bad-source')input.sourceAt=null;assert.deepEqual(observeProductionQueueClocks(input),[]);
+});
+test('production clock historical validator rejects wrong scope, timing and write or collection authority',()=>{
+ const base=observeProductionQueueClocks(queueClockInput())[0];for(const change of [v=>v.executable=true,v=>v.collectionConfirmed=true,v=>v.eligibility=true,v=>v.autoResume=true,v=>v.source='local clock',v=>v.readiness='READY_BY_CLOCK',v=>v.target.finishTime=0,v=>v.target.finishTime='101',v=>v.target.index=-1,v=>v.target.index=2147483648,v=>v.target.uid='invented',v=>v.serverBounds.earliestMs=102000,v=>delete v.sourceAt]){const bad=structuredClone(base);change(bad);assert.throws(()=>validateProductionQueueClockObservation(bad),{code:'WORKFLOW_INVALID'});}
 });

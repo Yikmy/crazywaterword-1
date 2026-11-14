@@ -1,6 +1,6 @@
 # crazywaterword
 
-当前进度唯一基线是 [ROADMAP_RECONCILIATION](docs/ROADMAP_RECONCILIATION.md)（2026-11-15，已提交源码 1495e48）。原目标 COMPLETE_CRAZYWATER_PLATFORM_R1_R8 保持 ACTIVE，完整保留 M0–M15、95C、42P、8S 和 273 Inventory；工程尚未完成，R7 全量离线与 R8 真实验收均未执行。PHASE 1–4 报告保留各自版本的历史证据。工作区未提交的生产队列时钟 WAIT 另记在路线图 W19，不计为已提交交付。
+当前进度唯一基线是 [ROADMAP_RECONCILIATION](docs/ROADMAP_RECONCILIATION.md)（2026-11-15完成对齐；后续提交与具体交付边界见该表）。原目标 COMPLETE_CRAZYWATER_PLATFORM_R1_R8 保持 ACTIVE，完整保留 M0–M15、95C、42P、8S 和 273 Inventory；工程尚未完成，R7 全量离线与 R8 真实验收均未执行。PHASE 1–4 报告保留各自版本的历史证据。
 
 本项目通过游戏 WebSocket 协议提供只读数据浏览、具体业务计划和受控执行。现有 OperationService、Function Registry、ResourceLedger、ExecutionHistory 与有限 Workflow 共用账号、连接、授权、预算、D6、取消及 UNKNOWN 保护。26 个静态模块加原 Stage 已注册；每个模块的可执行子集和缺证操作见唯一进度基线，注册不代表完整玩法交付。
 

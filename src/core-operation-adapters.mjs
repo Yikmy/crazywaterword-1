@@ -6,7 +6,7 @@ import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
-import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, orderProductionWait } from './production-planning.mjs';
+import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, orderProductionWait, observeProductionQueueClocks } from './production-planning.mjs';
 
 import { readGameTime } from './state-facts.mjs';
 import { makeTypeResolver } from './world.mjs';
@@ -21,6 +21,7 @@ const modes = new Set(['Manual', 'Hybrid', 'Automatic']);
 const cityKinds = new Set(['build', 'upgrade', 'finishUpgrade', 'collectProduct', 'speedUpUpgrade']);
 const productionKinds = new Set(['startProduce', 'gainFactory', 'speedUpProduce']);
 const completed = new WeakMap();
+const productionQueueClocks = new WeakMap();
 
 export function validateCoreOperationParameters(value = {}) {
   if (!plain(value) || Reflect.ownKeys(value).length) throw invalid('核心业务参数必须为空对象；目标仅接受服务端候选 actionId，不允许 request、body 或未知字段');
@@ -107,16 +108,23 @@ function ordersProductionView(facts, config, requirements) {
 // Explicit production survey reuses the existing city/order read set; only the
 // two already-catalogued appointment facts are added, never a second Snapshot.
 export async function surveyProductionOperations(client,protocol,options={}) {
- const facts=await surveyCoreOperations(client,protocol,options);
- const read=async name=>{const response=name.replace(/Request$/,"Response");if(!protocol?.[name]||!protocol?.[response])return null;assertExecutionActive(client,options);try{const body=await awaitExecution(client.request(name,{},response,options.timeout??8000),client,options);assertExecutionActive(client,options);return body;}catch(error){if(executionOutcome(error)==="CANCELLED")throw error;return null;}};
- const appointed=await read("AppointInfoRequest"),heroes=await read("AllHeroRequest");
- return {...facts,productionContext:{appointment:appointProduceReduce(options.config,{appointed:appointed?.heroes,heroes:heroes?.heroes,reliable:Array.isArray(appointed?.heroes)&&Array.isArray(heroes?.heroes)})}};
+ const identity=()=>JSON.stringify(['accountId','generation','playerId','worldId','connectionId'].map(k=>client.factContext?.[k]??null).concat(client.connectionId??null,['playerId','worldId'].map(k=>toSnapshotJson(options.player?.[k]??null)))),captured=identity();
+ const current=()=>{assertExecutionActive(client,options);if(identity()!==captured)throw Object.assign(new Error('生产调查期间账号或连接变化'),{code:'CANCELLED'});};
+ const clock=()=>{const c=client.factContext;let t;try{t=client.gameClock?.read?.(c);}catch{}const role=k=>{const v=toSnapshotJson(options.player?.[k]??null);return (typeof v==='string'&&/^[1-9][0-9]*$/.test(v)||typeof v==='number'&&Number.isSafeInteger(v)&&v>0)&&BigInt(v)<(1n<<63n)&&(!Object.hasOwn(c,k)||String(toSnapshotJson(c[k]))===String(v));};return c&&['accountId','connectionId'].every(k=>typeof c[k]==='string'&&c[k])&&['playerId','worldId'].every(role)&&Number.isSafeInteger(c.generation)&&c.generation>=0&&t?.status==='TRUSTED'&&t.reliable===true&&t.source==='PingResponse.serverTimestamp'&&t.accountId===c.accountId&&t.generation===c.generation&&['earliestMs','nowMs','latestMs'].every(k=>Object.hasOwn(t,k)&&Number.isFinite(t[k])&&t[k]>=0&&t[k]<=Number.MAX_SAFE_INTEGER)&&t.earliestMs<=t.nowMs&&t.nowMs<=t.latestMs?{earliestMs:t.earliestMs,latestMs:t.latestMs}:null;};
+ let sourceAt=null,sourceClock=null;
+ const observed=new Proxy(client,{get(target,key){if(key!=='request'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return async(...args)=>{current();const value=await target.request(...args);current();if(args[0]==='OnWaterRequest'){sourceAt=Date.now();sourceClock=clock();}return value;};}});
+ const facts=await surveyCoreOperations(observed,protocol,options);
+ const read=async name=>{current();const response=name.replace(/Request$/,"Response");if(!protocol?.[name]||!protocol?.[response])return null;try{const body=await awaitExecution(client.request(name,{},response,options.timeout??8000),client,options);current();return body;}catch(error){current();if(executionOutcome(error)==="CANCELLED")throw error;return null;}};
+ const appointed=await read("AppointInfoRequest"),heroes=await read("AllHeroRequest");current();
+ const result={...facts,productionContext:{appointment:appointProduceReduce(options.config,{appointed:appointed?.heroes,heroes:heroes?.heroes,reliable:Array.isArray(appointed?.heroes)&&Array.isArray(heroes?.heroes)})}},end=clock();
+ productionQueueClocks.set(result,{raw:JSON.stringify(result.rawOnWater),identity:captured,current:identity,sourceAt,bounds:sourceClock&&end&&end.earliestMs>=sourceClock.earliestMs&&end.latestMs>=sourceClock.latestMs?end:null});return result;
 }
 function productionPlanningView(facts,view,config) {
  const appointment=facts.productionContext?.appointment??{reliable:false,seconds:null,reason:'APPOINT_SOURCE_UNKNOWN'};
  const factories=view.factories.map(factory=>({...factory,recipes:factory.recipes.map(recipe=>({...recipe,appointmentAdjustedSeconds:produceFinalTime(recipe.produceTime,appointment.seconds),timingScope:'APPOINTMENT_ONLY_SPEED_BONUS_NOT_ESTABLISHED',packCoverage:packCoverPlan(config,{costs:recipe.costs,stock:facts.stockReliable===true?facts.stock:null})}))}));
  const cropSupply=cropSupplyPlan(config,{stock:facts.stockReliable===true?facts.stock:null,buildings:facts.buildings,farmsReliable:facts.cityReliability?.buildings===true});
- return {factories,appointment,cropSupply};
+ const proof=productionQueueClocks.get(facts),queueClocks=proof&&proof.identity===proof.current()&&proof.raw===JSON.stringify(facts.rawOnWater)?observeProductionQueueClocks({buildings:facts.rawOnWater?.building,sourceAt:proof.sourceAt,serverBounds:proof.bounds}):[];
+ return {factories,appointment,cropSupply,queueClocks};
 }
 export function viewCoreOrders(facts, options = {}) {
   const args = context(options), result = planOrderExecution(facts, { ...args, ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null), selections: [] });

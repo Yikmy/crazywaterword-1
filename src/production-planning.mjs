@@ -174,3 +174,30 @@ export function orderProductionWait(config,{requirements,stock,buildings,effects
  return {...base,status:'PROJECTED',reason:null,leadSeconds:lead,items,allocations,reservedExistingStock:ledger.reservationSummary().resources,
   assumptions:['按物品ID顺序分配到已知可用工厂，复用排队产物；不是最短工期证明。','效果和队列保持本快照状态；新排产仅使用现有材料，不使用预计收益。','成品仍须独立授权收取和复读，估计不会改规则建议、库存或刷新资格。']};
 }
+
+// Fixed FactoryQueueItem compares finishTime to timer.getServerTime (seconds).
+// This is the clock of the exact still-observed queue tuple, never evidence that
+// a removed queue produced, delivered or credited an aggregated finished item.
+const queueClockSource='OnWaterResponse.building.factory.factoryQ.finishTime/PingResponse.serverTimestamp';
+const queueClockFields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&keys.every(k=>{const d=Object.getOwnPropertyDescriptor(v,k);return d&&Object.hasOwn(d,'value')&&d.enumerable;});
+const queueClockDense=(v,max)=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=max&&Array.from({length:v.length},(_,i)=>own(v,i)).every(Boolean);
+const queueClockCount=n=>Number.isInteger(n)&&n>=0&&n<=2147483647;
+const queueClockBounds=b=>queueClockFields(b,['earliestMs','latestMs'])&&[b.earliestMs,b.latestMs].every(n=>Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER)&&b.earliestMs<=b.latestMs;
+const queueClockReadiness=(target,bounds)=>!bounds?'UNKNOWN':bounds.earliestMs>=target.finishTime*1000?'READY_BY_CLOCK':bounds.latestMs<target.finishTime*1000?'WAITING_BY_CLOCK':'UNKNOWN';
+export function validateProductionQueueClockObservation(v){
+ const invalid=()=>Object.assign(new Error('生产队列时钟缺少精确来源、目标或只读边界'),{code:'WORKFLOW_INVALID',statusCode:400});
+ if(!queueClockFields(v,['status','source','target','sourceAt','serverBounds','readiness','collectionConfirmed','eligibility','executable','autoResume'])||!['OBSERVED','UNKNOWN'].includes(v.status)||v.source!==queueClockSource||v.collectionConfirmed!==false||v.eligibility!==null||v.executable!==false||v.autoResume!==false)throw invalid();
+ if(v.status==='UNKNOWN'){if(v.target!==null||v.sourceAt!==null||v.serverBounds!==null||v.readiness!=='UNKNOWN')throw invalid();}
+ else if(!queueClockFields(v.target,['buildingId','index','productId','finishTime'])||!id(v.target.buildingId)||v.target.buildingId.length>100||!queueClockCount(v.target.index)||!id(v.target.productId)||v.target.productId.length>100||!queueClockCount(v.target.finishTime)||v.target.finishTime===0||!Number.isSafeInteger(v.sourceAt)||v.sourceAt<0||v.serverBounds!==null&&!queueClockBounds(v.serverBounds)||v.readiness!==queueClockReadiness(v.target,v.serverBounds))throw invalid();
+ return structuredClone(v);
+}
+export function observeProductionQueueClocks({buildings,sourceAt,serverBounds=null}={}){
+ if(!queueClockDense(buildings,1000)||!unique(buildings,'buildingId')||!Number.isSafeInteger(sourceAt)||sourceAt<0)return [];
+ const result=[],bounds=queueClockBounds(serverBounds)?structuredClone(serverBounds):null;
+ for(const building of buildings){
+  const f=own(building,'factory')?building.factory:null,q=own(f,'factoryQ')?f.factoryQ:null;
+  if(!id(building.buildingId)||building.buildingId.length>100||!own(f,'autoProductId')||f.autoProductId!==''||!queueClockDense(q,100)||!unique(q,'idx')||q.some(job=>!own(job,'idx')||!queueClockCount(job.idx)||!own(job,'productId')||!id(job.productId)||job.productId.length>100||!own(job,'finishTime')||!queueClockCount(job.finishTime)))continue;
+  for(const job of q){if(job.finishTime===0)continue;const target={buildingId:building.buildingId,index:job.idx,productId:job.productId,finishTime:job.finishTime};result.push(validateProductionQueueClockObservation({status:'OBSERVED',source:queueClockSource,target,sourceAt,serverBounds:bounds,readiness:queueClockReadiness(target,bounds),collectionConfirmed:false,eligibility:null,executable:false,autoResume:false}));if(result.length>1000)return [];}
+ }
+ return result;
+}
