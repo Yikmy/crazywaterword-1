@@ -19,16 +19,18 @@ const protocol = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyRes
 const claims = amount => ({ resources: [{ id: 'wood', num: amount }], quotas: [], uids: [] });
 const amount = (rows, id = 'wood') => rows.find(row => row.id === id)?.num ?? 0;
 const order = index => ({ index, workerId: 'synthetic-resident-' + index, textId: 1, isSpecial: false, refreshTime: 0, requirements: [{ id: 'wood', num: 40 }] });
-function fixture({ stock = 60, apply = true, connection = true, clock = Date.now } = {}) {
+function fixture({ stock = 60, apply = true, connection = true, clock = Date.now, orderWait = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-run-budget-service-'));
   const durable = createExecutionHistory({ file: path.join(dir, 'history.json') });
   let failPut = () => false, writerAllowed = true;
   const journal = [], reads = [], writes = [], clients = new Map(), releases = [];
   const history = { ...durable, put(record) { if (failPut(record)) throw Object.assign(Error('synthetic run-budget persistence failure'), { code: 'HISTORY_UNAVAILABLE' }); journal.push(structuredClone(record)); return durable.put(record); } };
   const moduleSettings = createModuleSettings({ file: path.join(dir, 'module-settings.json'), modules: CORE_OPERATION_MODULES });
-  const service = createOperationService({ protocol, clock, getConfig: () => config, loadRules: () => ({ config: rules }), loadProduction: () => ({ config: production, warning: null }), history, modules: CORE_OPERATION_MODULES, moduleSettings, assertWriter() { if (!writerAllowed) throw Object.assign(Error('synthetic writer owner lost'), { code: 'WRITER_LOST' }); } });
+  const waitConfig = orderWait ? { tables: { ...config.tables, BuildingCfg: { data: [{ buildingType:'材料厂' }] }, BuildingProduceCfg: { data: [{ buildType:'材料厂',itemId:'wood',produceTime:2,unlockLevel:1,costItem:[] }] } } } : config;
+  const service = createOperationService({ protocol: orderWait ? { ...protocol, GameEffectRequest:{},GameEffectResponse:{} } : protocol, clock, getConfig: () => waitConfig, loadRules: () => ({ config: rules }), loadProduction: () => ({ config: production, warning: null }), history, modules: CORE_OPERATION_MODULES, moduleSettings, assertWriter() { if (!writerAllowed) throw Object.assign(Error('synthetic writer owner lost'), { code: 'WRITER_LOST' }); } });
   function makeSession(id = 'A') {
     const state = { stock, raw: { building: [], workerOrder: [order(0), order(1), order(2)], orderOfTheDay: { orderNum: 7 } }, apply, beforeWrite: null, beforeRead: null };
+    if(orderWait)state.raw.building=[{buildingId:'1材料厂',level:1,buildFinishTime:0,factory:{autoProductId:'',factoryQ:[],finishedProducts:[]}}];
     const uncertainWrites = new Set();
     const client = { connected: true, pending: [], watchers: [], lateResponses: new Map(), uncertainWrites,
       async request(name, body, response, timeout, options) {
@@ -43,6 +45,7 @@ function fixture({ stock = 60, apply = true, connection = true, clock = Date.now
         if (name === 'AllResourceRequest') return { list: [] };
         if (name === 'MyResFieldsRequest') return { info: { fields: [] } };
         if (name === 'MyFleetsRequest') return { fleets: [] };
+        if (orderWait && name === 'GameEffectRequest') return { effects:[{id:1,value:0},{id:2,value:0}] };
         throw Error('Unexpected synthetic request ' + name);
       },
       markUnverifiedWrite(name, body) { uncertainWrites.add(JSON.stringify({ name, body })); },
@@ -645,4 +648,34 @@ test('one malformed achievement list member cannot partially wake or execute the
   f.socket.receive('SCAchievementUpdate',{task:[{id:71,progress:'1',targetProgress:'2',rewardClaimed:false},{id:72,progress:'2',targetProgress:'3'}]},1);
   const done=await f.runner.settle();assert.equal(done.status,'UNKNOWN');assert.equal(f.writes.length,0);assert.equal(f.reads.length,reads);assert.equal(f.service.workflowBudget('A').state,'CLOSED');
  }finally{await f.cleanup();}
+});
+
+test('registered Orders survey exposes a projection through the original Service cache, account isolation and restart boundaries',async()=>{
+ const f=fixture({stock:0,orderWait:true});
+ try{
+  const result=await f.service.surveyModule(f.session,'orders',{});
+  assert.equal(result.accountId,'A');assert.equal(result.view.orders[0].productionWait.status,'PROJECTED');assert.equal(result.view.orders[0].productionWait.leadSeconds,80);
+  assert.equal(result.view.candidates[0].productionWait,undefined);assert.equal(f.service.moduleView('B','orders').view,null);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);
+  result.view.orders[0].productionWait.leadSeconds=1;assert.equal(f.service.moduleView('A','orders').view.orders[0].productionWait.leadSeconds,80);
+  const fresh=fixture({stock:0,orderWait:true});try{assert.equal(fresh.service.moduleView('A','orders').view,null);}finally{await fresh.cleanup();}
+ }finally{await f.cleanup();}
+});
+test('original Workflow SURVEY consumes Orders projection through the same Service without a write, permit or recovered authority',async()=>{
+ const f=fixture({stock:0,orderWait:true});let runner;
+ try{
+  const graph={version:1,id:'order-wait-survey',name:'Synthetic order wait survey',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'orders',parameters:{}},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'z'}]};
+  runner=createWorkflowRunner({operations:f.service,modules:CORE_OPERATION_MODULES,getSession:()=>f.session,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+  const result=await runner.start('A',graph);await runner.settle();
+  assert.equal(result.status,'COMPLETED');assert.ok(result.trace.some(row=>row.nodeId==='q'&&row.result==='SURVEYED'));
+  const view=f.service.moduleView('A','orders');assert.equal(view.view.orders[0].productionWait.leadSeconds,80);assert.equal(view.lastPlan,null);assert.equal(f.writes.length,0);assert.equal(f.history.list('A').length,0);assert.equal(f.reads.filter(row=>row.name==='GameEffectRequest').length,1);
+ }finally{runner?.stop();await runner?.settle();await f.cleanup();}
+});
+for(const fault of ['generation','account','connection','abort'])test('Service discards Orders projection after '+fault+' changes while effects are pending',async()=>{
+ const f=fixture({stock:0,orderWait:true});let release,entered;const start=new Promise(r=>entered=r);
+ try{
+  f.state().beforeRead=async name=>{if(name==='GameEffectRequest'){entered();await new Promise(r=>release=r);}};
+  const pending=f.service.surveyModule(f.session,'orders',{});await start;
+  if(fault==='generation')f.session.generation++;if(fault==='account')f.session.client.factContext={accountId:'B',generation:1};if(fault==='connection')f.session.connectionId='other';if(fault==='abort')f.session.abort.abort();
+  release();await assert.rejects(pending,{code:'CANCELLED'});assert.equal(f.service.moduleView('A','orders').view,null);assert.equal(f.service.moduleView('B','orders').view,null);assert.equal(f.writes.length,0);
+ }finally{release?.();await f.cleanup();}
 });

@@ -1,6 +1,6 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@fc81076及本批W04/BIZ-R16h订单等待投影。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
+当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@f87f028及本批W04/BIZ-R16h原Orders Function等待投影集成。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
 
 > 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
@@ -9,7 +9,7 @@
 | 工作包 | 已完成能力 | 当前下一项 | 真正阻塞 | 最后提交 | 对应测试 |
 |---|---|---|---|---|---|
 | W01 PARTIAL | 唯一Console所有者、CLI独立写拒绝、Stage共同门控和有限证据恢复已有 | 维持原合同，按领域权威证据扩恢复 | 通用恢复缺独立证明，重连/重启及其他领域STILL_UNKNOWN | 26ed68d；当前执行链fc68c50 | 原writer-ownership/recovery/Service/API专项；本轮未重跑 |
-| W02 PARTIAL | 26静态模块加Stage、27合同、原核心Adapter及父资源/配额/UID预算已有 | 随原剩余领域补合同/Registry | 注册或协议存在不能证明未闭合写可执行 | 原公共实现保留；合同104755d | 原Contract/Registry/共享测试；本轮未重跑 |
+| W02 PARTIAL | 26静态模块加Stage、27合同、原核心Adapter及父资源/配额/UID预算已有 | 随原剩余领域补合同/Registry | 注册或协议存在不能证明未闭合写可执行 | 原公共实现保留；合同104755d | 2026-11-15原Contract/Registry专项PASS，已计入W04本批649项；其余共享历史证据保留 |
 | W05 PARTIAL | 港口专业货舱/逐物品缺货、明确装货及到港领取已有 | 补原范围其余允许分支 | D6/未知成本/未证身份仅冻结具体操作；不推导全包完成 | fleet最近32656af；原领域提交保留 | 原fleet/HTTP/PAGE专项；本轮未重跑 |
 | W10 PARTIAL | 科技专业树、下一等级/实际扣点及复读已接原联盟链 | 原科技重置独立合同 | 重置成本/资格/恢复缺证 | 原科技提交保留；alliance最近72c6388 | 原alliance-tech/共享测试；本轮未重跑 |
 | W14 PARTIAL | Fleet编队/维修/移动及港口子集已有 | 原攻击/加速/资源田/其他模式有据合同 | 模式结果、宣战成本/身份和非premium加速缺；MOVE非攻击 | fleet最近32656af；原成果保留 | 原fleet/naval/共享测试；本轮未重跑 |
@@ -25,7 +25,7 @@
 | W15 PARTIAL | 原Loop有限naval SURVEY新增CURRENT_RESPONSE_ONLY摘要：同查询/规则绑定的哈希及通过/不匹配/未知计数；响应排序与本地时间不产生变化，相同响应标UNCHANGED，查询/规则改变重建基线；缺来源/身份重复或失源为UNKNOWN。不持久化原始玩家/联盟/舰队数据，不新增调度器 | 继续原C404有界观察及W14有据能力；跨视野定位/跟随和动态攻击须先补原X07/X08证据 | 当前响应未见不证明全局消失、移动或全图完整；哈希仅本轮响应比较，不建立全局持续身份，不推导派遣/攻击资格。W15仍PARTIAL，R7/R8未执行 | 本行所在提交（父de5539e）；原海战观察20d438c/规则a31b4d2保留 | 与本批W19共用五文件879/879 PASS（5.92秒），不重复计数。覆盖精确int64同名不同玩家、乱序/变化/空响应、查询/规则切换、未知不跨接基线、新run不继承及原执行链零写；仅离线Codec/合成传输，REAL_UNVERIFIED |
 | W20 PARTIAL | 保留原图编辑、有限run/父预算、日历及两类具名WAIT；新增ACHIEVEMENT_TASK_PROGRESS复用原GameClient/Runner/Service/Store和页面，Tasks/Dailies/Loop使用同一策略。当前七类可信事件，不新建调度器；成就列表只触发一次原调查链 | 继续原S6剩余有据业务节点及全产品覆盖；缺证操作各自冻结 | 成就目标进度和已领标记仅为观察，不授予领奖资格；与主支线保持独立游标，不由每日重置推断其周期。通用日界/跨窗口策略仍缺，重启不恢复监听或权限。W20仍PARTIAL，R7/R8未执行 | c0a6f24（父231ff84）；原WAIT/主支线事件合同保留 | 与W19共用本批九文件1446项最终结果，不重复计数。原六类事件及WAIT回归保留；仅离线合成，REAL_UNVERIFIED |
 | W21 PARTIAL | 原专业页、预算及舰队维修模式/顺序配置保留；Workflow批次和有匹配原历史的拒绝/UNKNOWN记忆可直接打开原runId历史，清除旧日期筛选，仅一次本地GET。显示原派发、预算、权威复读及复核证据；账号/流程/节点/轮次/批次/动作关联冲突则拒绝显示，失效回调及迟到返回不覆盖新视图 | 继续原42P尚未闭合交互及独立工作包；现有历史/入口链已证部分不重复施工 | 原业务资格与结算缺证不因页面导航解除；冷却/gameDay和完整42P未齐，W21仍PARTIAL，R7/R8未执行 | 本行所在提交（父3f147f9）；原舰队配置及专业页成果保留 | 2026-11-14：完整PAGE/操作页/Workflow历史/恢复HTTP四文件最终823/823 PASS，0 fail/cancel/skip/todo（6.12秒）。首轮822/823发现scope导致合同错误提示回归，修复原scope复用后页面768/768，再最终四文件通过；实际切页验证一次GET、无授权或恢复写。覆盖特殊字符、关联冲突、筛选/替换/切号失效及迟到；仅离线合成，REAL_UNVERIFIED |
-| W04 PARTIAL | 保留原单田、材料包、日报及种子/过剩作物供给。本批BIZ-R16h在原production-planning增加有界本地等待投影，原订单规则缓存API/页面复用：客户端总效果公式、完整串行队列、各厂实际等级、已有排队及未收产物、共享现有材料预留；按ID顺序分配，不宣称最短工期。四项原始采集事实的账号/代次/来源和值一致才参与；有在制队首须保存的可信服务器时点，不用电脑当前时间。未知保持UNKNOWN，投影不改库存、规则建议或刷新资格 | 接原注册orders Function/Workflow只读调查视图复用同一投影；完成数/时窗解释仍需明确来源，随后原DAG继续 | 自动队列、重叠时间标记、已到期未结算队首或缺字段不推断等待；本批仅原缓存预览，尚未覆盖统一Function视图。全天覆盖/权威日界、最终金币、免费刷新和批量农田结算原缺证保留；W04仍PARTIAL，R7/R8未执行 | 本行所在提交（父fc81076）；原生产/日报成果保留 | 2026-11-15：领域/原缓存HTTP/整页与原订单规则、执行、奖励及生产Adapter共9文件最终272/272 PASS，0 fail/cancel/skip/todo。分范围79项预览/领域及193项旧链；最后仅修改领域Codec测试和页面中文提示后两文件64/64复测，不重复累计。覆盖整队列阻塞瞬成配方、共享工厂串行与多厂并行、逐厂等级、现有产物/材料零重复使用、缺失wire标量、来源/账号/代次/重启/迟到、安全DOM和零新请求/写；仅固定客户端/协议及合成HTTP，REAL_UNVERIFIED |
+| W04 PARTIAL | 保留f87f028的完整队列/总效果/现有材料等待投影；本批原注册Orders Function复用同一纯算法，原OperationService调查/API缓存、Workflow SURVEY及候选卡片可读取。仅Orders额外读取原GameEffect；建筑/库存沿用原调查，队首时间取OnWater返回时同账号代次可信服务器时间。未知保持UNKNOWN，投影不参与候选、授权、资源预留或刷新资格 | 补原BIZ-R16h完成数/时窗的有据只读解释；原orderOfTheDay计数需与周期语义分开，时窗不明保持UNKNOWN，随后按原DAG推进 | 自动/坏队列、重复或缺失库存、未证效果/时间不猜；全天生产、权威日界、最终金币、免费刷新及批量农田结算原缺证保留。W04仍PARTIAL，R7/R8未执行 | 本行所在提交（父f87f028）；原缓存投影f87f028 | 2026-11-15：按范围共9文件最终649个不同测试PASS，0 fail/cancel/skip/todo；Adapter+共享Service/Workflow213，公共HTTP/页面/Contract/Registry337，原订单执行/奖励Service/生产策略99。首轮新增UI及HTTP夹具问题已修复，针对改动复测，不累计重跑。覆盖与纯算法一致、候选/成本不变、缺证/账号代次连接/取消迟到、重启缓存为空、安全DOM和原HTTP同源门禁；本地Codec/合成传输，REAL_UNVERIFIED |
 | W11 PARTIAL | 保留博物馆及古董成长成果；静态复核既有v76 FragExchangePop明确fragItemId为目标古董专属碎片，已纠正请求与D6校验；成本仍为对应品质万能碎片，独立复读验证1:1净入且古董状态不变 | 继续原博物馆结算/领取恢复身份与古董剩余分支 | 博物馆结算及领取缺精确可恢复身份的操作继续冻结；不得把配置或typed提示当最终到账 | 本行所在提交（父ec28846） | 2026-11-13：antique-advanced领域/Service及actions-safety三文件76/76 PASS，0 fail/cancel/skip/todo，17.28秒；保留全部负例并新增旧错误源ID和错误目标ID拒绝。合成传输，REAL_UNVERIFIED |
 | W06 PARTIAL | 英雄显式 fragment-exchange 接入原 heroes Function/Registry/OperationService/API/专业页/Workflow；对应品质自有万能碎片按明确数量1:1兑换目标专属碎片，所有英雄及其他库存不变，兑换与升星分别授权；自动混用万能碎片升星仍冻结 | 继续原碎片/背包剩余兑换合同及其他依赖已满足分支 | 其他兑换需各自明确身份、成本与结算证据；无 dedicated Response 的兑换只凭新完整库存净入确认，缺失或迟到均 UNKNOWN，无自动重放 | 本行所在提交（父ac64891）；古董目标ID纠正ac64891 | 2026-11-13：英雄领域/Service/专武回归、D6、合同/注册/设置、HTTP/完整页面九文件478/478 PASS，0 fail/cancel/skip/todo，9.60秒；覆盖四品质固定配置、零初始库存、篡改、父预算、持久意图、重启/隔离/迟到、表单编辑及既有扫荡控件回归。仅本地Codec/合成传输，REAL_UNVERIFIED |
 | W07 PARTIAL | 保留原成长、红装/红徽章升星和Pet单次feed；本批徽章LEVEL复用原badge-growth Adapter，将明确当前经验从下一级需求中扣除，精确消耗自有经验和对应金币；仅单级且落点低于上限，decomposeUid=[]。完整徽章池、英雄槽位和库存独立确认等级+1、经验归零、精确净扣及非目标不变；沿用Registry/Service/History/Memory/Workflow/API和专业页，UNKNOWN持久零重放 | 继续Pet培育及成熟领取的精确队列与结算合同、徽章到达等级上限的结算证据，再推进其他依赖已满足分支 | 徽章上限落点客户端隐藏剩余经验，未证明结算仍冻结；EquipReplace/BadgeReplace成长转移、旧物归属和材料返还规则仍缺证；专武可靠未激活状态、PetBreed新队列恢复及GetMaturePet空请求领取身份仍缺证，仅冻结对应操作；R7/R8未执行 | 本行所在提交（父50af088）；Pet42a85e7/写前隔离及红徽章63a4e9e、红装a200362保留 | 2026-11-14：徽章领域/真实Service恢复/穿戴、公共Adapter集成/合同/Registry/D6/配置和完整PAGE共9文件749/749 PASS（6.84秒），0 fail/cancel/skip/todo。覆盖两级不同倍率及最小1经验差额、明确0/部分经验/缺失负数满额溢出、固定配置、错误余量/多级/成本/其他UID、原父预算/逐批授权、落盘失败零发送、拒绝跨重连与角色世界返回、账号/角色/世界/连接/代次隔离、取消迟到及重启UNKNOWN零重放；原Pet375/375等保留为历史证据不累计。仅离线Codec/配置/合成传输，REAL_UNVERIFIED |
@@ -1555,7 +1555,7 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 
 - W19 / C604/C606、BIZ-L03/L04、S7：当前原统一入口的run→node→batch→action及拒绝/UNKNOWN关联已检查，原共享测试覆盖只读重启/未决零重放；通用冷却/gameDay缺权威来源保持false。后续仅新增已证领域策略，旧写handler保持403。
 - W21 / P7-2/P7-3：本批补齐Workflow批次/记忆→原执行证据导航，见顶部状态；后续按42P其他实际交互缺口推进，不重做本批导航或已有历史查询。
-- W19/W20成就事件已提交c0a6f24，逐帧监听保存首个匹配事件。本批W04 / BIZ-R16h已补原缓存订单预览等待估计；下一项接原注册orders Function/Workflow只读调查视图，复用同一投影，来源不足为UNKNOWN，不参与候选或许可。完成数/时窗解释及免费刷新仍须各自权威证据。
+- W19/W20成就事件已提交c0a6f24，逐帧监听保存首个匹配事件。本批W04 / BIZ-R16h已将f87f028等待投影接原注册orders Function、Service/API、Workflow SURVEY及原候选卡片。来源不足为UNKNOWN，不参与候选或许可；下一项为完成数/时窗的有据只读解释，周期与免费刷新仍须各自权威证据。
 - 通用冷却/日界外证缺口保留policyCoverage=false；W03地图/来源恢复及其他具体缺证写仍各自冻结。全范围冻结前不提前R7；E01–E24具体R8授权清单仍待所有独立工作完成后生成。
 
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
@@ -1789,7 +1789,7 @@ profile中的测试是继承的相关测试族索引，不能把整个族通过�
 | BIZ-R16e | 增强planWorld内部waterlineOf；参考world:1065–1089 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 原Production水位策略已有；预测收成不进库存 |
 | BIZ-R16f | 增强planWorld种子缺口需求；参考world:1091–1130 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 种子需求缺口纯规划接原策略 |
 | BIZ-R16g | 增强planWorld过剩作物→成品需求；参考world:1131–1167 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 过剩作物到成品需求纯规划已有；实际消耗走原账本 |
-| BIZ-R16h | decideOrderReroll；参考world:274；增强planWorld:872–1029 | C113 C114 非C:农田委任水位 | PARTIAL | src/production-planning.mjs；src/server.mjs；src/page.mjs；tests/production-planning.test.mjs；tests/order-rules-api.test.mjs；tests/order-rules-view.test.mjs | B | 已补原缓存规则预览完整队列/总效果等待投影；统一Function视图及完成数/时窗解释未齐。保留KEEP/REFRESH/REVIEW；免费配额冷却未证不派发 |
+| BIZ-R16h | decideOrderReroll；参考world:274；增强planWorld:872–1029 | C113 C114 非C:农田委任水位 | PARTIAL | src/production-planning.mjs；src/core-operation-adapters.mjs；src/server.mjs；src/page.mjs；src/gameplay-page.mjs；原领域/HTTP/Workflow/页面测试 | B | 已补原缓存预览和原注册Function/Service/API/Workflow调查的完整队列/总效果等待投影；完成数/时窗解释未齐。保留KEEP/REFRESH/REVIEW；免费配额冷却未证不派发 |
 | BIZ-R17a | planYoudu kill分支；参考youdu:230–249→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
 | BIZ-R17b | planYoudu驱邪累计奖励；参考youdu:252–277→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
 | BIZ-R17c | planYoudu罗盘；参考youdu:279–298→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |

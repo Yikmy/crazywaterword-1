@@ -6,7 +6,12 @@ import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
-import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan } from './production-planning.mjs';
+import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, orderProductionWait } from './production-planning.mjs';
+
+import { readGameTime } from './state-facts.mjs';
+import { makeTypeResolver } from './world.mjs';
+import { stockFromResponses, safeResourceQuantity } from './resource-ledger.mjs';
+import { toSnapshotJson } from './game.mjs';
 
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -50,6 +55,55 @@ export async function surveyCoreOperations(client, protocol, options = {}) {
   validateCoreOperationParameters(options.parameters);
   return surveyOrderExecution(client, protocol, { ...options, survey: surveyCityOperations });
 }
+// Orders alone adds the catalogued total-effects read. This observation never
+// enters write candidates, resource reservations, permits or refresh eligibility.
+export async function surveyOrdersOperations(client, protocol, options = {}) {
+  const identity = () => JSON.stringify(['accountId','generation','playerId','worldId','connectionId'].map(key => client.factContext?.[key] ?? null).concat(client.connectionId ?? null));
+  const capturedIdentity = identity();
+  const current = () => {
+    assertExecutionActive(client, options);
+    if (identity() !== capturedIdentity) throw Object.assign(new Error('订单调查期间账号或连接身份已变化'), { code: 'CANCELLED' });
+  };
+  let serverTimeMs = null;
+  const observed = new Proxy(client, { get(target, key) {
+    if (key !== 'request') { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
+    return async (...args) => {
+      current();
+      const value = await target.request(...args);
+      current();
+      if (args[0] === 'OnWaterRequest') {
+        const time = readGameTime(target).gameTime, context = target.factContext;
+        if (time.reliable === true && typeof context?.accountId === 'string' && context.accountId
+          && Number.isSafeInteger(context.generation) && context.generation >= 0
+          && time.accountId === context.accountId && time.generation === context.generation
+          && Number.isSafeInteger(Math.round(time.nowMs))) serverTimeMs = Math.round(time.nowMs);
+      }
+      return value;
+    };
+  } });
+  const facts = await surveyCoreOperations(observed, protocol, options);
+  let effects = null;
+  current();
+  if (protocol?.GameEffectRequest && protocol?.GameEffectResponse) {
+    try { effects = toSnapshotJson(await awaitExecution(observed.request('GameEffectRequest', {}, 'GameEffectResponse', options.timeout ?? 8000), client, options)); }
+    catch (error) { if (executionOutcome(error) === 'CANCELLED') throw error; }
+  }
+  current();
+  return { ...facts, orderProductionObservation: { effects, serverTimeMs } };
+}
+function ordersProductionView(facts, config, requirements) {
+  const resolve = makeTypeResolver(config);
+  const buildings = Array.isArray(facts.rawOnWater?.building) ? facts.rawOnWater.building.map(row => ({ ...row, type: typeof row?.buildingId === 'string' ? resolve(row.buildingId) : null })) : null;
+  let stock = null;
+  const items = facts.rawAllItem?.items, resources = facts.rawAllResource?.list;
+  if (facts.stockReliable === true && Array.isArray(items) && Array.isArray(resources)
+    && items.every(row => typeof (row?.itemId ?? row?.id) === 'string' && (row.itemId ?? row.id).trim() && safeResourceQuantity(row.num ?? row.count) !== null)
+    && resources.every(row => Number.isSafeInteger(row?.res) && safeResourceQuantity(row.amount) !== null)
+    && new Set(items.map(row => row.itemId ?? row.id)).size === items.length
+    && new Set(resources.map(row => row.res)).size === resources.length) stock = stockFromResponses(facts.rawAllItem, facts.rawAllResource);
+  return orderProductionWait(config, { requirements, stock, buildings,
+    effects: facts.orderProductionObservation?.effects ?? null, serverTimeMs: facts.orderProductionObservation?.serverTimeMs ?? null });
+}
 // Explicit production survey reuses the existing city/order read set; only the
 // two already-catalogued appointment facts are added, never a second Snapshot.
 export async function surveyProductionOperations(client,protocol,options={}) {
@@ -66,7 +120,7 @@ function productionPlanningView(facts,view,config) {
 }
 export function viewCoreOrders(facts, options = {}) {
   const args = context(options), result = planOrderExecution(facts, { ...args, ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null), selections: [] });
-  return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated(row, args)), candidates: result.rows.map(row => gated({ ...row, parameters: {} }, args)), notes: result.notes };
+  return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated({ ...row, productionWait: ordersProductionView(facts, args.config, row.beforeState?.requirements) }, args)), candidates: result.rows.map(row => gated({ ...row, parameters: {} }, args)), notes: result.notes };
 }
 export function planCoreOrders(facts, options = {}) {
   const args = context(options), ids = selections(options.selections, args.mode);
@@ -167,7 +221,7 @@ function coreRejectionIdentity(operation,{context}={}) {
   return result;
 }
 const shared = { rejectionIdentity: coreRejectionIdentity, defaultConfig, validateConfig: settings, validateParameters: validateCoreOperationParameters, survey: surveyCoreOperations, verify: verifyCoreOperation };
-export const ordersModule = Object.freeze({ ...shared, id: 'orders', label: '居民订单',
+export const ordersModule = Object.freeze({ ...shared, survey: surveyOrdersOperations, id: 'orders', label: '居民订单',
   capabilities: Object.freeze(['C121', 'C122', 'C123', 'C125', 'C126', 'C128']),
   view: viewCoreOrders, plan: planCoreOrders, execute: (client, protocol, operation, options) => executeCore('orders', client, protocol, operation, options),
   dependencyVersions: options => dependencies('orders', options),

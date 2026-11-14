@@ -329,3 +329,68 @@ test('core adapter candidates carry explicit empty parameters into the registere
  }
  assert.equal(f.writes.length,0);
 });
+
+const waitProtocol = { ...protocol, GameEffectRequest: {}, GameEffectResponse: {} };
+function waitFixture() {
+  const f = fixture({ orders: [rawOrder(0, [{ id: 'cloth', num: 2 }])] });
+  const original = f.client.request.bind(f.client);
+  f.effects = { effects: [{ id: 1, value: 0 }, { id: 2, value: 0 }] };
+  f.client.factContext = { accountId: 'A', generation: 1, connectionId: 'connection-A' };
+  f.client.gameClock = { read: () => ({ status: 'TRUSTED', reliable: true, accountId: 'A', generation: 1, nowMs: 100000, earliestMs: 99999, latestMs: 100001 }) };
+  f.client.request = async (...args) => { if (args[0] === 'GameEffectRequest') { f.reads.push(args[0]); return f.effectRead ? f.effectRead() : structuredClone(f.effects); } return original(...args); };
+  return f;
+}
+const waitView = facts => ordersModule.view(facts, options()).orders[0].productionWait;
+test('registered Orders survey reuses the full original read set plus one effects read and the original pure projection', async () => {
+  const f = waitFixture(), facts = await ordersModule.survey(f.client, waitProtocol, options());
+  const wait = waitView(facts), { orderProductionWait } = await import('../src/production-planning.mjs');
+  assert.equal(wait.status, 'PROJECTED'); assert.equal(wait.leadSeconds, 60); assert.equal(wait.executable, false);
+  assert.deepEqual(wait, orderProductionWait(config, { requirements: rawOrder(0,[{id:'cloth',num:2}]).requirements, stock: f.inventory, buildings: facts.rawOnWater.building.map(row=>({...row,type:row.buildingId==='1民居'?'民居':'材料厂'})), effects:f.effects,serverTimeMs:100000 }));
+  assert.deepEqual(f.reads.sort(), ['OnWaterRequest','AllItemRequest','AllResourceRequest','MyResFieldsRequest','MyFleetsRequest','GameEffectRequest'].sort());
+  const originalFacts = await cityModule.survey(f.client, protocol, options());
+  assert.deepEqual(ordersModule.view(facts,options()).candidates,ordersModule.view(originalFacts,options()).candidates);
+  assert.deepEqual(ordersModule.plan(facts,options({selections:[]})),ordersModule.plan(originalFacts,options({selections:[]})));
+  assert.equal(f.writes.length,0); assert.equal(facts.orderProductionObservation.serverTimeMs,100000);
+});
+test('Orders captures trusted server time at the water response and does not substitute a later clock',async()=>{
+  const f=waitFixture();f.raw.building[1].factory.factoryQ=[{idx:1,productId:'cloth',finishTime:120}];
+  f.effectRead=()=>{f.client.gameClock.read=()=>({status:'UNKNOWN'});return f.effects;};
+  const facts=await ordersModule.survey(f.client,waitProtocol,options());
+  assert.equal(waitView(facts).leadSeconds,50);assert.equal(waitView(facts).serverTimeMs,100000);
+});
+for(const missing of ['protocol','failure','scalar','wrong-account-clock','wrong-generation-clock','no-clock','duplicate-stock','missing-stock-count','missing-building-level'])test('Orders wait projection keeps '+missing+' unknown without changing original write logic',async()=>{
+  const f=waitFixture();let proto=waitProtocol;
+  if(missing==='protocol')proto=protocol;
+  if(missing==='failure')f.effectRead=()=>{throw Error('synthetic effect read failed');};
+  if(missing==='scalar')delete f.effects.effects[0].value;
+  if(missing==='missing-building-level')delete f.raw.building[1].level;
+  if(['wrong-account-clock','wrong-generation-clock','no-clock'].includes(missing)){
+    f.raw.building[1].factory.factoryQ=[{idx:1,productId:'cloth',finishTime:120}];
+    const value=f.client.gameClock.read();if(missing==='wrong-account-clock')value.accountId='B';if(missing==='wrong-generation-clock')value.generation=2;if(missing==='no-clock')value.reliable=false;f.client.gameClock.read=()=>value;
+  }
+  if(missing==='duplicate-stock'||missing==='missing-stock-count'){
+    const original=f.client.request;f.client.request=async(...args)=>{const result=await original(...args);if(args[0]==='AllItemRequest'){if(missing==='duplicate-stock')result.items.push({...result.items[0]});else delete result.items[0].num;}return result;};
+  }
+  const facts=await ordersModule.survey(f.client,proto,options()),wait=waitView(facts);
+  assert.equal(wait.status,'UNKNOWN');assert.deepEqual(wait.allocations,[]);assert.equal(wait.executable,false);assert.equal(f.writes.length,0);
+});
+test('Orders effect read failure preserves an already stocked submit candidate and its original cost contract',async()=>{
+  const f=waitFixture();f.inventory.set('cloth',2);f.effectRead=()=>{throw Error('synthetic');};
+  const facts=await ordersModule.survey(f.client,waitProtocol,options()),view=ordersModule.view(facts,options());
+  assert.equal(view.orders[0].productionWait.status,'IN_STOCK');assert.equal(view.candidates[0].executable,true);assert.equal(view.candidates[0].productionWait,undefined);
+  assert.deepEqual(ordersModule.plan(facts,options({selections:[view.candidates[0].actionId]})).actions[0].costs,[{id:'cloth',num:2}]);assert.equal(f.writes.length,0);
+});
+for(const key of ['accountId','generation','connectionId'])test('Orders survey cancels '+key+' changes during the added read',async()=>{
+  const f=waitFixture();f.effectRead=()=>{f.client.factContext[key]=key==='generation'?2:'changed';return f.effects;};
+  await assert.rejects(ordersModule.survey(f.client,waitProtocol,options()),{code:'CANCELLED'});assert.equal(f.writes.length,0);
+});
+test('Orders cancellation does not accept a late effects response or carry it into a fresh survey',async()=>{
+  const f=waitFixture(),abort=new AbortController();let release,entered;
+  const start=new Promise(r=>entered=r);f.effectRead=()=>{entered();return new Promise(r=>release=r);};
+  const pending=ordersModule.survey(f.client,waitProtocol,options({signal:abort.signal}));await start;abort.abort();await assert.rejects(pending,{code:'CANCELLED'});
+  release(f.effects);await new Promise(r=>setImmediate(r));f.effectRead=null;
+  const fresh=await ordersModule.survey(f.client,protocol,options());assert.equal(waitView(fresh).status,'UNKNOWN');assert.equal(f.writes.length,0);
+});
+test('City and Production do not acquire the new Orders effects read',async()=>{
+  for(const adapter of [cityModule,productionModule]){const f=waitFixture();await adapter.survey(f.client,waitProtocol,options());assert.equal(f.reads.includes('GameEffectRequest'),false);assert.equal(f.writes.length,0);}
+});

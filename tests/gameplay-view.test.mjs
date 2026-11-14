@@ -435,3 +435,27 @@ test('trade field edit invalidates an existing exact plan and Loop candidate unt
 test('trade applied parameters refill the form while account reset clears unprepared draft',async()=>{
  const {h,value}=await tradeFormBoot();h.node('gp-trade-parameters').value=JSON.stringify({action:'sell',cityId:17,pid:1,num:2});const read=h.run("refreshGameplay('trade')");h.respond('/api/gameplay?module=trade',structuredClone(value));await read;const controls=tradeFormNodes(h);assert.equal(controls.fields.num.value,'2');controls.fields.num.value='3';controls.fields.num.oninput();h.select('B');h.select('A');const next=h.run("refreshGameplay('trade')");h.respond('/api/gameplay?module=trade',structuredClone(value));await next;assert.equal(tradeFormNodes(h).fields.num.value,'');controls.fields.num.value='5';controls.fields.num.oninput();assert.equal(tradeFormNodes(h).fields.num.value,'');
 });
+
+async function ordersWaitEditor(h){
+ h.node('wf-saved').value='saved';h.node('wf-open').onclick();
+ const graph=JSON.parse(h.node('wf-json').value);graph.nodes[1].module='orders';graph.nodes[1].parameters={};graph.nodes[1].selection='safe-order';h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').onclick();
+ const card=h.node('wf-nodes').children[1],pending=card.children.find(e=>e.dataset.workflowCandidate==='a').onclick();
+ return {pending};
+}
+const ordersWaitData=(status='PROJECTED')=>({accountId:'A',module:'orders',config:{enabled:true},view:{candidates:[{actionId:'safe-order',actionType:'SUBMIT',executable:false,blockedReason:'缺货',costs:[{id:'wood',num:2}]},{actionId:'other-order',actionType:'REFRESH',executable:false,blockedReason:'缺少免费刷新资格',costs:[]}],orders:[{actionId:'safe-order',productionWait:{status,scope:'CAPTURED_SERVER_TIME_PROJECTION',executable:false,leadSeconds:status==='UNKNOWN'?null:60,reason:status==='UNKNOWN'?'PRODUCTION_EFFECT_UNKNOWN':null,serverTimeMs:100000,allocations:[{buildingId:'<img src=x onerror=alert(1)>',itemId:'wood',num:2,completionSeconds:60}]}}]}});
+for(const status of ['PROJECTED','UNKNOWN','IN_STOCK'])test('Workflow Orders candidate displays '+status+' captured wait without granting execution',async()=>{
+ const h=await workflows(),{pending}=await ordersWaitEditor(h);assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/gameplay/survey').body)),{module:'orders',parameters:{}});
+ h.respond('/api/gameplay/survey',ordersWaitData(status));await pending;
+ const card=h.node('wf-nodes').children[1],text=card.textContent;
+ assert.match(text,/生产等待估计/);assert.match(text,/本次调查投影.*免费刷新资格/);assert.match(text,/CAPTURED_SERVER_TIME_PROJECTION/);assert.ok(text.includes('<img src=x onerror=alert(1)>'));
+ if(status==='PROJECTED')assert.match(text,/60 秒.*尚须收取/);if(status==='UNKNOWN')assert.match(text,/未知.*PRODUCTION_EFFECT_UNKNOWN/);if(status==='IN_STOCK')assert.match(text,/现有库存已覆盖/);
+ const select=card.children.find(e=>e.dataset.workflowSelection==='a');assert.equal(select.children[1].disabled,true);assert.equal(select.children[2].disabled,true);
+ assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/plan'),undefined);assert.equal(h.confirmations.length,0);
+ h.select('B');assert.doesNotMatch(h.node('wf-nodes').textContent,/CAPTURED_SERVER_TIME_PROJECTION/);
+});
+for(const change of ['account','edit'])test('Workflow Orders wait drops late '+change+' responses with the original candidate guard',async()=>{
+ const h=await workflows(),{pending}=await ordersWaitEditor(h);
+ if(change==='account'){h.select('B');h.select('A');}else {const graph=JSON.parse(h.node('wf-json').value);graph.nodes[1].parameters={edited:true};h.node('wf-json').value=JSON.stringify(graph);h.node('wf-json-apply').onclick();}
+ h.respond('/api/gameplay/survey',ordersWaitData());await pending;
+ assert.doesNotMatch(h.node('wf-nodes').textContent,/生产等待估计|CAPTURED_SERVER_TIME_PROJECTION/);assert.equal(h.pending('/api/operations/authorize'),undefined);
+});
