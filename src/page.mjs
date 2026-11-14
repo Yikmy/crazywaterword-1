@@ -920,6 +920,15 @@ function renderOrderPreview(data) {
     if (Array.isArray(row.inventoryFacts)) for (const fact of row.inventoryFacts) {
       card.appendChild(el('div', 'dim', orderItemText(fact.id) + '：需求 ' + (fact.required ?? '未知') + ' / 持有 ' + (fact.available ?? '未知') + ' / 缺口 ' + (fact.missing ?? '未知')));
     }
+    const wait = row.productionWait;
+    if (wait) {
+      const reason = {ORDER_OR_STOCK_UNKNOWN:'订单或库存来源不完整',FACTORY_OR_RECIPE_UNKNOWN:'工厂或配方来源不完整',PRODUCTION_EFFECT_UNKNOWN:'生产效果来源不完整',FACTORY_QUEUE_UNKNOWN:'队列或采集时服务器时间不完整',NO_OBSERVED_PRODUCTION_PATH:'本快照未见可用生产路径',PRODUCTION_INPUT_OR_TIME_UNKNOWN:'现有材料不足或生产时长未知',PROJECTION_LIMIT:'本订单超出有限估计范围'}[wait.reason] || '来源不完整';
+      const label = wait.status === 'IN_STOCK' ? '现有库存已覆盖，无需新增生产' : wait.status === 'PROJECTED' ? wait.leadSeconds + ' 秒（至预计生产完成，尚须收取）' : '未知 · ' + reason;
+      card.appendChild(el('div', wait.status === 'UNKNOWN' ? 'warn' : '', '生产等待估计：' + label));
+      if (Number.isSafeInteger(wait.serverTimeMs) && wait.serverTimeMs > 0) card.appendChild(el('div', 'dim', '起点为采集时服务器时间：' + when(wait.serverTimeMs)));
+      card.appendChild(el('div', 'dim', '仅使用本快照的效果、完整队列和现有材料；不代表当前到账、最短工期或免费刷新资格。'));
+      for (const step of wait.allocations || []) card.appendChild(el('div', 'dim', step.buildingId + ' · ' + orderItemText(step.itemId) + ' × ' + step.num + ' · ' + ({APPEND:'队尾新排',QUEUED:'已有排队产物',FINISHED_UNCOLLECTED:'已有未收成品'}[step.kind] || '未知来源') + ' · 预计完成 ' + step.completionSeconds + ' 秒'));
+    }
     const trace = el('ol', 'order-rule-trace');
     for (const rule of result.ruleResults || []) trace.appendChild(el('li', rule.status === 'FAIL' || rule.status === 'UNKNOWN' ? 'warn' : '', '优先级 ' + rule.priority + ' · ' + rule.id + ' · ' + rule.type + ' · ' + rule.status + '：' + rule.explanation));
     if (!trace.childElementCount) trace.appendChild(el('li', 'dim', '没有已配置规则。'));

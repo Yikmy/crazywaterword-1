@@ -236,3 +236,14 @@ test('leaving and returning to the rules tab preserves an unsaved draft without 
   assert.equal(draft(h).rules[1].params.value, 925);
   assert.match(h.node('order-rules-hint').textContent, /未保存修改/);
 });
+
+
+test('cached wait projection shows full queue allocation, UNKNOWN and uncollected scope as safe text without granting actions',async()=>{
+ const h=await boot();await load(h);const body=previewFixture();
+ body.orders[0].productionWait={status:'PROJECTED',leadSeconds:200,allocations:[{buildingId:'<img onerror=bad>',itemId:'item/wood',num:2,kind:'APPEND',completionSeconds:200}],executable:false};
+ body.orders[1].productionWait={status:'UNKNOWN',reason:'PRODUCTION_EFFECT_UNKNOWN',leadSeconds:null,allocations:[],executable:false};
+ body.orders[2].productionWait={status:'IN_STOCK',leadSeconds:0,allocations:[],executable:false};
+ const pending=h.node('order-rules-preview').onclick();h.respond('/api/order-rules/preview','A',body);await pending;
+ const text=h.node('order-preview-list').textContent;assert.match(text,/200 秒（至预计生产完成，尚须收取）/);assert.match(text,/队尾新排 · 预计完成 200 秒/);assert.match(text,/未知 · 生产效果来源不完整/);assert.match(text,/现有库存已覆盖/);assert.match(text,/不代表当前到账、最短工期或免费刷新资格/);assert.match(text,/<img onerror=bad>/);
+ const walk=node=>[node,...node.children.flatMap(walk)];assert.equal(walk(h.node('order-preview-list')).some(node=>node.tagName==='img'),false);assert.ok(h.requests.every(r=>!r.url.includes('/authorize')&&!r.url.includes('/execute')));
+});

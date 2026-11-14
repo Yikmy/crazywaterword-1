@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appointEffectValue, appointProduceReduce, produceFinalTime, packCoverPlan, cropSupplyPlan, MATERIAL_PACKS, CROP_SUPPLY_POLICY } from '../src/production-planning.mjs';
+import { appointEffectValue, appointProduceReduce, produceFinalTime, orderProductionWait, packCoverPlan, cropSupplyPlan, MATERIAL_PACKS, CROP_SUPPLY_POLICY } from '../src/production-planning.mjs';
 
 const table = data => ({ data });
 const effect = () => ({ effectId: '生产时间', viewType: '数值', heroAdd: [10, 20, 150, 200], starAdd: [1, 2, 12, 20] });
@@ -139,4 +139,57 @@ test('seed demand excludes all D6-paid recipe aliases even with complete crop an
     const f=cropFixture({recipes:[recipe('小麦种子',[[premium,1]],{buildType:'种子厂'})],stock:new Map([['小麦',0],['小麦种子',0],[premium,100]])});
     assert.equal(supply(f).reliable,true);assert.deepEqual(supply(f).seedDemand,[]);
   }
+});
+
+
+function orderWaitFixture(){
+ const config={tables:{BuildingProduceCfg:table([
+  recipe('instant',[['木材',1]],{produceTime:20}),recipe('slow',[['木材',2]],{produceTime:200}),recipe('middle',[['木材',1]],{produceTime:100})
+ ])}};
+ return {config,input:{requirements:[{id:'instant',num:2}],stock:new Map([['木材',10]]),effects:{effects:[{id:1,value:1},{id:2,value:20}]},serverTimeMs:1000000,
+  buildings:[building('食品厂',{factory:{autoProductId:'',factoryQ:[{idx:7,productId:'slow',finishTime:1030},{idx:8,productId:'slow'}],finishedProducts:[]}})]}};
+}
+const orderWait=f=>orderProductionWait(f.config,f.input);
+test('instant recipe waits for the running head and every queued unit, with speed and total reduction applied once',()=>{
+ const f=orderWaitFixture(),before=structuredClone(f),r=orderWait(f);assert.equal(r.status,'PROJECTED');assert.equal(r.leadSeconds,120);assert.equal(r.allocations[0].unitSeconds,0);assert.equal(r.allocations[0].num,2);assert.equal(r.executable,false);assert.deepEqual(f,before);
+ f.input.effects.effects[0].value=0;assert.equal(orderWait(f).leadSeconds,210);
+});
+test('one order serializes different shortages sharing the same factory instead of taking independent maximums',()=>{
+ const f=orderWaitFixture();f.input.buildings[0].factory.factoryQ=[];f.input.requirements=[{id:'slow',num:1},{id:'middle',num:2}];
+ const r=orderWait(f);assert.equal(r.status,'PROJECTED');assert.equal(r.leadSeconds,170);assert.deepEqual(r.allocations.map(row=>[row.itemId,row.num,row.completionSeconds]),[['middle',2,80],['slow',1,170]]);
+ f.input.requirements.reverse();assert.deepEqual(orderWait(f),r);
+});
+test('compatible distinct factories can run in parallel and each uses its actual own level',()=>{
+ const f=orderWaitFixture();f.input.buildings[0].factory.factoryQ=[];f.input.requirements=[{id:'middle',num:2}];const other=structuredClone(f.input.buildings[0]);other.buildingId='2食品厂';f.input.buildings.push(other);
+ const r=orderWait(f);assert.equal(r.leadSeconds,40);assert.deepEqual(new Set(r.allocations.map(row=>row.buildingId)),new Set(['1食品厂','2食品厂']));
+ f.config.tables.BuildingProduceCfg.data.find(row=>row.itemId==='middle').unlockLevel=5;f.input.buildings[1].level=5;
+ const high=orderWait(f);assert.equal(high.leadSeconds,80);assert.ok(high.allocations.every(row=>row.buildingId==='2食品厂'));f.input.buildings[1].level=1;assert.equal(orderWait(f).reason,'NO_OBSERVED_PRODUCTION_PATH');
+});
+test('queued and uncollected matching output cover gaps without inventing available stock or spending production inputs again',()=>{
+ const f=orderWaitFixture();f.input.requirements=[{id:'slow',num:2}];f.input.stock=new Map();f.input.buildings[0].factory.finishedProducts=[{id:'slow',num:1}];
+ const r=orderWait(f);assert.equal(r.status,'PROJECTED');assert.equal(r.leadSeconds,30);assert.deepEqual(r.allocations.map(row=>[row.kind,row.num,row.completionSeconds]),[['FINISHED_UNCOLLECTED',1,0],['QUEUED',1,30]]);assert.deepEqual(r.reservedExistingStock,[]);assert.equal(f.input.stock.has('slow'),false);
+});
+test('existing order inventory is held before hypothetical production inputs and materials are shared across all shortages',()=>{
+ const f=orderWaitFixture();f.input.buildings[0].factory.factoryQ=[];f.input.requirements=[{id:'instant',num:2},{id:'middle',num:2}];f.input.stock=new Map([['木材',3]]);assert.equal(orderWait(f).reason,'PRODUCTION_INPUT_OR_TIME_UNKNOWN');
+ f.input.requirements=[{id:'木材',num:2},{id:'instant',num:2}];f.input.stock.set('木材',3);assert.equal(orderWait(f).reason,'PRODUCTION_INPUT_OR_TIME_UNKNOWN');f.input.stock.set('木材',4);assert.equal(orderWait(f).status,'PROJECTED');
+});
+test('fully owned order needs no clock, production effect or recipe assumptions',()=>{
+ const f=orderWaitFixture();f.input.stock.set('instant',2);delete f.input.effects;delete f.input.serverTimeMs;delete f.input.buildings;delete f.config.tables.BuildingProduceCfg;const r=orderWait(f);assert.equal(r.status,'IN_STOCK');assert.equal(r.leadSeconds,0);assert.deepEqual(r.allocations,[]);assert.equal(r.executable,false);
+});
+for(const [name,change] of [
+ ['missing effects',f=>delete f.input.effects],['missing speed',f=>f.input.effects.effects.shift()],['implicit zero',f=>delete f.input.effects.effects[0].value],['duplicate effect',f=>f.input.effects.effects.push({id:1,value:0})],['negative effect',f=>f.input.effects.effects[0].value=-1],['nan effect',f=>f.input.effects.effects[0].value=NaN],
+ ['missing clock',f=>delete f.input.serverTimeMs],['missing head marker',f=>delete f.input.buildings[0].factory.factoryQ[0].finishTime],['unstarted head',f=>f.input.buildings[0].factory.factoryQ[0].finishTime=0],['already elapsed head',f=>f.input.buildings[0].factory.factoryQ[0].finishTime=999],['overlapping tail',f=>f.input.buildings[0].factory.factoryQ[1].finishTime=1040],['duplicate queue id',f=>f.input.buildings[0].factory.factoryQ[1].idx=7],['unknown queued recipe',f=>f.input.buildings[0].factory.factoryQ[1].productId='missing'],['missing queue',f=>delete f.input.buildings[0].factory.factoryQ],['automation',f=>f.input.buildings[0].factory.autoProductId='slow'],['building upgrade',f=>f.input.buildings[0].buildFinishTime=1030],['unknown finished pool',f=>delete f.input.buildings[0].factory.finishedProducts],['duplicate building',f=>f.input.buildings.push(structuredClone(f.input.buildings[0]))],['unsafe inventory',f=>f.input.stock.set('instant',Number.MAX_SAFE_INTEGER+1)],['duplicate recipe',f=>f.config.tables.BuildingProduceCfg.data.push(structuredClone(f.config.tables.BuildingProduceCfg.data[0]))]
+])test('order wait keeps incomplete '+name+' UNKNOWN, with no partial schedule',()=>{const f=orderWaitFixture();change(f);const r=orderWait(f);assert.equal(r.status,'UNKNOWN');assert.equal(r.leadSeconds,null);assert.deepEqual(r.allocations,[]);assert.equal(r.executable,false);});
+test('no new-item projection can spend RUBY, overflow time or allocate an unbounded number of units',()=>{
+ const f=orderWaitFixture();f.input.buildings[0].factory.factoryQ=[];f.input.requirements=[{id:'instant',num:10001}];assert.equal(orderWait(f).reason,'PROJECTION_LIMIT');
+ f.input.requirements[0].num=1;f.config.tables.BuildingProduceCfg.data[0].costItem=[['RUBY',1]];f.input.stock.set('RUBY',10);assert.equal(orderWait(f).reason,'PRODUCTION_INPUT_OR_TIME_UNKNOWN');
+ f.config.tables.BuildingProduceCfg.data[0].costItem=[];f.config.tables.BuildingProduceCfg.data[0].produceTime=Number.MAX_SAFE_INTEGER;f.input.effects.effects=[{id:1,value:0},{id:2,value:0}];f.input.requirements[0].num=2;assert.equal(orderWait(f).status,'UNKNOWN');
+});
+
+
+test('fixed retained protocol effect IDs and absent wire scalar do not fabricate zero production effects',async()=>{
+ const p=(await import('../src/proto.mjs')).loadProtocol(),codec=(await import('../src/codec.mjs')).createCodec(p),f=orderWaitFixture();
+ assert.equal(p.GameEffectId.PRODUCE_SPEED_UP,1);assert.equal(p.GameEffectId.PRODUCE_TIME_REDUCTION,2);
+ f.input.effects=codec.decode(codec.encode('GameEffectResponse',0,{effects:[{id:1,value:1},{id:2,value:20}]})).body;assert.equal(orderWait(f).leadSeconds,120);
+ f.input.effects=codec.decode(codec.encode('GameEffectResponse',0,{effects:[{id:1},{id:2,value:20}]})).body;assert.equal(f.input.effects.effects[0].value,0);assert.equal(Object.hasOwn(f.input.effects.effects[0],'value'),false);assert.equal(orderWait(f).reason,'PRODUCTION_EFFECT_UNKNOWN');
 });

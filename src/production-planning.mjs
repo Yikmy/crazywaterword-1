@@ -1,6 +1,6 @@
 // Pure projections ported from the existing world/factories reference algorithms.
 // Unknown input stays unknown; these results never grant a write or anticipated income.
-import { resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
+import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 const own=(o,k)=>o!==null&&typeof o==='object'&&Object.hasOwn(o,k);
 const id=value=>typeof value==='string'&&value.trim()===value&&value.length>0;
 const quantity=value=>safeResourceQuantity(value);
@@ -100,4 +100,77 @@ export function cropSupplyPlan(config,{stock,buildings,farmsReliable=false,polic
   if(fits>0)surplusDemand.push({itemId:recipe.itemId,buildType:recipe.buildType,maximumUnits:fits,costs:recipe.costs,reason:'AVAILABLE_SURPLUS_ABOVE_STRATEGY',allowPacks:false});
  }
  return {reliable,reason:reliable?null:'PARTIAL_CROP_INVENTORY',waterlines,seedDemand,surplusDemand,policy:{...policy},projectionOnly:true,source:'FarmlandPlantCfg/BuildingProduceCfg+inventory+explicit strategy',notes:['策略需求不覆盖订单规则；本视图不自动排产、不购买材料、不打开包。']};
+}
+
+
+// BIZ-R16h: a finite local schedule over one captured response bundle. This is
+// production completion under unchanged effects, followed by explicit collection;
+// it is never stock, an ETA guarantee, a refresh policy or an executable plan.
+export function orderProductionWait(config,{requirements,stock,buildings,effects,serverTimeMs=null}={}) {
+ const scope='CAPTURED_SERVER_TIME_PROJECTION',base={scope,executable:false,serverTimeMs,leadSeconds:null,items:[],allocations:[]};
+ const fail=(reason,items=[])=>({...base,status:'UNKNOWN',reason,items});
+ const dense=v=>Array.isArray(v)&&v.length<=10000&&Array.from({length:v.length},(_,i)=>own(v,i)).every(Boolean);
+ if(!dense(requirements)||!requirements.length||requirements.some(r=>!id(r?.id)||quantity(r?.num)===null||quantity(r.num)===0)||!(stock instanceof Map))return fail('ORDER_OR_STOCK_UNKNOWN');
+ let needs;try{needs=resourceCosts(requirements).sort((a,b)=>a.id.localeCompare(b.id));}catch{return fail('ORDER_OR_STOCK_UNKNOWN');}
+ const ledger=new ResourceLedger(stock),items=[];
+ for(const need of needs){const have=balance(stock,need.id);if(have===null)return fail('ORDER_OR_STOCK_UNKNOWN');const held=Math.min(have,need.num);if(held&&!ledger.reserve([{id:need.id,num:held}]))return fail('ORDER_OR_STOCK_UNKNOWN');items.push({...need,have,gap:need.num-held});}
+ if(items.every(row=>row.gap===0))return {...base,status:'IN_STOCK',reason:null,leadSeconds:0,items};
+ const recipes=rows(config,'BuildingProduceCfg');
+ if(!dense(recipes)||!recipes.length||!dense(buildings)||!unique(buildings,'buildingId')||buildings.some(b=>!id(b.buildingId)||!id(b.type)||quantity(b.level)===null))return fail('FACTORY_OR_RECIPE_UNKNOWN',items);
+ if(!dense(effects?.effects)||!unique(effects.effects,'id'))return fail('PRODUCTION_EFFECT_UNKNOWN',items);
+ const speed=effects.effects.find(r=>r.id===1),reduce=effects.effects.find(r=>r.id===2);
+ if(!own(speed,'value')||typeof speed.value!=='number'||!Number.isFinite(speed.value)||speed.value<0||!own(reduce,'value')||quantity(reduce.value)===null)return fail('PRODUCTION_EFFECT_UNKNOWN',items);
+ const recipeKeys=new Set(),catalog=[];
+ for(const r of recipes){let costs;try{costs=resourceCosts(r.costItem);}catch{return fail('FACTORY_OR_RECIPE_UNKNOWN',items);}const key=JSON.stringify([r.buildType,r.itemId]);
+  if(!id(r.buildType)||!id(r.itemId)||quantity(r.unlockLevel)===null||quantity(r.produceTime)===null||recipeKeys.has(key))return fail('FACTORY_OR_RECIPE_UNKNOWN',items);
+  recipeKeys.add(key);catalog.push({...r,costs,seconds:produceFinalTime(r.produceTime,reduce.value,speed.value)});
+ }
+ const factories=[];
+ for(const b of buildings){
+  if(!catalog.some(r=>r.buildType===b.type)||b.level===0)continue;
+  const known=quantity(b.buildFinishTime)!==null&&quantity(b.buildFinishTime)===0&&b.factory&&b.factory.autoProductId===''
+   &&dense(b.factory.factoryQ)&&unique(b.factory.factoryQ,'idx')&&dense(b.factory.finishedProducts);
+  const f={buildingId:b.buildingId,type:b.type,level:b.level,known,ready:0,supply:[]};factories.push(f);if(!known)continue;
+  let at=0;
+  for(const [index,job] of b.factory.factoryQ.entries()){
+   const recipe=catalog.find(r=>r.buildType===b.type&&r.itemId===job?.productId),finish=own(job,'finishTime')?quantity(job.finishTime):null;
+   if(!id(job?.productId)||!Number.isInteger(job.idx)||job.idx<0||job.idx>2147483647||!recipe||recipe.unlockLevel>b.level||recipe.seconds===null){f.known=false;break;}
+   if(index===0){
+    // A running head needs its actual finish marker and the captured trusted
+    // server time. Never replace an absent marker with a recipe's full duration.
+    if(!Number.isSafeInteger(serverTimeMs)||serverTimeMs<0||finish===null||finish*1000<=serverTimeMs){f.known=false;break;}
+    at=Math.ceil(finish-serverTimeMs/1000);
+   }else{
+    // FactoryQueueItem renders missing/zero tail markers as queued. A second
+    // positive marker is an unsupported overlapping schedule, not serial proof.
+    if(own(job,'finishTime')&&finish!==0){f.known=false;break;}
+    at+=recipe.seconds;
+   }
+   if(!Number.isSafeInteger(at)){f.known=false;break;}
+   f.supply.push({itemId:job.productId,num:1,at,used:0,kind:'QUEUED'});
+  }
+  f.ready=at;
+  for(const asset of b.factory.finishedProducts){if(!id(asset?.id)||quantity(asset?.num)===null){f.known=false;break;}f.supply.push({itemId:asset.id,num:quantity(asset.num),at:0,used:0,kind:'FINISHED_UNCOLLECTED'});}
+ }
+ const allocations=[];let lead=0,totalNew=0;
+ for(const item of items){let remaining=item.gap;if(!remaining)continue;
+  const supply=factories.filter(f=>f.known).flatMap(f=>f.supply.filter(row=>row.itemId===item.id).map(row=>({f,row}))).sort((a,b)=>a.row.at-b.row.at||a.f.buildingId.localeCompare(b.f.buildingId));
+  for(const {f,row} of supply){const take=Math.min(remaining,row.num-row.used);if(!take)continue;row.used+=take;remaining-=take;lead=Math.max(lead,row.at);allocations.push({buildingId:f.buildingId,itemId:item.id,num:take,kind:row.kind,completionSeconds:row.at});if(!remaining)break;}
+  if(!remaining)continue;
+  const options=factories.flatMap(f=>catalog.filter(r=>r.buildType===f.type&&r.itemId===item.id&&r.unlockLevel<=f.level).map(recipe=>({f,recipe})));
+  if(!options.length)return fail('NO_OBSERVED_PRODUCTION_PATH',items);
+  if(options.every(o=>!o.f.known))return fail('FACTORY_QUEUE_UNKNOWN',items);
+  totalNew+=remaining;if(!Number.isSafeInteger(totalNew)||totalNew>10000)return fail('PROJECTION_LIMIT',items);
+  for(let unit=0;unit<remaining;unit++){
+   const choices=options.filter(o=>o.f.known&&o.recipe.seconds!==null&&!premiumCost(o.recipe.costs)&&ledger.canReserve(o.recipe.costs)&&Number.isSafeInteger(o.f.ready+o.recipe.seconds)).sort((a,b)=>(a.f.ready+a.recipe.seconds)-(b.f.ready+b.recipe.seconds)||a.f.buildingId.localeCompare(b.f.buildingId));
+   if(!choices.length)return fail('PRODUCTION_INPUT_OR_TIME_UNKNOWN',items);
+   const {f,recipe}=choices[0];if(!ledger.reserve(recipe.costs))return fail('PRODUCTION_INPUT_OR_TIME_UNKNOWN',items);
+   f.ready+=recipe.seconds;lead=Math.max(lead,f.ready);
+   const previous=allocations.at(-1);
+   if(previous?.kind==='APPEND'&&previous.buildingId===f.buildingId&&previous.itemId===item.id){previous.num++;previous.completionSeconds=f.ready;}
+   else allocations.push({buildingId:f.buildingId,itemId:item.id,num:1,kind:'APPEND',unitSeconds:recipe.seconds,completionSeconds:f.ready});
+  }
+ }
+ return {...base,status:'PROJECTED',reason:null,leadSeconds:lead,items,allocations,reservedExistingStock:ledger.reservationSummary().resources,
+  assumptions:['按物品ID顺序分配到已知可用工厂，复用排队产物；不是最短工期证明。','效果和队列保持本快照状态；新排产仅使用现有材料，不使用预计收益。','成品仍须独立授权收取和复读，估计不会改规则建议、库存或刷新资格。']};
 }

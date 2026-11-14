@@ -22,13 +22,15 @@ import { exploreSnapshot } from './data-catalog.mjs';
 import { getConfig, APPID, RESOURCE } from './config.mjs';
 import { defaultOrderRules, validateOrderRules, ORDER_RULE_TYPES, evaluateOrders } from './order-rules.mjs';
 import { loadOrderRules, saveOrderRules } from './order-rules-store.mjs';
+import { orderProductionWait } from './production-planning.mjs';
+import { stockFromResponses } from './resource-ledger.mjs';
 import { createStageRunner, defaultStageConfig, validateStageConfig, MAINLINE_CHALLENGE, MAINLINE_SIDE_AUTHORIZATION, resolveMainlineChallengeSide } from './stages.mjs';
 import { qrSvg } from './vendor/qrcode.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, DAILY_DRIVERS, CHEST_TABLE } from './dailies.mjs';
 import { dailyChecklist, formatDailyChecklist } from './daily-checklist.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
-import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset, makeTypeResolver } from './world.mjs';
 import { runLoop, formatLoopRound, compileUnifiedExecution } from './loop.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, DATA_DIR } from './accounts.mjs';
@@ -480,7 +482,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     if (typeof value === 'string' && /^\d+$/.test(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(value);
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
   }
-  async function previewOrderRules(session, policy) {
+  async function previewOrderRules(session, policy, accountId) {
     const snapshot = session?.snapshot;
     const base = { updatedAt: session?.snapshotAt ?? null, stale: session?.snapshotStale ?? false, itemSourceNote,
       simulationNote: '只读模拟，不会执行游戏操作。各订单独立使用同一库存，未跨订单预留库存。' };
@@ -529,11 +531,25 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       }
     }
     const results = evaluateOrders(orders, inventory, policy);
+    const waitConfig = loadConfigSafe(), resolveWaitType = makeTypeResolver(waitConfig);
+    const captured = name => {
+      const source = orderSource(snapshot, name), fact = snapshot?.facts?.[name], p = fact?.provenance;
+      return source.status === 'SUCCESS' && snapshot?.outcomes?.[name]?.status === 'SUCCESS' && !Object.hasOwn(snapshot?.failed ?? {}, name)
+        && p?.accountId === accountId && p.generation === session?.generation && p.source === name.replace(/Request$/, 'Response')
+        && p.scope?.kind === 'CURRENT_RESPONSE_ONLY' && p.scope.key === name && p.sourceAt === Date.parse(source.updatedAt)
+        && JSON.stringify(fact.value) === JSON.stringify(source.raw) ? fact : null;
+    };
+    const waterFact = captured('OnWaterRequest'), effectFact = captured('GameEffectRequest');
+    const factoryRows = waterFact && Array.isArray(water.raw.building) ? water.raw.building.map(b => ({ ...b, type: typeof b?.buildingId === 'string' ? resolveWaitType(b.buildingId) : null })) : null;
+    const serverTimeMs = waterFact && Number.isSafeInteger(waterFact.provenance.serverTime) && waterFact.provenance.serverTime >= 0 ? waterFact.provenance.serverTime : null;
+    const estimateStock = waterFact && captured('AllItemRequest') && captured('AllResourceRequest') && itemsKnown && resourcesKnown && invalidItems.size === 0
+      && new Set(itemData.raw.items.map(row => row.itemId ?? row.id)).size === itemData.raw.items.length
+      && new Set(resourceData.raw.list.map(row => row.res)).size === resourceData.raw.list.length ? stockFromResponses(itemData.raw, resourceData.raw) : null;
     return { ...base, status: 'SUCCESS', error: null,
       orders: orders.map((order, index) => {
         const totals = new Map();
         for (const need of order.requirements ?? []) totals.set(need.id, (totals.get(need.id) ?? 0) + need.num);
-        return { order, result: results[index], inventoryFacts: [...totals].map(([id, required]) => {
+        return { order, result: results[index], productionWait: orderProductionWait(waitConfig, { requirements: order.requirements, stock: estimateStock, buildings: factoryRows, effects: effectFact?.value ?? null, serverTimeMs }), inventoryFacts: [...totals].map(([id, required]) => {
           const available = inventory.has(id) ? inventory.get(id) : 0;
           return { id, required: Number.isSafeInteger(required) ? required : null, available,
             missing: available === null || !Number.isSafeInteger(required) ? null : Math.max(0, required - available) };
@@ -925,8 +941,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           json({ accountId: id, ...saveOrderRules(id, jsonBody().config) });
         } else {
           const policy = validateOrderRules(jsonBody().config);
-          const preview = await previewOrderRules(session, policy);
-          if (!loadStore().accounts.some((account) => account.id === id) || sessions.get(id) !== session) {
+          const generation = session?.generation;
+          const preview = await previewOrderRules(session, policy, id);
+          if (!loadStore().accounts.some((account) => account.id === id) || sessions.get(id) !== session || session?.generation !== generation) {
             json({ error: '账号已删除或会话已切换，请重新读取' }, 409); return;
           }
           json({ accountId: id, ...preview });

@@ -16,6 +16,11 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
     { itemId: 'GOLD', reward: [['EXP', 1]] },
   ] }],
   [1, 'ResourceCfg', { data: [{ id: 'GOLD', show_name: '金币' }] }],
+  [2, 'BuildingCfg', { data: [{ buildingType: '食品厂' }] }],
+  [3, 'BuildingProduceCfg', { data: [
+    { buildType:'食品厂',itemId:'item/wood',unlockLevel:1,produceTime:100,costItem:[['item/bread',1]] },
+    { buildType:'食品厂',itemId:'item/bread',unlockLevel:1,produceTime:200,costItem:[['item/toilet',1]] },
+  ] }],
 ]));
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
@@ -247,4 +252,37 @@ test('successful metadata cannot turn an absent inventory body into zero stock',
     assert.equal(result.data.orders[1].result.decision, 'NEEDS_REVIEW');
     assert.equal(result.data.orders[1].inventoryFacts[0].available, null);
   } finally { await app.close(); }
+});
+
+
+function waitingSnapshot(id='A'){
+ const s=snapshot(),updatedAt='2026-11-15T00:00:00.000Z';
+ s.ok.OnWaterRequest={building:[{buildingId:'1食品厂',level:1,buildFinishTime:0,factory:{autoProductId:'',factoryQ:[{idx:7,productId:'item/bread',finishTime:1030},{idx:8,productId:'item/bread'}],finishedProducts:[]}}],workerOrder:[{index:0,workerId:'worker',requirements:[{id:'item/wood',num:2}]}]};
+ s.ok.AllItemRequest.items.find(r=>r.itemId==='item/wood').num=0;
+ s.ok.GameEffectRequest={effects:[{id:1,value:1},{id:2,value:20}]};s.raw=structuredClone(s.ok);
+ s.outcomes={};s.facts={};for(const name of ['OnWaterRequest','GameEffectRequest','AllItemRequest','AllResourceRequest']){s.outcomes[name]={status:'SUCCESS',updatedAt};s.facts[name]={value:structuredClone(s.raw[name]),provenance:{accountId:id,generation:0,source:name.replace(/Request$/,'Response'),sourceAt:Date.parse(updatedAt),serverTime:1000000,scope:{kind:'CURRENT_RESPONSE_ONLY',key:name},reliability:'UNKNOWN'}};}return s;
+}
+test('original cached order preview adds full-queue production projection without changing REFRESH advice or sending requests',async()=>{
+ const app=await harness();try{
+  const data=waitingSnapshot(),before=structuredClone(data);app.sessions.set('A',cached(data));
+  const response=await preview(app,policy([rule('exp',1,'MIN_EXPERIENCE',{value:900,operator:'GT'})]));assert.equal(response.status,200);
+  const row=response.data.orders[0];assert.equal(row.result.decision,'RECOMMEND_REFRESH');assert.equal(row.productionWait.status,'PROJECTED');assert.equal(row.productionWait.leadSeconds,200);assert.equal(row.productionWait.serverTimeMs,1000000);assert.equal(row.productionWait.allocations[0].completionSeconds,200);assert.equal(row.productionWait.executable,false);
+  assert.deepEqual(data,before);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(fs.existsSync(ORDER_RULES_PATH),false);assert.equal((await app.call('/api/orders/refresh','A',{})).status,403);
+ }finally{await app.close();}
+});
+test('order projection rejects failed effects, foreign or changed capture provenance and incomplete queues while preserving original rules',async()=>{
+ const app=await harness();try{
+  for(const change of [s=>s.outcomes.GameEffectRequest.status='FAILED',s=>delete s.raw.GameEffectRequest.effects[0].value,s=>s.facts.OnWaterRequest.provenance.accountId='B',s=>s.facts.OnWaterRequest.provenance.generation=9,s=>s.facts.OnWaterRequest.provenance.serverTime=null,s=>s.facts.OnWaterRequest.provenance.sourceAt++,s=>s.facts.OnWaterRequest.value.building=[],s=>delete s.raw.OnWaterRequest.building[0].factory.factoryQ,s=>s.raw.AllItemRequest.items.push({...s.raw.AllItemRequest.items[0]}),s=>s.failed.GameEffectRequest='failed',s=>s.facts.AllResourceRequest.provenance.accountId='B',s=>s.facts.GameEffectRequest.provenance.generation=1]){
+   const data=waitingSnapshot();change(data);app.sessions.set('A',cached(data));const r=await preview(app,policy());assert.equal(r.status,200);assert.equal(r.data.orders[0].productionWait.status,'UNKNOWN');assert.equal(r.data.orders[0].productionWait.leadSeconds,null);assert.deepEqual(r.data.orders[0].productionWait.allocations,[]);assert.equal(r.data.orders[0].result.decision,'RECOMMEND_KEEP');
+  }
+  assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(fs.existsSync(ORDER_RULES_PATH),false);
+ }finally{await app.close();}
+});
+test('two account previews retain their own captured server times and inventory, without a live client or inherited clock',async()=>{
+ const app=await harness();try{
+  const a=waitingSnapshot('A'),b=waitingSnapshot('B');b.facts.OnWaterRequest.provenance.serverTime=1010000;
+  app.sessions.set('A',cached(a));app.sessions.set('B',cached(b));const [ra,rb]=await Promise.all([preview(app,policy(),'A'),preview(app,policy(),'B')]);
+  assert.equal(ra.data.orders[0].productionWait.leadSeconds,200);assert.equal(rb.data.orders[0].productionWait.leadSeconds,190);
+  const restarted=cached(structuredClone(a));restarted.generation=1;app.sessions.set('A',restarted);assert.equal((await preview(app)).data.orders[0].productionWait.status,'UNKNOWN');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
 });
