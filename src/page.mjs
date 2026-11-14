@@ -1289,7 +1289,16 @@ function renderOperationHistory(data, historyScope = viewGuard.begin('operations
     for (const note of daily.notes || []) report.appendChild(el('div', 'dim', typeof note === 'string' ? note : JSON.stringify(note)));
   } else report.textContent = '尚未提供当日本工具已复核汇总；游戏完整产量未知。';
 }
-async function refreshOperationHistory() {
+// Reuse the original local history reader for precise evidence navigation.
+function openOperationHistoryEvidence(expected) {
+  const id=value=>typeof value==='string'&&value.length>0&&value.length<=512&&value.trim()===value;
+  if(expected?.accountId!==current||!id(expected.operationRunId)||!id(expected.batchId)||!Array.isArray(expected.actionIds)||!expected.actionIds.length||expected.actionIds.some(value=>!id(value)))return;
+  $('ops-history-run-id').value=expected.operationRunId;$('ops-history-date').value='';$('ops-history-run-id').oninput();
+  const tab=document.querySelector?.('#tabs button[data-tab="operations-history"]');
+  if(typeof tab?.onclick==='function')return tab.onclick({historyEvidence:expected});
+  return refreshOperationHistory(expected);
+}
+async function refreshOperationHistory(expected = null) {
   if (!current) return;
   const scope = viewGuard.begin('operations-history'), runId = $('ops-history-run-id').value, date = $('ops-history-date').value; $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
   try {
@@ -1303,6 +1312,13 @@ async function refreshOperationHistory() {
     if (date && data.dailyReport?.date !== date) throw new Error('日报日期不匹配，请重新读取。');
     if (data.accountId !== scope.account) throw new Error('历史账号不匹配');
     if (!Array.isArray(data.runs) || runId && data.runs.some(run => run.runId !== runId)) throw new Error('历史运行不匹配');
+    if(expected?.operationRunId){
+      const run=data.runs[0],same=(a,b)=>(a??null)===(b??null),actions=run?.actions??[],hasActions=expected.actionIds.every(id=>actions.filter(row=>row.actionId===id).length===1);
+      if(data.runs.length!==1||!run||expected.accountId!==scope.account||run.accountId!==scope.account||run.runId!==expected.operationRunId||run.module!==expected.module||
+        !same(run.workflowId,expected.workflowId)||!same(run.workflowDefinitionId,expected.workflowDefinitionId)||!same(run.workflowNodeId,expected.workflowNodeId)||
+        run.planSummary?.batchId!==expected.batchId||run.authorizationSummary?.batchId!==expected.batchId||!hasActions||expected.exactActions===true&&actions.length!==expected.actionIds.length||
+        expected.workflowRound!==undefined&&run.workflowRound!==expected.workflowRound)throw new Error('原始执行证据与所选流程、节点、批次或动作不匹配。');
+    }
     renderOperationHistory(data, scope); $('ops-history-hint').textContent = '';
   } catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
 }
@@ -1318,7 +1334,7 @@ function resetOperationMemory() {
   $('ops-memory-coverage').textContent = '尚未读取覆盖范围。';
   clear($('ops-memory-pending')); $('ops-memory-hint').textContent = '';
 }
-function renderOperationMemory(data) {
+function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-memory')) {
   if(typeof data.available!=='boolean'||!Array.isArray(data.events)||!Array.isArray(data.pendingHistoryProjection)||data.resumable!==false||data.retryAllowed!==false)throw new Error('执行记忆只读合同不可靠');
   const box=clear($('ops-memory')),coverage=clear($('ops-memory-coverage')),pending=clear($('ops-memory-pending'));
   const policy=data.policyCoverage||{};
@@ -1337,6 +1353,10 @@ function renderOperationMemory(data) {
     else card.appendChild(el('div','dim','确定拒绝记录；当前限制由新鲜权威身份及既有执行保护判断，本记录不授予重试。'));
     card.appendChild(el('pre',null,JSON.stringify({operationRunId:origin.operationRunId??event.runId??null,workflowRunId:origin.workflowRunId??event.workflowId??null,workflowDefinitionId:origin.workflowDefinitionId??null,nodeId:origin.nodeId??event.nodeId??null,batchId:event.batchId??null,actionId:event.actionId??null,capabilityId:event.capabilityId??null},null,2)));
     card.appendChild(el('pre',null,JSON.stringify({eventId:event.eventId,status:event.status,dispatched:event.dispatched,unresolvedWrite:event.unresolvedWrite,targetDigest:event.targetDigest,identityDigest:event.identityDigest,source:event.source,generation:event.generation,recordedAt:event.recordedAt,reason:event.reason,policy:event.policy,timeGate:event.timeGate,historyOrigin:event.historyOrigin},null,2)));
+    if(origin.operationRunId===event.runId&&typeof event.batchId==='string'&&typeof event.actionId==='string'&&['STILL_UNKNOWN','UNKNOWN','REJECTED','APPLIED','NOT_APPLIED'].includes(origin.status)){
+      const evidence=el('button',null,'查看原始执行证据');evidence.type='button';evidence.dataset.memoryOperation=event.runId;
+      evidence.onclick=()=>{if(!viewGuard.current(memoryScope))return;return openOperationHistoryEvidence({accountId:data.accountId,operationRunId:origin.operationRunId,module:event.module,batchId:event.batchId,actionIds:[event.actionId],workflowId:origin.workflowRunId,workflowDefinitionId:origin.workflowDefinitionId,workflowNodeId:origin.nodeId});};card.appendChild(evidence);
+    }
     box.appendChild(card);
   }
   if(!box.childElementCount)box.textContent=data.available===true?'本账号尚无补充执行记忆。':'当前存储未提供补充执行记忆；原始执行历史仍是复核依据。';
@@ -1356,7 +1376,7 @@ async function refreshOperationMemory() {
     if(data.accountId!==scope.account)throw new Error('执行记忆账号不匹配');
     if(runId&&[data.events,data.pendingHistoryProjection].some(rows=>Array.isArray(rows)&&rows.some(row=>row?.runId!==runId)))throw new Error('执行记忆运行不匹配');
     if(workflowId&&[data.events,data.pendingHistoryProjection].some(rows=>Array.isArray(rows)&&rows.some(row=>row?.workflowId!==workflowId)))throw new Error('执行记忆工作流运行不匹配');
-    renderOperationMemory(data);$('ops-memory-hint').textContent='';
+    renderOperationMemory(data,scope);$('ops-memory-hint').textContent='';
   } catch(error) {
     if(live()) {clear($('ops-memory'));clear($('ops-memory-coverage'));clear($('ops-memory-pending'));$('ops-memory-hint').textContent='读取失败：'+error.message;}
   }
@@ -1754,7 +1774,7 @@ for (const id of ['loot-run', 'loop-start', 'loop-stop', 'loop-rounds', 'loop-ev
   $(id).disabled = true; $(id).classList.add('mvp-disabled'); $(id).onclick = null;
 }
 document.querySelectorAll('#tabs button').forEach((button) => {
-  button.onclick = () => {
+  button.onclick = (navigation) => {
     activeTab = button.dataset.tab;
     document.querySelectorAll('#tabs button').forEach((other) => other.classList.toggle('on', other === button));
     for (const section of document.querySelectorAll('main > section')) section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
@@ -1764,8 +1784,8 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     if (button.dataset.tab === 'order-rules' && !orderRulesDraft) loadOrderRules();
     if (button.dataset.tab === 'stages') refreshStages();
     $('operations-batch').classList.toggle('hidden', !OPERATIONS_TABS.has(activeTab));
-    if (OPERATIONS_TABS.has(activeTab)) refreshOperations();
-    if (activeTab === 'operations-history' || activeTab === 'production') refreshOperationHistory();
+    if (OPERATIONS_TABS.has(activeTab) && !navigation?.historyEvidence) refreshOperations();
+    if (activeTab === 'operations-history' || activeTab === 'production') {const reading=refreshOperationHistory(navigation?.historyEvidence);if(navigation?.historyEvidence)return reading;}
     if (activeTab === 'production' && !productionPolicyDirty) refreshProductionPolicy();
   };
 });

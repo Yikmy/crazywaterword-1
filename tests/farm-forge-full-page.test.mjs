@@ -2644,3 +2644,28 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' cargo form preserv
  for(const value of ['','0','-1','1.5','1e2','2147483648','<img src=x onerror=alert(1)>']){const source=h.node('wf-unified-intent').value;h.node('wf-unified-cargo-index').value=value;unifiedAdd(h,'dailies','cargo-fill','2');assert.equal(h.node('wf-unified-intent').value,source);h.node('wf-unified-cargo-index').value='1';unifiedAdd(h,'dailies','cargo-fill',value);assert.equal(h.node('wf-unified-intent').value,source);}
  const stale=h.node('wf-unified-add').onclick;h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-unified-intent').value;stale();assert.equal(h.node('wf-unified-intent').value,source);assert.equal(h.node('wf-unified-cargo-index').value,'');assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
 });
+
+async function workflowOperationEvidencePage(){
+ const {h,data,runId}=await workflowMemoryPage(),operationRunId='operation/?x=1&<literal>',batchId='batch-original',actionId='fleet:cargoFill:2:3';
+ data.preparation={entry:'dailies',blocked:[]};data.nodes=[{nodeId:'dailies-0-1',round:1,module:'fleet',traceResult:'AWAITING_VERIFICATION',batches:[{batchId,operationRunId,module:'fleet',finalStatus:'UNKNOWN',actions:[{actionId,result:'UNKNOWN',requestStatus:'SUCCESS',verificationStatus:'UNKNOWN',needsReconciliation:true}]}]}];
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',data);await reading;
+ const button=descendants(h.node('wf-history-detail')).find(n=>n.dataset.workflowOperation===operationRunId);assert.ok(button);
+ const record={accountId:'A',runId:operationRunId,module:'fleet',workflowId:runId,workflowDefinitionId:data.workflowDefinitionId,workflowNodeId:'dailies-0-1',workflowRound:1,finalStatus:'UNKNOWN',planSummary:{batchId},authorizationSummary:{batchId},actions:[{actionId,actionType:'cargoFill',result:'UNKNOWN',requestStatus:'SUCCESS',unresolvedWrite:true,verification:{status:'UNKNOWN'},dispatchEvidence:{state:'MAY_HAVE_DISPATCHED'},resourceReservation:[{id:'木材',num:4}]}]};
+ return {h,data,runId,operationRunId,record,button};
+}
+test('Workflow batch opens exact original operation evidence using only the existing history GET',async()=>{
+ const {h,operationRunId,record,button}=await workflowOperationEvidencePage();h.node('ops-history-date').value='2026-11-01';h.node('ops-history-run-id').value='previous-run';const count=h.requests.length;
+ const reading=button.click(),request=h.pending('/api/operations/history'),url=new URL(request.url,'http://local');assert.equal(url.searchParams.get('runId'),operationRunId);assert.equal(url.searchParams.get('account'),'A');assert.equal(url.searchParams.has('date'),false);assert.equal(request.options.body,undefined);assert.equal(request.options.method,undefined);assert.equal(h.requests.length,count+1);
+ h.respond('/api/operations/history',{accountId:'A',runs:[record]});await reading;const text=h.node('ops-history').textContent;for(const value of [operationRunId,record.workflowId,record.workflowNodeId,'batch-original','UNKNOWN','MAY_HAVE_DISPATCHED','木材'])assert.ok(text.includes(value),value);assert.equal(h.confirmations.length,0);assert.equal(writes(h).length,0);
+});
+for(const fault of ['workflow','definition','node','round','batch','authorization','action','extra-action','account','absent'])test('Workflow evidence shortcut rejects original association mismatch '+fault,async()=>{
+ const {h,record,button}=await workflowOperationEvidencePage(),data={accountId:'A',runs:[structuredClone(record)]},run=data.runs[0];
+ if(fault==='workflow')run.workflowId='other';if(fault==='definition')run.workflowDefinitionId='other';if(fault==='node')run.workflowNodeId='other';if(fault==='round')run.workflowRound=2;if(fault==='batch')run.planSummary.batchId='other';if(fault==='authorization')run.authorizationSummary.batchId='other';if(fault==='action')run.actions[0].actionId='other';if(fault==='extra-action')run.actions.push({...run.actions[0],actionId:'extra'});if(fault==='account')run.accountId='B';if(fault==='absent')data.runs=[];
+ const reading=button.click();h.respond('/api/operations/history',data);await reading;assert.equal(h.node('ops-history').textContent,'');assert.match(h.node('ops-history-hint').textContent,/原始执行证据.*不匹配/);assert.equal(writes(h).length,0);
+});
+for(const change of ['selection','replacement','account-return'])test('Workflow operation shortcut retires detached history callback after '+change,async()=>{
+ const {h,data,button}=await workflowOperationEvidencePage();if(change==='selection'){h.node('wf-history-selected').value='other';h.node('wf-history-selected').onchange();}if(change==='replacement'){const read=h.node('wf-history-read').click();h.respond('/api/workflows/history',data);await read;}if(change==='account-return')h.run("selectAccount('B');selectAccount('A')");const count=h.requests.length,filter=h.node('ops-history-run-id').value;await button.click();assert.equal(h.requests.length,count);assert.equal(h.node('ops-history-run-id').value,filter);assert.equal(writes(h).length,0);
+});
+test('Workflow evidence navigation ignores a late read after account return or a newer history filter',async()=>{
+ for(const change of ['account-return','filter']){const {h,record,button}=await workflowOperationEvidencePage(),reading=button.click();if(change==='account-return')h.run("selectAccount('B');selectAccount('A')");else {h.node('ops-history-run-id').value='other';h.node('ops-history-run-id').oninput();}h.respond('/api/operations/history',{accountId:'A',runs:[record]});await reading;assert.equal(h.node('ops-history').textContent,change==='account-return'?'尚未读取历史。':'');assert.equal(writes(h).length,0);}
+});

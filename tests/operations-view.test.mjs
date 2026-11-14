@@ -783,3 +783,20 @@ test('invalid crop supply values stay local and strategy requirements expose the
   const state=fixture();state.view.productionShortages={reliable:true,items:[{id:'小麦种子',required:8,inventory:1,inProgress:2,finished:1,missing:4,sources:['SEED_RESERVE']},{id:'面包',required:3,inventory:0,inProgress:0,finished:0,missing:3,sources:['SURPLUS_CROP']}],cropSupply:{reliable:true}};
   await load(h,state);assert.match(h.node('ops-stock').textContent,/种子储备/);assert.match(h.node('ops-stock').textContent,/过剩作物/);assert.match(h.node('ops-stock').textContent,/本账号策略目标/);
 });
+
+test('shared UNKNOWN memory opens the exact original operation evidence without authorizing recovery',async()=>{
+ const h=await boot(),event=memoryEvent(),data=memoryFixture('A',{events:[event]});await loadMemory(h,data);
+ const button=descendants(h.node('ops-memory')).find(n=>n.dataset.memoryOperation===event.runId);assert.ok(button);h.node('ops-history-date').value='2026-11-01';
+ h.run("document.querySelector=selector=>document.querySelectorAll('#tabs button').find(button=>selector==='#tabs button[data-tab=\"'+button.dataset.tab+'\"]');");const before=h.requests.length;
+ const reading=button.onclick(),request=h.pending('/api/operations/history','A');assert.equal(new URL(request.url,'http://local').searchParams.get('runId'),event.runId);assert.equal(new URL(request.url,'http://local').searchParams.has('date'),false);
+ const original=recoveryHistory(),run=original.runs[0];Object.assign(run,{accountId:'A',runId:event.runId,module:event.module,workflowId:event.historyOrigin.workflowRunId,workflowDefinitionId:event.historyOrigin.workflowDefinitionId,workflowNodeId:event.historyOrigin.nodeId,planSummary:{batchId:event.batchId},authorizationSummary:{batchId:event.batchId}});run.actions[0].actionId=event.actionId;
+ h.respond('/api/operations/history','A',original);await reading;assert.equal(h.requests.length,before+1);assert.equal(h.pending('/api/operations','A'),undefined);assert.ok(h.node('ops-history').textContent.includes(event.runId));assert.match(h.node('ops-history').textContent,/UNKNOWN/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);assert.equal(h.confirmations.length,0);
+});
+for(const change of ['filter','pending','replacement','account-return'])test('memory original-evidence callback expires after '+change,async()=>{
+ const h=await boot(),event=memoryEvent(),data=memoryFixture('A',{events:[event]});await loadMemory(h,data);const button=descendants(h.node('ops-memory')).find(n=>n.dataset.memoryOperation===event.runId);assert.ok(button);let pending;
+ if(change==='filter'){h.node('ops-memory-run-id').value='other';h.node('ops-memory-run-id').oninput();}if(change==='pending')pending=h.node('ops-memory-load').onclick();if(change==='replacement')await loadMemory(h,data);if(change==='account-return')h.run("selectAccount('B');selectAccount('A')");
+ const count=h.requests.length;await button.onclick();assert.equal(h.requests.length,count);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);if(pending){h.respond('/api/operations/memory','A',data);await pending;}
+});
+test('memory with missing or conflicting origin cannot manufacture an original evidence navigation',async()=>{
+ const h=await boot();for(const origin of [{status:'ORIGIN_UNAVAILABLE'},{status:'ORIGIN_MISMATCH'},{status:'STILL_UNKNOWN',operationRunId:'other'}]){await loadMemory(h,memoryFixture('A',{events:[memoryEvent({historyOrigin:origin})]}));assert.equal(descendants(h.node('ops-memory')).some(n=>n.dataset.memoryOperation),false);}assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});

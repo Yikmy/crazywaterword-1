@@ -1049,6 +1049,9 @@ function wfHistoryRender(data) {
     if (!node.batches.length) box.appendChild(gpEl('p', node.traceResult?.startsWith('BLOCKED_') ? '该节点未生成可执行批次。' : '暂无可关联执行；预览本身不表示授权或派发。'));
     for (const batch of node.batches) {
       box.appendChild(gpEl('p', '批次 ' + batch.batchId + ' · 操作 ' + batch.operationRunId + ' · ' + batch.finalStatus));
+      const evidenceScope=viewGuard.capture(),evidenceRevision=gpRevision,evidenceHistoryRevision=wfHistoryRevision,evidence=gpEl('button','查看此批次的原始执行证据');
+      evidence.type='button';evidence.dataset.workflowOperation=batch.operationRunId;
+      evidence.onclick=()=>{if(!gpSafe(evidenceScope,evidenceRevision)||evidenceHistoryRevision!==wfHistoryRevision||$('wf-history-selected').value!==data.workflowRunId)return;return openOperationHistoryEvidence({accountId:data.accountId,operationRunId:batch.operationRunId,module:batch.module,batchId:batch.batchId,actionIds:batch.actions.map(row=>row.actionId),exactActions:true,workflowId:data.workflowRunId,workflowDefinitionId:data.workflowDefinitionId,workflowNodeId:node.nodeId,...(node.round!==undefined?{workflowRound:node.round}:{})});};box.appendChild(evidence);
       const authorizationLink=batch.runAuthorizationLink,authorizationText={MATCHED:'已关联原有限运行授权；仅供历史审计',BATCH_ONLY:'仅保留原单批授权记录，未证明继承有限运行授权',MISSING:'有限运行授权关联证据缺失；原执行结果保留',CONFLICT:'有限运行授权关联存在冲突；原执行结果保留'};
       box.appendChild(gpEl('p','授权来源：'+(authorizationText[authorizationLink?.status]??'原历史未记录授权关联')+(authorizationLink?.status==='MATCHED'?' · '+authorizationLink.approvedAt+' · 图摘要 '+authorizationLink.graphHash:'')));
       const table = gpEl('table'), header = gpEl('tr');
