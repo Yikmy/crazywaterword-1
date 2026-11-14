@@ -8,7 +8,7 @@ import path from 'node:path';
 import {createExecutionHistory} from '../src/execution-history.mjs';
 import {createExecutionMemory} from '../src/execution-memory.mjs';
 import {createOperationService} from '../src/operation-service.mjs';
-import {createWorkflowRunner,projectWorkflowExecutionHistory} from '../src/workflow.mjs';
+import {createWorkflowRunner,createWorkflowStore,projectWorkflowExecutionHistory} from '../src/workflow.mjs';
 
 // Private TEMP storage and synthetic in-process requests only. No account data,
 // credentials, Runtime, socket, server clock sample or real transport is used.
@@ -334,4 +334,28 @@ for(const entry of ['tasks','dailies','loop'])test('unified '+entry+' rejects mi
   assert.equal(restarted.reads.length,0);assert.deepEqual(restarted.history.list('A'),[]);
   assert.equal(restarted.service.workflowBudget('A'),null);assert.equal(fs.existsSync(f.memoryFile),false);
  }finally{runner?.stop();await runner?.settle();await restarted?.cleanup();await f.cleanup();}
+});
+
+for(const selection of ['one',{actionId:'one'}])test('explicit remembered refusal skips only its target and persists independent authorized work '+JSON.stringify(selection),async()=>{
+ const f=fixture({outcome:'REJECTED'});let next,runner;
+ try{
+  await f.execute(await f.plan());const original=fs.readFileSync(f.historyFile,'utf8'),memory=fs.readFileSync(f.memoryFile,'utf8');
+  next=fixture({file:f.historyFile});const workflowFile=path.join(f.dir,'workflows.json'),store=createWorkflowStore({file:workflowFile,modules:next.service.modules});
+  const graph={version:1,id:'explicit-refusal',name:'Explicit refusal isolation',budget:{resources:[{id:'wood',num:2}],quotas:[],uids:[]},nodes:[
+   {id:'s',type:'START'},{id:'blocked',type:'ACTION',module:'fixture',selection},
+   {id:'independent',type:'ACTION',module:'fixture',selection:'two'},{id:'verified',type:'VERIFY',module:'fixture'},{id:'z',type:'STOP'}],
+   edges:[{from:'s',to:'blocked'},{from:'blocked',to:'independent'},{from:'independent',to:'verified'},{from:'verified',to:'z'}]};store.save('A',graph);
+  runner=createWorkflowRunner({operations:next.service,modules:next.service.modules,getSession:()=>next.account,claim:(_id,runId,options)=>next.service.claimWorkflow(next.account,runId,options),onUpdate:row=>store.record('A',row)});
+  const paused=await runner.start('A',graph);assert.equal(paused.status,'AWAITING_AUTHORIZATION');assert.equal(paused.currentNode,'independent');assert.equal(paused.plan.actions[0].actionId,'two');
+  assert.deepEqual(paused.trace.find(row=>row.nodeId==='blocked'),{nodeId:'blocked',type:'ACTION',result:'BLOCKED_REJECTION_MEMORY',timestamp:paused.trace.find(row=>row.nodeId==='blocked').timestamp,module:'fixture',actionId:'one',blockedReasons:['REJECTION_MEMORY_ACTIVE']});
+  assert.equal(next.writes.length,0);assert.equal(fs.readFileSync(f.historyFile,'utf8'),original);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memory);
+  assert.equal((await runner.resume()).status,'AWAITING_AUTHORIZATION');assert.equal(next.writes.length,0);
+  const reopened=createWorkflowStore({file:workflowFile,modules:next.service.modules});const bytes=fs.readFileSync(workflowFile,'utf8'),restored=reopened.history('A')[0];
+  assert.equal(restored.status,'RECOVERED_STOPPED');assert.equal(restored.trace.find(row=>row.nodeId==='blocked').result,'BLOCKED_REJECTION_MEMORY');assert.deepEqual(reopened.history('B'),[]);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
+  const executed=await next.execute(paused.plan);assert.equal(executed.record.finalStatus,'SUCCESS');assert.equal(next.writes.length,1);assert.equal(next.writes[0].body.id,'two');
+  const done=await runner.resume();assert.equal(done.status,'COMPLETED');assert.match(done.reason,/阻塞/);assert.equal(done.trace.find(row=>row.nodeId==='verified').result,'CONFIRMED');
+  assert.equal(done.runBudget.reserved.resources[0].num,1);assert.equal(f.writes.length,1);assert.equal(next.store.list('A').length,1);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memory);
+  const projected=projectWorkflowExecutionHistory('A',store.history('A')[0],next.history.list('A'));
+  assert.equal(projected.nodes.find(row=>row.nodeId==='blocked').batches.length,0);assert.equal(projected.nodes.find(row=>row.nodeId==='independent').batches.length,1);
+ }finally{runner?.stop();await runner?.settle();await next?.cleanup();await f.cleanup();}
 });

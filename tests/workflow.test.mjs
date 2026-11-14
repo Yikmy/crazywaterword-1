@@ -774,3 +774,22 @@ test('Workflow client role scope preserves equivalent exact Long, string and saf
  const f=fixture();f.session.client.factContext={playerId:{low:1,high:2097152,unsigned:false},worldId:'9'};await f.runner.start(f.session.id,graph());
  f.session.client.factContext.playerId='9007199254740993';f.session.client.factContext.worldId=9;f.runs.push(f.success());assert.equal((await f.runner.resume()).status,'COMPLETED');assert.equal(f.released(),1);
 });
+
+
+function explicitRefusalGraph(selection='operation-1',verify=false){return {version:1,id:'explicit-refusal',name:'Explicit refusal',nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'fixture',selection},...(verify?[{id:'v',type:'VERIFY',module:'fixture'}]:[]),{id:'q',type:'SURVEY',module:'fixture'},{id:'z',type:'STOP'}],edges:verify?[{from:'s',to:'a'},{from:'a',to:'v'},{from:'v',to:'q'},{from:'q',to:'z'}]:[{from:'s',to:'a'},{from:'a',to:'q'},{from:'q',to:'z'}]};}
+for(const code of ['RECOVERY_UNCERTAIN','MEMORY_ORIGIN_UNRESOLVED','MEMORY_UNAVAILABLE','STALE_PLAN','AUTHORIZATION_REQUIRED','CANCELLED','WORKFLOW_UNKNOWN'])test('explicit refusal isolation never skips '+code,async()=>{
+ let surveys=0;const f=fixture({plan(){throw Object.assign(Error('synthetic '+code),{code});},surveyModule(){surveys++;return {};}});
+ const result=await f.runner.start(f.session.id,explicitRefusalGraph());assert.ok(['FAILED','UNKNOWN','CANCELLED'].includes(result.status));assert.equal(surveys,0);assert.equal(result.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'),false);assert.equal(result.plan,null);assert.equal(f.released(),1);
+});
+test('a skipped explicit refusal never supplies VERIFY success for its unexecuted action',async()=>{
+ let surveys=0;const f=fixture({plan(){throw Object.assign(Error('remembered'),{code:'REJECTION_MEMORY_ACTIVE'});},surveyModule(){surveys++;return {};}});
+ const result=await f.runner.start(f.session.id,explicitRefusalGraph({actionId:'operation-1'},true));assert.equal(result.status,'UNKNOWN');assert.equal(surveys,0);assert.ok(result.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(result.trace.some(row=>row.result==='CONFIRMED'),false);assert.equal(result.plan,null);
+});
+test('explicit refusal trace persistence failure stops before independent survey',async()=>{
+ let surveys=0;const f=fixture({plan(){throw Object.assign(Error('remembered'),{code:'REJECTION_MEMORY_ACTIVE'});},surveyModule(){surveys++;return {}; }},{onUpdate(row){if(row.trace.some(v=>v.result==='BLOCKED_REJECTION_MEMORY'))throw Object.assign(Error('synthetic disk failure'),{code:'WORKFLOW_STORE_UNAVAILABLE'});}});
+ const result=await f.runner.start(f.session.id,explicitRefusalGraph());assert.equal(result.status,'FAILED');assert.equal(surveys,0);assert.equal(result.plan,null);assert.equal(f.released(),1);
+});
+test('identity loss while a remembered refusal returns stops before independent survey',async()=>{
+ let surveys=0;const f=fixture({plan(){f.session.generation++;throw Object.assign(Error('remembered'),{code:'REJECTION_MEMORY_ACTIVE'});},surveyModule(){surveys++;return {};}});
+ const result=await f.runner.start(f.session.id,explicitRefusalGraph());assert.equal(result.status,'CANCELLED');assert.equal(surveys,0);assert.equal(result.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'),false);assert.equal(result.plan,null);
+});

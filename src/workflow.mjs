@@ -315,7 +315,9 @@ function repeatAfterStop(ctx,node){
           try { plan = await cancelled(ctx, operations.plan(ctx.session, { module: node.module, mode: 'Manual', selections: [selectedId], parameters: copy(node.parameters ?? {}) }, { workflowId: ctx.runId, signal: ctx.cancel.signal })); current(ctx); }
           catch (error) {
             current(ctx);
-            if (node.selection?.unique === true && error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY', {actionId:selectedId,blockedReasons:['REJECTION_MEMORY_ACTIVE']}); ctx.nodeId = next(ctx); continue; }
+            // A remembered refusal blocks this exact target for every selection form.
+            // Other errors, UNKNOWN and missing confirmation still stop the run.
+            if (error.code === 'REJECTION_MEMORY_ACTIVE') { await trace(ctx, node, 'BLOCKED_REJECTION_MEMORY', {actionId:selectedId,blockedReasons:['REJECTION_MEMORY_ACTIVE']}); ctx.nodeId = next(ctx); continue; }
             throw error;
           }
           if (!plain(plan) || !text(plan.batchId) || plan.accountId !== ctx.accountId || !Array.isArray(plan.actions) || plan.actions.length !== 1 || !text(plan.actions[0].actionId)) throw fail('操作服务未返回可单次确认的账号计划', 'WORKFLOW_UNKNOWN');
