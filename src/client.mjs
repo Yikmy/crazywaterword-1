@@ -306,7 +306,7 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
 const liveFestivalActivities = new WeakMap();
 function resetFestivalActivities(client, reason) {
   const previous=liveFestivalActivities.get(client);
-  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason});
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0});
 }
 function invalidateFestivalActivities(client, reason) {
   const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;}
@@ -355,7 +355,7 @@ export function readGuildShipActivitySnapshot(client,expected=null) {
   const identity=state?{...state.context,...state.identity}:{};
   if(!state||state.invalid||!state.seeded||!state.guildShipSnapshot||expected&&['accountId','generation','connectionId','playerId','worldId'].some(k=>vipValue(expected,k)!==identity[k]))
     return {...common,status:'UNKNOWN',reliable:false,reason:state?.guildShipReason??state?.reason??'GUILD_SHIP_PERIOD_NOT_OBSERVED',period:null,seq:null,observedAt:null};
-  return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.guildShipSnapshot)};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.guildShipSnapshot),stateRevision:state.guildShipRevision};
 }
 
 export const FESTIVAL_ACTIVITY_OBSERVATION_EVIDENCE=Object.freeze({protocolSha256:LIVE_VIP_LEVEL_EVIDENCE.protocolSha256,source:'SCAllActivity.festivalActivities / DispFestivalActivity / DispSubActivity.dailyActive / DailyActiveDetail.checkInId',scope:'Transport observation only; no eligibility, game day, independent claim reread or automatic execution',realGame:'REAL_UNVERIFIED'});
@@ -852,6 +852,13 @@ export class GameClient extends EventEmitter {
     if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
     if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
     if (name === 'SCGuildShipActivity') updateGuildShipActivity(this,body,seq,receivedAt);
+    if (['SCGuildShipLeader','SCGuildShipOrder','SCGuildShipMove','SCGuildShipReset'].includes(name)) {
+      const activity=liveFestivalActivities.get(this);
+      if(activity&&!activity.invalid&&activity.seeded&&festivalContextCurrent(this,activity)){
+        if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ){activity.guildShipSnapshot=null;activity.guildShipReason='GUILD_SHIP_STATE_SEQUENCE_UNKNOWN';}
+        else activity.guildShipRevision++;
+      }
+    }
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });

@@ -106,12 +106,13 @@ import {createExecutionHistory} from '../src/execution-history.mjs';
 import {createOperationService} from '../src/operation-service.mjs';
 import {GAMEPLAY_MODULES} from '../src/function-registry.mjs';
 import {createWorkflowRunner,validateWorkflow} from '../src/workflow.mjs';
+import {compileUnifiedExecution} from '../src/loop.mjs';
 const shipCodec=createCodec(wireProtocol),shipActual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const shipParams={action:'ship-order',shipId:41,crewId:1};
-async function shipFixture(t,{apply=true,accountId='synthetic-ship',connectionId='offline-ship',generation=3}={}){
+async function shipFixture(t,{apply=true,seek=false,accountId='synthetic-ship',connectionId='offline-ship',generation=3}={}){
  const state={stock:new Map([['木材',10],['鱼',8],['unrelated',9]]),resources:[{res:3,amount:100}],reads:[],writes:[],overrides:{},now:1800000000,period:7,onRead:null,onWrite:null};
  const cabin=crewId=>({crewId,order:[{type:0,id:'木材',num:2},{type:0,id:'鱼',num:3}]});
- state.ship={shipId:41,type:1,state:1,leader:{playerId:'19'},preparedEndTime:state.now+100,cabin:[cabin(1),cabin(2)]};state.ownRun=[];
+ state.ship={shipId:41,type:1,state:1,leader:{playerId:'19'},preparedEndTime:state.now+100,cabin:[cabin(1),cabin(2)]};state.ownRun=[];state.heroes=[{heroId:'captain-A',level:20,star:5,power:'9007199254740993',skillLevels:[1],exclusive:{level:1,star:2}},{heroId:'captain-B',level:20,star:8,power:'19',skillLevels:[1]}];if(seek){delete state.ship.leader;state.ship.preparedEndTime=0;state.ship.leaderCond=[{heroId:'captain-A',star:6,exStar:1},{heroId:'captain-B',star:8,exStar:0}];}
  const sockets=[];class Socket{
   constructor(){this.readyState=0;sockets.push(this);}
   send(bytes){assert.equal(this.readyState,1);shipCodec.decode(bytes);}
@@ -123,12 +124,12 @@ async function shipFixture(t,{apply=true,accountId='synthetic-ship',connectionId
  client.factContext={accountId,generation,connectionId};const pending=client.connect({}),socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:'1000001',level:20,guildId:'10'}});await pending;
  client.gameClock={reset(){},read:()=>({status:'TRUSTED',reliable:true,nowMs:state.now*1000,earliestMs:state.now*1000,latestMs:state.now*1000})};
  state.seq=0;state.publish=(period={period:state.period,startTime:state.now-100,endTime:state.now+1000})=>socket.receive('SCGuildShipActivity',{period},++state.seq);state.publish();
- const options={config:{tables:Object.fromEntries(['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'].map(k=>[k,structuredClone(shipActual.tables[k])]))},player:{playerId:'9007199254740993',worldId:'1000001',guildId:'10',level:20},parameters:{...shipParams},moduleConfig:{enabled:true,ship:true}};
+ const options={config:{tables:Object.fromEntries(['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'].map(k=>[k,structuredClone(shipActual.tables[k])]))},player:{playerId:'9007199254740993',worldId:'1000001',guildId:'10',level:20},parameters:seek?{action:'ship-seek',shipId:41}:{...shipParams},moduleConfig:{enabled:true,ship:true}};
  client.request=async(n,b,r)=>{wire(n,b);state.reads.push(n);await state.onRead?.(n);
-  let value=n==='GuildInfoRequest'?{guild:{guildId:'10'}}:n==='GuildShipRequest'?{period:state.period,ship:[state.ship],ownRun:state.ownRun}:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;
+  let value=n==='AllHeroRequest'?{heroes:state.heroes}:n==='GuildInfoRequest'?{guild:{guildId:'10'}}:n==='GuildShipRequest'?{period:state.period,ship:[state.ship],ownRun:state.ownRun}:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected ship read '+n);const decoded=wire(r,value);state.onDecoded?.(n,decoded);return decoded;
  };
- client.sendWatch=async(n,b,opts={})=>{wire(n,b);opts.beforeDispatch?.();state.writes.push({name:n,body:structuredClone(b)});if(apply){const slot=state.ship.cabin.find(c=>c.crewId===b.crewId);slot.player={playerId:options.player.playerId};for(const cost of slot.order)state.stock.set(cost.id,state.stock.get(cost.id)-cost.num);}await state.onWrite?.();return {status:'UNKNOWN'};};
+ client.sendWatch=async(n,b,opts={})=>{wire(n,b);opts.beforeDispatch?.();state.writes.push({name:n,body:structuredClone(b)});if(apply){if(n==='GuildShipSeekRequest'){state.ship.leader={playerId:options.player.playerId};state.ship.preparedEndTime=state.now+300;}else{const slot=state.ship.cabin.find(c=>c.crewId===b.crewId);slot.player={playerId:options.player.playerId};for(const cost of slot.order)state.stock.set(cost.id,state.stock.get(cost.id)-cost.num);}}await state.onWrite?.();return {status:'UNKNOWN'};};
  t.after(()=>client.stop());return {state,client,options,socket};
 }
 async function shipReady(t,extra){const f=await shipFixture(t,extra),facts=await surveyAlliance(f.client,wireProtocol,f.options),view=allianceView(facts,f.options);assert.equal(view.candidates.length,1,JSON.stringify(view.blocked));const operation=planAlliance(facts,{...f.options,selections:[view.candidates[0].actionId]}).actions[0];assert.ok(operation);return {...f,facts,operation};}
@@ -232,13 +233,13 @@ test('merchant cancellation stops reads and late applied response stays UNKNOWN'
  const f=await shipReady(t),abort=new AbortController();let release;f.state.onWrite=()=>new Promise(r=>release=r);const pending=executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget:shipBudget(f),signal:abort.signal});for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);abort.abort();release();assert.equal((await pending).status,'UNKNOWN');assert.equal(f.state.writes.length,1);
  const g=await shipFixture(t),stopped=new AbortController();stopped.abort();await assert.rejects(surveyAlliance(g.client,wireProtocol,{...g.options,signal:stopped.signal}));assert.equal(g.state.reads.length,0);
 });
-async function shipService(t,{file=null,apply=true,connectionId='offline-ship'}={}){
- const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-ship-')):null;file??=path.join(dir,'history.json');const f=await shipFixture(t,{apply,connectionId}),durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}};
+async function shipService(t,{file=null,apply=true,seek=false,connectionId='offline-ship'}={}){
+ const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-ship-')):null;file??=path.join(dir,'history.json');const f=await shipFixture(t,{apply,seek,connectionId}),durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}};
  const session={id:'synthetic-ship',client:f.client,player:f.options.player,generation:3,connectionId,state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol:wireProtocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:f.options.moduleConfig})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  const send=f.client.sendWatch.bind(f.client);f.client.sendWatch=async(...args)=>{f.state.saved=structuredClone(journal.at(-1));return send(...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
- const plan=async()=>{const read=await service.surveyModule(session,'alliance',shipParams),row=read.view.candidates[0];assert.ok(row,JSON.stringify(read.view.blocked));return service.plan(session,{module:'alliance',mode:'Manual',parameters:shipParams,selections:[row.actionId]});};
+ const plan=async()=>{const read=await service.surveyModule(session,'alliance',f.options.parameters),row=read.view.candidates[0];assert.ok(row,JSON.stringify(read.view.blocked));return service.plan(session,{module:'alliance',mode:'Manual',parameters:f.options.parameters,selections:[row.actionId]});};
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true});
  const run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
  return {...f,file,session,service,durable,history,plan,authorize,run};
@@ -285,4 +286,126 @@ for(const mode of ['account','role','world','guild','connection','generation'])t
  if(mode==='connection')f.client.factContext.connectionId='new';
  if(mode==='generation')f.client.factContext.generation++;
  };const result=await shipExecute(f);assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);
+});
+
+test('merchant captain exact ship qualification and independent leader assignment share executor and parent UID claims',async t=>{
+ const f=await shipReady(t,{seek:true});assert.deepEqual(f.operation.action,{request:'GuildShipSeekRequest',response:null,body:{shipId:41}});assert.deepEqual(f.operation.costs,[]);assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'guild-ship',id:'10:7:41'},{type:'hero',id:'captain-A'},{type:'hero',id:'captain-B'}]});assert.equal(f.state.reads.includes('AllHeroRequest'),true);const result=await shipExecute(f);assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(f.state.writes.length,1);assert.equal(f.state.ship.leader.playerId,f.options.player.playerId);assert.equal(f.state.stock.get('木材'),10);assert.equal(f.state.heroes[0].star,5);
+});
+
+const captainParameters={action:'ship-seek',shipId:41};
+test('merchant captain strict parameters and D6 require exact single ship and explicit zero cost',async t=>{
+ const a={request:'GuildShipSeekRequest',body:{shipId:41},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));
+ for(const body of [{},{shipId:0},{shipId:'41'},{shipId:2147483648},{shipId:41,crewId:1},{shipId:41,heroIds:['captain-A']},{shipId:41,buy:false}])assert.throws(()=>assertPaymentAllowed({...a,body}));
+ for(const costs of [undefined,null,[{id:'木材',num:1}],[{id:'RUBY',num:1}]])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+ for(const p of [{action:'ship-seek'},{...captainParameters,crewId:1},{...captainParameters,heroIds:['captain-A']},{...captainParameters,costs:[]},{...captainParameters,request:'GuildShipSeekRequest'}]){const f=await shipFixture(t,{seek:true});await assert.rejects(surveyAlliance(f.client,wireProtocol,{...f.options,parameters:p}));assert.equal(f.state.reads.length,0);}
+});
+const captainNegativeCases=[
+ ['absent-hero',f=>f.state.heroes.shift()],
+ ['duplicate-hero',f=>f.state.heroes.push(structuredClone(f.state.heroes[0]))],
+ ['missing-base-star',f=>f.state.onDecoded=(n,d)=>{if(n==='AllHeroRequest')delete d.heroes[0].star;}],
+ ['insufficient-combined',f=>f.state.heroes[0].exclusive.star=1],
+ ['missing-exclusive',f=>delete f.state.heroes[0].exclusive],
+ ['malformed-exclusive-even-with-sufficient-base',f=>{f.state.heroes[0].star=10;f.state.heroes[0].exclusive.star=-1;}],
+ ['missing-exclusive-star',f=>f.state.onDecoded=(n,d)=>{if(n==='AllHeroRequest')delete d.heroes[0].exclusive.star;}],
+ ['unknown-hero-read',f=>f.state.overrides.AllHeroRequest=Error('timeout')],
+ ['missing-hero-list',f=>f.state.onDecoded=(n,d)=>{if(n==='AllHeroRequest')delete d.heroes;}],
+ ['missing-condition-star',f=>f.state.onDecoded=(n,d)=>{if(n==='GuildShipRequest')delete d.ship[0].leaderCond[0].star;}],
+ ['missing-condition-exclusive',f=>f.state.onDecoded=(n,d)=>{if(n==='GuildShipRequest')delete d.ship[0].leaderCond[0].exStar;}],
+ ['negative-condition-star',f=>f.state.ship.leaderCond[0].star=-1],
+ ['duplicate-condition',f=>f.state.ship.leaderCond.push(structuredClone(f.state.ship.leaderCond[0]))],
+ ['missing-conditions',f=>f.state.onDecoded=(n,d)=>{if(n==='GuildShipRequest')delete d.ship[0].leaderCond;}],
+ ['already-captain',f=>f.state.ship.leader={playerId:'19'}],
+ ['own-passenger',f=>f.state.ship.cabin[0].player={playerId:f.options.player.playerId}],
+ ['moving',f=>{f.state.ship.state=2;f.state.ship.mvEndTime=f.state.now+100;}],
+ ['period',f=>f.state.period=8],
+ ['limit',f=>{f.state.ownRun=[42,43].map(shipId=>({...structuredClone(f.state.ship),shipId,leader:{playerId:f.options.player.playerId},preparedEndTime:f.state.now+100}));}],
+];
+for(const [label,mutate]of captainNegativeCases)test('merchant captain eligibility blocks '+label,async t=>{const f=await shipFixture(t,{seek:true});mutate(f);const facts=await surveyAlliance(f.client,wireProtocol,f.options),v=allianceView(facts,f.options);assert.equal(v.candidates.length,0,JSON.stringify(v));assert.equal(f.state.writes.length,0);});
+test('merchant captain base star alone proves qualification without manufacturing missing exclusive as zero',async t=>{
+ const f=await shipFixture(t,{seek:true});f.state.heroes[0].star=7;delete f.state.heroes[0].exclusive;const facts=await surveyAlliance(f.client,wireProtocol,f.options),v=allianceView(facts,f.options);assert.equal(v.candidates.length,1);assert.equal(v.candidates[0].qualification.rows[0].exclusiveStar,null);assert.equal(v.candidates[0].qualification.rows[0].qualified,true);
+});
+test('merchant cargo facts cannot be relabeled into captain authority without an independent hero read',async t=>{
+ const f=await shipFixture(t);delete f.state.ship.leader;f.state.ship.preparedEndTime=0;const facts=await surveyAlliance(f.client,wireProtocol,f.options);assert.equal(allianceView(facts,{...f.options,parameters:captainParameters}).candidates.length,0);assert.equal(f.state.reads.includes('AllHeroRequest'),false);
+});
+for(const mode of ['no-effect','other-leader','missing-deadline','past-deadline','hero-growth','inventory-debit','other-cabin','period-change'])test('merchant captain independent settlement retains UNKNOWN '+mode,async t=>{
+ const f=await shipReady(t,{seek:true,apply:mode!=='no-effect'});f.state.onWrite=()=>{
+ if(mode==='other-leader')f.state.ship.leader.playerId='21';
+ if(mode==='missing-deadline')delete f.state.ship.preparedEndTime;
+ if(mode==='past-deadline')f.state.ship.preparedEndTime=f.state.now;
+ if(mode==='hero-growth')f.state.heroes[0].star++;
+ if(mode==='inventory-debit')f.state.stock.set('木材',9);
+ if(mode==='other-cabin')f.state.ship.cabin[1].player={playerId:'25'};
+ if(mode==='period-change'){f.state.period=8;f.state.publish({period:8,startTime:f.state.now-100,endTime:f.state.now+1000});}
+ };const result=await shipExecute(f);assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(result.unresolvedWrite,true);assert.equal(f.state.writes.length,1);
+});
+test('merchant captain exact UID and symbolic deadline contract cannot be altered',async t=>{
+ for(const mutate of [o=>o.budgetClaims.uids.pop(),o=>o.budgetClaims.uids[1].id='other',o=>o.expectedState.allShips[0].preparedEndTime=1800000010,o=>o.action.body.heroId='captain-A',o=>o.target.shipId=42]){
+ const f=await shipReady(t,{seek:true});mutate(f.operation);const result=await shipExecute(f);assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);
+ }
+});
+test('merchant captain parent run must explicitly include all qualification heroes and exact ship UID',async t=>{
+ const f=await shipReady(t,{seek:true}),budget=shipBudget(f);budget.limits={...budget.limits,uids:budget.limits.uids.slice(1)};budget.runBudget=createRunBudgetContext({scope:budget.scope,limits:budget.limits});const result=await executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget});assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);
+});
+for(const apply of [true,false])test('merchant captain Service persists ship and hero claims with UNKNOWN restart zero replay '+apply,async t=>{
+ const f=await shipService(t,{seek:true,apply}),p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.deepEqual(f.state.saved.runBudget.reserved.uids,p.budgetClaims.uids);assert.deepEqual(f.state.saved.runBudget.reserved.resources,[]);
+ const restored=await shipService(t,{seek:true,file:f.file});assert.equal(restored.durable.list(f.session.id)[0].finalStatus,record.finalStatus);if(!apply){await assert.rejects(restored.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restored.state.writes.length,0);}
+});
+for(const mode of ['disk','qualifications','account','world','connection','generation','period'])test('merchant captain durable final guard prevents dispatch '+mode,async t=>{
+ const f=await shipService(t,{seek:true}),p=await f.plan(),permit=f.authorize(p),put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT')){
+ if(mode==='disk')throw Error('disk');
+ if(mode==='qualifications')f.options.player.level=17;
+ if(mode==='account')f.client.factContext.accountId='B';
+ if(mode==='world')f.options.player.worldId='2000001';
+ if(mode==='connection')f.client.factContext.connectionId='new';
+ if(mode==='generation')f.client.factContext.generation++;
+ if(mode==='period')f.state.publish({period:8,startTime:f.state.now-100,endTime:f.state.now+1000});
+ }return put(row);};try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0);
+});
+test('merchant captain cancellation after applied write preserves UNKNOWN and does not assign twice',async t=>{
+ const f=await shipReady(t,{seek:true}),abort=new AbortController();let release;f.state.onWrite=()=>new Promise(r=>release=r);const pending=executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget:shipBudget(f),signal:abort.signal});for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);abort.abort();release();assert.equal((await pending).status,'UNKNOWN');assert.equal(f.state.writes.length,1);
+});
+
+const merchantPushes=[
+ ['SCGuildShipLeader',f=>({shipId:41,leader:{playerId:'21'},preparedEndTime:f.state.now+300})],
+ ['SCGuildShipOrder',()=>({shipId:41,crewId:1,player:{playerId:'21'}})],
+ ['SCGuildShipMove',f=>({shipId:41,startTime:f.state.now,endTime:f.state.now+300})],
+ ['SCGuildShipReset',()=>({shipId:[41]})],
+];
+for(const seek of [false,true])for(const [name,body]of merchantPushes){
+ test('merchant private push invalidates survey '+seek+' '+name,async t=>{
+  const f=await shipFixture(t,{seek});let pushed=false;f.state.onRead=()=>{if(!pushed){pushed=true;f.socket.receive(name,body(f),++f.state.seq);}};
+  const facts=await surveyAlliance(f.client,wireProtocol,f.options);
+  assert.equal(facts.activityStable,false);assert.equal(allianceView(facts,f.options).candidates.length,0);assert.equal(f.state.writes.length,0);
+ });
+ test('merchant durable intent followed by private state push sends nothing '+seek+' '+name,async t=>{
+  const f=await shipService(t,{seek}),p=await f.plan(),permit=f.authorize(p),put=f.history.put;
+  let pushed=false;f.history.put=row=>{if(!pushed&&row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT')){pushed=true;f.socket.receive(name,body(f),++f.state.seq);}return put(row);};
+  f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(pushed,true);assert.equal(f.state.writes.length,0);
+ });
+}
+for(const seek of [false,true])for(const apply of [false,true])test('merchant accepted own push requires independent complete settlement '+seek+' '+apply,async t=>{
+ const f=await shipReady(t,{seek,apply});f.state.onWrite=()=>f.socket.receive(seek?'SCGuildShipLeader':'SCGuildShipOrder',seek?{shipId:41,leader:{playerId:f.options.player.playerId},preparedEndTime:f.state.now+300}:{shipId:41,crewId:1,player:{playerId:f.options.player.playerId}},++f.state.seq);
+ const result=await shipExecute(f);assert.equal(result.status,apply?'SUCCESS':'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);assert.equal(f.state.reads.filter(n=>n==='GuildShipRequest').length,3);
+});
+for(const seek of [false,true])for(const mode of ['gap','zero','late-read'])test('merchant settlement stream loss remains UNKNOWN '+seek+' '+mode,async t=>{
+ const f=await shipReady(t,{seek});
+ const push=()=>f.socket.receive('SCGuildShipReset',{shipId:[41]},mode==='zero'?0:mode==='gap'?f.state.seq+2:++f.state.seq);
+ f.state.onWrite=()=>{if(mode==='late-read'){let pushed=false;f.state.onRead=()=>{if(!pushed){pushed=true;push();}};}else push();};
+ const result=await shipExecute(f);assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);
+});
+test('merchant captain finite Loop uses original authorization, shared history and parent UID budget',async t=>{
+ const f=await shipService(t,{seek:true}),read=await f.service.surveyModule(f.session,'alliance',captainParameters),row=read.view.candidates[0],claims=operationBudgetClaims(row);
+ const compiled=compileUnifiedExecution({entry:'loop',world:[{module:'alliance',parameters:captainParameters,selection:{actionId:row.actionId}}],rounds:1,everyMs:0,budget:claims},{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(compiled.blocked,[]);assert.deepEqual(compiled.graph.budget,claims);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let result=await runner.start(f.session.id,compiled.graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.deepEqual(result.plan.budgetClaims.uids,claims.uids);
+ const {record}=await f.run(result.plan);assert.equal(record.finalStatus,'SUCCESS');assert.deepEqual(f.state.saved.runBudget.reserved.uids,claims.uids);
+ result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'world-0-1');assert.equal(f.state.writes.length,1);
+});
+test('merchant captain shared refusal survives reconnect and transport revision until business facts change',async t=>{
+ const f=await shipService(t,{seek:true,apply:false});f.state.onWrite=()=>{throw Object.assign(Error('definite refusal'),{code:'REJECTED'});};
+ assert.equal((await f.run(await f.plan())).record.finalStatus,'REJECTED');
+ const next=await shipService(t,{seek:true,file:f.file,connectionId:'next'});next.socket.receive('SCGuildShipReset',{shipId:[42]},++next.state.seq);
+ await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});next.state.heroes[0].star++;
+ assert.equal((await next.plan()).actions.length,1);assert.equal(next.state.writes.length,0);
 });

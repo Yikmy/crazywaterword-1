@@ -921,13 +921,13 @@ test('HTTP unified AFK declaration uses full Registry, requires exact level and 
  }finally{await app.close();}
 });
 
-for(const name of ['GuildShipRequest','GuildShipResponse','GuildShipOrderRequest'])protocol[name]=heroWireProtocol[name];
+for(const name of ['GuildShipRequest','GuildShipResponse','GuildShipOrderRequest','GuildShipSeekRequest'])protocol[name]=heroWireProtocol[name];
 
 const {loadConfig:loadShipHttpConfig}=await import('../src/config.mjs');
 const merchantHttpActual=loadShipHttpConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
 const merchantHttpConfig={tables:Object.fromEntries(['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'].map(k=>[k,structuredClone(merchantHttpActual.tables[k])]))};
 const merchantHttpParameters={action:'ship-order',shipId:41,crewId:1};
-async function merchantHttpReady(app,{unconfirmed=false}={}){
+async function merchantHttpReady(app,{unconfirmed=false,captain=false}={}){
  const session=app.ready('A'),codec=createVipHttpCodec(heroWireProtocol);session.player={playerId:'9007199254740993',worldId:'1000001',guildId:'10',level:20};session.connectionId='merchant-http-A';
  let socket;class Socket{constructor(){socket=this;this.readyState=0;}send(bytes){assert.equal(this.readyState,1);codec.decode(bytes);}close(){this.readyState=3;}receive(name,body,seq=0){this.onmessage?.({data:codec.encode(name,seq,body)});}}
  const client=new VipHttpClient({protocol:heroWireProtocol,accountId:'A',generation:session.generation,WebSocketImpl:Socket});client.on('error',()=>{});client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};
@@ -935,8 +935,9 @@ async function merchantHttpReady(app,{unconfirmed=false}={}){
  const now=1800000000;client.gameClock={reset(){},read:()=>({status:'TRUSTED',reliable:true,accountId:'A',generation:session.generation,source:'synthetic clock',nowMs:now*1000,earliestMs:now*1000,latestMs:now*1000})};
  socket.receive('SCGuildShipActivity',{period:{period:7,startTime:now-100,endTime:now+1000}},1);
  const state={stock:10,ship:{shipId:41,type:1,state:1,leader:{playerId:'19'},preparedEndTime:now+100,cabin:[{crewId:1,order:[{type:0,id:'木材',num:2}]},{crewId:2,order:[{type:0,id:'木材',num:2}]}]}};
- client.request=async(n,b,r)=>{heroWire(n,b);app.requests.push({id:'A',name:n,body:structuredClone(b),response:r});const v=n==='GuildInfoRequest'?{guild:{guildId:'10'}}:n==='GuildShipRequest'?{period:7,ship:[state.ship],ownRun:[]}:n==='AllItemRequest'?{items:[{itemId:'木材',num:state.stock}]}:n==='AllResourceRequest'?{list:[{res:3,amount:100}]}:null;assert.ok(v,n);return heroWire(r,v);};
- client.sendWatch=async(n,b,options)=>{heroWire(n,b);options.beforeDispatch?.();app.requests.push({id:'A',name:n,body:structuredClone(b),response:null});if(!unconfirmed){state.stock-=2;state.ship.cabin[0].player={playerId:session.player.playerId};}return {status:'UNKNOWN'};};
+ if(captain){delete state.ship.leader;state.ship.preparedEndTime=0;state.ship.leaderCond=[{heroId:'captain-A',star:6,exStar:1}];state.heroes=[{heroId:'captain-A',level:20,star:5,power:'9007199254740993',skillLevels:[1],exclusive:{level:1,star:2}}];}
+ client.request=async(n,b,r)=>{heroWire(n,b);app.requests.push({id:'A',name:n,body:structuredClone(b),response:r});const v=n==='AllHeroRequest'?{heroes:state.heroes}:n==='GuildInfoRequest'?{guild:{guildId:'10'}}:n==='GuildShipRequest'?{period:7,ship:[state.ship],ownRun:[]}:n==='AllItemRequest'?{items:[{itemId:'木材',num:state.stock}]}:n==='AllResourceRequest'?{list:[{res:3,amount:100}]}:null;assert.ok(v,n);return heroWire(r,v);};
+ client.sendWatch=async(n,b,options)=>{heroWire(n,b);options.beforeDispatch?.();app.requests.push({id:'A',name:n,body:structuredClone(b),response:null});if(!unconfirmed){if(captain){state.ship.leader={playerId:session.player.playerId};state.ship.preparedEndTime=now+300;}else{state.stock-=2;state.ship.cabin[0].player={playerId:session.player.playerId};}}return {status:'UNKNOWN'};};
  session.client=client;return {session,client,state,socket};
 }
 for(const unconfirmed of [false,true])test('merchant HTTP original routes enforce exact permit and independent settlement '+unconfirmed,async()=>{
@@ -950,5 +951,15 @@ for(const unconfirmed of [false,true])test('merchant HTTP original routes enforc
  const p=await app.call('/api/operations/plan',{body:{module:'alliance',mode:'Manual',parameters:merchantHttpParameters,selections:[row.actionId]}});assert.equal(p.status,200,JSON.stringify(p.data));assert.deepEqual(p.data.resourceBudget,[{id:'木材',num:2}]);assert.equal(app.requests.filter(r=>r.name==='GuildShipOrderRequest').length,0);
  const approved=await app.approve(p.data);assert.equal(approved.status,200);assert.equal((await app.call('/api/operations/execute',{body:approved.data})).status,200);await app.operations.settle('A');
  const record=(await app.call('/api/operations/history')).data.runs[0];assert.equal(record.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS');assert.equal(app.requests.filter(r=>r.name==='GuildShipOrderRequest').length,1);assert.deepEqual(app.requests.find(r=>r.name==='GuildShipOrderRequest').body,{shipId:41,crewId:1});assert.equal((await app.call('/api/operations/execute',{body:approved.data})).status,403);assert.equal((await app.call('/api/gameplay?module=alliance')).data.status.blocked,unconfirmed);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{client?.stop();await app.close();}
+});
+
+for(const unconfirmed of[false,true])test('merchant captain HTTP uses original permit and exact UID reservation with independent settlement '+unconfirmed,async()=>{
+ const app=await harness({includeAlliance:true,configOverride:merchantHttpConfig});let client;try{
+ const f=await merchantHttpReady(app,{captain:true,unconfirmed});client=f.client;await app.call('/api/gameplay?module=alliance');await app.call('/api/gameplay/config',{body:{module:'alliance',config:{enabled:true,ship:true}}});
+ const parameters={action:'ship-seek',shipId:41};for(const p of[{...parameters,crewId:1},{...parameters,heroIds:['captain-A']},{...parameters,buy:false}])assert.equal((await app.call('/api/gameplay/survey',{body:{module:'alliance',parameters:p}})).status,400);
+ const read=await app.call('/api/gameplay/survey',{body:{module:'alliance',parameters}});assert.equal(read.status,200);const row=read.data.view.candidates[0];assert.ok(row);assert.equal(row.actionType,'shipSeek');assert.deepEqual(row.costs,[]);assert.equal(row.qualification.rows[0].requiredCombined,7);assert.equal(row.action,undefined);
+ const p=await app.call('/api/operations/plan',{body:{module:'alliance',mode:'Manual',parameters,selections:[row.actionId]}});assert.equal(p.status,200,JSON.stringify(p.data));assert.deepEqual(p.data.resourceBudget,[]);assert.deepEqual(p.data.budgetClaims.uids,[{type:'guild-ship',id:'10:7:41'},{type:'hero',id:'captain-A'}]);assert.equal(app.requests.filter(r=>r.name==='GuildShipSeekRequest').length,0);
+ const approved=await app.approve(p.data);assert.equal(approved.status,200);assert.equal((await app.call('/api/operations/execute',{body:approved.data})).status,200);await app.operations.settle('A');const record=(await app.call('/api/operations/history')).data.runs[0];assert.equal(record.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS');assert.deepEqual(record.runBudget.reserved.uids,p.data.budgetClaims.uids);assert.deepEqual(app.requests.find(r=>r.name==='GuildShipSeekRequest').body,{shipId:41});assert.equal((await app.call('/api/operations/execute',{body:approved.data})).status,403);assert.equal((await app.call('/api/gameplay?module=alliance')).data.status.blocked,unconfirmed);assert.equal(f.state.stock,10);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{client?.stop();await app.close();}
 });

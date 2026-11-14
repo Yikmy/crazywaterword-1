@@ -375,3 +375,27 @@ test('guild ship period cannot survive reconnection or late callbacks and follow
  const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),old=socket.onmessage;socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:200}},MAX_SEQ);socket.receive('SCGuildShipActivity',{period:{period:8,startTime:200,endTime:300}},1);assert.equal(read(f.client).period.period,8);assert.equal(read(f.client).seq,1);
  f.client.stop();await f.ready();assert.equal(read(f.client).status,'UNKNOWN');old({data:codec.encode('SCGuildShipActivity',2,{period:{period:8,startTime:200,endTime:300}})});assert.equal(read(f.client).status,'UNKNOWN');
 });
+
+const shipStatePushes=[
+ ['SCGuildShipLeader',{shipId:41,leader:{playerId:'21'},preparedEndTime:300}],
+ ['SCGuildShipOrder',{shipId:41,crewId:1,player:{playerId:'21'}}],
+ ['SCGuildShipMove',{shipId:41,startTime:200,endTime:300}],
+ ['SCGuildShipReset',{shipId:[41]}],
+];
+for(const [name,body]of shipStatePushes)test('merchant revision accepts private contiguous state only '+name,async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();
+ socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:400}},1);
+ assert.equal(read(f.client).stateRevision,0);const sent=socket.sent.length;
+ f.client.emit('message',{name,body,seq:2});assert.equal(read(f.client).stateRevision,0);
+ socket.receive(name,body,2);const value=read(f.client);assert.equal(value.status,'OBSERVED');assert.equal(value.stateRevision,1);assert.equal(value.seq,1);assert.deepEqual(value.period,{period:7,startTime:100,endTime:400});
+ value.stateRevision=999;socket.receive(name,body,2);assert.equal(read(f.client).stateRevision,1);assert.equal(socket.sent.length,sent);
+ socket.receive(name,body,3);assert.equal(read(f.client).stateRevision,2);
+});
+for(const mode of ['gap','zero','role','world','connection','stop'])test('merchant state revision cannot restore lost authority '+mode,async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();
+ socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:400}},1);
+ if(mode==='gap')socket.receive('SCGuildShipReset',{shipId:[41]},3);
+ else if(mode==='zero')socket.receive('SCGuildShipReset',{shipId:[41]},0);
+ else {if(mode==='role')f.client.factContext.playerId='2';if(mode==='world')f.client.factContext.worldId='18';if(mode==='connection')f.client.factContext.connectionId='new';if(mode==='stop')f.client.stop();socket.receive('SCGuildShipReset',{shipId:[41]},2);}
+ assert.equal(read(f.client).status,'UNKNOWN');assert.equal(read(f.client).reliable,false);
+});
