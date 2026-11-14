@@ -714,7 +714,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       if (closed) { json({ error: '控制台已关闭' }, 503); return; }
       const allowed = new Set([
         'GET /', 'GET /api/art/index', 'GET /api/events', 'GET /api/accounts', 'GET /api/accounts/credential',
-        'POST /api/accounts/active', 'POST /api/accounts/label', 'POST /api/accounts/remove',
+        'POST /api/accounts/active', 'POST /api/accounts/label', 'POST /api/accounts/remove', 'POST /api/accounts/import',
         'POST /api/connect', 'POST /api/disconnect', 'POST /api/refresh', 'GET /api/overview',
         'GET /api/heroes', 'GET /api/dailies', 'GET /api/tasks', 'GET /api/world', 'GET /api/worlds',
         'GET /api/loop', 'GET /api/snapshot/export', 'GET /api/data-explorer', 'GET /api/assets/readiness',
@@ -738,6 +738,36 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         json(runtimeAssetReadiness({ root: assetRoot })); return;
       }
       if (req.method === 'POST') writerOwnership.assertOwned();
+      if (route === 'GET /api/accounts' || route === 'POST /api/accounts/import') {
+        const acceptedHosts = new Set([host + ':' + server.address()?.port]);
+        if (host === '127.0.0.1') acceptedHosts.add('localhost:' + server.address()?.port);
+        if (!acceptedHosts.has(req.headers.host) || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host) || req.headers['sec-fetch-site'] === 'cross-site') {
+          json({ error: '账号导入仅允许同源请求', code: 'ORIGIN_REQUIRED' }, 403); return;
+        }
+        if (route === 'POST /api/accounts/import') {
+          const csrf = req.headers['x-cw-csrf'];
+          if (req.headers.origin !== 'http://' + req.headers.host || typeof csrf !== 'string' || Buffer.byteLength(csrf) !== Buffer.byteLength(operationCsrf)
+            || !timingSafeEqual(Buffer.from(csrf), Buffer.from(operationCsrf)) || !/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) {
+            json({ error: '缺少当前页面同源执行授权上下文', code: 'CSRF_REQUIRED' }, 403); return;
+          }
+          if (parsed.search || Buffer.byteLength(body) > 65536) { json({ error: '导入只接受不超过64KiB的显式JSON正文', code: 'INVALID_INPUT' }, 400); return; }
+          let payload;
+          try {
+            payload = jsonBody();
+            if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !['credential', 'label', 'confirm'].includes(key)) || payload.confirm !== true
+              || (payload.label !== undefined && (typeof payload.label !== 'string' || payload.label.length > 100))) throw Error('invalid');
+            validateCredentials(payload.credential);
+          } catch { json({ error: '导入需确认、有效的普通账号凭证及可选的100字以内备注', code: 'INVALID_INPUT' }, 400); return; }
+          const supplied = payload.credential;
+          const login = supplied.login || supplied.body;
+          const store = loadStore();
+          if (store.accounts.some(account => account.id === login.eworldParams.openId)) { json({ error: '账号已存在；本入口不会覆盖原凭证', code: 'ACCOUNT_EXISTS' }, 409); return; }
+          // Import only the normal login envelope; a supplied raw frame cannot override its identity.
+          const { account } = upsertAccount(store, { url: supplied.url || supplied.wsUrl, login, source: 'local-import' }, { label: payload.label?.trim() || null });
+          saveStore(store);
+          json({ ok: true, created: true, account: describeAccount(account, { active: store.activeId === account.id }) }, 201); return;
+        }
+      }
       if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute || extremeFormationRoute || stageRecommendationRoute) {
         // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
         const expectedPort = server.address()?.port;
@@ -958,6 +988,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         const store = loadStore();
         json({
           activeId: store.activeId,
+          csrfToken: operationCsrf,
           accounts: store.accounts.map((account) => ({
             ...describeAccount(account, { active: account.id === store.activeId }),
             status: accountStatus(sessionFor(account.id)),

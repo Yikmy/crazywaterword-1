@@ -1,6 +1,6 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-当前核对日期：2026-11-14（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@1536835及本批W19增量。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
+当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@afd5c6c及本批W03账号导入增量。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
 
 > 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
@@ -14,7 +14,7 @@
 | W10 PARTIAL | 科技专业树、下一等级/实际扣点及复读已接原联盟链 | 原科技重置独立合同 | 重置成本/资格/恢复缺证 | 原科技提交保留；alliance最近72c6388 | 原alliance-tech/共享测试；本轮未重跑 |
 | W14 PARTIAL | Fleet编队/维修/移动及港口子集已有 | 原攻击/加速/资源田/其他模式有据合同 | 模式结果、宣战成本/身份和非premium加速缺；MOVE非攻击 | fleet最近32656af；原成果保留 | 原fleet/naval/共享测试；本轮未重跑 |
 | W22 PARTIAL | 当前需求与Inventory追踪、历史边界和交付约束已维护 | 全范围完成后集成冻结，统一R7，再生成R8清单 | 领域/API/UI/Workflow未全；R7/R8 NOT_RUN | 本行文档提交（父fc68c50） | 文档静态校验PASS：M16/C95/P42/S8/Inventory273及W22/R8/E24/X18，135路径存在、原5输入指纹不变；不是平台验收 |
-| W03 PARTIAL | 保留原固定清单/协议配置地图同字节加载、只读资产API/设置页；本批原assets CLI支持archive/verify/restore。归档仅收录清单校验通过资产，嵌入完整清单身份与具体缺口；原清单及已登记归档指纹独立校验，恢复全目标预检、仅独占创建缺失文件，已有冲突/部分写入/链接均保留并拒绝。当前协议及配置已保留为work/runtime-assets.cwassets.gz（1901461字节，指纹见原RUNTIME_ASSETS.json）；原设置页展示只读记录及离线命令 | 继续原地图资产与上游来源恢复；迁移携带原清单和已保留归档后先verify再显式restore，不自动恢复或下载 | map-1仍缺失及来源/哈希未知，归档complete=false；原始协议包/CDN版本仍未记录，保留本地字节不证明上游来源或真实玩法通过。固定v76仅有地图资源名，不推断包版本/URL；R7/R8未执行 | 本行所在提交（父20424c1）；固定资产加载及原只读诊断成果保留 | 2026-11-14：资产/CLI安全/服务器运行时/完整PAGE四文件685/685 PASS，0 fail/cancel/skip/todo；新增14项覆盖可重复归档/空白目标完整恢复、缺图、损坏/重复/越界/来源篡改、归档指纹独立验证、预检冲突/迟到新文件/中断零覆盖、链接拒绝、固定CLI零账号读取/零连接、只读记录与DOM。首轮新夹具文件symlink权限及普通指南token字样误判已纠正，未放宽业务断言。实际archive后verify磁盘复核通过，SHA-256记于原清单；历史398/398等独立保留不累计。仅离线文件/合成传输，REAL_UNVERIFIED |
+| W03 PARTIAL | 保留固定清单资产加载、诊断和archive/verify/restore；本批在原账号页新增显式普通凭证JSON导入，复用validateCredentials、upsertAccount/saveStore和当前同源CSRF，仅新增精确账号、重复拒绝，原始帧不导入。写后重新读取列表确认，草稿提交/切号清空；结果未确认须先读列表，无自动重交、连接或采集 | 继续原地图/上游来源恢复与P0-1剩余登录入口；缺证项冻结，转向原DAG其他独立任务 | map-1及上游来源/哈希仍缺，原归档complete=false；扫码/捕获仍未开放，已有账号凭证更新不由新增入口覆盖。R7/R8未执行 | 本行所在提交（父afd5c6c）；原资产归档与校验提交保留 | 2026-11-15：账号HTTP/账号视图/完整PAGE/CLI安全四文件774/774 PASS，0 fail/cancel/skip/todo（14.40秒）。新增13项覆盖空仓导入、持久及重启、重复零覆盖、同源/CSRF/禁用鉴权/坏JSON/写失败/所有权拒绝、切号迟到、清草稿、独立读取确认及不确定零重交；旧页面DOM夹具补setAttribute，原断言保留。仅合成凭证及本机回环测试，未读取真实Token/连接游戏，REAL_UNVERIFIED |
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
 | W16 PARTIAL | 保留原任务/日活跃/赠礼/单封邮件读领、挂机等级及三类周礼包和周芯片具名任务；原mail Function已有显式有界只读枚举；本批Tasks/Loop经原SURVEY接线并保存只读覆盖摘要，停止透传取消信号；复用Registry/Service/Workflow/原API/专业页。固定v76 AllMailModel.hasNextPage/nextPageNo及GameConstants.MAIL_PAGE_SIZE=10证明总数和页边界；逐页总数稳定、页长匹配且精确ID唯一才确认观察覆盖，保存来源页供原单封重新探测，零自动授权或写入  本批每日缓存关联原私有重置流/游标，采集前后连续性与复读标记一致才保持有效；重置/竞态/失源/身份变化仅将DailyTaskInfo投影为UNKNOWN，保留原始快照及独立赠礼/成就/免费点金观察，不自动采集或写入。 同一固定DailyTaskModel已核验SCDailyTaskUpdate替换任务、SCDailyWeeklyReset清空周活跃与已领列表；本批沿用原私有流记录cacheRevision，仅失效缓存，不生成新调度事件，重复帧/伪造公开emit无效。| 继续原W19有证据合同接入及W16其他独立能力；邮件实例附件需单独身份/归属与完整池结算合同，缺证仅冻结对应操作 | 邮件协议无快照版本，分页覆盖完成不证明原子一致；批量及实例附件仍BLOCKED_EVIDENCE；DispAttachment的heroes/equips/antiques仅为字符串列表，不提供新实例UID或重复转化的结算映射。周芯片换轮、VIP礼包独立复读、日周权威周期、每日订单身份、签到和挂机时段结算原缺证保留；UNKNOWN持久零重放；R7/R8未执行，W16仍PARTIAL | 本行所在提交（父56ea228）；每日重置缓存56ea228/可信重置2da3e5e及原成果保留 | 2026-11-14：Client来源/生命周期、Workflow、运行时/HTTP/日常领域/完整PAGE七文件1065/1065 PASS（32.71秒），0 fail/cancel/skip/todo。新增6项先6失败后定向7/7通过，覆盖进度/周重置来源修订、伪造/重复帧、原reset游标零变化、缺口失源、采集竞态、独立观察保留/原始缓存不变/零自动请求；前批790/790独立保留不累计。只静态核验已有固定模块，测试仅离线Codec/合成传输，REAL_UNVERIFIED |
 | W17 PARTIAL | 保留原周活动成果；本批BIZ-R17h签到前置观察接入原Client私有来源、48项Collector、日常API及专业页：仅采纳当前连接连续序列SCAllActivity.festivalActivities，精确活动ID/窗口和dailyActive签到记录，独立于VIP/角色等级是否存在；重复/缺口/断线/迟到及五维身份隔离 | 继续原签到资格/成本、游戏日界和独立领取复读合同；随后推进其他依赖已满足分支 | 推送仅为已观察片段，不证明完整活动目录、当前可领或到账；签到仍缺权威日界/资格及独立结算复读，保持具体写操作BLOCKED_EVIDENCE；R7/R8未执行 | 本行所在提交（父fa7e7c9）；周芯片任务1c0d196保留 | 2026-11-14：日常领域/API/完整PAGE/Client来源及生命周期/月卡/时钟/UNKNOWN/数据目录9文件806/806 PASS（22.337秒），0 fail/cancel/skip/todo；覆盖精确int64、合法0与缺失区分、重复活动仅局部未知、安全DOM、当前上下文隔离、采集仍48请求和零新增派发。全部离线Codec/固定配置/合成传输，REAL_UNVERIFIED |
@@ -61,9 +61,9 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 | 核对项 | 本轮实际结果 |
 |---|---|
 | 开发根目录 | //zhangnas/app/crazywaterword；初始aibot-crazywaterword为另一仓库，不在其中施工 |
-| 分支/HEAD | codex/phase-4-alliance-integration / 1536835及本批W19增量；本地提交后按原DAG继续 |
-| 远端关系 | 前批已安全fetch；本批开始时origin跟踪引用和本地HEAD均为1536835，无分叉；本批未push/merge |
-| 工作区 | 文档对齐1536835后，本批只接原W19港口动作声明/页面及定向测试；保留原5份未跟踪输入，未读账号/Token、未连接游戏 |
+| 分支/HEAD | codex/phase-4-alliance-integration / afd5c6c及本批W03增量；本地提交后按原DAG继续 |
+| 远端关系 | 前批已安全fetch；最近观察origin跟踪引用1536835为本地祖先，当前父afd5c6c含其后两次W19提交；本批未再次fetch或push/merge，不推断远端实时状态 |
+| 工作区 | 本批仅原账号页/HTTP路由及既有定向测试和当前文档；保留原5份未跟踪输入。测试使用隔离目录与合成凭证，未读真实账号/Token、未连接游戏 |
 | 历史/权限 | PHASE1–4原提交和证据保留；允许离线施工与本地提交；push/merge/reset/rebase/clean及真实游戏操作仍未授权 |
 | 目录约束 | 沿用既有src/tests/tools/docs/data/work；不新建仓库、worktree、目录或报告 |
 
@@ -304,7 +304,7 @@ CrazyWater Platform
 
 | 模块 | 原名称 | 状态 | 工作包 | 当前范围与剩余边界 |
 |---|---|---|---|---|
-| M0 | Platform Runtime | PARTIAL | W01/W03 | 账号/连接/所有权及来源检查已有；安全导入产品化、地图来源与资产缺口保留 |
+| M0 | Platform Runtime | PARTIAL | W01/W03 | 账号/连接/所有权、显式仅新增本地导入及来源检查已有；扫码产品链、地图来源与资产缺口保留 |
 | M1 | Data Center | PARTIAL | W03 | 48查询（28解析/20原始）、可靠性与钓鱼解析已有；全业务完整读模型未闭合 |
 | M2 | City & Production | PARTIAL | W04 | 建筑/生产/单田种收/水位与委任投影已有；完整全天量及批量农田结算缺 |
 | M3 | Resident Orders | PARTIAL | W04 | 规则/提交/库存/基础金币预览已有；最终金币公式与免费刷新额度缺 |
@@ -325,7 +325,7 @@ CrazyWater Platform
 
 | P ID | 原页面/面板 | 当前UI维度 | 需求/施工 |
 |---|---|---|---|
-| P0-1 | 账号列表/扫码添加 | PARTIAL：账号列表已有；扫码隐藏且捕获路由403，安全导入产品入口未全 | C001/C002；W03 |
+| P0-1 | 账号列表/扫码添加 | PARTIAL：账号列表及显式仅新增普通凭证导入已有，同源确认/重复拒绝/独立本地读取；扫码隐藏且捕获路由403，未覆盖原完整登录产品链 | C001/C002；W03 |
 | P0-2 | 账号配置 | PARTIAL：账号独立模块/规则/生产/预算配置已有；未覆盖全业务 | C002；W03/W21 |
 | P1-1 | 数据中心总览 | EXISTING_UI：只读缓存总览/可靠性及显式刷新 | C004；W03 |
 | P1-2 | 建筑生产 | PARTIAL：队列/工具内生产历史日报已有；游戏完整全天图表缺 | C101/C111/C112；W04 |

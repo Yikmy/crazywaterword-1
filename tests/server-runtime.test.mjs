@@ -11,7 +11,7 @@ import path from 'node:path';
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-runtime-test-'));
 process.env.CW_DATA_DIR = sandbox;
 const { createConsole } = await import('../src/server.mjs');
-const { saveStore } = await import('../src/accounts.mjs');
+const { saveStore, loadStore, ACCOUNTS_PATH } = await import('../src/accounts.mjs');
 const {GameClient}=await import('../src/client.mjs'),{loadProtocol}=await import('../src/proto.mjs'),{createCodec}=await import('../src/codec.mjs');
 const token = 'synthetic-token-never-use-in-game';
 const sign = 'synthetic-sign-never-use-in-game';
@@ -47,14 +47,14 @@ async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, c
   const clients = []; let collects = 0;
   const app = createConsole({ ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol, tracePath: path.join(sandbox, 'trace.log'), clientFactory: (options) => { const client = clientFactory ? clientFactory(options) : new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
   await app.listen(); const port = app.server.address().port;
-  function call(route, { method = 'GET', account = 'account-A', body } = {}) {
+  function call(route, { method = 'GET', account = 'account-A', body, headers = {}, rawBody } = {}) {
     const url = new URL(route, 'http://127.0.0.1:' + port); if (account) url.searchParams.set('account', account);
     return new Promise((resolve, reject) => {
-      const req = http.request(url, { method, headers: { connection: 'close', 'content-type': 'application/json' } }, (res) => {
+      const req = http.request(url, { method, headers: { connection: 'close', 'content-type': 'application/json', ...headers } }, (res) => {
         let text = ''; res.setEncoding('utf8'); res.on('data', (chunk) => text += chunk);
         res.on('end', () => { try { resolve({ status: res.statusCode, text, data: JSON.parse(text) }); } catch (error) { reject(error); } });
       });
-      req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
+      req.on('error', reject); req.end(rawBody === undefined ? (body === undefined ? undefined : JSON.stringify(body)) : rawBody);
     });
   }
   return { ...app, clients, call, get collects() { return collects; }, connect: (account = 'account-A') => call('/api/connect', { method: 'POST', account }), refresh: (account = 'account-A') => call('/api/refresh', { method: 'POST', account }) };
@@ -376,4 +376,95 @@ test('daily source remains unknown when '+name+' races collection',async()=>{
  const gate=deferred(),app=await dailyRuntimeHarness({collect:()=>gate.promise});
  try{const socket=await app.login(),refresh=app.refresh();await until(()=>app.collects===1);socket.receive(name,body,1);gate.resolve(dailyRuntimeSnapshot());assert.equal((await refresh).status,200);assert.equal((await app.call('/api/dailies')).data.checklist.sources.daily.status,'UNKNOWN');}
  finally{gate.resolve(dailyRuntimeSnapshot());await app.close();}
+});
+
+
+async function importContext(app) {
+  const response = await app.call('/api/accounts', { account: null });
+  return { origin: 'http://127.0.0.1:' + app.server.address().port, 'x-cw-csrf': response.data.csrfToken };
+}
+test('explicit local import persists synthetic credentials without connection, overwrite, switch or raw frame', async () => {
+  const app = await harness();
+  try {
+    const headers = await importContext(app);
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: credential('account-C'), label: 'Imported' } });
+    assert.equal(response.status, 201); assert.equal(response.data.account.id, 'account-C');
+    assert.equal(app.clients.length, 0); assert.equal(app.collects, 0);
+    const stored = loadStore(); assert.equal(stored.activeId, 'account-A'); assert.equal(stored.accounts.length, 3);
+    const added = stored.accounts.find(a => a.id === 'account-C');
+    assert.equal(added.source, 'local-import'); assert.equal(added.label, 'Imported'); assert.equal(added.loginFrameHex, null);
+    assert.equal(added.login.eworldParams.token, token);
+    for (const secret of [token, sign, frame]) assert.ok(!response.text.includes(secret));
+    const before = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    const duplicate = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: credential('account-C') } });
+    assert.equal(duplicate.status, 409); assert.equal(duplicate.data.code, 'ACCOUNT_EXISTS'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    await app.close();
+    const restarted = createConsole({ port: 0, protocol: {}, tracePath: path.join(sandbox, 'import-restart.log'), clientFactory: () => { throw Error('must not connect'); } });
+    try { await restarted.listen(); assert.equal(loadStore().accounts.find(a => a.id === 'account-C').label, 'Imported'); assert.equal(restarted.sessions.size, 0); }
+    finally { await restarted.close(); }
+  } finally { await app.close(); }
+});
+test('empty-store import accepts existing wsUrl/body envelope and only sets a local default', async () => {
+  const app = await harness();
+  try {
+    saveStore({ version: 1, activeId: null, accounts: [] }); const headers = await importContext(app), c = credential('first');
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: { wsUrl: c.url, body: c.login } } });
+    assert.equal(response.status, 201); assert.equal(loadStore().activeId, 'first'); assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
+test('local import requires same-origin CSRF, JSON, confirmation and unique route context', async () => {
+  const app = await harness();
+  try {
+    const headers = await importContext(app), body = { confirm: true, credential: credential('account-C') }, before = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    const cases = [
+      { headers: {}, status: 403 }, { headers: { ...headers, origin: 'http://evil.invalid' }, status: 403 },
+      { headers: { ...headers, host: 'evil.invalid' }, status: 403 }, { headers: { ...headers, 'sec-fetch-site': 'cross-site' }, status: 403 },
+      { headers: { ...headers, 'x-cw-csrf': 'wrong' }, status: 403 }, { headers: { ...headers, 'content-type': 'text/plain' }, status: 403 },
+      { headers, account: 'account-A', status: 400 }, { headers, body: { ...body, confirm: false }, status: 400 },
+      { headers, body: { ...body, replace: true }, status: 400 }, { headers, body: { ...body, label: 'x'.repeat(101) }, status: 400 },
+      { headers, rawBody: 'x'.repeat(65537), status: 400 }, { headers, rawBody: '{"secret":"malformed-sensitive-value"', status: 400 },
+    ];
+    for (const item of cases) {
+      const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body, ...item });
+      assert.equal(response.status, item.status); assert.ok(!response.text.includes('malformed-sensitive-value')); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    }
+    assert.equal((await app.call('/api/accounts', { account: null, headers: { origin: 'http://evil.invalid' } })).status, 403); assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
+test('invalid or developer credentials fail closed without reflection or account changes', async () => {
+  const app = await harness();
+  try {
+    const headers = await importContext(app), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8'), base = credential('account-C');
+    const invalid = [null, [], { ...base, id: 'other' }, { ...base, url: 'ws://example.invalid/ws' },
+      { ...base, login: { eworldParams: { ...base.login.eworldParams, timestamp: 0 } } },
+      { ...base, login: { eworldParams: { ...base.login.eworldParams, token: '' } } }, { ...base, nested: { superToken: 'never-reflect-this' } }];
+    for (const value of invalid) {
+      const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: value } });
+      assert.equal(response.status, 400); for (const secret of [token, sign, frame, 'never-reflect-this']) assert.ok(!response.text.includes(secret)); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    }
+    assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
+
+
+test('import storage failure preserves existing accounts and never creates a client', async () => {
+  const app = await harness(), temp = ACCOUNTS_PATH + '.tmp';
+  try {
+    const headers = await importContext(app), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    fs.mkdirSync(temp);
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: credential('account-C') } });
+    assert.notEqual(response.status, 201); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    assert.equal(loadStore().accounts.some(a => a.id === 'account-C'), false); assert.equal(app.clients.length, 0);
+    for (const secret of [token, sign, frame]) assert.ok(!response.text.includes(secret));
+  } finally { fs.rmdirSync(temp); await app.close(); }
+});
+test('lost writer ownership blocks local import before persistence', async () => {
+  let owned = false;
+  const writerOwnership = { claim() { owned = true; }, assertOwned() { if (!owned) throw Object.assign(Error('writer lost'), { statusCode: 409, code: 'WRITER_LOST' }); }, release() { owned = false; } };
+  const app = await harness({ writerOwnership });
+  try {
+    const headers = await importContext(app), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8'); owned = false;
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: credential('account-C') } });
+    assert.equal(response.status, 409); assert.equal(response.data.code, 'WRITER_LOST'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before); assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
 });

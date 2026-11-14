@@ -412,6 +412,14 @@ export const PAGE = `<!doctype html>
     <h2>账号</h2>
     <div id="accounts"></div>
 
+    <h2>导入本地账号</h2>
+    <p class="dim">显式粘贴普通凭证 JSON（url/login 或 wsUrl/body）。仅新增本地记录，重复账号拒绝覆盖；原始登录帧不会导入。首个账号会成为本地默认账号，连接仍需单独点击。</p>
+    <textarea id="account-import-json" aria-label="普通账号凭证 JSON" autocomplete="off" spellcheck="false" rows="5" style="width:100%"></textarea>
+    <div class="bar"><input id="account-import-label" aria-label="导入账号备注" maxlength="100" placeholder="可选备注">
+      <button id="account-import" type="button" disabled>确认新增本地账号</button>
+      <button id="account-import-read" type="button">重新读取本地账号列表</button></div>
+    <span id="account-import-hint" class="dim" aria-live="polite"></span>
+
     <h2>运行资产与恢复</h2>
     <p class="dim">检查本机保留的协议、配置和地图。来源不全或文件不匹配时显示具体缺口。</p>
     <button id="assets-read" type="button">检查本地运行资产</button><span id="assets-hint" class="dim" aria-live="polite"></span>
@@ -466,6 +474,7 @@ const compareStageBattles = ${compareStageBattles.toString()};
 const $ = (id) => document.getElementById(id);
 let current = null;
 let accounts = [];
+let accountImportCsrf = null, accountImportPending = false, accountImportUncertain = false;
 let stream = null;
 let snapshot = { connected: false, state: 'IDLE', busy: null, looping: false };
 const viewGuard = createAccountViewGuard();
@@ -550,6 +559,8 @@ function renderAccountSelect() {
 function selectAccount(id) {
   current = id || null;
   viewGuard.select(current);
+  $('account-import-json').value = ''; $('account-import-label').value = ''; $('account-import-hint').textContent = '';
+  accountImportControls();
   if (stream) stream.close();
   stream = null;
   snapshot = { connected: false, state: 'IDLE', busy: null, looping: false };
@@ -570,6 +581,8 @@ async function loadAccounts(reload, scope = viewGuard.capture()) {
   const data = await call('/api/accounts', undefined, scope);
   viewGuard.assert(scope);
   accounts = data.accounts;
+  accountImportCsrf = typeof data.csrfToken === 'string' ? data.csrfToken : null;
+  accountImportUncertain = false; accountImportControls();
   const selected = accounts.some((entry) => entry.id === current) ? current : data.activeId || null;
   if (selected !== current) selectAccount(selected);
   renderAccountSelect();
@@ -585,6 +598,50 @@ async function switchAccount(id) {
     await loadAccounts(true, scope);
   } catch (error) { if (viewGuard.current(scope)) $('hint').textContent = error.message; }
 }
+function accountImportControls() {
+  $('account-import').disabled = !accountImportCsrf || accountImportPending || accountImportUncertain;
+  $('account-import-read').disabled = accountImportPending;
+}
+$('account-import-read').onclick = async () => {
+  const scope = viewGuard.begin('accounts-edit');
+  try { await loadAccounts(false, scope); }
+  catch { if (viewGuard.current(scope)) $('account-import-hint').textContent = '本地账号列表读取失败，请重新读取后核查。'; }
+};
+$('account-import').onclick = async () => {
+  if (!accountImportCsrf || accountImportPending || accountImportUncertain) return;
+  let credential;
+  try {
+    const raw = $('account-import-json').value;
+    if (!raw || raw.length > 65536) throw Error('invalid');
+    credential = JSON.parse(raw);
+    if (!credential || typeof credential !== 'object' || Array.isArray(credential)) throw Error('invalid');
+  } catch { $('account-import-hint').textContent = '请输入有效的普通凭证 JSON 对象（不超过64KiB）。'; return; }
+  const expectedId = (credential.login || credential.body)?.eworldParams?.openId;
+  const label = $('account-import-label').value;
+  if (label.length > 100) { $('account-import-hint').textContent = '备注最多100字。'; return; }
+  if (!window.confirm('将这份凭证新增到本地账号存储？重复账号会拒绝；保存后仍需单独连接。')) return;
+  const scope = viewGuard.begin('accounts-edit');
+  accountImportPending = true; accountImportControls();
+  $('account-import-json').value = ''; $('account-import-label').value = '';
+  $('account-import-hint').textContent = '正在保存本地账号…';
+  try {
+    const response = await fetch('/api/accounts/import', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-cw-csrf': accountImportCsrf }, body: JSON.stringify({ credential, label, confirm: true }) });
+    credential = null;
+    viewGuard.assert(scope);
+    if (!response.ok) {
+      if (![400, 403, 409].includes(response.status)) throw Error('save result uncertain');
+      // Never render server text that could contain imported credentials.
+      $('account-import-hint').textContent = response.status === 409 ? '账号已存在，未覆盖原凭证。' : '导入被拒绝，请核对普通凭证与当前页面。';
+      return;
+    }
+    await loadAccounts(false, scope);
+    if (typeof expectedId !== 'string' || !accounts.some(account => account.id === expectedId)) throw Error('saved account not confirmed');
+    $('account-import-hint').textContent = '已新增本地账号；连接需单独点击。';
+  } catch {
+    accountImportUncertain = true;
+    if (viewGuard.current(scope)) $('account-import-hint').textContent = '保存结果未确认；请重新读取本地账号列表核查，不会自动重交。';
+  } finally { credential = null; accountImportPending = false; accountImportControls(); }
+};
 $('account').onchange = () => switchAccount($('account').value);
 $('connect').onclick = async () => {
   const scope = viewGuard.begin('connection');
@@ -1710,7 +1767,7 @@ function renderAssetReadiness(data){
 $('assets-read').onclick=()=>{clear($('assets-readiness'));return readView('assets','/api/assets/readiness',renderAssetReadiness,'assets-hint','正在检查本地文件…');};
 function renderAccounts() {
   const box = clear($('accounts'));
-  if (!accounts.length) { box.appendChild(el('div', 'dim', '尚无本地账号记录；账号导入将在下一登录阶段开放。')); return; }
+  if (!accounts.length) { box.appendChild(el('div', 'dim', '尚无本地账号记录；可在下方显式导入普通凭证。')); return; }
   for (const account of accounts) {
     const card = el('div', 'acct' + (account.id === current ? ' on' : ''));
     const top = el('div', 'top');

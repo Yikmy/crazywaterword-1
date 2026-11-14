@@ -8,7 +8,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag; this.children = []; this.style = {}; this.dataset = {};
-    this.disabled = false; this.value = ''; this._text = '';
+    this.disabled = false; this.value = ''; this._text = ''; this.attrs = {};
     const classes = new Set();
     this.classList = { add: (v) => classes.add(v), contains: (v) => classes.has(v), toggle(v, on) { if (on) classes.add(v); else classes.delete(v); } };
   }
@@ -17,6 +17,7 @@ class Element {
   appendChild(node) { this.children.push(node); return node; }
   append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   removeChild(node) { this.children.splice(this.children.indexOf(node), 1); }
+  setAttribute(key, value) { this.attrs[key] = String(value); }
   get firstChild() { return this.children[0]; }
   get childElementCount() { return this.children.length; }
 }
@@ -210,4 +211,72 @@ test('cached achievement int64 and free gold facts render through assembled page
   sources:{daily:{status:'UNKNOWN'},gift:{status:'UNKNOWN'},achievements:{status:'AVAILABLE'},freeGold:{status:'AVAILABLE'}},note:'缓存观察不授权执行'}};
  h.run('renderDailies('+JSON.stringify(data)+')');const text=h.node('dailies-table').textContent;assert.match(text,/成就.*1001.*9007199254740993\/9007199254740993.*达到门槛.*已接入任务奖励；选择成就并重新探测、预览与授权/);assert.match(text,/普通免费点金.*1.*3.*2.*1780000000.*3000/);assert.match(text,/gold\/ratio 实际净入待核实/);assert.doesNotMatch(text,/可领取|免费领取|直接执行|已到账/);assert.equal(h.requests.length,before);
  data.checklist.achievements={rows:[],counts:{total:null}};data.checklist.freeGold={used:null,total:null,remaining:null,eligible:null,resetMarker:null,minimumGold:null,note:'未知'};h.run('renderDailies('+JSON.stringify(data)+')');assert.match(h.node('dailies-table').textContent,/成就列表未知/);assert.match(h.node('dailies-table').textContent,/普通免费点金.*未知/);assert.equal(h.requests.length,before);
+});
+
+
+const importCredential = { url: 'wss://example.invalid/ws', login: { eworldParams: { openId: 'C', token: 'synthetic-import-secret', sign: 'synthetic-import-sign', timestamp: 1 } } };
+async function importBoot(empty = false) {
+  const h = harness();
+  h.respond('/api/accounts', undefined, { activeId: empty ? null : 'A', accounts: empty ? [] : [{ id: 'A', title: 'A' }], csrfToken: 'synthetic-csrf' });
+  await tick(); if (!empty) { h.respond('/api/overview', 'A', overview('A')); await tick(); }
+  h.node('account-import-json').value = JSON.stringify(importCredential); return h;
+}
+test('empty account UI explicitly imports and clears secrets; only local account GET follows save', async () => {
+  const h = await importBoot(true); assert.equal(h.node('account-import').disabled, false);
+  const work = h.node('account-import').onclick(); const request = h.pending('/api/accounts/import');
+  assert.ok(request); assert.equal(request.url, '/api/accounts/import'); assert.equal(request.options.headers['x-cw-csrf'], 'synthetic-csrf');
+  assert.equal(JSON.parse(request.options.body).confirm, true); assert.equal(h.node('account-import-json').value, '');
+  await h.node('account-import').onclick(); assert.equal(h.requests.filter(r => r.url === '/api/accounts/import').length, 1);
+  h.respond('/api/accounts/import', undefined, { ok: true }); await tick();
+  h.respond('/api/accounts', undefined, { activeId: 'C', accounts: [{ id: 'C', title: 'Imported' }], csrfToken: 'synthetic-csrf' }); await work;
+  assert.match(h.node('account-import-hint').textContent, /已新增/);
+  assert.equal(h.requests.some(r => /api\/(connect|refresh)/.test(r.url)), false);
+  assert.equal(h.node('account-import-json').value, ''); assert.equal(h.streams.length, 0);
+});
+test('import needs explicit confirmation and current page token; invalid JSON never reaches fetch', async () => {
+  const h = await importBoot(); const count = h.requests.length;
+  h.run('window.confirm = () => false'); await h.node('account-import').onclick(); assert.equal(h.requests.length, count);
+  h.run('window.confirm = () => true'); h.node('account-import-json').value = '{secret-invalid';
+  await h.node('account-import').onclick(); assert.equal(h.requests.length, count); assert.doesNotMatch(h.node('account-import-hint').textContent, /secret-invalid/);
+  h.node('account-import-json').value = JSON.stringify(importCredential); h.run('accountImportCsrf = null');
+  await h.node('account-import').onclick(); assert.equal(h.requests.length, count);
+});
+test('uncertain import never retries and requires local list read before another explicit submit', async () => {
+  const h = await importBoot(); const work = h.node('account-import').onclick(); const request = h.pending('/api/accounts/import');
+  request.settled = true; request.reject(Error('synthetic-import-secret')); await work;
+  assert.match(h.node('account-import-hint').textContent, /未确认/); assert.doesNotMatch(h.node('account-import-hint').textContent, /synthetic-import-secret/);
+  assert.equal(h.node('account-import').disabled, true); await h.node('account-import').onclick();
+  assert.equal(h.requests.filter(r => r.url === '/api/accounts/import').length, 1);
+  const read = h.node('account-import-read').onclick(); h.respond('/api/accounts', 'A', { activeId: 'A', accounts: [{ id: 'A', title: 'A' }, { id: 'C', title: 'C' }], csrfToken: 'synthetic-csrf' }); await read;
+  assert.equal(h.node('account-import').disabled, false);
+});
+test('account switch clears import drafts and ignores late success without changing account', async () => {
+  const h = await importBoot(); const work = h.node('account-import').onclick();
+  h.node('account-import-json').value = 'synthetic-import-secret'; h.node('account-import-label').value = 'old';
+  h.run("selectAccount('B')"); assert.equal(h.node('account-import-json').value, ''); assert.equal(h.node('account-import-label').value, '');
+  h.respond('/api/accounts/import', undefined, { ok: true }); await work;
+  assert.equal(h.run('current'), 'B'); assert.equal(h.node('account-import-hint').textContent, '');
+  assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-import').disabled, true);
+});
+test('server import rejection cannot reflect credential text into the page', async () => {
+  const h = await importBoot(); const work = h.node('account-import').onclick();
+  const request = h.pending('/api/accounts/import'); request.settled = true;
+  request.resolve({ ok: false, status: 409, json: async () => ({ error: 'synthetic-import-secret' }) }); await work;
+  assert.match(h.node('account-import-hint').textContent, /已存在/); assert.doesNotMatch(h.node('account-import-hint').textContent, /synthetic-import-secret/);
+  assert.equal(h.node('account-import-json').value, '');
+});
+
+
+test('HTTP success alone does not confirm import when independent local list lacks the account', async () => {
+  const h = await importBoot(); const work = h.node('account-import').onclick();
+  h.respond('/api/accounts/import', undefined, { ok: true }); await tick();
+  h.respond('/api/accounts', 'A', { activeId: 'A', accounts: [{ id: 'A', title: 'A' }], csrfToken: 'synthetic-csrf' }); await work;
+  assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-import').disabled, true);
+  assert.equal(h.requests.filter(r => r.url === '/api/accounts/import').length, 1);
+});
+test('server error leaves import uncertain without reading or resubmitting automatically', async () => {
+  const h = await importBoot(); const work = h.node('account-import').onclick(); const request = h.pending('/api/accounts/import');
+  request.settled = true; request.resolve({ ok: false, status: 500 }); await work;
+  assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-import').disabled, true);
+  assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-import-json').value, '');
 });
