@@ -141,6 +141,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
     if(input.entry!=='loop'&&phase!==input.entry&&rows.length)invalid('入口与业务阶段不匹配');
     for(const [index,row] of rows.entries()){
       let module,parameters,selection={unique:true};
+      // A named wait is compiled into the existing WAIT node; its native contract is validated below.
+      if(row?.type==='WAIT'){
+        exact(row,['type','cooldown']);if(!Object.hasOwn(row,'cooldown'))invalid('统一等待须明确具名冷却来源及等待上限');
+        steps.push({type:'WAIT',phase,index,cooldown:structuredClone(row.cooldown)});continue;
+      }
       // Explicit observation reuses the native survey; no plan, selection or claim is generated.
       if(['tasks','dailies'].includes(phase)&&row?.action==='observe'){
         exact(row,phase==='tasks'?['kind','taskId','action']:['taskId','action']);
@@ -223,7 +228,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
   const add=node=>{edges.push({from:nodes.at(-1).id,to:node.id});nodes.push(node);};
   for(let round=1;round<=rounds;round++){
     if(round>1&&everyMs)add({id:'wait-'+round,type:'WAIT',durationMs:everyMs});
-    for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:step.type??'ACTION',label:step.phase+' '+round+' / '+(step.index+1),module:step.module,parameters:step.parameters,...(step.type==='SURVEY'?{}:{selection:step.selection})});
+    for(const step of steps)add({id:step.phase+'-'+step.index+'-'+round,type:step.type??'ACTION',label:step.phase+' '+round+' / '+(step.index+1),...(step.type==='WAIT'?{cooldown:structuredClone(step.cooldown)}:{module:step.module,parameters:step.parameters,...(step.type==='SURVEY'?{}:{selection:step.selection})})});
   }
   add({id:'stop',type:'STOP'});
   const graph={version:1,id:input.id??('unified-'+input.entry),name:input.name??('Unified '+input.entry),nodes,edges,budget:input.budget,...(Object.hasOwn(input,'runPolicy')?{runPolicy:input.runPolicy}:{}),preparation:{entry:input.entry,blocked:structuredClone(blocked)}};
