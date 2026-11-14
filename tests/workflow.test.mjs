@@ -1035,3 +1035,15 @@ test('Workflow provenance leaves missing and inherited start identity fields unk
  assert.deepEqual(result.executionContext,{accountId:f.session.id,playerId:null,worldId:null,generation:1,connectionId:null});
  const audit=projectWorkflowExecutionHistory(f.session.id,result,[]).reasonAudit;assert.equal(audit.executionContext.playerId,null);assert.equal(audit.executionContext.worldId,null);
 });
+
+
+for(const mode of ['confirmed','unconfirmed','unresolved','not-dispatched','wrong-side','wrong-win','wrong-plan','wrong-account','not-stage','no-stop-policy','running','inflight','uncertain','missing-history','wrong-history-stage','wrong-last-stage','request-unknown'])test('Workflow keeps confirmed Stage defeat stopped and distinguishes incomplete evidence '+mode,async()=>{
+ const f=fixture(),g=graph();f.plan.module='stage';f.plan.parameters={config:{stopOnDefeat:true}};for(const node of g.nodes)if(node.module==='fixture')node.module='stage';
+ if(mode==='not-stage'){f.plan.module='fixture';for(const node of g.nodes)if(node.module==='stage')node.module='fixture';}
+ if(mode==='no-stop-policy')delete f.plan.parameters.config.stopOnDefeat;
+ await f.runner.start(f.session.id,g);await f.runner.settle();
+ const row=f.success({finalStatus:'FAILED',actions:[{actionId:'operation-1',result:'FAILED',requestStatus:'FAILED',dispatched:true,unresolvedWrite:false,verification:{status:'CONFIRMED'},afterState:{stopKind:'DEFEAT_STOPPED',running:false,inFlight:false,uncertain:false,attempts:1,nextStage:41,history:[{outcome:'FAILED',stage:41}],lastResult:{outcome:'FAILED',stage:41,playerSide:'LEFT',isLeftWin:false}}}]});
+ const action=row.actions[0],status=action.afterState;
+ if(mode==='unconfirmed')action.verification.status='UNCONFIRMED';if(mode==='unresolved')action.unresolvedWrite=true;if(mode==='not-dispatched')action.dispatched=false;if(mode==='wrong-side')status.lastResult.playerSide='RIGHT';if(mode==='wrong-win')status.lastResult.isLeftWin=true;if(mode==='wrong-plan')row.planSummary.planHash='other';if(mode==='wrong-account')row.accountId='other';if(mode==='running')status.running=true;if(mode==='inflight')status.inFlight=true;if(mode==='uncertain')status.uncertain=true;if(mode==='missing-history')delete status.history;if(mode==='wrong-history-stage')status.history[0].stage=42;if(mode==='wrong-last-stage')status.lastResult.stage=42;if(mode==='request-unknown')action.requestStatus='UNKNOWN';
+ f.runs.push(row);const result=await f.runner.resume();assert.equal(result.status,mode==='confirmed'?'FAILED':mode==='wrong-account'?'AWAITING_AUTHORIZATION':'UNKNOWN');assert.ok(!result.trace.some(row=>row.nodeId==='v'));assert.equal(f.calls.filter(row=>row[0]==='plan').length,1);if(mode==='wrong-account'){assert.equal(f.released(),0);assert.equal(result.running,true);f.runner.stop();await f.runner.settle();assert.equal(f.runner.getStatus().status,'CANCELLED');}else assert.equal(result.running,false);assert.equal(f.released(),1);await assert.rejects(f.runner.resume(),{code:'WORKFLOW_INVALID'});
+});

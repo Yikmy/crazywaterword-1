@@ -277,13 +277,25 @@ export function simulateWorkflow(graph, options = {}) {
   return { status: 'SIMULATED', workflowId: graph.id, runtimeCreated: false, requestsSent: 0,...(validated.workflow.runPolicy?{runPolicy:copy(validated.workflow.runPolicy)}:{}),...(validated.workflow.runPolicy?.maxRounds!==undefined?{traceCoverage:'ONE_STATIC_DAG_PASS'}:{}),
     trace: validated.order.map(id => { const node = byId.get(id); return { nodeId: id, type: node.type, module: node.module ?? null, requiresAuthorization: node.type === 'ACTION', result: node.condition ? evaluateWorkflowCondition(node.condition, options.facts ?? {}).status : node.type === 'ACTION' ? 'AWAITING_AUTHORIZATION' : 'STATIC', durationMs: node.cooldown?null:node.durationMs??0,...(node.cooldown?{cooldown:copy(node.cooldown)}:{}) }; }) };
 }
-function confirmedRun(run, plan, accountId) {
-  if (!run || run.accountId !== accountId || run.finalStatus !== 'SUCCESS' || !text(run.finishedAt) || !Array.isArray(run.actions) || !Array.isArray(plan.actions) || !run.actions.length || run.actions.length !== plan.actions.length) return false;
+function confirmedRun(run, plan, accountId, outcome = 'SUCCESS') {
+  if (!run || run.accountId !== accountId || run.finalStatus !== outcome || !text(run.finishedAt) || !Array.isArray(run.actions) || !Array.isArray(plan.actions) || !run.actions.length || run.actions.length !== plan.actions.length) return false;
   const ids = plan.actions.map(action => action.actionId);
   if (new Set(ids).size !== ids.length || new Set(run.actions.map(action => action.actionId)).size !== run.actions.length) return false;
   if (run.planSummary?.batchId !== plan.batchId && run.authorizationSummary?.batchId !== plan.batchId) return false;
   if (run.planSummary?.batchId && run.planSummary.batchId !== plan.batchId || run.authorizationSummary?.batchId && run.authorizationSummary.batchId !== plan.batchId || run.planSummary?.planHash && run.planSummary.planHash !== plan.planHash) return false;
-  return run.actions.every(action => ids.includes(action.actionId) && action.result === 'SUCCESS' && (action.verification === 'CONFIRMED' || action.verification?.confirmed === true || action.verification?.status === 'CONFIRMED'));
+  return run.actions.every(action => ids.includes(action.actionId) && action.result === outcome && (action.verification === 'CONFIRMED' || action.verification?.confirmed === true || action.verification?.status === 'CONFIRMED'));
+}
+// A confirmed mainline defeat is a known failed action, never a success or a
+// permission to advance. All other failed/unconfirmed batches retain UNKNOWN.
+function confirmedStageDefeat(run,plan,accountId){
+ if(plan.module!=='stage'||plan.parameters?.config?.stopOnDefeat!==true||plan.actions?.length!==1||!text(plan.planHash)||
+   run?.planSummary?.planHash!==plan.planHash||!confirmedRun(run,plan,accountId,'FAILED'))return false;
+ const action=run.actions[0],status=action.afterState,last=status?.lastResult;
+ return action.verification?.status==='CONFIRMED'&&action.requestStatus==='FAILED'&&action.dispatched===true&&action.unresolvedWrite===false&&
+   status?.stopKind==='DEFEAT_STOPPED'&&status.running===false&&status.inFlight===false&&status.uncertain===false&&
+   Number.isSafeInteger(status.attempts)&&status.attempts>0&&Array.isArray(status.history)&&status.history.length===status.attempts&&
+   status.history.at(-1)?.outcome==='FAILED'&&status.history.at(-1).stage===status.nextStage&&
+   last?.outcome==='FAILED'&&last.stage===status.nextStage&&last.playerSide==='LEFT'&&last.isLeftWin===false;
 }
 export function createWorkflowRunner({ operations, getSession, modules, isCurrent, signal, clock = Date.now, claim = () => true, release = () => {}, onUpdate = () => {} } = {}) {
   if (!operations || typeof operations.surveyModule !== 'function' || typeof operations.plan !== 'function' || typeof operations.history !== 'function' || typeof getSession !== 'function') throw fail('工作流缺少已注册的操作服务');
@@ -466,6 +478,11 @@ function repeatAfterStop(ctx,node){
           refused.actions[0].requestStatus === 'REJECTED' && refused.actions[0].unresolvedWrite === false) {
         ctx.lastRun = copy(refused);
         await finish(ctx, 'FAILED', '当前批次确定拒绝；共享拒绝记忆保留，停止后续执行');
+        return false;
+      }
+      if(matches.length===1&&confirmedStageDefeat(matches[0],ctx.waitingPlan,ctx.accountId)){
+        ctx.lastRun=copy(matches[0]);
+        await finish(ctx,'FAILED','主线逐场证据已确认战败；按首次战败配置停止，不续跑或重放');
         return false;
       }
       if (matches.length !== 1 || !confirmedRun(matches[0], ctx.waitingPlan, ctx.accountId)) {

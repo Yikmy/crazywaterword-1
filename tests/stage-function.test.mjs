@@ -37,3 +37,36 @@ test('bounded Stage binds optional exact expectedStage and refuses to move the r
 for(const expectedStage of [null,0,-1,'41',1.5,2147483648])test('bounded Stage rejects malformed expectedStage '+expectedStage,async()=>{
  const h=harness();await assert.rejects(h.operation({...parameters(),expectedStage}),{code:'INVALID_PARAMETERS'});assert.equal(h.client.calls.length,0);
 });
+
+
+test('confirmed first defeat retains FAILED with exact original Runner evidence and no second battle',async()=>{
+ const h=harness({handler:stage=>response(stage,false)}),p=parameters({stopOnDefeat:true}),{facts,operation}=await h.operation(p);
+ const result=await h.module.execute(h.client,protocol,operation,h.options);
+ assert.equal(result.status,'FAILED');assert.equal(result.ok,false);assert.equal(result.verification.status,'CONFIRMED');assert.equal(result.dispatched,true);assert.equal(result.unresolvedWrite,false);
+ assert.equal(result.afterState.lastResult.playerSide,'LEFT');assert.equal(result.afterState.lastResult.isLeftWin,false);assert.equal(result.afterState.nextStage,41);assert.deepEqual(h.client.calls.map(row=>row.body.stage),[41]);
+ const after=await h.module.survey(h.client,protocol,{...h.options,parameters:p});assert.equal(h.module.verify(operation,facts,after,{runnerStatus:result.afterState}).outcome,'FAILED');
+});
+test('victory then first defeat confirms each preceding stage and retains the failed stage',async()=>{
+ const h=harness({handler:stage=>response(stage,stage===41)}),{operation}=await h.operation(parameters({stopOnDefeat:true,maxAttempts:3}));
+ const result=await h.module.execute(h.client,protocol,operation,h.options);assert.equal(result.status,'FAILED');assert.equal(result.verification.status,'CONFIRMED');assert.equal(result.afterState.nextStage,42);assert.equal(result.unresolvedWrite,false);assert.deepEqual(h.client.calls.map(row=>row.body.stage),[41,42]);
+});
+for(const mode of ['missing-last','wrong-last-stage','wrong-side','missing-win','wrong-win','wrong-outcome','missing-row','wrong-row-stage','wrong-row-run','old-run','response-run','running','inflight','uncertain','wrong-next','wrong-progress','wrong-generation','wrong-role','wrong-world','no-stop-policy','over-attempts','victory-tail','earlier-defeat'])test('defeat verification rejects incomplete or conflicting '+mode,async()=>{
+ const h=harness({handler:stage=>response(stage,false)}),p=parameters({stopOnDefeat:true}),{facts,operation}=await h.operation(p),result=await h.module.execute(h.client,protocol,operation,h.options),after=await h.module.survey(h.client,protocol,{...h.options,parameters:p});
+ const status=structuredClone(result.afterState),op=structuredClone(operation),before=structuredClone(facts);let responseRun=status.runId;
+ if(mode==='missing-last')delete status.lastResult;if(mode==='wrong-last-stage')status.lastResult.stage++;if(mode==='wrong-side')status.lastResult.playerSide='RIGHT';if(mode==='missing-win')delete status.lastResult.isLeftWin;if(mode==='wrong-win')status.lastResult.isLeftWin=true;if(mode==='wrong-outcome')status.lastResult.outcome='SUCCESS';
+ if(mode==='missing-row')status.history=[];if(mode==='wrong-row-stage')status.history[0].stage++;if(mode==='wrong-row-run')status.history[0].runId='other';if(mode==='old-run')before.state.previousRunId=status.runId;if(mode==='response-run')responseRun='other';if(mode==='running')status.running=true;if(mode==='inflight')status.inFlight=true;if(mode==='uncertain')status.uncertain=true;if(mode==='wrong-next')status.nextStage++;if(mode==='wrong-progress')after.state.currentProgress++;
+ if(mode==='wrong-generation')after.state.generation++;if(mode==='wrong-role')after.state.playerId='other';if(mode==='wrong-world')after.state.worldId='other';if(mode==='no-stop-policy')delete op.parameters.config.stopOnDefeat;if(mode==='over-attempts')op.parameters.config.maxAttempts=0;if(mode==='victory-tail')status.history[0].outcome='SUCCESS';if(mode==='earlier-defeat'){status.history.push({...status.history[0]});status.attempts++;}
+ const checked=h.module.verify(op,before,after,{runId:responseRun,runnerStatus:status});assert.equal(checked.confirmed,false);assert.equal(h.client.calls.length,1);
+});
+
+
+test('completed label and attempt limit cannot turn a first-defeat stop into successful completion',async()=>{
+ const h=harness({handler:stage=>response(stage,false)}),p=parameters({stopOnDefeat:true,maxAttempts:1}),{facts,operation}=await h.operation(p),result=await h.module.execute(h.client,protocol,operation,h.options),after=await h.module.survey(h.client,protocol,{...h.options,parameters:p});
+ assert.equal(result.verification.status,'CONFIRMED');const status=structuredClone(result.afterState);status.stopKind='COMPLETED';assert.equal(h.module.verify(operation,facts,after,{runnerStatus:status}).confirmed,false);
+});
+for(const mode of ['generation','role','world','account','client','connection','cancel'])test('late parsed defeat cannot confirm after execution context changes '+mode,async()=>{
+ let resolve;const h=harness({handler:()=>new Promise(r=>resolve=r)}),{operation}=await h.operation(parameters({stopOnDefeat:true}));
+ const work=h.module.execute(h.client,protocol,operation,h.options);await new Promise(r=>setImmediate(r));assert.equal(h.client.calls.length,1);
+ if(mode==='generation')h.session.generation++;if(mode==='role')h.player.playerId='other';if(mode==='world')h.player.worldId='other';if(mode==='account')h.session.id='B';if(mode==='client')h.session.client={connected:true};if(mode==='connection')h.session.connectionId='new-connection';if(mode==='cancel')h.session.abort.abort();
+ resolve(response(41,false));const result=await work;assert.equal(result.status,'UNKNOWN');assert.equal(result.verification.status,'UNCONFIRMED');assert.equal(result.unresolvedWrite,true);await new Promise(r=>setImmediate(r));assert.equal(h.client.calls.length,1);
+});
