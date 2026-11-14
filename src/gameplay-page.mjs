@@ -192,7 +192,11 @@ function gpRenderDomain(id,view){
   table('当前港口行情',['货物 ID','名称','价格','stock 原值'],(view?.prices||[]).map(row=>[row.goodsId,row.name,row.price,row.stock]));
   table('持有货物',['批次 PID','货物','数量','买入单价','来源港口'],(view?.holdings||[]).map(row=>[row.pid,row.name||row.goodsId,row.num,row.buyPrice,row.cityId]));
   table('全批非亏损卖价预览',['批次 PID','当前单价','预计利润','预计总价','预览状态'],(view?.quotes||[]).map(row=>[row.pid,row.price,row.profit,row.total,row.reason||row.status]));
-  box.appendChild(gpEl('p','前后货舱相同不证明原子快照；stock 不解释为可买数量。预期售得不加入预算。买卖、航行、加速和领奖仍需独立合同。'));
+  box.appendChild(gpEl('p','前后货舱相同不证明原子快照；stock 不解释为可买数量。预期售得不加入预算。单次非亏损卖出须重新探测、预览并单独授权；买入、航行、加速和领奖保持独立。'));
+  const scope=viewGuard.capture(),revision=gpRevision,inputs={};
+  for(const [key,label]of [['cityId','卖出港口 ID'],['pid','持货批次 PID'],['num','本次数量']]){const field=gpEl('label',label),input=gpEl('input');input.type='text';input.inputMode='numeric';input.value='';input.dataset.tradeSellField=key;input.disabled=!gpDomainSelectable(id);inputs[key]=input;field.appendChild(input);box.appendChild(field);s.actionControls.push(input);}
+  for(const row of view?.holdings||[]){const select=gpEl('button','选择批次 '+row.pid);select.dataset.tradeHolding=String(row.pid);select.disabled=!gpDomainSelectable(id);select.onclick=()=>{if(select.disabled||!gpSafe(scope,revision)||!gpDomainSelectable(id)||gpGet(id).data?.view!==view)return;inputs.cityId.value=String(view?.cargo?.cityId??'');inputs.pid.value=String(row.pid);inputs.num.value='';};box.appendChild(select);s.actionControls.push(select);}
+  const prepare=gpEl('button','准备单次非亏损卖出');prepare.dataset.tradeSellPrepare='true';prepare.disabled=!gpDomainSelectable(id);prepare.onclick=()=>{if(prepare.disabled||!gpSafe(scope,revision)||!gpDomainSelectable(id)||gpGet(id).data?.view!==view)return;const parameters={action:'sell'};for(const key of ['cityId','pid','num']){const raw=inputs[key].value;if(!/^[1-9][0-9]*$/.test(raw)||!Number.isInteger(Number(raw))||Number(raw)>2147483647){$('gp-'+id+'-hint').textContent='港口、批次和本次数量须为明确正int32整数';return;}parameters[key]=Number(raw);}$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备指定批次与数量；重新探测贸易窗口、行情和库存，再预览并单独授权。';};box.appendChild(prepare);s.actionControls.push(prepare);
  }else if(id==='material-packs'){
   table('自有材料包',['包','持有'],(view?.packs||[]).map(pack=>[pack.packId,pack.have]));
   box.appendChild(gpEl('p','当前世界赛季：'+show(view?.season)+'。选择目标与包数后重新探测，再预览并单独授权。预计得料不作为库存，不自动排产或补购。'));

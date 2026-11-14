@@ -1,3 +1,14 @@
+import { createWorkflowRunner, validateWorkflow } from '../src/workflow.mjs';
+import { createRunBudgetContext } from '../src/resource-ledger.mjs';
+import os from 'node:os';
+import path from 'node:path';
+import { GameClient } from '../src/client.mjs';
+import { createCodec } from '../src/codec.mjs';
+import { trustedGameClock } from '../src/state-facts.mjs';
+import { assertPaymentAllowed } from '../src/actions.mjs';
+import { executeBusinessOperation } from '../src/business-functions.mjs';
+import { createOperationService } from '../src/operation-service.mjs';
+import { createExecutionHistory } from '../src/execution-history.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,8 +35,8 @@ test('fixed v76 Codec/current port Info-City-Info retains zero stock and compute
  assert.deepEqual(view.balances,{coins:100,maxCoins:100,profit:0,buySpeedTimes:0});assert.deepEqual(view.capacity,{used:3,total:1000,remaining:997});
  assert.deepEqual(view.prices,[{goodsId:1001,stock:0,price:51,name:'生鱼片'}]);
  assert.deepEqual(view.quotes,[{pid:1,goodsId:1001,num:3,buyPrice:50,originCityId:2,price:51,profit:4,total:154,status:'PREVIEW',reason:null}]);
- assert.deepEqual(planTrade(facts,{parameters:{},selections:['pretend-sale']}),{module:'trade',actions:[],notes:['海商王当前只读；行情和利润预览不产生执行动作。']});assert.equal(tradeModule.verify().confirmed,false);
- assert.deepEqual(view.candidates,[]);assert.ok(view.blocked.every(row=>row.code==='NOT_IMPLEMENTED'));
+ assert.deepEqual(planTrade(facts,{parameters:{},selections:['pretend-sale']}),{module:'trade',actions:[],notes:['行情预览不是到账；仅明确单次卖出可生成候选，其他交易分支保持独立。']});assert.equal(tradeModule.verify().confirmed,false);
+ assert.deepEqual(view.candidates,[]);assert.deepEqual(view.blocked.map(row=>[row.actionType,row.code]),[['BUY','NOT_IMPLEMENTED'],['SELL','EXPLICIT_TARGET_REQUIRED'],['MOVE','NOT_IMPLEMENTED']]);
 });
 test('explicit empty holding and price lists are known empty, without defaulting omitted scalar balances or cargo',async()=>{
  const f=fixture();f.state.info.player.goods=[];f.state.city.goods=[];let view=viewTrade(await f.survey());assert.equal(view.status,'OBSERVED');assert.deepEqual(view.holdings,[]);assert.deepEqual(view.quotes,[]);assert.equal(view.capacity.used,0);
@@ -69,8 +80,8 @@ test('config omissions, mutations, duplicate ship rows, unknown goods and intege
  for(const mode of ['missing','changed','duplicate','overflow']){const f=fixture(),cfg=copy(config);if(mode==='missing')delete cfg.tables.TradeShipCfg;if(mode==='duplicate')cfg.tables.TradeShipCfg.data.push(copy(cfg.tables.TradeShipCfg.data[0]));if(mode==='overflow'){f.state.info.player.goods[0].num=2147483647;f.state.city.goods[0].price=2147483647;}const options={...f.options,config:cfg};const facts=await surveyTrade(f.client,protocol,options);if(mode==='changed')cfg.tables.TradeShipCfg.data[0].profitMargin++;const view=viewTrade(facts,{config:cfg});assert.equal(view.quotes[0].total,null);if(mode==='overflow')assert.equal(view.quotes[0].reason,'TRADE_PREVIEW_OVERFLOW');}
  const f=fixture();f.state.info.player.goods[0].goodsId=999999;const view=viewTrade(await f.survey());assert.equal(view.capacity.used,null);assert.equal(view.holdings[0].name,null);assert.equal(view.quotes[0].total,null);
 });
-test('static Registry rejects forged write controls and confirms observation-only metadata',()=>{
- const m=GAMEPLAY_MODULES.trade;assert.equal(m.survey,surveyTrade);assert.equal(m.defaultConfig.enabled,false);assert.equal(validateFunctionContract('trade',m).permissions.write,'FORBIDDEN_OBSERVATION_ONLY');assert.throws(()=>validateFunctionContract('trade',m,{requireExecutable:true}),{code:'INVALID_FUNCTION_CONTRACT'});
+test('static Registry rejects forged controls and requires explicit trade batch authorization',()=>{
+ const m=GAMEPLAY_MODULES.trade;assert.equal(m.survey,surveyTrade);assert.equal(m.defaultConfig.enabled,false);assert.equal(validateFunctionContract('trade',m).permissions.write,'ACCOUNT_MODULE_ENABLED_AND_EXACT_BATCH_PERMIT');assert.equal(validateFunctionContract('trade',m,{requireExecutable:true}).implementation.mode,'CONTROLLED_WRITE');
  for(const p of [{cityId:1},{pid:1},{request:'TradeSellRequest'},[],null,{get cityId(){throw Error('getter ran');}}])assert.throws(()=>validateTradeParameters(p),{code:'INVALID_PARAMETERS'});
  for(const c of [{enabled:'true'},{buy:true},[],null])assert.throws(()=>validateTradeConfig(c),{code:'INVALID_PARAMETERS'});
  assert.deepEqual(validateTradeParameters(),{});assert.deepEqual(validateTradeConfig(),{enabled:false});
@@ -92,4 +103,110 @@ test('bounded trade observation summary validates source, explicit zero counts a
  for(const patch of [{scope:'GLOBAL'},{source:'invented'},{status:'SUCCESS'},{period:0},{holdingCount:2},{priceCount:-1},{priceCount:10001},{unknownQuoteCount:null},{extra:'raw price payload'},{status:'UNKNOWN'}])assert.throws(()=>validateTradeObservationSummary({...summary,...patch}));
  const malformed=copy(view);malformed.quotes[0].total=null;assert.equal(summarizeTradeObservation(malformed).status,'UNKNOWN');
  const unknown=summarizeTradeObservation(null);assert.deepEqual(validateTradeObservationSummary(unknown),unknown);assert.throws(()=>validateTradeObservationSummary({...unknown,period:1}));
+});
+
+
+async function saleFixture(t,{apply=true,file=null,connectionId='trade-connection'}={}){
+ const codec=createCodec(protocol),state={wall:1000000,mono:100,seq:1,reads:[],writes:[],sourceReads:[],overrides:{},onRead:null,onWrite:null,onDispatch:null,receiptOverride:null,apply,
+  info:{period:7,player:{coins:100,maxCoins:100,profit:0,buySpeedTimes:0,goods:[{pid:1,goodsId:1001,num:3,buyPrice:50,cityId:2}]},cargo:{cargoLv:1,cityId:1,moveStartTime:0,moveEndTime:0,moveToCityId:0},gotAchieveRwdId:0,gotReportRwdId:0,guildReportNum:0},
+  city:{goods:[{goodsId:1001,stock:0,price:51}]},stock:[{itemId:'无关',num:9}],resources:[{res:3,amount:100},{res:4,amount:50}]};
+ const clock=trustedGameClock({accountId:'trade-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
+ let socket;class Socket{constructor(){this.readyState=0;socket=this;}send(bytes){const frame=codec.decode(bytes);if(frame.name==='PingRequest')queueMicrotask(()=>this.receive('PingResponse',{clientTimestamp:frame.body.clientTimestamp,serverTimestamp:state.wall}));}close(){this.readyState=3;}receive(name,body,seq=0){this.onmessage?.({data:codec.encode(name,seq,body)});}}
+ const client=new GameClient({protocol,accountId:'trade-A',generation:3,WebSocketImpl:Socket,gameClock:clock});client.factContext={accountId:'trade-A',generation:3,connectionId};client.on('error',()=>{});
+ const player={playerId:'9007199254740993',worldId:'1000001',level:30};const pending=client.connect({});socket.readyState=1;socket.onopen();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:player});await pending;
+ const push=(name,body)=>socket.receive(name,body,state.seq++);push('SCAllActivity',{trade:{period:7,startTime:100,endTime:2000}});
+ clock.markPing(state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:state.wall,serverTimestamp:state.wall}));
+ const cfg=copy(config),options={config:cfg,player,moduleConfig:{enabled:true},parameters:{action:'sell',cityId:1,pid:1,num:2}};
+ client.request=async(name,body,response,_timeout,opts={})=>{
+  wire(name,body);
+  if(opts.mutate){await state.onDispatch?.(name,body);opts.beforeDispatch?.();assert.equal(name,'TradeSellRequest');state.writes.push({name,body:copy(body)});if(state.apply){const row=state.info.player.goods.find(r=>r.pid===body.pid),price=state.city.goods.find(r=>r.goodsId===row.goodsId).price,profit=Math.ceil((price-row.buyPrice)*body.sellNum*1.03);state.info.player.coins+=row.buyPrice*body.sellNum+profit;state.info.player.profit+=profit;state.info.player.maxCoins=Math.max(state.info.player.maxCoins,state.info.player.coins);row.num-=body.sellNum;if(row.num===0)state.info.player.goods=state.info.player.goods.filter(r=>r!==row);}await state.onWrite?.(name,body);return wire(response,state.receiptOverride??{player:state.info.player});}
+  state.reads.push(name);await state.onRead?.(name);let value=name==='TradeInfoRequest'?state.info:name==='TradeCityRequest'?state.city:name==='AllItemRequest'?{items:state.stock}:name==='AllResourceRequest'?{list:state.resources}:null;
+  if(Object.hasOwn(state.overrides,name))value=state.overrides[name];if(value instanceof Error)throw value;assert.ok(value,'unexpected read '+name);return wire(response,value);
+ };
+ t.after(()=>client.stop());
+ const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-trade-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(copy(row));return durable.put(row);}};
+ const session={id:'trade-A',client,player,generation:3,connectionId,state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
+ const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:options.moduleConfig})},getConfig:()=>cfg,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
+ const send=client.request;client.request=async(...args)=>{if(args[4]?.mutate)state.saved=copy(journal.at(-1));return send(...args);};
+ t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
+ const survey=()=>surveyTrade(client,protocol,options);
+ const plan=async()=>{const read=await service.surveyModule(session,'trade',options.parameters),row=read.view.candidates[0];assert.ok(row.executable,JSON.stringify(row));return service.plan(session,{module:'trade',mode:'Manual',parameters:options.parameters,selections:[row.actionId]});};
+ const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true});
+ const run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
+ return {state,client,player,options,push,clock,survey,service,session,history,durable,journal,file,plan,authorize,run};
+}
+test('single non-loss sale uses exact batch, known window, quota and inventory, with typed and independent Info verification',async t=>{
+ const f=await saleFixture(t),facts=await f.survey(),view=viewTrade(facts,f.options),row=view.candidates[0];assert.ok(row.executable,JSON.stringify(row));
+ assert.deepEqual(row.action,{request:'TradeSellRequest',response:'TradeSellResponse',body:{cityId:1,pid:1,sellNum:2}});assert.deepEqual(row.costs,[]);assert.equal(row.quote.total,103);assert.equal(row.quote.profit,3);assert.equal(row.expectedState.player.coins,203);assert.equal(row.expectedState.receiptRule.predicted,false);
+ assert.deepEqual(row.budgetClaims,{resources:[],quotas:[{id:'trade:7:holding:1',num:2}],uids:[{type:'trade-holding',id:'7:1'}]});
+ assert.equal(planTrade(facts,{...f.options,selections:[row.actionId]}).actions.length,1);assert.equal(f.state.writes.length,0);
+ const result=await executeBusinessOperation(f.client,protocol,row,{...f.options,adapter:GAMEPLAY_MODULES.trade,allowMutate:true,budget:saleBudget(f,row)});assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(f.state.writes.length,1);assert.equal(f.state.info.player.coins,203);assert.equal(f.state.info.player.goods[0].num,1);assert.deepEqual(f.state.resources,[{res:3,amount:100},{res:4,amount:50}]);
+});
+
+function saleBudget(f,row){const scope={accountId:f.session.id,generation:f.session.generation,connectionId:f.session.connectionId,runId:'trade-run'},limits=row.budgetClaims;return {ledger:null,runBudget:createRunBudgetContext({scope,limits}),scope,limits,batchId:'trade-batch'};}
+
+
+test('trade parameters and D6 accept only explicit one-batch sell, never inferred quantity, raw transport, premiums or other trade requests',()=>{
+ const good={request:'TradeSellRequest',body:{cityId:1,pid:2,sellNum:3},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(good));
+ assert.deepEqual(validateTradeParameters({action:'sell',cityId:1,pid:2,num:3}),{action:'sell',pid:2,cityId:1,num:3});
+ for(const value of [{action:'sell'},{action:'sell',cityId:1,pid:2,num:0},{action:'sell',cityId:1,pid:'2',num:3},{action:'sell',cityId:1,pid:2,num:2147483648},{action:'buy',cityId:1,pid:2,num:3},{action:'sell',cityId:1,pid:2,num:3,price:51}])assert.throws(()=>validateTradeParameters(value));
+ for(const body of [{cityId:1,pid:2},{cityId:1,pid:2,sellNum:0},{cityId:1,pid:2,sellNum:3,buy:false},{cityId:1,pid:2,sellNum:'3'},{cityId:2147483648,pid:2,sellNum:3}])assert.throws(()=>assertPaymentAllowed({...good,body}));
+ assert.throws(()=>assertPaymentAllowed({request:good.request,body:good.body}));for(const costs of [[{id:'RUBY',num:1}],[{id:'GOLD',num:1}]])assert.throws(()=>assertPaymentAllowed({...good,costs}));
+ for(const request of ['TradeBuyRequest','TradeSpeedRequest','TradeMoveRequest','TradeUpgradeCargoRequest'])assert.throws(()=>assertPaymentAllowed({...good,request}));
+});
+const saleBlockers=[
+ ['disabled',f=>f.options.moduleConfig.enabled=false],['module level',f=>f.options.player.level=16],['level missing',f=>delete f.options.player.level],['module config missing',f=>delete f.options.config.tables.ModuleOpenCfg],
+ ['period source missing',f=>f.push('SCAllActivity',{})],['period closed',f=>f.push('SCAllActivity',{trade:{period:0,startTime:0,endTime:0}})],['period mismatch',f=>f.state.info.period=8],['expired',f=>f.push('SCAllActivity',{trade:{period:7,startTime:100,endTime:999}})],['future start',f=>f.push('SCAllActivity',{trade:{period:7,startTime:1001,endTime:2000}})],
+ ['travelling',f=>f.state.info.cargo.moveEndTime=1001],['wrong port',f=>f.options.parameters.cityId=2],['wrong holding',f=>f.options.parameters.pid=2],['excess num',f=>f.options.parameters.num=4],['loss',f=>f.state.city.goods[0].price=49],['origin city',f=>f.state.info.player.goods[0].cityId=1],['coin overflow',f=>f.state.info.player.coins=2147483647],
+ ['missing claims',f=>delete f.state.info.gotReportRwdId],['missing inventory',f=>f.state.overrides.AllItemRequest=new Error('unknown')],['missing resources',f=>f.state.overrides.AllResourceRequest=new Error('unknown')],['duplicate holding',f=>f.state.info.player.goods.push(copy(f.state.info.player.goods[0]))]
+];
+for(const [label,mutate]of saleBlockers)test('single sale blocks '+label+' without any dispatch',async t=>{
+ const f=await saleFixture(t);mutate(f);const facts=await f.survey(),row=viewTrade(facts,f.options).candidates[0];assert.equal(row.executable,false,label);assert.equal(planTrade(facts,{...f.options,selections:[row.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);
+});
+test('sale fact cannot be renewed by tampering, a public price event, an accepted revision or a late source mutation',async t=>{
+ const f=await saleFixture(t),facts=await f.survey(),row=viewTrade(facts,f.options).candidates[0];
+ f.client.emit('message',{name:'SCTradeCityGoods',seq:2,body:{cityId:1,goods:[]}});assert.equal(planTrade(facts,{...f.options,selections:[row.actionId]}).actions.length,1);
+ f.push('SCTradeCityGoods',{cityId:1,goods:[]});assert.equal(planTrade(facts,{...f.options,selections:[row.actionId]}).actions.length,0);
+ for(const mode of ['detached','stock','state','price','configuration','level']){const g=await saleFixture(t);let fact=await g.survey();const op=viewTrade(fact,g.options).candidates[0];if(mode==='detached')fact=copy(fact);if(mode==='stock')fact.stock.set('RUBY',51);if(mode==='state')fact.state.player.coins++;if(mode==='price')fact.city.goods[0].price++;if(mode==='configuration')g.options.config.tables.TradeShipCfg.data[0].profitMargin++;if(mode==='level')g.options.player.level++;assert.equal(planTrade(fact,{...g.options,selections:[op.actionId]}).actions.length,0,mode);}
+ const race=await saleFixture(t);race.state.onRead=name=>{if(name==='AllItemRequest')race.push('SCTradeCityGoods',{cityId:1,goods:[]});};const changed=await race.survey();assert.equal(viewTrade(changed,race.options).candidates[0].executable,false);
+});
+for(const key of ['accountId','connectionId','generation','playerId','worldId'])test('sale five-dimensional isolation invalidates '+key+' before dispatch',async t=>{
+ const f=await saleFixture(t),facts=await f.survey(),row=viewTrade(facts,f.options).candidates[0];if(['playerId','worldId'].includes(key))f.player[key]='12';else f.client.factContext[key]=key==='generation'?4:'different';assert.equal(planTrade(facts,{...f.options,selections:[row.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);
+});
+for(const mode of ['revision','window','clock','budget'])test('final dispatch fence blocks '+mode+' after planning/persistence',async t=>{
+ const f=await saleFixture(t),facts=await f.survey(),row=viewTrade(facts,f.options).candidates[0],budget=saleBudget(f,row);
+ if(mode==='budget')budget.limits.quotas[0].num=1;
+ const onStage=stage=>{if(stage!=='DISPATCH_INTENT')return;if(mode==='revision')f.push('SCTradeCityGoods',{cityId:1,goods:[]});if(mode==='window')f.push('SCAllActivity',{trade:{period:8,startTime:100,endTime:2000}});if(mode==='clock'){f.state.wall=2000000;f.state.mono+=1000000;}};
+ const result=await executeBusinessOperation(f.client,protocol,row,{...f.options,adapter:GAMEPLAY_MODULES.trade,allowMutate:true,budget,onStage});assert.equal(result.dispatched,false,JSON.stringify(result));assert.equal(f.state.writes.length,0);
+});
+const settlementFailures=[
+ ['no server mutation',f=>{f.state.apply=false;}],['missing typed player',f=>f.state.receiptOverride={}],['typed receipt only',f=>{f.state.apply=false;f.state.receiptOverride={player:{...copy(f.state.info.player),coins:203,maxCoins:203,profit:3,goods:[{...copy(f.state.info.player.goods[0]),num:1}]}};}],
+ ['wrong coin income',f=>f.state.onWrite=()=>f.state.info.player.coins++],['wrong remaining goods',f=>f.state.onWrite=()=>f.state.info.player.goods[0].num++],['other holding',f=>f.state.onWrite=()=>f.state.info.player.goods.push({pid:2,goodsId:1001,num:1,buyPrice:50,cityId:2})],
+ ['paid speed count',f=>f.state.onWrite=()=>f.state.info.player.buySpeedTimes++],['new period',f=>f.state.onWrite=()=>f.state.info.period++],['port change',f=>f.state.onWrite=()=>f.state.info.cargo.cityId=2],['claim changes',f=>f.state.onWrite=()=>f.state.info.gotAchieveRwdId++],
+ ['normal inventory',f=>f.state.onWrite=()=>f.state.stock[0].num++],['ruby debit',f=>f.state.onWrite=()=>f.state.resources[1].amount--],['reread failure',f=>f.state.onWrite=()=>f.state.overrides.TradeInfoRequest=new Error('timeout')],['activity source lost',f=>f.state.onWrite=()=>f.push('SCAllActivity',{})]
+];
+for(const [label,mutate]of settlementFailures)test('single sale keeps UNKNOWN for '+label+' and never resends',async t=>{
+ const f=await saleFixture(t);mutate(f);const facts=await f.survey(),row=viewTrade(facts,f.options).candidates[0];assert.equal(row.executable,true);const result=await executeBusinessOperation(f.client,protocol,row,{...f.options,adapter:GAMEPLAY_MODULES.trade,allowMutate:true,budget:saleBudget(f,row)});assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(result.unresolvedWrite,true);assert.equal(f.state.writes.length,1);assert.ok(f.client.uncertainWrites.size>0);
+});
+test('full-batch removal and reported non-predicted ancillary fields require exact independent receipt equality',async t=>{
+ const f=await saleFixture(t);f.options.parameters.num=3;f.state.onWrite=()=>{f.state.info.player.maxCoins=999;f.state.info.player.profit=123;f.push('SCTradeCityGoods',{cityId:1,goods:[]});};const result=await f.run(await f.plan());assert.equal(result.record.finalStatus,'SUCCESS');assert.deepEqual(f.state.info.player.goods,[]);assert.equal(f.state.info.player.coins,254);assert.equal(f.state.writes.length,1);
+ const g=await saleFixture(t);g.state.onWrite=()=>g.state.receiptOverride={player:{...copy(g.state.info.player),maxCoins:999}};const record=(await g.run(await g.plan())).record;assert.equal(record.finalStatus,'UNKNOWN');
+});
+for(const apply of [true,false])test('original Service preserves dispatch intent, quota/UID, durable result and restart '+apply,async t=>{
+ const f=await saleFixture(t,{apply}),{permit,record}=await f.run(await f.plan());assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.saved.runBudget.reserved.quotas,[{id:'trade:7:holding:1',num:2}]);assert.deepEqual(f.state.saved.runBudget.reserved.uids,[{type:'trade-holding',id:'7:1'}]);assert.throws(()=>f.service.execute(f.session,permit));
+ const restart=await saleFixture(t,{file:f.file,connectionId:'trade-new'});assert.equal(restart.durable.list('trade-A')[0].finalStatus,apply?'SUCCESS':'UNKNOWN');if(!apply){await assert.rejects(restart.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restart.state.writes.length,0);}
+});
+test('persistence failure, foreign authorization, cancellation and config changes prevent sends',async t=>{
+ for(const mode of ['disk','account','cancel','config']){const f=await saleFixture(t),p=await f.plan();if(mode==='account'){f.session.id='B';assert.throws(()=>f.authorize(p));continue;}if(mode==='config'){f.options.config.tables.TradeShipCfg.revision=2;assert.throws(()=>f.authorize(p));continue;}const permit=f.authorize(p);if(mode==='cancel')f.session.abort.abort();else{const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('disk');return put(row);};}try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0,mode);}
+});
+test('refusal memory survives a new connection without automatically clearing or retrying the same holding',async t=>{
+ const f=await saleFixture(t,{apply:false});f.state.onWrite=()=>{throw Object.assign(Error('definite refusal'),{code:'REJECTED'});};const record=(await f.run(await f.plan())).record;assert.equal(record.finalStatus,'REJECTED');assert.equal(f.state.writes.length,1);
+ const next=await saleFixture(t,{file:f.file,connectionId:'trade-reconnected'});await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+test('late post-send reply after identity replacement remains UNKNOWN, and cancellation never replays the sell',async t=>{
+ const f=await saleFixture(t);let release,entered;const wait=new Promise(r=>release=r),started=new Promise(r=>entered=r);f.state.onWrite=async()=>{entered();await wait;};const p=await f.plan(),permit=f.authorize(p);f.service.execute(f.session,permit);await started;f.client.factContext.connectionId='changed';f.session.connectionId='changed';release();await f.service.settle(f.session.id);assert.equal(f.durable.list('trade-A')[0].finalStatus,'UNKNOWN');assert.equal(f.state.writes.length,1);assert.throws(()=>f.service.execute(f.session,permit));
+});
+test('registered trade Workflow retains original per-batch authorization and shared history',async t=>{
+ const f=await saleFixture(t),p=await f.plan(),g={version:1,id:'trade-sale',name:'Explicit sale',nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'trade',parameters:f.options.parameters,selection:p.actions[0].actionId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'z'}]};assert.equal(validateWorkflow(g,{modules:GAMEPLAY_MODULES}).valid,true);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());g.budget=p.budgetClaims;let status=await runner.start('trade-A',g);assert.equal(status.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(status.plan);status=await runner.resume();assert.equal(status.status,'COMPLETED');assert.equal(f.durable.list('trade-A')[0].workflowId,status.runId);assert.equal(f.durable.list('trade-A')[0].workflowNodeId,'a');
 });

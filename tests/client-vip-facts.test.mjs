@@ -423,3 +423,34 @@ for(const fault of ['rollback','zero-id','negative','gap','decode','account','ge
 test('daily progress keeps bounded event history and old connections cannot publish or restore new sources',async t=>{
  const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(login()),receive=socket.onmessage;for(let seq=1;seq<=201;seq++)socket.receive('SCDailyTaskUpdate',{task:progressTask(1001,seq)},seq);assert.equal(readDailyTaskProgressEvent(f.client,{cursor:1}).reliable,false);assert.equal(readDailyTaskProgressEvent(f.client,{cursor:2}).event.progress,2);const old=readDailyTaskProgressEvent(f.client);f.client.stop();assert.equal(readDailyTaskProgressEvent(f.client).reliable,false);await f.ready(login());const fresh=readDailyTaskProgressEvent(f.client);assert.notEqual(fresh.streamId,old.streamId);receive({data:codec.encode('SCDailyTaskUpdate',202,{task:progressTask(1001,202)})});assert.equal(readDailyTaskProgressEvent(f.client).cursor,0);
 });
+
+
+test('trade period and price revisions reuse private accepted stream; public emit and duplicates cannot forge authority',async t=>{
+ const {readTradeActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());assert.equal(read(f.client).status,'UNKNOWN');const socket=await f.ready();
+ f.client.emit('message',{name:'SCAllActivity',seq:1,body:{trade:{period:7,startTime:100,endTime:400}}});assert.equal(read(f.client).status,'UNKNOWN');
+ socket.receive('SCAllActivity',{trade:{period:7,startTime:100,endTime:400}},1);const value=read(f.client);assert.equal(value.status,'OBSERVED');assert.deepEqual(value.period,{period:7,startTime:100,endTime:400});assert.equal(value.source,'SCAllActivity.trade');assert.equal(value.stateRevision,0);assert.equal(value.playerId,'9007199254740993');assert.equal(value.executable,false);
+ value.period.period=8;assert.equal(read(f.client).period.period,7);
+ f.client.emit('message',{name:'SCTradeCityGoods',seq:2,body:{cityId:1,goods:[]}});assert.equal(read(f.client).stateRevision,0);
+ socket.receive('SCTradeCityGoods',{cityId:1,goods:[]},2);assert.equal(read(f.client).stateRevision,1);socket.receive('SCTradeCityGoods',{cityId:1,goods:[]},2);assert.equal(read(f.client).stateRevision,1);
+ socket.receive('SCTradeGuildTask',{},3);socket.receive('SCTradeCityReport',{},4);assert.equal(read(f.client).stateRevision,3);
+ assert.equal(read(f.client,{accountId:'B'}).status,'UNKNOWN');socket.receive('SCAllActivity',{trade:{period:0,startTime:0,endTime:0}},5);assert.deepEqual(read(f.client).period,{period:0,startTime:0,endTime:0});
+ assert.ok(socket.sent.every(row=>!/^Trade.*Request$/.test(row.name)));
+});
+for(const mode of ['gap','zero-seq','close','account','generation','connection','role','world'])test('trade source loses authority on '+mode,async t=>{
+ const {readTradeActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',{trade:{period:7,startTime:100,endTime:400}},1);
+ if(mode==='gap')socket.receive('SCTradeCityGoods',{cityId:1,goods:[]},3);
+ else if(mode==='zero-seq')socket.receive('SCTradeCityGoods',{cityId:1,goods:[]},0);
+ else if(mode==='close')socket.end();
+ else if(mode==='role')f.client.factContext.playerId='2';
+ else if(mode==='world')f.client.factContext.worldId='2';
+ else f.client.factContext[mode==='account'?'accountId':mode==='connection'?'connectionId':'generation']=mode==='generation'?4:'changed';
+ assert.equal(read(f.client).status,'UNKNOWN');assert.equal(read(f.client).period,null);
+});
+test('trade missing/default period invalidates only its observation and old socket cannot seed a new connection',async t=>{
+ const {readTradeActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),old=socket.onmessage;let seq=1;
+ for(const trade of [undefined,{}, {period:7,startTime:100},{period:7,startTime:400,endTime:400},{period:0,startTime:100,endTime:200}]){
+  socket.receive('SCAllActivity',{festivalActivities:[],trade:{period:7,startTime:100,endTime:400}},seq++);assert.equal(read(f.client).status,'OBSERVED');
+  socket.receive('SCAllActivity',{festivalActivities:[],...(trade===undefined?{}:{trade})},seq++);assert.equal(read(f.client).status,'UNKNOWN');assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');
+ }
+ f.client.stop();await f.ready();old({data:codec.encode('SCAllActivity',1,{trade:{period:7,startTime:100,endTime:400}})});assert.equal(read(f.client).status,'UNKNOWN');
+});

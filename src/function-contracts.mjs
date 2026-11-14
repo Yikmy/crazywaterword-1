@@ -44,11 +44,10 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
-  trade: contract('trade',['C521','C522'],['P6-3'],['src/trade.mjs#tradeModule','src/trade.mjs#surveyTrade'],{}, {
-    permissions:{...common.permissions,write:'FORBIDDEN_OBSERVATION_ONLY'},
-    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('C522:DESTINATION_STRATEGY','Current port non-loss sale preview only; no destination-price or purchase strategy','NOT_IMPLEMENTED'),blocked('C523','Exact buy/sell eligibility, settlement and recovery are not implemented','NOT_IMPLEMENTED'),blocked('C524','Routes, movement and speed require separate contracts','NOT_IMPLEMENTED')]},
-    verification:verification('verify','src/trade.mjs#tradeModule.verify','Current-port response only; same bracketing Info is not an atomic snapshot and no write can be confirmed',{authoritativeRead:false,canConfirmWrite:false}),
-    dependencyVersions:dependencies(['moduleConfig','config.TradeGoodsCfg','config.TradeShipCfg']),
+  trade: contract('trade',['C521','C522','C523'],['P6-3'],['src/trade.mjs#tradeModule','src/trade.mjs#surveyTrade'],{action:{type:'string',enum:['sell']},pid:integer,cityId:integer,num:integer}, {
+    implementation:{mode:'CONTROLLED_WRITE',actions:['SELL'],blockedCapabilities:[blocked('C522:DESTINATION_STRATEGY','Current port non-loss preview only; no destination-price or purchase strategy','NOT_IMPLEMENTED'),blocked('C523:BUY','Buy eligibility, exact cost and settlement are not implemented','NOT_IMPLEMENTED'),blocked('C523:LOSS_SELL','Fixed client loss label and total disagree; loss settlement formula is unverified'),blocked('C524','Routes, movement and speed require separate contracts','NOT_IMPLEMENTED')]},
+    verification:verification('verifyTrade','src/trade.mjs#verifyTrade','Exact single non-loss sale: typed player and independent TradeInfo must agree on exact holding decrease and trade-coins preview net income; normal inventory unchanged. maxCoins/profit are reported fields requiring typed/reread equality, never predicted.'),
+    dependencyVersions:dependencies(['moduleConfig','config.TradeGoodsCfg','config.TradeShipCfg','config.ModuleOpenCfg']),
   }),
   'material-packs': contract('material-packs',[],['P2-2'],['src/material-packs.mjs#materialPackModule','src/material-packs.mjs#planMaterialPacks'],{packId:string,itemId:string,num:integer},{
     inventoryRequirementIds:['BIZ-R14'],

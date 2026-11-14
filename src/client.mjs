@@ -327,10 +327,10 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
 const liveFestivalActivities = new WeakMap();
 function resetFestivalActivities(client, reason) {
   const previous=liveFestivalActivities.get(client);
-  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0});
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0,tradeSnapshot:null,tradeReason:reason,tradeRevision:0});
 }
 function invalidateFestivalActivities(client, reason) {
-  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;}
+  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;state.tradeSnapshot=null;state.tradeReason=reason;}
 }
 function festivalContextCurrent(client,state) {
   return vipCurrentContext(client,state)&&['playerId','worldId'].every(k=>!vipOwn(client.factContext,k)||vipIdentity(vipValue(client.factContext,k))===state.identity?.[k]);
@@ -377,6 +377,22 @@ export function readGuildShipActivitySnapshot(client,expected=null) {
   if(!state||state.invalid||!state.seeded||!state.guildShipSnapshot||expected&&['accountId','generation','connectionId','playerId','worldId'].some(k=>vipValue(expected,k)!==identity[k]))
     return {...common,status:'UNKNOWN',reliable:false,reason:state?.guildShipReason??state?.reason??'GUILD_SHIP_PERIOD_NOT_OBSERVED',period:null,seq:null,observedAt:null};
   return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.guildShipSnapshot),stateRevision:state.guildShipRevision};
+}
+
+function updateTradeActivity(client,body,seq,receivedAt) {
+  const state=liveFestivalActivities.get(client);if(!state||state.invalid)return;
+  state.tradeSnapshot=null;state.tradeReason='TRADE_PERIOD_UNKNOWN';
+  if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'ACTIVITY_CONNECTION_OR_IDENTITY_CHANGED');return;}
+  const period=vipValue(body,'trade'),values=Object.fromEntries(['period','startTime','endTime'].map(key=>[key,vipValue(period,key)]));
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||Object.values(values).some(n=>!Number.isInteger(n)||n<0||n>2147483647)||(values.period===0?(values.startTime!==0||values.endTime!==0):values.startTime>=values.endTime))return;
+  state.tradeSnapshot={seq,observedAt:new Date(receivedAt).toISOString(),period:values};state.tradeReason=null;
+}
+export function readTradeActivitySnapshot(client,expected=null) {
+  readFestivalActivitySnapshot(client);
+  const state=liveFestivalActivities.get(client),common={source:'SCAllActivity.trade',scope:'ACCEPTED_STREAM_PERIOD_AND_REVISION_ONLY',executable:false};
+  const identity=state?{...state.context,...state.identity}:{};
+  if(!state||state.invalid||!state.seeded||!state.tradeSnapshot||expected&&['accountId','generation','connectionId','playerId','worldId'].some(k=>vipValue(expected,k)!==identity[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.tradeReason??state?.reason??'TRADE_PERIOD_NOT_OBSERVED',period:null,seq:null,observedAt:null,stateRevision:null};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.tradeSnapshot),stateRevision:state.tradeRevision};
 }
 
 export const FESTIVAL_ACTIVITY_OBSERVATION_EVIDENCE=Object.freeze({protocolSha256:LIVE_VIP_LEVEL_EVIDENCE.protocolSha256,source:'SCAllActivity.festivalActivities / DispFestivalActivity / DispSubActivity.dailyActive / DailyActiveDetail.checkInId',scope:'Transport observation only; no eligibility, game day, independent claim reread or automatic execution',realGame:'REAL_UNVERIFIED'});
@@ -872,7 +888,14 @@ export class GameClient extends EventEmitter {
     if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
     if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
     if(name==='SCDailyTaskUpdate')observeDailyTaskProgress(this,body,seq,receivedAt);
-    if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
+    if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);}
+    if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
+      const activity=liveFestivalActivities.get(this);
+      if(activity&&!activity.invalid&&activity.seeded&&festivalContextCurrent(this,activity)){
+        if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ){activity.tradeSnapshot=null;activity.tradeReason='TRADE_STATE_SEQUENCE_UNKNOWN';}
+        else activity.tradeRevision++;
+      }
+    }
     if (name === 'SCGuildShipActivity') updateGuildShipActivity(this,body,seq,receivedAt);
     if (['SCGuildShipLeader','SCGuildShipOrder','SCGuildShipMove','SCGuildShipReset'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
