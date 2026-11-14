@@ -1,6 +1,7 @@
-import { summarizeTradeObservation, validateTradeObservationSummary } from './trade.mjs';
+import { summarizeTradeObservation, validateTradeObservationSummary, validateTradeLegClockObservation } from './trade.mjs';
 import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent } from './client.mjs';
@@ -112,22 +113,27 @@ function validateEventTriggerHistory(run){
  }
 }
 function validateCooldownWaitPolicy(value){
- exact(value,['kind','maxWaitMs'],'具名冷却等待');if(value.kind!=='FREE_RECRUIT'||!Number.isSafeInteger(value.maxWaitMs)||value.maxWaitMs<1||value.maxWaitMs>WORKFLOW_LIMITS.waitMs)throw fail('冷却等待仅支持明确免费招募来源及1–60000毫秒上限');return copy(value);
+ const trade=value?.kind==='TRADE_LEG_END';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId']:['kind','maxWaitMs'],'具名冷却等待');
+ if(!['FREE_RECRUIT','TRADE_LEG_END'].includes(value.kind)||!Number.isSafeInteger(value.maxWaitMs)||value.maxWaitMs<1||value.maxWaitMs>WORKFLOW_LIMITS.waitMs||trade&&(!['cityId','mvToCityId'].every(k=>Number.isInteger(value[k])&&value[k]>0&&value[k]<=2147483647)||value.cityId===value.mvToCityId))throw fail('具名等待须为免费招募或明确不同港口的贸易航段，及1–60000毫秒上限');return copy(value);
 }
-function cooldownWaitObservation(value){
- const observation=validateFreeRecruitCooldownObservation(value);if(observation.status!=='OBSERVED'||!observation.serverBounds)throw fail('冷却等待缺少当前原Function权威来源或可信时钟','WORKFLOW_UNKNOWN');return observation;
+const cooldownModule=policy=>policy.kind==='TRADE_LEG_END'?'trade':'free-recruit';
+const cooldownMarker=observation=>observation.source==='TradeInfoResponse.cargo/TradeInfoResponse.cargo/PingResponse.serverTimestamp'?observation.leg.moveEndTime:observation.freeEndTimeSeconds;
+const cooldownTarget=observation=>observation.leg??observation.freeEndTimeSeconds;
+function cooldownWaitObservation(value,policy){
+ const trade=policy?.kind==='TRADE_LEG_END',observation=trade?validateTradeLegClockObservation(value):validateFreeRecruitCooldownObservation(value);
+ if(observation.status!=='OBSERVED'||!observation.serverBounds||trade&&(observation.leg.cityId!==policy.cityId||observation.leg.moveToCityId!==policy.mvToCityId))throw fail('具名等待缺少当前原Function权威来源、精确目标或可信时钟','WORKFLOW_UNKNOWN');return observation;
 }
 function cooldownWaitHistoryRow(row){
- const value=row.cooldownWait;exact(value,['kind','maxWaitMs','observation'],'冷却等待历史');const policy=validateCooldownWaitPolicy({kind:value.kind,maxWaitMs:value.maxWaitMs}),observation=cooldownWaitObservation(value.observation);
+ const value=row.cooldownWait,trade=value?.kind==='TRADE_LEG_END';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId','observation']:['kind','maxWaitMs','observation'],'冷却等待历史');const {observation:raw,...declaration}=value,policy=validateCooldownWaitPolicy(declaration),observation=cooldownWaitObservation(raw,policy);
  if(row.type!=='WAIT'||!['WAIT_STARTED','WAITED'].includes(row.result)||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>policy.maxWaitMs)throw fail('冷却等待历史节点或时长无效');
- if(row.result==='WAIT_STARTED'&&Math.max(0,Math.ceil(observation.freeEndTimeSeconds*1000-observation.serverBounds.earliestMs))!==row.durationMs||row.result==='WAITED'&&observation.readiness!=='READY_BY_CLOCK')throw fail('冷却等待历史缺少原时钟计算或到期复读');
+ if(row.result==='WAIT_STARTED'&&Math.max(0,Math.ceil(cooldownMarker(observation)*1000-observation.serverBounds.earliestMs))!==row.durationMs||row.result==='WAITED'&&observation.readiness!=='READY_BY_CLOCK')throw fail('冷却等待历史缺少原时钟计算或到期复读');
  return {policy,observation};
 }
 function validateCooldownWaitHistory(run){
  const started=new Map();for(const row of run.trace??[]){if(row.cooldownWait===undefined)continue;
  const {policy,observation}=cooldownWaitHistoryRow(row),key=JSON.stringify([row.round??null,row.nodeId]);
- if(row.result==='WAIT_STARTED'){if(started.has(key))throw fail('冷却等待起点重复');started.set(key,{row,observation});}
- else{const before=started.get(key);if(!before||before.finished||before.row.durationMs!==row.durationMs||before.row.cooldownWait.maxWaitMs!==policy.maxWaitMs||before.observation.freeEndTimeSeconds!==observation.freeEndTimeSeconds||observation.sourceAt<before.observation.sourceAt)throw fail('冷却等待缺少同目标独立复读');before.finished=true;}
+ if(row.result==='WAIT_STARTED'){if(started.has(key))throw fail('冷却等待起点重复');started.set(key,{row,observation,policy});}
+ else{const before=started.get(key);if(!before||before.finished||before.row.durationMs!==row.durationMs||!isDeepStrictEqual(before.policy,policy)||!isDeepStrictEqual(cooldownTarget(before.observation),cooldownTarget(observation))||observation.sourceAt<before.observation.sourceAt)throw fail('冷却等待缺少同目标独立复读');before.finished=true;}
  }
 }
 function validateRunPolicy(value) {
@@ -190,7 +196,7 @@ export function validateWorkflow(input, options = {}) {
     }
     if (['CONDITION','RULE'].includes(node.type) || node.condition !== undefined) condition(node.condition);
     if(node.type==='WAIT'){
-      if(node.cooldown!==undefined){validateCooldownWaitPolicy(node.cooldown);if(Object.hasOwn(node,'durationMs'))throw fail('具名冷却等待不能混用本地时长');registered(registry,'free-recruit');if(graph.runPolicy&&!graph.runPolicy.modules.includes('free-recruit'))throw fail('冷却来源超出明确玩法范围');}
+      if(node.cooldown!==undefined){const policy=validateCooldownWaitPolicy(node.cooldown),module=cooldownModule(policy);if(Object.hasOwn(node,'durationMs'))throw fail('具名冷却等待不能混用本地时长');registered(registry,module);if(graph.runPolicy&&!graph.runPolicy.modules.includes(module))throw fail('冷却来源超出明确玩法范围');}
       else if(!Number.isSafeInteger(node.durationMs)||node.durationMs<0||node.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('WAIT 必须为 0–60000 毫秒');
     }
     if(graph.runPolicy&&node.module!==undefined&&!graph.runPolicy.modules.includes(node.module))throw fail('节点玩法超出声明运行范围');
@@ -354,11 +360,11 @@ function repeatAfterStop(ctx,node){
         }
         if (node.type === 'WAIT') {
           let durationMs=node.durationMs,initial;
-          const readCooldown=async()=>{const surveyed=await cancelled(ctx,operations.surveyModule(ctx.session,'free-recruit',{}, {workflowId:ctx.runId,signal:ctx.cancel.signal}));current(ctx);if(surveyed?.accountId!==ctx.accountId||surveyed.module!=='free-recruit')throw fail('冷却调查账号或原Function不一致','WORKFLOW_UNKNOWN');return {surveyed,observation:cooldownWaitObservation(surveyed.view?.cooldownObservation)};};
-          if(node.cooldown){initial=await readCooldown();durationMs=Math.max(0,Math.ceil(initial.observation.freeEndTimeSeconds*1000-initial.observation.serverBounds.earliestMs));if(durationMs>node.cooldown.maxWaitMs)throw fail('权威冷却超出本节点明确等待上限','WORKFLOW_LIMIT');}
+          const readCooldown=async()=>{const policy=node.cooldown,module=cooldownModule(policy),parameters=policy.kind==='TRADE_LEG_END'?{action:'move',cityId:policy.cityId,mvToCityId:policy.mvToCityId}:{};const surveyed=await cancelled(ctx,operations.surveyModule(ctx.session,module,parameters,{workflowId:ctx.runId,signal:ctx.cancel.signal}));current(ctx);if(surveyed?.accountId!==ctx.accountId||surveyed.module!==module)throw fail('冷却调查账号或原Function不一致','WORKFLOW_UNKNOWN');return {surveyed,observation:cooldownWaitObservation(surveyed.view?.cooldownObservation,policy)};};
+          if(node.cooldown){initial=await readCooldown();durationMs=Math.max(0,Math.ceil(cooldownMarker(initial.observation)*1000-initial.observation.serverBounds.earliestMs));if(durationMs>node.cooldown.maxWaitMs)throw fail('权威冷却超出本节点明确等待上限','WORKFLOW_LIMIT');}
           ctx.status='WAITING';await trace(ctx,node,'WAIT_STARTED',{durationMs,...(initial?{cooldownWait:{...copy(node.cooldown),observation:initial.observation}}:{})});current(ctx);
           let timer;try{await cancelled(ctx,new Promise(resolve=>{timer=setTimeout(resolve,durationMs);}));}finally{clearTimeout(timer);}ctx.status='RUNNING';current(ctx);
-          let confirmed;if(initial){confirmed=await readCooldown();if(confirmed.observation.freeEndTimeSeconds!==initial.observation.freeEndTimeSeconds||confirmed.observation.sourceAt<initial.observation.sourceAt||confirmed.observation.readiness!=='READY_BY_CLOCK')throw fail('冷却目标变化或独立复读未确认到期','WORKFLOW_UNKNOWN');ctx.survey=confirmed.surveyed;ctx.surveyModule='free-recruit';}
+          let confirmed;if(initial){confirmed=await readCooldown();if(!isDeepStrictEqual(cooldownTarget(confirmed.observation),cooldownTarget(initial.observation))||confirmed.observation.sourceAt<initial.observation.sourceAt||confirmed.observation.readiness!=='READY_BY_CLOCK')throw fail('冷却目标变化或独立复读未确认到期','WORKFLOW_UNKNOWN');ctx.survey=confirmed.surveyed;ctx.surveyModule=cooldownModule(node.cooldown);}
           await trace(ctx,node,'WAITED',{durationMs,...(confirmed?{cooldownWait:{...copy(node.cooldown),observation:confirmed.observation}}:{})});ctx.nodeId=next(ctx);continue;
         }
         if (node.type === 'BRANCH') { if (!['PASS','FAIL'].includes(ctx.lastResult)) throw fail('分支缺少已验证的条件结果', 'WORKFLOW_UNKNOWN'); await trace(ctx, node, ctx.lastResult); ctx.nodeId = next(ctx, ctx.lastResult); continue; }

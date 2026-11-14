@@ -215,9 +215,24 @@ function verifySpeed(operation,before,after,result){
  if(!positive(get(result,'moveEndTime'))||result.moveEndTime!==canonical.expectedState.cargo.moveEndTime||!time||result.moveEndTime*1000<=time.latestMs||!same(after.state,canonical.expectedState)||!same(infoOf(after.first),infoOf(after.last))||after.activity.period.period!==before.activity.period.period||time.earliestMs<window.startTime*1000||time.latestMs>=window.endTime*1000)return no('未独立确认相同航段的精确未来终点、道具净扣及其他状态不变；不得推测到达');
  return {confirmed:true,afterState:copy(after.state),reason:'专用终点回执与独立完整Info/库存确认精确自有道具净扣和未来终点缩短；不证明到达或收益',responseEvidence:{period:canonical.target.period,useNum:canonical.target.num,moveEndTime:result.moveEndTime,arrivalConfirmed:false}};
 }
+const legClockSource='TradeInfoResponse.cargo/TradeInfoResponse.cargo/PingResponse.serverTimestamp';
+const legClockReadiness=(leg,bounds)=>!bounds?'UNKNOWN':bounds.earliestMs>=leg.moveEndTime*1000?'READY_BY_CLOCK':bounds.latestMs<leg.moveEndTime*1000?'WAITING_BY_CLOCK':'BOUNDARY_UNCERTAIN';
+export function validateTradeLegClockObservation(v){
+ const keys=['status','source','leg','sourceAt','serverBounds','readiness','arrivalConfirmed','eligibility','executable','autoResume'],bounds=v?.serverBounds,leg=v?.leg,finite=n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER;
+ if(!plain(v,keys)||Reflect.ownKeys(v).length!==keys.length||!['OBSERVED','UNKNOWN'].includes(v.status)||v.source!==legClockSource||v.arrivalConfirmed!==false||v.eligibility!==null||v.executable!==false||v.autoResume!==false||
+ (v.status==='UNKNOWN'?(leg!==null||v.sourceAt!==null||bounds!==null||v.readiness!=='UNKNOWN'):
+ !plain(leg,['period','cargoLv','cityId','moveToCityId','moveStartTime','moveEndTime'])||Reflect.ownKeys(leg).length!==6||!['period','cargoLv','cityId','moveToCityId','moveStartTime','moveEndTime'].every(k=>positive(leg[k]))||leg.cityId===leg.moveToCityId||leg.moveStartTime>=leg.moveEndTime||!Number.isSafeInteger(v.sourceAt)||v.sourceAt<0||
+ !plain(bounds,['earliestMs','latestMs'])||Reflect.ownKeys(bounds).length!==2||!finite(bounds.earliestMs)||!finite(bounds.latestMs)||bounds.earliestMs>bounds.latestMs||bounds.earliestMs<leg.moveStartTime*1000||v.readiness!==legClockReadiness(leg,bounds)))throw invalid('贸易航段等待历史须有精确同航段、两次独立Info及原可信时钟；不确认到达');
+ return copy(v);
+}
+function tradeLegClockObservation(f){
+ const p=f?.parameters,valid=p?.action==='move'&&tradeAuthority(f)&&same(infoOf(f.first),infoOf(f.last)),cargo=valid?f.state.cargo:null,owner=live.get(f),clock=valid&&owner?clockOf(owner.client,f.context):null;
+ const known=Boolean(cargo&&positive(cargo.moveStartTime)&&cargo.moveStartTime<cargo.moveEndTime&&cargo.cityId===p.cityId&&cargo.moveToCityId===p.mvToCityId&&clock&&clock.earliestMs>=cargo.moveStartTime*1000),leg=known?{period:f.state.period,...cargo}:null,bounds=known?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
+ return validateTradeLegClockObservation({status:known?'OBSERVED':'UNKNOWN',source:legClockSource,leg,sourceAt:known?f.sourceAt.findLast(row=>row.name==='TradeInfoRequest').at:null,serverBounds:bounds,readiness:known?legClockReadiness(leg,bounds):'UNKNOWN',arrivalConfirmed:false,eligibility:null,executable:false,autoResume:false});
+}
 export function viewTrade(f,options={}){
  const parameters=validateTradeParameters(options.parameters??f?.parameters??{}),view=observationTrade(f,options);
- view.route=routeObservation(f);view.speed={policy:speedPolicy(options.config??f?.configEvidence),owned:f?.stockReliable?f.stock.get(tradeSpeedItem)??0:null,arrivalConfirmed:false};
+ view.cooldownObservation=tradeLegClockObservation(f);view.route=routeObservation(f);view.speed={policy:speedPolicy(options.config??f?.configEvidence),owned:f?.stockReliable?f.stock.get(tradeSpeedItem)??0:null,arrivalConfirmed:false};
  if(parameters.action){const speeding=parameters.action==='speed',moving=parameters.action==='move',buy=parameters.action==='buy';view.candidates=[speeding?speedCandidate(f,options):moving?moveCandidate(f,options):(buy?buyCandidate:saleCandidate)(f,options,view)];view.blocked=view.blocked.filter(row=>row.actionType!==(speeding?'SPEED':moving?'MOVE':buy?'BUY':'SELL'));}
  view.notes.push('卖出须明确港口、持货批次和数量，单次非亏损；预计售得不进入预算。maxCoins/profit仅采纳专用回执并独立复读，不猜测更新公式。');return view;
 }
