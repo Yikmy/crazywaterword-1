@@ -509,3 +509,38 @@ for(const fault of ['duplicate','gap','close','prelogin','bad-login','too-many-t
  if(fault==='too-many-tasks')for(let seq=2;seq<=201;seq++)socket.receive(name,{task:{taskId:seq+100,progress:'1'}},seq);
  assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);
 });
+
+
+const achievementRow=(id=71,progress='1',extra={})=>({id,progress,targetProgress:'9223372036854775807',rewardClaimed:false,...extra});
+test('achievement list uses original private task cursor, validates whole push, preserves int64 and ignores public payloads',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),kind='achievement';
+ const baseline=readTaskProgressEvent(f.client,{kind});assert.equal(baseline.reliable,true);assert.equal(baseline.cursor,0);
+ f.client.emit('message',{name:'SCAchievementUpdate',seq:1,body:{task:[achievementRow()]}});assert.equal(readTaskProgressEvent(f.client,{kind}).cursor,0);
+ let observed;f.client.on('message',({name})=>{if(name==='SCAchievementUpdate')observed=readTaskProgressEvent(f.client,{kind});});
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(70,'0'),achievementRow(71,'9007199254740993'),achievementRow(72,'9223372036854775807')]},1);
+ assert.equal(observed.cursor,3);assert.equal(observed.source,'SCAchievementUpdate.task');
+ const target=readTaskProgressEvent(f.client,{kind,cursor:2});assert.equal(target.event.taskId,71);assert.equal(target.event.progress,'9007199254740993');assert.equal(target.event.targetProgress,'9223372036854775807');assert.equal(target.event.rewardClaimed,false);assert.equal(target.event.seq,1);
+ target.event.progress='0';assert.equal(readTaskProgressEvent(f.client,{kind,cursor:2}).event.progress,'9007199254740993');
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'9007199254740993',{rewardClaimed:true})]},2);assert.equal(readTaskProgressEvent(f.client,{kind}).cursor,3);
+ socket.receive('SCAchievementUpdate',{},3);assert.equal(readTaskProgressEvent(f.client,{kind}).cursor,3);assert.equal(readTaskProgressEvent(f.client,{kind}).reliable,true);
+ socket.receive('SCDailyTaskReset',{dailyResetTime:100},4);assert.equal(readTaskProgressEvent(f.client,{kind}).streamId,baseline.streamId);
+ assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).cursor,0);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).cursor,0);
+});
+for(const fault of ['id','duplicate','progress','target','target-zero','claimed','rollback','limit'])test('achievement list fails atomically and keeps other task streams independent: '+fault,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'2')]},1);
+ let invalid=achievementRow(72,'3');if(fault==='id')invalid.id=0;if(fault==='progress')delete invalid.progress;if(fault==='target')delete invalid.targetProgress;if(fault==='target-zero')invalid.targetProgress='0';if(fault==='claimed')delete invalid.rewardClaimed;
+ let rows=[achievementRow(71,'3'),invalid];if(fault==='duplicate')rows=[achievementRow(71,'3'),achievementRow(71,'4')];if(fault==='rollback')rows=[achievementRow(71,'1')];if(fault==='limit')rows=Array.from({length:201},(_,i)=>achievementRow(i+100,'1'));
+ socket.receive('SCAchievementUpdate',{task:rows},2);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement',cursor:2}).reliable,false);
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'4')]},3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).reliable,true);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,true);
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId'])test('achievement progress identity change cannot be undone by returning to '+field,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),before={...f.client.factContext};socket.receive('SCAchievementUpdate',{task:[achievementRow()]},1);
+ f.client.factContext={...before,[field]:field==='generation'?99:'changed'};assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);f.client.factContext=before;assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);
+});
+test('achievement cursor eviction, new login, old socket and sequence gap retain original transport authority',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const old=await f.ready();for(let seq=1;seq<=201;seq++)old.receive('SCAchievementUpdate',{task:[achievementRow(71,String(seq))]},seq);
+ assert.equal(readTaskProgressEvent(f.client,{kind:'achievement',cursor:1}).reliable,false);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement',cursor:2}).event.progress,'2');const before=readTaskProgressEvent(f.client,{kind:'achievement'});
+ f.client.stop();assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);const socket=await f.ready();assert.notEqual(readTaskProgressEvent(f.client,{kind:'achievement'}).streamId,before.streamId);
+ old.receive('SCAchievementUpdate',{task:[achievementRow(71,'999')]},202);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cursor,0);
+ socket.receive('SCAchievementUpdate',{task:[achievementRow()]},1);socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'2')]},3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);
+});

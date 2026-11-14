@@ -2671,17 +2671,17 @@ test('Workflow evidence navigation ignores a late read after account return or a
 });
 
 
-for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])for(const progress of ['0','9007199254740993','9223372036854775807'])test(kind+' form preserves exact int64 string and original unified business graph '+progress,async()=>{
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'])for(const progress of ['0','9007199254740993','9223372036854775807'])test(kind+' form preserves exact int64 string and original unified business graph '+progress,async()=>{
  const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);eventPolicyDraft(h,progress,kind);assert.equal(h.node('wf-policy-event-task').disabled,false);h.node('wf-policy-event-task').value='71';h.node('wf-policy-event-task').oninput();h.node('wf-policy-apply').click();const graph=conditionGraph(h);
  assert.deepEqual(graph.runPolicy.eventTrigger,{kind,taskId:71,progress});assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);assert.deepEqual(graph.nodes,before.nodes);assert.deepEqual(graph.edges,before.edges);assert.deepEqual(graph.budget,before.budget);
  for(const entry of ['tasks','dailies','loop']){unifiedLoad(h,{entry,...(entry==='tasks'?{tasks:[{kind:'main',taskId:1}]}:{dailies:[{taskId:1006}]}),budget:{resources:[],quotas:[],uids:[]}});h.node('wf-unified-policy-copy').click();assert.deepEqual(unifiedDraft(h).runPolicy,graph.runPolicy);}
  assert.equal(writes(h).length,0);
 });
-for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' form rejects fractional, noncanonical and out-of-int64 progress without mutating the graph',async()=>{
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'])test(kind+' form rejects fractional, noncanonical and out-of-int64 progress without mutating the graph',async()=>{
  const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);
  for(const progress of ['','-1','01','1.0','1e3',' 1','9223372036854775808','<img src=x>']){eventPolicyDraft(h,progress,kind);h.node('wf-policy-event-task').value='71';h.node('wf-policy-event-task').oninput();h.node('wf-policy-apply').click();assert.deepEqual(conditionGraph(h),before);assert.equal(writes(h).length,0);}
 });
-for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' finite run scope requires exact confirmation and stale callbacks cannot alter another account',async()=>{
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'])test(kind+' finite run scope requires exact confirmation and stale callbacks cannot alter another account',async()=>{
  const eventTrigger={kind,taskId:71,progress:'9007199254740993'},f=await finiteRunPage({eventTrigger}),{h,offer,status}=f;
  assert.equal(h.node('wf-authorize-run').disabled,false);assert.match(h.node('wf-run-scope').textContent,/任务 71.*9007199254740993/);assert.match(h.node('wf-run-scope').textContent,/不证明完成或领奖资格/);
  const approval=h.node('wf-authorize-run').click();assertMutation(h.pending('/api/workflows/authorize-run'),'/api/workflows/authorize-run',{offer,batchId:null,planHash:null,confirm:true});h.run("selectAccount('B');selectAccount('A')");h.respond('/api/workflows/authorize-run',{accountId:'A',status:{...status,runAuthorization:{scope:offer,approvedAt:'late'}},graphs:[],history:[]});await approval;assert.equal(h.node('wf-authorize-run').disabled,true);assert.doesNotMatch(h.node('wf-run-scope').textContent,/任务 71|有限运行授权已于/);assert.equal(writes(h,'/api/operations/execute').length,0);

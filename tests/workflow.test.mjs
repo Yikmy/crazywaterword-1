@@ -922,7 +922,7 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' cargo intent selec
 });
 
 
-for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' requires exact task and int64 string threshold and compiles through all original entry points',()=>{
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'])test(kind+' requires exact task and int64 string threshold and compiles through all original entry points',()=>{
  const rule={kind,taskId:71,progress:'9007199254740993'};
  for(const progress of ['0','9007199254740993','9223372036854775807'])assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:{...rule,progress}}),{modules}).valid,true);
  for(const change of [r=>delete r.taskId,r=>r.taskId=0,r=>r.taskId='71',r=>r.taskId=2147483648,r=>delete r.progress,r=>r.progress=1,r=>r.progress='01',r=>r.progress='-1',r=>r.progress='9223372036854775808',r=>r.eligible=true,r=>r.rewardClaimed=false]){const bad=structuredClone(rule);change(bad);assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:bad}),{modules}),{code:'WORKFLOW_INVALID'});}

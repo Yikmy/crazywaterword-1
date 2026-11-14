@@ -182,7 +182,7 @@ test('crop supply settings use original exact-account CSRF API and never allocat
 });
 
 
-for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' original prepare/save HTTP preserves exact string progress without creating a runtime',async()=>{
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'])test(kind+' original prepare/save HTTP preserves exact string progress without creating a runtime',async()=>{
  const app=await harness();try{
   await app.call();
   for(const entry of ['tasks','dailies','loop']){

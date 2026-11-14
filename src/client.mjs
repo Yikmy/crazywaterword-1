@@ -139,7 +139,7 @@ function updatePlayerLevel(client,body,seq,receivedAt){const state=livePlayerLev
 export function readPlayerLevelEvent(client,{cursor}={}){const state=livePlayerLevels.get(client);if(state&&!vipCurrentContext(client,state))invalidatePlayerLevel(client,'PLAYER_CONTEXT_UNKNOWN_OR_CHANGED');else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidatePlayerLevel(client,'PLAYER_CONNECTION_NOT_CURRENT');if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'PLAYER_LOGIN_BASELINE_UNKNOWN'};const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'PLAYER_EVENT_CURSOR_UNAVAILABLE'};return {status:'CURRENT',reliable:true,playerLevel:state.level,source:state.source,reason:null,...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};}
 export const LIVE_PLAYER_LEVEL_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'ModelManager._onSCPlayerExpUpdate',policy:'Explicit login level then continuous SCPlayerExpUpdate.level; SCPlayerLevelGrade has no evidenced consumer and is excluded',realGame:'REAL_UNVERIFIED'});
 
-// Main and branch progress are accepted-stream observations, not task eligibility.
+// Main, branch and achievement progress are accepted-stream observations, not task eligibility.
 // This private bounded cursor uses the existing login/socket/sequence authority.
 const liveTaskProgress = new WeakMap();
 function resetTaskProgress(client,reason) {
@@ -152,7 +152,7 @@ function seedTaskProgress(client,body,socket) {
  const state=liveTaskProgress.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
  if(state?.invalid)return;
  if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateTaskProgress(client,'TASK_PROGRESS_LOGIN_OR_CONTEXT_UNKNOWN');return;}
- Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,events:[],tasks:new Map(),invalid:null}]))});
+ Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch','achievement'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,events:[],tasks:new Map(),invalid:null}]))});
 }
 function taskProgressCount(value) {
  let n;
@@ -168,26 +168,31 @@ function taskProgressCount(value) {
 function observeTaskProgress(client,kind,body,seq,receivedAt) {
  const state=liveTaskProgress.get(client),stream=state?.streams?.[kind];if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return;
  if(!client.connected||state.socket!==client.socket||!taskProgressCurrent(client,state)){invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');return;}
- const task=vipValue(body,'task'),taskId=vipValue(task,'taskId'),progress=taskProgressCount(vipValue(task,'progress')),rewardClaimed=vipValue(task,'rewardClaimed');
- if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isInteger(taskId)||taskId<1||taskId>2147483647||progress===null||kind==='main'&&typeof rewardClaimed!=='boolean'){stream.invalid='TASK_PROGRESS_SOURCE_UNKNOWN';return;}
- const previous=stream.tasks.get(taskId);
- if(previous!==undefined&&BigInt(progress)<BigInt(previous)){stream.invalid='TASK_PROGRESS_ROLLBACK';return;}
- if(previous===progress)return;
- if(!Number.isSafeInteger(stream.cursor)||stream.cursor>=Number.MAX_SAFE_INTEGER||previous===undefined&&stream.tasks.size>=200){stream.invalid='TASK_PROGRESS_LIMIT';return;}
- stream.tasks.set(taskId,progress);const cursor=++stream.cursor;
- stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,taskId,progress,...(kind==='main'?{rewardClaimed}:{}),receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();
+ const achievement=kind==='achievement',input=vipValue(body,'task');
+ // An absent repeated protobuf list carries no updates; never read inherited defaults.
+ if(achievement&&input===undefined&&!vipOwn(body,'task'))return;
+ const rows=achievement?input:[input];
+ const dense=Array.isArray(rows)&&Object.getPrototypeOf(rows)===Array.prototype&&rows.length<=200&&Reflect.ownKeys(rows).length===rows.length+1&&Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
+ if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!dense){stream.invalid='TASK_PROGRESS_SOURCE_UNKNOWN';return;}
+ const parsed=rows.map(task=>({taskId:vipValue(task,achievement?'id':'taskId'),progress:taskProgressCount(vipValue(task,'progress')),...(kind==='main'||achievement?{rewardClaimed:vipValue(task,'rewardClaimed')} : {}),...(achievement?{targetProgress:taskProgressCount(vipValue(task,'targetProgress'))}:{})}));
+ if(parsed.some(row=>!Number.isInteger(row.taskId)||row.taskId<1||row.taskId>2147483647||row.progress===null||(kind==='main'||achievement)&&typeof row.rewardClaimed!=='boolean'||achievement&&(row.targetProgress===null||row.targetProgress==='0'))||new Set(parsed.map(row=>row.taskId)).size!==parsed.length){stream.invalid='TASK_PROGRESS_SOURCE_UNKNOWN';return;}
+ if(parsed.some(row=>stream.tasks.has(row.taskId)&&BigInt(row.progress)<BigInt(stream.tasks.get(row.taskId)))){stream.invalid='TASK_PROGRESS_ROLLBACK';return;}
+ const changed=parsed.filter(row=>stream.tasks.get(row.taskId)!==row.progress),newTargets=changed.filter(row=>!stream.tasks.has(row.taskId)).length;
+ if(!Number.isSafeInteger(stream.cursor)||stream.cursor>Number.MAX_SAFE_INTEGER-changed.length||stream.tasks.size+newTargets>200){stream.invalid='TASK_PROGRESS_LIMIT';return;}
+ // Validate the entire push before recording any member; one invalid row cannot partially fire a workflow.
+ for(const row of changed){stream.tasks.set(row.taskId,row.progress);const cursor=++stream.cursor;stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,...row,receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();}
 }
 export function readTaskProgressEvent(client,{kind,cursor}={}) {
  const state=liveTaskProgress.get(client);
  if(state&&!taskProgressCurrent(client,state))invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');
  else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidateTaskProgress(client,'TASK_PROGRESS_CONNECTION_NOT_CURRENT');
- const stream=['main','branch'].includes(kind)?state?.streams?.[kind]:null;
+ const stream=['main','branch','achievement'].includes(kind)?state?.streams?.[kind]:null;
  if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return {status:'UNKNOWN',reliable:false,reason:stream?.invalid??state?.reason??'TASK_PROGRESS_BASELINE_UNKNOWN'};
  const event=cursor===undefined?stream.events.at(-1)??null:stream.events.find(row=>row.cursor===cursor);
  if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'TASK_PROGRESS_CURSOR_UNAVAILABLE'};
- return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,event:event?structuredClone(event):null};
+ return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':kind==='achievement'?'SCAchievementUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,event:event?structuredClone(event):null};
 }
-export const TASK_PROGRESS_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 MainTaskModel._onSCMainTaskUpdate/_onSCBranchTaskUpdate replace task by taskId; signed int64 progress',scope:'New accepted progress only; not target completion, claim eligibility, game day or reward receipt',realGame:'REAL_UNVERIFIED'});
+export const TASK_PROGRESS_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 MainTaskModel._onSCMainTaskUpdate/_onSCBranchTaskUpdate and AchievementModel._onSCAchievementUpdate; exact taskId/id and signed int64 progress',scope:'New accepted progress only; not target completion, claim eligibility, game day or reward receipt',realGame:'REAL_UNVERIFIED'});
 
 // The client DailyTaskModel replaces daily state on this push. The marker is the
 // server's next reset value, not an inferred timezone, clock or claim period.
@@ -948,6 +953,7 @@ export class GameClient extends EventEmitter {
     if(name==='SCDailyTaskUpdate')observeDailyTaskProgress(this,body,seq,receivedAt);
     if(name==='SCMainTaskUpdate')observeTaskProgress(this,'main',body,seq,receivedAt);
     if(name==='SCBranchTaskUpdate')observeTaskProgress(this,'branch',body,seq,receivedAt);
+    if(name==='SCAchievementUpdate')observeTaskProgress(this,'achievement',body,seq,receivedAt);
     if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);}
     if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
