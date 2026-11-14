@@ -181,7 +181,7 @@ Rule Contract v1：
 }
 ```
 
-支持 ITEM_FORBIDDEN / ITEM_REQUIRED（params.itemIds）、MIN_EXPERIENCE（value 与 GT/GTE）、MAX_ITEM_COUNT（itemId 与 value）、INVENTORY_AVAILABLE（空参数）。另支持 LOCAL_TIME_WINDOW（start/end 为 HH:mm，timeZone 必须为 Asia/Shanghai）：用户明确配置每日本地策略时窗，起点包含、终点不含，可跨午夜；两端必填且不同。本地时钟未知转人工检查，写前及实际发送回调重核窗口；它不提供服务器日界、免费刷新资格或定时运行授权，本地跨日不解除原拒绝记忆。priority 唯一且按升序评估；禁用规则 SKIPPED，首个 FAIL 或 UNKNOWN 后停止。FAIL 按独立 onFail=KEEP/REFRESH/REVIEW 给建议；UNKNOWN 转人工检查。全部规则通过后独立检查库存：充足建议提交，不足建议保留，缺失或不安全数量建议人工检查。默认配置关闭、规则为空；配置无效时安全回落，不覆盖坏文件。
+支持 ITEM_FORBIDDEN / ITEM_REQUIRED（params.itemIds）、MIN_EXPERIENCE（value 与 GT/GTE）、MAX_ITEM_COUNT（itemId 与 value）、INVENTORY_AVAILABLE（空参数）。另支持 OBSERVED_ORDER_COUNT（明确非负 int32 value 与 LT/LTE）：只比较本轮原响应 orderNum，缺失、显示默认零、错型或跨账号来源转人工检查；周期仍未知，不代表每日剩余额度、已领奖档位或奖励资格。每次提交前重新调查，计数变化和重启均不解除既有拒绝记忆。另支持 LOCAL_TIME_WINDOW（start/end 为 HH:mm，timeZone 必须为 Asia/Shanghai）：用户明确配置每日本地策略时窗，起点包含、终点不含，可跨午夜；两端必填且不同。本地时钟未知转人工检查，写前及实际发送回调重核窗口；它不提供服务器日界、免费刷新资格或定时运行授权，本地跨日不解除原拒绝记忆。priority 唯一且按升序评估；禁用规则 SKIPPED，首个 FAIL 或 UNKNOWN 后停止。FAIL 按独立 onFail=KEEP/REFRESH/REVIEW 给建议；UNKNOWN 转人工检查。全部规则通过后独立检查库存：充足建议提交，不足建议保留，缺失或不安全数量建议人工检查。默认配置关闭、规则为空；配置无效时安全回落，不覆盖坏文件。
 
 本地接口（均要求精确 account ID）：
 

@@ -378,3 +378,18 @@ for(const phase of ['in-window','before-preflight','resource-check','wire-callba
 test('explicit local strategy window REFRESH advice still needs original free quota proof',async()=>{
  const client=makeClient(),policy=structuredClone(windowPolicy);policy.rules[0].onFail='REFRESH';const plan=await makePlan(client,{rules:policy,clock:()=>Date.parse('2026-11-15T20:00:00+08:00')});assert.equal(plan.rows[0].actionType,'REFRESH');assert.equal(plan.actions.length,0);assert.match(plan.rows[0].blockedReason,/免费刷新/);assert.equal(client.writes.length,0);
 });
+
+const observedCountPolicy=(value=4)=>({version:1,enabled:true,rules:[{id:'observed-count',priority:1,type:'OBSERVED_ORDER_COUNT',enabled:true,params:{value,operator:'LT'},onFail:'KEEP'}]});
+for(const mode of ['explicit-zero','missing','inherited-zero','rewarded-only','string','overflow','at-threshold'])test('observed order count original survey source is exact '+mode,async()=>{
+ const orderOfTheDay=mode==='explicit-zero'?{orderNum:0}:mode==='inherited-zero'?Object.create({orderNum:0}):mode==='rewarded-only'?{rewardedNum:0}:mode==='string'?{orderNum:'0'}:mode==='overflow'?{orderNum:2147483648}:mode==='at-threshold'?{orderNum:4}:{};
+ const client=makeClient({waters:[{...water(),orderOfTheDay}]}),facts=await surveyOrderExecution(client,protocol,{config}),plan=planOrderExecution(facts,{rules:observedCountPolicy()});assert.equal(plan.actions.length,mode==='explicit-zero'?1:0);assert.equal(plan.rows[0].ruleResult.ruleResults[0].status,mode==='explicit-zero'?'PASS':mode==='at-threshold'?'FAIL':'UNKNOWN');assert.equal(client.writes.length,0);assert.equal(facts.orderProgress.period.status,'UNKNOWN');
+});
+test('observed order count fresh preflight blocks threshold change after original plan',async()=>{
+ const client=makeClient(),plan=await makePlan(client,{rules:observedCountPolicy()});assert.equal(plan.actions.length,1);const request=client.request.bind(client);client.request=async(...args)=>{const v=await request(...args);return args[0]==='OnWaterRequest'?{...v,orderOfTheDay:{orderNum:4}}:v;};const result=await execute(client,plan.actions[0],{rules:observedCountPolicy()});assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(client.writes.length,0);
+});
+test('observed order count multi-action original batch rereads after first confirmed submission',async()=>{
+ const client=makeClient({waters:[water([rawOrder(),rawOrder({index:1})],3),water([rawOrder({index:1})],4)],stock:4}),policy=observedCountPolicy(),plan=await makePlan(client,{rules:policy,mode:'Automatic'});assert.equal(plan.actions.length,2);const budget={ledger:new ResourceLedger(new Map([['wood',4]]))};assert.equal((await execute(client,plan.actions[0],{rules:policy,budget})).status,'SUCCESS');const second=await execute(client,plan.actions[1],{rules:policy,budget});assert.equal(second.status,'NOT_EXECUTED');assert.equal(client.writes.length,1);assert.equal(client.writes[0].body.index,0);
+});
+test('observed order count REFRESH advice still lacks free quota authority',async()=>{
+ const policy=observedCountPolicy(3);policy.rules[0].onFail='REFRESH';const client=makeClient(),plan=await makePlan(client,{rules:policy});assert.equal(plan.rows[0].actionType,'REFRESH');assert.equal(plan.actions.length,0);assert.match(plan.rows[0].blockedReason,/免费刷新/);assert.equal(client.writes.length,0);
+});

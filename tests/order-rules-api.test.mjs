@@ -74,7 +74,7 @@ test('policy settings and missing preview never allocate a Runtime, connection, 
   const app = await harness();
   try {
     const loaded = await app.call(); assert.equal(loaded.status, 200); assert.equal(loaded.data.source, 'default');
-    assert.deepEqual(loaded.data.config, { version: 1, enabled: false, rules: [] }); assert.equal(loaded.data.ruleTypes.length, 6);
+    assert.deepEqual(loaded.data.config, { version: 1, enabled: false, rules: [] }); assert.equal(loaded.data.ruleTypes.length, 7);
     assert.ok(loaded.data.items.some((item) => item.id === 'item/toilet' && item.source.includes('WorkerOrderCfg.itemId')));
     const result = await preview(app); assert.equal(result.status, 200); assert.equal(result.data.status, 'UNKNOWN'); assert.deepEqual(result.data.orders, []);
     assert.equal(app.sessions.size, 0); assert.deepEqual(app.counts(), { clients: 0, collections: 0 }); assert.equal(fs.existsSync(ORDER_RULES_PATH), false);
@@ -331,5 +331,13 @@ test('explicit local strategy window API previews current local policy independe
   const active=await preview(app,inside);assert.equal(active.status,200);assert.equal(active.data.orders[1].result.decision,'RECOMMEND_SUBMIT');assert.equal(active.data.orders[1].result.ruleResults[0].strategyWindow.status,'IN_WINDOW');
   const closed=await preview(app,outside);assert.equal(closed.data.orders[1].result.decision,'RECOMMEND_KEEP');assert.equal(closed.data.orders[1].result.ruleResults[0].strategyWindow.gameDay,null);assert.equal(closed.data.orders[1].result.ruleResults[0].strategyWindow.refreshEligibility,null);
   const refresh=await preview(app,window(minute+5,minute+10,'REFRESH'));assert.equal(refresh.data.orders[1].result.decision,'RECOMMEND_REFRESH');assert.deepEqual(data,before);assert.equal((await app.call('/api/order-rules','A',inside)).status,200);assert.deepEqual((await app.call()).data.config,inside);assert.deepEqual((await app.call('/api/order-rules','B')).data.config,{version:1,enabled:false,rules:[]});assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+for(const mode of ['zero','below','threshold','missing','rewarded-only','string','overflow','foreign','generation','source','failed','changed-capture'])test('observed order count cached API requires exact source '+mode,async()=>{
+ const app=await harness();try{
+  const data=progressSnapshot(),count=mode==='zero'?0:mode==='threshold'?13:mode==='string'?'0':mode==='overflow'?2147483648:12;for(const raw of [data.ok.OnWaterRequest,data.raw.OnWaterRequest,data.facts.OnWaterRequest.value]){raw.orderOfTheDay={orderNum:count,rewardedNum:0};if(['missing','rewarded-only'].includes(mode))delete raw.orderOfTheDay.orderNum;}
+  if(mode==='foreign')data.facts.OnWaterRequest.provenance.accountId='B';if(mode==='generation')data.facts.OnWaterRequest.provenance.generation=1;if(mode==='source')data.facts.OnWaterRequest.provenance.source='OtherResponse';if(mode==='failed')data.outcomes.OnWaterRequest.status='FAILED';if(mode==='changed-capture')data.facts.OnWaterRequest.value.orderOfTheDay.orderNum=99;
+  const before=structuredClone(data);app.sessions.set('A',cached(data));const cfg=policy([rule('observed-count',1,'OBSERVED_ORDER_COUNT',{value:13,operator:'LT'},'REFRESH')]),result=await preview(app,cfg);assert.equal(result.status,200);if(mode==='failed'){assert.equal(result.data.status,'UNKNOWN');assert.deepEqual(result.data.orders,[]);assert.deepEqual(data,before);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(fs.existsSync(ORDER_RULES_PATH),false);return;}const row=result.data.orders[0].result.ruleResults[0];assert.equal(row.status,['zero','below'].includes(mode)?'PASS':mode==='threshold'?'FAIL':'UNKNOWN');assert.equal(row.countObservation.value,['zero','below','threshold'].includes(mode)?count:null);assert.equal(result.data.orders[0].result.decision,mode==='threshold'?'RECOMMEND_REFRESH':['zero','below'].includes(mode)?'RECOMMEND_KEEP':'NEEDS_REVIEW');assert.equal(result.data.progress.period.status,'UNKNOWN');assert.deepEqual(data,before);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(fs.existsSync(ORDER_RULES_PATH),false);
  }finally{await app.close();}
 });

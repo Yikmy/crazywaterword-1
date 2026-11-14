@@ -153,6 +153,7 @@ export function decorateOrderSurvey(survey, responses, config = null) {
   }
   return { ...survey, orderReliability: { orders: orders !== null, counter: orderNum !== null },
     rawOrderMetadata: { orders, orderNum },
+    orderProgress: summarizeOrderProgress({ progress: observeOrderProgress(config, { orderOfTheDay: water?.orderOfTheDay }) }),
     orderRewardSources: Array.isArray(water?.workerOrder) ? water.workerOrder.map(raw => ({index:indexOf(raw?.index),evidence:configuredBaseOrderReward(config,raw)})) : [] };
 }
 export async function surveyOrderExecution(client, protocol, { survey = surveyWorld, ...options } = {}) {
@@ -178,7 +179,7 @@ export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(
   for (const order of survey?.orders ?? []) {
     const state = snapshot(order), identity = state ? hash(state) : null;
     const costs = state?.requirements ?? [];
-    const ruleResult = evaluateOrder(order, survey.stockReliable === true ? survey.stock : null, policy, { localTimeMs });
+    const ruleResult = evaluateOrder(order, survey.stockReliable === true ? survey.stock : null, policy, { localTimeMs, observedOrderCount: survey.orderProgress?.completed.value });
     const actionType = { RECOMMEND_SUBMIT: 'SUBMIT', RECOMMEND_REFRESH: 'REFRESH', RECOMMEND_KEEP: 'KEEP', NEEDS_REVIEW: 'REVIEW' }[ruleResult.decision];
     const actionId = `orders:${actionType}:${hash({ identity, policy })}`;
     const selected = selectedIds === null || selectedIds.has(actionId);
@@ -245,7 +246,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     const current = trustedOrder(beforeSurvey, indexOf(operation.target.index));
     beforeState = snapshot(current);
     if (!beforeState || hash(beforeState) !== operation.identity) throw notExecuted('订单身份已变化，请重新规划');
-    const ruleResult = evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock() });
+    const ruleResult = evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock(), observedOrderCount: beforeSurvey.orderProgress?.completed.value });
     const expectedDecision = operation.actionType === 'SUBMIT' ? 'RECOMMEND_SUBMIT' : 'RECOMMEND_REFRESH';
     if (ruleResult.decision !== expectedDecision) throw notExecuted('当前订单不再符合已规划的规则动作');
     if (beforeSurvey.stockReliable !== true) throw notExecuted('当前库存来源不可靠');
@@ -267,7 +268,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     if (refreshReservation) budget.orderRefreshQuotas.set(refreshReservation.source, refreshReservation.after);
     reservationBefore = budget.ledger?.reserved instanceof Map ? [...budget.ledger.reserved].map(([id, num]) => ({ id, num })) : [];
     const assertLocalWindow = () => {
-      if (policy.rules.some(rule => rule.enabled && rule.type === 'LOCAL_TIME_WINDOW') && evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock() }).decision !== expectedDecision) throw notExecuted('本地策略时窗已变化，原订单计划不再符合规则动作');
+      if (policy.rules.some(rule => rule.enabled && rule.type === 'LOCAL_TIME_WINDOW') && evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock(), observedOrderCount: beforeSurvey.orderProgress?.completed.value }).decision !== expectedDecision) throw notExecuted('本地策略时窗已变化，原订单计划不再符合规则动作');
     };
     const dispatchOptions = options => ({ ...options, beforeDispatch: () => { active(); assertLocalWindow(); options?.beforeDispatch?.(); } });
     const guarded = new Proxy(client, { get(target, key) {

@@ -224,6 +224,9 @@ function coreRejectionIdentity(operation,{context}={}) {
   if(operation.module==='orders'){
     if(!operation.ruleResult)return null;
     result.ruleResult=structuredClone(operation.ruleResult);
+    // A changing global observation never expires a refusal for the same order.
+    // Keep the declared threshold, source and decision; omit only the read count.
+    for(const row of result.ruleResult.ruleResults??[])if(row.type==='OBSERVED_ORDER_COUNT'&&row.countObservation)delete row.countObservation.value;
   }else{
     if(!operation.expectedState)return null;
     result.expectedState=structuredClone(operation.expectedState);

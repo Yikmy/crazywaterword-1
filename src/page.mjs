@@ -793,6 +793,7 @@ function orderRuleParams(type) {
   if (type === 'ITEM_FORBIDDEN' || type === 'ITEM_REQUIRED') return { itemIds: [] };
   if (type === 'MIN_EXPERIENCE') return { value: 700, operator: 'GT' };
   if (type === 'MAX_ITEM_COUNT') return { itemId: '', value: 1 };
+  if (type === 'OBSERVED_ORDER_COUNT') return { value: null, operator: 'LT' };
   if (type === 'LOCAL_TIME_WINDOW') return { start: '', end: '', timeZone: 'Asia/Shanghai' };
   return {};
 }
@@ -856,6 +857,10 @@ function renderOrderRulesEditor() {
     } else if (rule.type === 'MAX_ITEM_COUNT') {
       addField('限制的原始物品 ID', itemInput('itemId', rule.params.itemId || '', (value) => { rule.params.itemId = value.trim(); }));
       addField('需求数量上限', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));
+    } else if (rule.type === 'OBSERVED_ORDER_COUNT') {
+      addField('完成计数比较', select([['LT', '<'], ['LTE', '≤']], rule.params.operator, 'operator', (value) => { rule.params.operator = value; }));
+      addField('用户明确阈值', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));
+      fields.appendChild(el('span', 'dim', '仅比较当前原响应的已完成计数；缺失转人工检查。周期未知，不是每日剩余额度、已领奖阈值或刷新资格；每次提交前重新调查。'));
     } else if (rule.type === 'LOCAL_TIME_WINDOW') {
       for (const [field, label] of [['start', '上海本地起点（包含）'], ['end', '上海本地终点（不含）']]) {
         const input = el('input'); input.type = 'time'; input.step = '60'; input.dataset.field = field; input.value = rule.params[field] || '';

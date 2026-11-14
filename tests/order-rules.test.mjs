@@ -26,7 +26,7 @@ test('configuration canonicalization sorts by priority and never aliases editabl
   result.rules[0].params.itemIds.push('new-id');
   assert.deepEqual(input.rules[1].params.itemIds, [itemId]);
   assert.deepEqual(input.rules.map(({ id }) => id), ['experience', 'forbidden']);
-  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE', 'LOCAL_TIME_WINDOW']);
+  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE', 'LOCAL_TIME_WINDOW', 'OBSERVED_ORDER_COUNT']);
 });
 
 test('unsupported versions, rule types, duplicate ids/priorities and invalid parameters fail closed', () => {
@@ -223,3 +223,12 @@ for(const [onFail,decision]of [['KEEP','RECOMMEND_KEEP'],['REFRESH','RECOMMEND_R
 test('explicit local strategy window does not alter refusal identity on each clock tick or bypass stock',()=>{
  const policy=rules(localWindowRule()),at=Date.parse('2026-11-15T09:00:00+08:00');assert.deepEqual(evaluateOrder(order(),inventory(),policy,{localTimeMs:at}),evaluateOrder(order(),inventory(),policy,{localTimeMs:at+3600000}));assert.equal(evaluateOrder(order(),new Map(),policy,{localTimeMs:at}).decision,'RECOMMEND_KEEP');const disabled=localWindowRule();disabled.enabled=false;assert.equal(evaluateOrder(order(),inventory(),rules(disabled)).decision,'RECOMMEND_SUBMIT');
 });
+
+const countRule=(value=4,operator='LT',onFail='KEEP')=>({id:'observed-count',priority:1,type:'OBSERVED_ORDER_COUNT',enabled:true,params:{value,operator},onFail});
+for(const [value,operator,observedOrderCount,pass]of [[4,'LT',3,true],[4,'LT',4,false],[4,'LTE',4,true],[4,'LTE',5,false],[0,'LT',0,false],[0,'LTE',0,true],[2147483647,'LTE',2147483647,true]])test('observed order count explicit threshold '+[value,operator,observedOrderCount],()=>{
+ const policy=rules(countRule(value,operator)),before=structuredClone(policy),result=evaluateOrder(order(),inventory(),policy,{observedOrderCount});assert.equal(result.ruleResults[0].status,pass?'PASS':'FAIL');assert.equal(result.decision,pass?'RECOMMEND_SUBMIT':'RECOMMEND_KEEP');assert.deepEqual(result.ruleResults[0].countObservation,{status:'OBSERVED',value:observedOrderCount,source:'OnWaterResponse.orderOfTheDay.orderNum',period:'UNKNOWN',gameDay:null,refreshEligibility:null});assert.deepEqual(result.ruleResults[0].countPolicy,{operator,value});assert.deepEqual(evaluateOrders([order()],inventory(),policy,{observedOrderCount})[0],result);assert.deepEqual(policy,before);
+});
+for(const observedOrderCount of [undefined,null,-1,NaN,Infinity,1.5,2147483648,'0',0n])test('observed order count unknown is never zero or REFRESH '+String(observedOrderCount),()=>{const result=evaluateOrder(order(),inventory(),rules(countRule(4,'LT','REFRESH')),{observedOrderCount});assert.equal(result.decision,'NEEDS_REVIEW');assert.equal(result.ruleResults[0].status,'UNKNOWN');assert.equal(result.ruleResults[0].countObservation.value,null);});
+for(const params of [{value:null},{value:-1},{value:1.5},{value:2147483648},{operator:'GTE'},{operator:'lt'},{period:'daily'},{orderNum:0},{source:'rewardedNum'}])test('observed order count rejects ambiguous user policy '+JSON.stringify(params),()=>{const rule=countRule();Object.assign(rule.params,params);assert.throws(()=>validateOrderRules(rules(rule)),/完成计数筛选/);});
+for(const [onFail,decision]of [['KEEP','RECOMMEND_KEEP'],['REFRESH','RECOMMEND_REFRESH'],['REVIEW','NEEDS_REVIEW']])test('observed order count retains original failure advice '+onFail,()=>{const result=evaluateOrder(order(),inventory(),rules(countRule(4,'LT',onFail)),{observedOrderCount:4});assert.equal(result.decision,decision);assert.equal(result.inventory.status,'SKIPPED');});
+test('observed order count rule respects first failure, disabled rules and independent stock',()=>{const r=countRule();r.enabled=false;assert.equal(evaluateOrder(order(),inventory(),rules(r)).decision,'RECOMMEND_SUBMIT');assert.equal(evaluateOrder(order(),new Map(),rules(countRule()),{observedOrderCount:3}).decision,'RECOMMEND_KEEP');const first=forbidden({params:{itemIds:[breadId]}}),next=countRule();next.priority=2;assert.deepEqual(evaluateOrder(order(),inventory(),rules(first,next)).ruleResults.map(r=>r.status),['FAIL','SKIPPED']);});

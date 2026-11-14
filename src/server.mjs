@@ -531,7 +531,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
             || (inventory.has(need.id) && safeQuantity(inventory.get(need.id)) === null)) inventory.set(need.id, null);
       }
     }
-    const results = evaluateOrders(orders, inventory, policy, { localTimeMs: Date.now() });
     const waitConfig = loadConfigSafe(), resolveWaitType = makeTypeResolver(waitConfig);
     const captured = name => {
       const source = orderSource(snapshot, name), fact = snapshot?.facts?.[name], p = fact?.provenance;
@@ -541,13 +540,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         && JSON.stringify(fact.value) === JSON.stringify(source.raw) ? fact : null;
     };
     const waterFact = captured('OnWaterRequest'), effectFact = captured('GameEffectRequest');
+    const progress = observeOrderProgress(waitConfig, { orderOfTheDay: waterFact?.value?.orderOfTheDay, effects: effectFact?.value });
+    const results = evaluateOrders(orders, inventory, policy, { localTimeMs: Date.now(), observedOrderCount: progress.completed.value });
     const factoryRows = waterFact && Array.isArray(water.raw.building) ? water.raw.building.map(b => ({ ...b, type: typeof b?.buildingId === 'string' ? resolveWaitType(b.buildingId) : null })) : null;
     const serverTimeMs = waterFact && Number.isSafeInteger(waterFact.provenance.serverTime) && waterFact.provenance.serverTime >= 0 ? waterFact.provenance.serverTime : null;
     const estimateStock = waterFact && captured('AllItemRequest') && captured('AllResourceRequest') && itemsKnown && resourcesKnown && invalidItems.size === 0
       && new Set(itemData.raw.items.map(row => row.itemId ?? row.id)).size === itemData.raw.items.length
       && new Set(resourceData.raw.list.map(row => row.res)).size === resourceData.raw.list.length ? stockFromResponses(itemData.raw, resourceData.raw) : null;
     return { ...base, status: 'SUCCESS', error: null,
-      progress: observeOrderProgress(waitConfig, { orderOfTheDay: waterFact?.value?.orderOfTheDay, effects: effectFact?.value }),
+      progress,
       orders: orders.map((order, index) => {
         const totals = new Map();
         for (const need of order.requirements ?? []) totals.set(need.id, (totals.get(need.id) ?? 0) + need.num);
