@@ -44,7 +44,7 @@ let exState={stage:null,rows:[]};
 let antiqueState={pending:false};
 let gpRevision = 0, gpToken = null, wfData = null, wfPending = false, wfPlan = null;
 let wfBudgetDraft = null, wfPolicyDraft = null;
-let wfHistoryRows = [], wfHistoryPending = false, wfHistoryRevision = 0;
+let wfHistoryRows = [], wfHistoryPending = false, wfHistoryRevision = 0, wfHistoryReference = null;
 let wfGraph = {version:1,id:'workflow-1',name:'新工作流',nodes:[{id:'start',type:'START'},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'stop'}]};
 function gpEl(tag,text) { const e=document.createElement(tag); if(text!==undefined)e.textContent=String(text); return e; }
 function gpClear(e) { e.textContent=''; return e; }
@@ -1026,7 +1026,7 @@ function wfHistoryControls() {
   $('wf-history-read').disabled = !current || wfHistoryPending || !wfHistoryRows.some(row => row.runId === $('wf-history-selected').value);
 }
 function wfHistoryChanged() {
-  wfHistoryRevision++; wfHistoryPending = false;
+  wfHistoryRevision++; wfHistoryPending = false; wfHistoryReference = null;
   gpClear($('wf-history-detail')); $('wf-history-hint').textContent = '';
   wfHistoryControls();
 }
@@ -1123,8 +1123,21 @@ function wfHistoryRender(data) {
   };box.appendChild(memoryButton);
   $('wf-history-hint').textContent = '只读历史；原始 UNKNOWN 保留，读取不会继续或重发动作。';
 }
+function readWorkflowHistoryEvidence(expected) {
+  const id=value=>typeof value==='string'&&value.length>0&&value.length<=512&&value.trim()===value;
+  if(expected?.accountId!==current||!id(expected.workflowRunId)||!id(expected.workflowDefinitionId)||!Object.hasOwn(expected,'executionContext'))return;
+  const ctx=expected.executionContext;
+  if(ctx!==null&&(!ctx||typeof ctx!=='object'||Array.isArray(ctx)||ctx.accountId!==current||['playerId','worldId','generation','connectionId'].some(key=>!Object.hasOwn(ctx,key))))return;
+  // This reference comes from the existing readonly memory projection, not a
+  // graph or a resumable run. Only the original history reader is invoked.
+  const reference={accountId:expected.accountId,workflowRunId:expected.workflowRunId,workflowDefinitionId:expected.workflowDefinitionId,executionContext:JSON.parse(JSON.stringify(expected.executionContext))};
+  wfHistoryList([...wfHistoryRows.filter(row=>row.runId!==reference.workflowRunId),{accountId:current,runId:reference.workflowRunId,status:'原记忆引用'}]);
+  $('wf-history-selected').value=reference.workflowRunId;wfHistoryChanged();wfHistoryReference=reference;
+  $('wf-history-selected').scrollIntoView?.({block:'start'});
+  return wfReadHistory();
+}
 async function wfReadHistory() {
-  const runId = $('wf-history-selected').value;
+  const runId = $('wf-history-selected').value, reference = wfHistoryReference;
   if (!current || wfHistoryPending || !wfHistoryRows.some(row => row.runId === runId)) return;
   const scope = viewGuard.begin('workflow-history'), revision = gpRevision, requestRevision = ++wfHistoryRevision;
   const live = () => gpSafe(scope, revision) && requestRevision === wfHistoryRevision && $('wf-history-selected').value === runId;
@@ -1133,7 +1146,11 @@ async function wfReadHistory() {
     const data = await call('/api/workflows/history?workflowRunId=' + encodeURIComponent(runId), undefined, scope);
     if (!live()) return;
     if (data.accountId !== scope.account || data.workflowRunId !== runId || data.readOnly !== true || data.resumable !== false || !Array.isArray(data.nodes)) throw Error('工作流历史归属不匹配');
-    wfOriginalHistory(data);
+    const original=wfOriginalHistory(data);
+    if(reference){
+      const sameContext=(actual,expected)=>actual===null||expected===null?actual===expected:['accountId','playerId','worldId','generation','connectionId'].every(key=>actual[key]===expected[key]);
+      if(reference.accountId!==scope.account||reference.workflowRunId!==runId||reference.workflowDefinitionId!==data.workflowDefinitionId||!original||!sameContext(original.executionContext,reference.executionContext))throw Error('原工作流历史与记忆引用的流程或身份不匹配');
+    }
     wfHistoryRender(data);
   } catch (error) {
     if (live()) { gpClear($('wf-history-detail')); $('wf-history-hint').textContent = '历史读取失败：' + error.message; }
@@ -1409,8 +1426,8 @@ function wfCandidateControls(card,node){const cached=wfCandidateCache.get(node.i
 async function wfFetchCandidates(node){if(wfPending||wfData?.status?.running||!current||!snapshot?.connected||!gameplayCsrfToken())return;const scope=viewGuard.begin('workflow-candidate-'+node.id),revision=gpRevision,edit=wfEdit,signature=wfCandidateSignature(node),module=node.module,parameters=JSON.parse(JSON.stringify(node.parameters||{}));$('wf-hint').textContent='正在只读采集 '+module+' 候选；不会授权或执行。';try{const data=await operationMutation('/api/gameplay/survey',{module,parameters},scope);if(!gpSafe(scope,revision)||edit!==wfEdit||!wfGraph.nodes.includes(node)||signature!==wfCandidateSignature(node))return;if(data.accountId!==scope.account||data.module!==module)throw Error('候选账号或模块不匹配');wfCandidateCache.set(node.id,{signature,rows:data.view?.candidates||[],orders:module==='orders'?data.view?.orders||[]:[],progress:module==='orders'?data.view?.progress:null});wfRenderGraph();$('wf-hint').textContent='采集完成；请选择具体候选，保存图后再开始流程。';}catch(error){if(gpSafe(scope,revision)&&edit===wfEdit)$('wf-hint').textContent='候选采集失败：'+error.message;}}
 function wfDraw(){if(typeof document.createElementNS!=='function')return;const svg=gpClear($('wf-canvas')),height=Math.max(120,Math.ceil(wfGraph.nodes.length/4)*100);svg.setAttribute('viewBox','0 0 800 '+height);const positions=new Map(wfGraph.nodes.map((node,index)=>[node.id,{x:20+index%4*200,y:20+Math.floor(index/4)*100}]));const create=(tag,attrs,text)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value]of Object.entries(attrs))el.setAttribute(key,String(value));if(text!==undefined)el.textContent=String(text);svg.appendChild(el);return el;};for(const edge of wfGraph.edges){const a=positions.get(edge.from),b=positions.get(edge.to);if(!a||!b)continue;create('line',{x1:a.x+150,y1:a.y+24,x2:b.x,y2:b.y+24,stroke:'#7c8695','stroke-width':2});create('text',{x:(a.x+b.x+150)/2,y:(a.y+b.y)/2+15,fill:'#e0bd6a','font-size':11},edge.when||'→');}for(const node of wfGraph.nodes){const p=positions.get(node.id);create('rect',{x:p.x,y:p.y,width:150,height:48,rx:6,fill:'#21252c',stroke:'#7c8695'});create('text',{x:p.x+8,y:p.y+19,fill:'#d5dae1','font-size':12},node.id);create('text',{x:p.x+8,y:p.y+37,fill:'#9ca6b5','font-size':11},node.type+(node.module?' · '+node.module:''));}}
 function wfAcceptGraph(graph){if(!graph||graph.version!==1||typeof graph.id!=='string'||typeof graph.name!=='string'||!Array.isArray(graph.nodes)||!Array.isArray(graph.edges)||graph.nodes.length>50||graph.edges.length>100)throw Error('图需要 version:1、id、name、nodes 和 edges；最多50节点100连线');wfCandidateCache.clear();wfGraph=JSON.parse(JSON.stringify(graph));wfChanged();wfRenderGraph();}
-function wfRender(data,scope){gpTokenFrom(data,scope);if(Array.isArray(data.history))wfHistoryList(data.history);wfData={...wfData,...data};const status=data.status||wfData.status||{};$('wf-status').textContent=gpJson(status);if(data.graphs||data.examples){wfList=[...(data.graphs||[]),...(data.examples||[])].map(row=>row.graph||row);const select=gpClear($('wf-saved'));for(const graph of wfList){const option=gpEl('option',graph.name||graph.id);option.value=graph.id;select.appendChild(option);}}const pending=data.pendingPlan||data.plan||status.pendingPlan||status.plan;if(!pending&&!['AWAITING_AUTHORIZATION','AWAITING_VERIFICATION'].includes((status.status??status.state))){wfPlan=null;gpClear($('wf-plan'));}if(pending?.actions?.length){if(pending.accountId!==current)throw Error('流程 ACTION 计划账号不匹配');wfPlan=pending;gpRenderPlan($('wf-plan'),pending);$('wf-hint').textContent='流程已在 ACTION 暂停，等待以上具体计划的授权。';}wfControls();}
-async function refreshWorkflows(){if(!current||wfPending)return;const scope=viewGuard.begin('workflow'),revision=gpRevision;wfPending=true;wfControls();try{const data=await call('/api/workflows',undefined,scope);if(gpSafe(scope,revision))wfRender(data,scope);}catch(error){if(gpSafe(scope,revision)){$('wf-hint').textContent='读取失败：'+error.message;wfHistoryReset();wfData=null;wfPlan=null;gpClear($('wf-plan'));}}finally{if(gpSafe(scope,revision)){wfPending=false;wfControls();}}}
+function wfRender(data,scope){gpTokenFrom(data,scope);if(Array.isArray(data.history)&&!wfHistoryReference)wfHistoryList(data.history);wfData={...wfData,...data};const status=data.status||wfData.status||{};$('wf-status').textContent=gpJson(status);if(data.graphs||data.examples){wfList=[...(data.graphs||[]),...(data.examples||[])].map(row=>row.graph||row);const select=gpClear($('wf-saved'));for(const graph of wfList){const option=gpEl('option',graph.name||graph.id);option.value=graph.id;select.appendChild(option);}}const pending=data.pendingPlan||data.plan||status.pendingPlan||status.plan;if(!pending&&!['AWAITING_AUTHORIZATION','AWAITING_VERIFICATION'].includes((status.status??status.state))){wfPlan=null;gpClear($('wf-plan'));}if(pending?.actions?.length){if(pending.accountId!==current)throw Error('流程 ACTION 计划账号不匹配');wfPlan=pending;gpRenderPlan($('wf-plan'),pending);$('wf-hint').textContent='流程已在 ACTION 暂停，等待以上具体计划的授权。';}wfControls();}
+async function refreshWorkflows(){if(!current||wfPending)return;if(wfHistoryReference)wfHistoryChanged();const scope=viewGuard.begin('workflow'),revision=gpRevision;wfPending=true;wfControls();try{const data=await call('/api/workflows',undefined,scope);if(gpSafe(scope,revision))wfRender(data,scope);}catch(error){if(gpSafe(scope,revision)){$('wf-hint').textContent='读取失败：'+error.message;if(!wfHistoryReference)wfHistoryReset();wfData=null;wfPlan=null;gpClear($('wf-plan'));}}finally{if(gpSafe(scope,revision)){wfPending=false;wfControls();}}}
 async function wfMutation(action){if(wfPending||!wfData||!gameplayCsrfToken())return;const scope=viewGuard.begin('workflow'),revision=gpRevision,edit=wfEdit;wfPending=true;wfControls();wfRenderGraph();try{const data=await operationMutation('/api/workflows/'+action,['resume','stop'].includes(action)?{}:{graph:wfGraph},scope);if(!gpSafe(scope,revision)||edit!==wfEdit)return;wfRender(data,scope);$('wf-result').textContent=gpJson(data.simulation||data.result||data);if(!wfPlan)$('wf-hint').textContent={save:'图已保存。',simulate:'模拟完成，没有执行游戏写操作。',start:'流程已启动；ACTION 等待具体授权。',resume:'已请求验证历史并继续。',stop:'已停止后续流程。'}[action];}catch(error){if(gpSafe(scope,revision))$('wf-hint').textContent='流程停止：'+error.message;}finally{if(gpSafe(scope,revision)){wfPending=false;wfRenderGraph();wfControls();}}}
 function wfOpenUnified(entry){
  if(!current||wfPending||wfData?.status?.running)return;
@@ -1426,7 +1443,7 @@ async function wfPrepareUnified(){if(wfPending||!current||!gameplayCsrfToken()||
 for(const entry of ['tasks','dailies','loop'])$(entry+'-unified').onclick=()=>wfOpenUnified(entry);
 $('wf-unified-prepare').onclick=wfPrepareUnified;
 $('wf-load').onclick=refreshWorkflows;$('wf-open').onclick=()=>{if(!wfEditorEditable())return;try{const graph=wfList.find(row=>row.id===$('wf-saved').value);if(!graph)throw Error('请选择已保存的图');wfAcceptGraph(graph);}catch(error){$('wf-hint').textContent=error.message;}};for(const action of ['save','simulate','start','resume','stop'])$('wf-'+action).onclick=()=>{if(!$('wf-'+action).disabled)return wfMutation(action);};$('wf-id').oninput=()=>{if(!wfEditorEditable())return;wfGraph.id=$('wf-id').value;wfChanged();};$('wf-name').oninput=()=>{if(!wfEditorEditable())return;wfGraph.name=$('wf-name').value;wfChanged();};$('wf-add').onclick=()=>{if(!wfEditorEditable())return;let sequence=wfGraph.nodes.length+1,id;do{id='node-'+sequence++;}while(wfGraph.nodes.some(node=>node.id===id));wfGraph.nodes.push({id:id,type:'SURVEY',module:'formation',parameters:{}});wfChanged();wfRenderGraph();};$('wf-add-edge').onclick=()=>{if(!wfEditorEditable()||wfGraph.nodes.length<2)return;wfGraph.edges.push({from:wfGraph.nodes[0].id,to:wfGraph.nodes[wfGraph.nodes.length-1].id});wfChanged();wfRenderGraph();};$('wf-json-apply').onclick=()=>{if(!wfEditorEditable())return;try{wfAcceptGraph(gpParse('wf-json'));}catch(error){$('wf-hint').textContent=error.message;}};$('wf-authorize').onclick=()=>gpAuthorize(null,wfPlan,'workflow');
-function gameplayPoll(tab){if(tab==='workflow'||wfData?.status?.running)return refreshWorkflows();if(GP_MODULES.includes(tab))return refreshGameplay(tab);const running=GP_MODULES.find(id=>gpGet(id).data?.status?.running);if(running)return refreshGameplay(running);}
+function gameplayPoll(tab){if(tab==='workflow'&&wfHistoryReference)return;if(tab==='workflow'||wfData?.status?.running)return refreshWorkflows();if(GP_MODULES.includes(tab))return refreshGameplay(tab);const running=GP_MODULES.find(id=>gpGet(id).data?.status?.running);if(running)return refreshGameplay(running);}
 function wfSetting(id){return wfSettings[id]||(wfSettings[id]={config:null,scope:null});}
 function wfSettingReady(id){const setting=wfSetting(id);return Boolean(current&&setting.config&&setting.scope&&viewGuard.current(setting.scope)&&gameplayCsrfToken());}
 function wfSettingsControls(){for(const id of Object.keys(WF_SETTING_NAMES)){const ready=wfSettingReady(id),locked=wfPending||Boolean(snapshot?.busy)||wfData?.status?.running===true;$('wf-'+id+'-load').disabled=!current||wfPending;$('wf-'+id+'-enabled').disabled=!ready||locked;$('wf-'+id+'-save').disabled=!ready||locked;}}
@@ -1441,7 +1458,7 @@ function captureStageRecommendationEditor(){
  const current=()=>wfEditorEditable()&&wfEdit===edit&&wfGraph===graph;
  return {current,accept(value){if(!current())throw Error('工作流编辑状态已变化，请重新准备');wfAcceptGraph(value);}};
 }
-Object.assign(globalThis,{captureStageRecommendationEditor,stageRecommendationEditable:wfEditorEditable,resetGameplay,gameplayCsrfToken,refreshGameplay,refreshWorkflows,gameplayActivate,gameplayPoll});
+Object.assign(globalThis,{captureStageRecommendationEditor,stageRecommendationEditable:wfEditorEditable,resetGameplay,gameplayCsrfToken,refreshGameplay,refreshWorkflows,readWorkflowHistoryEvidence,gameplayActivate,gameplayPoll});
 resetGameplay();
 
 }

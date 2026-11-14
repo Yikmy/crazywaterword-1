@@ -25,7 +25,7 @@ function harness() {
   const nodes = new Map(), requests = [], timers = [], confirmations = [], streams = [];
   let confirmed = true;
   const node = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
-  const tabs = ['overview', 'order-rules', 'orders-execution', 'city', 'production', 'operations-history', 'stages'].map((tab) => { const button = new Element('button'); button.dataset.tab = tab; return button; });
+  const tabs = ['overview', 'order-rules', 'orders-execution', 'city', 'production', 'operations-history', 'stages', 'workflow'].map((tab) => { const button = new Element('button'); button.dataset.tab = tab; return button; });
   const context = vm.createContext({
     URL, location: { href: 'http://127.0.0.1:17321/' },
     document: { getElementById: node, createElement: (tag) => new Element(tag), createTextNode: (text) => { const entry = new Element(); entry.textContent = text; return entry; }, querySelectorAll: (selector) => selector === '#tabs button' ? tabs : [] },
@@ -866,4 +866,51 @@ test('full PAGE Workflow memory causes cannot return after filter or A-B-A chang
  const h=await boot(),oldTask=h.node('ops-memory-load').onclick(),old=h.pending('/api/operations/memory','A');h.node('ops-memory-run-id').value='operation-filter';h.node('ops-memory-run-id').oninput();const filters={runId:'operation-filter'},freshTask=h.node('ops-memory-load').onclick(),fresh=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);
  settleMemoryRequest(fresh,memoryFixture('A',{summary:workflowMemorySummary(workflowMemoryReasons({filters,runs:[]}),filters)}));await freshTask;const shown=memoryText(h);settleMemoryRequest(old,memoryFixture('A',{summary:workflowMemorySummary()}));await oldTask;assert.equal(memoryText(h),shown);assert.doesNotMatch(memoryText(h),/original workflow/);
  const lateTask=h.node('ops-memory-load').onclick(),late=h.pending('/api/operations/memory','A');h.run("selectAccount('B')");h.run("selectAccount('A')");settleMemoryRequest(late,memoryFixture('A',{summary:workflowMemorySummary()}));await lateTask;assert.doesNotMatch(memoryText(h),/original workflow/);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+const workflowMemoryButton=h=>descendants(h.node('ops-memory-coverage')).find(row=>row.dataset.memoryWorkflow);
+const workflowMemoryDetail=(row=workflowMemoryReasons().runs[0])=>({accountId:row.accountId,workflowRunId:row.workflowRunId,workflowDefinitionId:row.workflowDefinitionId,readOnly:true,resumable:false,status:'RECOVERED_STOPPED',recovered:true,currentNode:'condition',reason:'recovery display only',unlinkedOperationCount:0,nodes:[],reasonAudit:structuredClone(row)});
+const mountWorkflowNavigation=h=>h.run("document.querySelector=selector=>document.querySelectorAll('#tabs button').find(button=>selector==='#tabs button[data-tab=\"'+button.dataset.tab+'\"]');");
+
+test('full PAGE memory navigates to exact Workflow original history using one local GET and no plan load',async()=>{
+ const h=await boot();mountWorkflowNavigation(h);await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const button=workflowMemoryButton(h);assert.ok(button);h.node('wf-json').value='original unsaved draft';const count=h.requests.length;
+ const reading=button.onclick(),request=h.pending('/api/workflows/history','A');assert.ok(request);assert.deepEqual([...new URL(request.url,'http://local').searchParams.keys()].sort(),['account','workflowRunId']);assert.equal(new URL(request.url,'http://local').searchParams.get('workflowRunId'),'workflow-memory');assert.equal(h.node('wf-history-selected').value,'workflow-memory');assert.equal(h.tabs.find(t=>t.dataset.tab==='workflow').classList.contains('on'),true);assert.equal(h.node('operations-batch').classList.contains('hidden'),true);
+ await h.run("gameplayPoll('workflow')");assert.equal(h.requests.length,count+1);h.respond('/api/workflows/history','A',workflowMemoryDetail());await reading;
+ for(const value of ['原始记录状态：UNKNOWN','角色 9007199254740993','世界 0','original workflow <script>pause</script>'])assert.ok(h.node('wf-history-detail').textContent.includes(value),value);
+ await h.run("gameplayPoll('workflow')");assert.equal(h.requests.length,count+1);assert.equal(h.node('wf-json').value,'original unsaved draft');assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.node('wf-start').disabled,true);assert.equal(h.confirmations.length,0);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);assert.equal(h.pending('/api/workflows','A'),undefined);assert.equal(h.pending('/api/gameplay','A'),undefined);
+ const explicit=h.node('wf-load').onclick();assert.ok(h.pending('/api/workflows','A'));h.respond('/api/workflows','A',{accountId:'A',status:{status:'IDLE'},history:[]});await explicit;assert.equal(h.node('wf-history-detail').textContent,'');
+});
+
+for(const kind of ['filter','pending','replacement','account-return'])test('Workflow memory navigation callback expires after '+kind,async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const button=workflowMemoryButton(h);let reading;
+ if(kind==='filter'){h.node('ops-memory-workflow-id').value='other';h.node('ops-memory-workflow-id').oninput();}
+ if(kind==='pending')reading=h.node('ops-memory-load').onclick();if(kind==='replacement')await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));if(kind==='account-return')h.run("selectAccount('B');selectAccount('A')");
+ const count=h.requests.length;await button.onclick();assert.equal(h.requests.length,count);if(reading){h.respond('/api/operations/memory','A',memoryFixture('A',{summary:workflowMemorySummary()}));await reading;}assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+
+test('Workflow memory navigation rejects wrong graph and original identities without showing partial evidence',async()=>{
+ for(const mutate of [d=>d.accountId='B',d=>d.workflowRunId='other',d=>d.workflowDefinitionId='changed-definition',d=>d.resumable=true,d=>{delete d.reasonAudit;},d=>d.reasonAudit.executionContext=null,...['accountId','playerId','worldId','generation','connectionId'].map(key=>d=>d.reasonAudit.executionContext[key]=key==='generation'?4:key==='worldId'?1:'different')]){
+  const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const reading=workflowMemoryButton(h).onclick(),detail=workflowMemoryDetail();mutate(detail);h.respond('/api/workflows/history','A',detail);await reading;assert.equal(h.node('wf-history-detail').textContent,'');assert.match(h.node('wf-history-hint').textContent,/历史读取失败/);assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+ }
+});
+
+test('Workflow memory navigation cannot be replaced by an older target or account response',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const oldTask=workflowMemoryButton(h).onclick(),old=h.pending('/api/workflows/history','A');
+ const wf=workflowMemoryReasons();wf.runs[0].workflowRunId='new/workflow';wf.runs[0].workflowDefinitionId='new-definition';await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(wf)}));const freshTask=workflowMemoryButton(h).onclick(),fresh=h.requests.filter(r=>!r.settled&&new URL(r.url,'http://local').pathname==='/api/workflows/history').at(-1);assert.equal(new URL(fresh.url,'http://local').searchParams.get('workflowRunId'),'new/workflow');
+ settleMemoryRequest(fresh,workflowMemoryDetail(wf.runs[0]));await freshTask;const shown=h.node('wf-history-detail').textContent;settleMemoryRequest(old,workflowMemoryDetail());await oldTask;assert.equal(h.node('wf-history-detail').textContent,shown);assert.match(shown,/new\/workflow/);
+ const lateTask=workflowMemoryButton(h).onclick(),late=h.pending('/api/workflows/history','A');h.run("selectAccount('B');selectAccount('A')");settleMemoryRequest(late,workflowMemoryDetail(wf.runs[0]));await lateTask;assert.equal(h.node('wf-history-detail').textContent,'');assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+
+test('Workflow navigation failure stays readonly and legacy missing identity can only match equally unknown original identity',async()=>{
+ const h=await boot(),wf=workflowMemoryReasons();wf.runs[0].executionContext=null;await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(wf)}));let reading=workflowMemoryButton(h).onclick();h.respond('/api/workflows/history','A',workflowMemoryDetail(wf.runs[0]));await reading;assert.match(h.node('wf-history-detail').textContent,/角色 未知 · 世界 未知/);
+ reading=workflowMemoryButton(h).onclick();h.respond('/api/workflows/history','A',{error:'original file unavailable'},false);await reading;assert.equal(h.node('wf-history-detail').textContent,'');assert.match(h.node('wf-history-hint').textContent,/历史读取失败/);assert.equal(h.node('wf-history-read').disabled,false);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+
+test('in-flight Workflow refresh cannot replace a memory-selected original history',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const refreshing=h.run('refreshWorkflows()'),reading=workflowMemoryButton(h).onclick();assert.ok(h.pending('/api/workflows','A'));assert.ok(h.pending('/api/workflows/history','A'));
+ h.respond('/api/workflows','A',{accountId:'A',status:{status:'IDLE'},history:[]});await refreshing;assert.equal(h.node('wf-history-selected').value,'workflow-memory');h.respond('/api/workflows/history','A',workflowMemoryDetail());await reading;assert.match(h.node('wf-history-detail').textContent,/original workflow/);const count=h.requests.length;await h.run("gameplayPoll('workflow')");assert.equal(h.requests.length,count);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+});
+
+test('a late failed live Workflow read cannot erase selected original history',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));const refreshing=h.run('refreshWorkflows()'),reading=workflowMemoryButton(h).onclick();h.respond('/api/workflows','A',{error:'unavailable live state'},false);await refreshing;assert.equal(h.node('wf-history-selected').value,'workflow-memory');h.respond('/api/workflows/history','A',workflowMemoryDetail());await reading;assert.match(h.node('wf-history-detail').textContent,/original workflow/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
 });

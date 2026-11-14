@@ -1378,6 +1378,13 @@ function openOperationHistoryEvidence(expected) {
   if(typeof tab?.onclick==='function')return tab.onclick({historyEvidence:expected});
   return refreshOperationHistory(expected);
 }
+function openWorkflowHistoryEvidence(expected) {
+  const id=value=>typeof value==='string'&&value.length>0&&value.length<=512&&value.trim()===value;
+  if(expected?.accountId!==current||!id(expected.workflowRunId)||!id(expected.workflowDefinitionId))return;
+  const tab=document.querySelector?.('#tabs button[data-tab="workflow"]');
+  if(typeof tab?.onclick==='function')return tab.onclick({workflowHistoryEvidence:expected});
+  return readWorkflowHistoryEvidence(expected);
+}
 async function refreshOperationHistory(expected = null) {
   if (!current) return;
   const scope = viewGuard.begin('operations-history'), runId = $('ops-history-run-id').value, date = $('ops-history-date').value; $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
@@ -1518,6 +1525,9 @@ function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-m
       card.appendChild(el('div','dim','角色 '+known(ctx?.playerId)+' / 世界 '+known(ctx?.worldId)+' · 代次 '+known(ctx?.generation)+'；只读原始归属，不能恢复授权、重试或解除UNKNOWN。'));
       card.appendChild(el('div',null,summary.filters.nodeId?'当前节点筛选不带入整个运行原因。':'Workflow.run.reason：'+(row.reason.coverage==='RECORDED'?row.reason.text:row.reason.coverage==='RECOVERY_ONLY'?'未知（仅有恢复提示）':'未知')));
       for(const event of row.events)card.appendChild(el('div',null,'原节点 '+event.nodeId+' · '+event.type+' · '+event.result+(event.blockedReasons?.length?' · '+event.blockedReasons.join('、'):'')+'；不证明动作已派发或结算。'));
+      const expected={accountId:data.accountId,workflowRunId:row.workflowRunId,workflowDefinitionId:row.workflowDefinitionId,executionContext:ctx===null?null:{...ctx}};
+      const evidence=el('button',null,'查看此工作流的原始历史');evidence.type='button';evidence.dataset.memoryWorkflow=row.workflowRunId;
+      evidence.onclick=()=>{if(!viewGuard.current(memoryScope))return;return openWorkflowHistoryEvidence(expected);};card.appendChild(evidence);
       coverage.appendChild(card);
     }
     const excluded=summary.excluded;
@@ -1963,6 +1973,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     activeTab = button.dataset.tab;
     document.querySelectorAll('#tabs button').forEach((other) => other.classList.toggle('on', other === button));
     for (const section of document.querySelectorAll('main > section')) section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
+    if(activeTab==='workflow'&&navigation?.workflowHistoryEvidence){$('operations-batch').classList.add('hidden');return readWorkflowHistoryEvidence(navigation.workflowHistoryEvidence);}
     gameplayActivate(button.dataset.tab);
     if (button.dataset.tab === 'account') renderAccounts();
     if (button.dataset.tab === 'explorer') refreshExplorer();
