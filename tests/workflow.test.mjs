@@ -851,3 +851,23 @@ for(const entry of ['tasks','dailies','loop'])test('unified named cooldown compi
  const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),phase=entry==='loop'?'world':entry,row={type:'WAIT',cooldown:{kind:'FREE_RECRUIT',maxWaitMs:1000}},input={entry,[phase]:[row],rounds:entry==='loop'?2:1,budget:{resources:[],quotas:[],uids:[]},runPolicy:{maxDurationMs:60000,maxActions:0,modules:['free-recruit']}},before=structuredClone(input),compiled=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});assert.deepEqual(input,before);assert.deepEqual(compiled.blocked,[]);const waits=compiled.graph.nodes.filter(n=>n.type==='WAIT');assert.equal(waits.length,entry==='loop'?2:1);for(const n of waits){assert.deepEqual(n.cooldown,row.cooldown);for(const key of ['module','parameters','selection','durationMs'])assert.equal(Object.hasOwn(n,key),false);}assert.equal(compiled.graph.nodes.some(n=>n.type==='ACTION'),false);assert.equal(simulateWorkflow(compiled.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
  for(const mutate of [r=>r.module='free-recruit',r=>r.parameters={},r=>r.selection={unique:true},r=>r.durationMs=1000,r=>r.action='perform',r=>r.cooldown.kind='ANY',r=>r.cooldown.maxWaitMs=0,r=>r.cooldown.maxWaitMs=60001,r=>r.cooldown.maxWaitMs='1000',r=>r.cooldown.clearRefusal=true,r=>r.cooldown.request='RecruitStartRequest']){const bad=structuredClone(input);mutate(bad[phase][0]);assert.throws(()=>compileUnifiedExecution(bad,{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});}const bad=structuredClone(input);bad.runPolicy.modules=[];assert.throws(()=>compileUnifiedExecution(bad,{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
 });
+
+test('daily pirate targets compile through the registered Function with exact UID and city only',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ for(const entry of ['dailies','loop']){
+  const parameters={uid:7,cityId:9,allowLowerLevel:true},input={entry,dailies:[{taskId:1010,action:'perform',parameters}],budget:unifiedBudget},before=structuredClone(input);
+  const result=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});
+  assert.deepEqual(result.blocked,[]);assert.deepEqual(input,before);
+  const actions=result.graph.nodes.filter(n=>n.type==='ACTION');assert.equal(actions.length,1);
+  assert.equal(actions[0].module,'pirate-sweep');assert.deepEqual(actions[0].parameters,parameters);assert.deepEqual(actions[0].selection,{unique:true});
+  assert.equal(validateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).valid,true);
+  for(const partial of [{},{uid:7},{cityId:9}]){
+   const compiled=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters:partial},{taskId:1002}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES});
+   assert.deepEqual(compiled.blocked,[{phase:'dailies',index:0,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:1010}]);
+   assert.deepEqual(compiled.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.module),['free-recruit']);
+   assert.equal(JSON.stringify(compiled.graph).includes('pirate-sweep'),false);
+  }
+  for(const malformed of [[],{uid:0},{cityId:2147483648},{uid:'7'},{cityId:1.5},{uid:7,extra:true},{uid:7,cityId:9,allowLowerLevel:1},{uid:7,cityId:9,request:'InjectedRequest'}])
+   assert.throws(()=>compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters:malformed},{taskId:1002}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES}));
+ }
+});

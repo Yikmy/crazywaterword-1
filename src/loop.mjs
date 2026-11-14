@@ -5,6 +5,7 @@ import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
 import { validateMailParameters } from './mail.mjs';
+import { validatePirateSweepParameters } from './pirate-operations.mjs';
 import { validateAfkLevelRewardsParameters } from './afk-level-rewards.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
@@ -208,7 +209,18 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           parameters=row.parameters??{};
           if(module==='alliance')try{selection=allianceOrderSelection(parameters);}catch{invalid('日常1012仅支持明确城市的联盟订单');}
           if(module==='museum')try{selection=museumStartExploreSelection(parameters);}catch{invalid('日常1016仅支持明确关卡、英雄队伍及时间倍率的探险出发');}
-          if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
+          if(module==='pirate-sweep'){
+            const hasUid=object(parameters)&&Object.hasOwn(parameters,'uid'),hasCity=object(parameters)&&Object.hasOwn(parameters,'cityId');
+            // Validate any supplied half with the original domain schema. The probe
+            // only checks its type/range; it is never compiled or used as a target.
+            let probe=parameters;
+            if(hasUid!==hasCity){
+              probe=Object.create(Object.getPrototypeOf(parameters),Object.getOwnPropertyDescriptors(parameters));
+              Object.defineProperty(probe,hasUid?'cityId':'uid',{value:Object.getOwnPropertyDescriptor(parameters,hasUid?'uid':'cityId').value,enumerable:true});
+            }
+            validatePirateSweepParameters(probe);
+            if(!hasUid||!hasCity){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
+          }
         }
       } else {
         exact(row,['type','module','parameters','selection']);module=row.module;parameters=row.parameters??{};

@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { GameClient } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { createRunBudgetContext } from '../src/resource-ledger.mjs';
+import { createOperationService } from '../src/operation-service.mjs';
+import { createExecutionHistory } from '../src/execution-history.mjs';
+import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
+import { compileUnifiedExecution } from '../src/loop.mjs';
+import { createWorkflowStore, createWorkflowRunner } from '../src/workflow.mjs';
 import {
   pirateSweepModule, planPirateSweep, surveyPirateSweep, validatePirateSweepParameters, viewPirateSweep,
 } from '../src/pirate-operations.mjs';
@@ -21,7 +29,7 @@ const config = () => ({ tables: {
 } });
 const testClaims = { resources: [], quotas: [{ id: 'pirate-sweep:2026-11-12', num: 1 }], uids: [{ type: 'pirate', id: '7' }] };
 const quota = (used, total = 5) => ({ dayKey: '2026-11-12', used, total, remaining: total - used, reason: null });
-const fixture = async t => {
+const fixture = async (t, identity = context) => {
   const data = {
     used, pirates: [{ uid: 7, cityId: 9, type: 1, level: 5, gridIdx: 0 }, { uid: 8, cityId: 10, type: 1, level: 4, gridIdx: 1 },
       { uid: 9, cityId: 11, type: 2, level: 1, gridIdx: 2 }],
@@ -62,13 +70,13 @@ const fixture = async t => {
   const gameClock = {
     reset() {}, markPing() {},
     read() {
-      return { status: data.clockReliable ? 'TRUSTED' : 'UNKNOWN', reliable: data.clockReliable, ...context,
+      return { status: data.clockReliable ? 'TRUSTED' : 'UNKNOWN', reliable: data.clockReliable, ...identity,
         source: 'PingResponse.serverTimestamp', sourceAt: data.clockSourceAt,
         nowMs: data.clockMs, earliestMs: data.clockMs - data.clockRadiusMs, latestMs: data.clockMs + data.clockRadiusMs };
     },
   };
-  const client = new GameClient({ protocol, ...context, WebSocketImpl: OfflineSocket, gameClock });
-  client.factContext = { ...context };
+  const client = new GameClient({ protocol, ...identity, WebSocketImpl: OfflineSocket, gameClock });
+  client.factContext = { ...identity };
   client.on('error', error => errors.push(error));
   t.after(() => client.stop());
   const login = client.connect({}); socket.open();
@@ -84,7 +92,7 @@ const fixture = async t => {
     ...args, adapter: pirateSweepModule, budget, allowMutate: true, window: 0,
   });
   function runBudget(limits = testClaims) {
-    const scope = { ...context, runId: 'offline-pirate-run' };
+    const scope = { ...identity, runId: 'offline-pirate-run' };
     const runBudget = createRunBudgetContext({ scope, limits });
     // Lazy child: shared preflight's additional ordered inventory replies must
     // not invalidate the live pirate evidence.
@@ -92,6 +100,71 @@ const fixture = async t => {
   }
   return { data, writes, reads, errors, client, socket, args, survey, propose, run, runBudget };
 };
+
+async function integratedPirate(t) {
+ const f=await fixture(t),dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-pirate-service-')),historyFile=path.join(dir,'history.json');
+ const history=createExecutionHistory({file:historyFile});
+ const makeService=store=>createOperationService({modules:GAMEPLAY_MODULES,
+  moduleSettings:{get:()=>({config:{enabled:true},source:'synthetic'})},protocol,history:store,getConfig:config,
+  loadRules:()=>({config:{version:1,enabled:false,rules:[]}}),
+  loadProduction:()=>({config:{version:1,enabled:false,onlyShortages:true,productIds:[],maxOperations:10}})});
+ const service=makeService(history),session={id:context.accountId,state:'READY',generation:context.generation,connectionId:context.connectionId,
+  player,client:f.client,abort:new AbortController(),busy:null,loop:{running:false}};
+ const store=createWorkflowStore({file:path.join(dir,'workflow.json'),modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({operations:service,modules:GAMEPLAY_MODULES,getSession:()=>session,
+  claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),onUpdate:state=>store.record(session.id,state)});
+ t.after(async()=>{runner.stop();await runner.settle();await service.settle(session.id);f.client.stop();fs.rmSync(dir,{recursive:true,force:true});});
+ const execute=async plan=>{
+  const permit=service.authorize(session,{batchId:plan.batchId,planHash:plan.planHash,
+   approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});
+  const started=service.execute(session,permit);await service.settle(session.id);
+  return history.list(session.id).find(row=>row.runId===started.runId);
+ };
+ return {...f,dir,historyFile,history,service,session,store,runner,execute,makeService};
+}
+
+for(const entry of ['dailies','loop'])test(entry+' pirate Function uses shared authorization, exact parent budget and durable operation/workflow history',async t=>{
+ const f=await integratedPirate(t);
+ f.data.effect=()=>{f.data.used++;f.socket.receive('SCPirateSweepTimes',{sweepTimes:f.data.used});};
+ const graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,action:'perform',parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+ const pending=await f.runner.start(f.session.id,graph);
+ assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(pending.plan.module,'pirate-sweep');assert.equal(pending.plan.actions.length,1);
+ assert.equal(f.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);
+ assert.equal((await f.runner.resume()).status,'AWAITING_AUTHORIZATION');assert.equal(f.writes.length,0);
+ const record=await f.execute(pending.plan);
+ assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record.actions));assert.equal(record.workflowId,pending.runId);
+ assert.equal(record.actions[0].verification.status,'CONFIRMED');assert.equal(f.writes.length,1);
+ assert.deepEqual(f.writes[0],{name:'PirateSweepRequest',body:parameters});
+ assert.equal((await f.runner.resume()).status,'COMPLETED');
+ const persisted=createExecutionHistory({file:f.historyFile});assert.equal(persisted.list(f.session.id)[0].finalStatus,'SUCCESS');
+ assert.deepEqual(persisted.list('other-account'),[]);assert.deepEqual(f.store.history('other-account'),[]);
+ assert.equal(f.store.history(f.session.id)[0].status,'COMPLETED');
+});
+
+for(const entry of ['dailies','loop'])test(entry+' pirate UNKNOWN stops later work and survives Service/client restart without replay',async t=>{
+ const f=await integratedPirate(t),graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters},{taskId:1010,parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+ const pending=await f.runner.start(f.session.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');
+ const record=await f.execute(pending.plan);assert.equal(record.finalStatus,'UNKNOWN');assert.equal(f.writes.length,1);
+ assert.equal((await f.runner.resume()).status,'UNKNOWN');assert.equal(f.writes.length,1);
+ const history=createExecutionHistory({file:f.historyFile}),restarted=f.makeService(history);
+ assert.equal(restarted.status(f.session.id).blocked,true);assert.equal(history.list(f.session.id)[0].finalStatus,'UNKNOWN');
+ assert.equal(f.store.history(f.session.id)[0].status,'UNKNOWN');
+ const fresh=await fixture(t,{...context,connectionId:'offline-reopened'}),session={...f.session,connectionId:'offline-reopened',client:fresh.client,busy:null,workflowOwner:null,abort:new AbortController()};
+ assert.equal(fresh.client.uncertainWrites.size,0);
+ await assert.rejects(restarted.plan(session,{module:'pirate-sweep',mode:'Manual',parameters,selections:pending.plan.actions.map(row=>row.actionId)}),{code:'RECOVERY_UNCERTAIN'});
+ assert.equal(fresh.writes.length,0);assert.equal(fresh.reads.length,0);assert.equal(f.writes.length,1);
+});
+
+test('daily pirate cannot bypass missing parent quota or UID reservation',async t=>{
+ for(const budget of [{...testClaims,quotas:[]},{...testClaims,uids:[]}]){
+  const f=await integratedPirate(t),graph=compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1010,parameters}],budget},{modules:GAMEPLAY_MODULES}).graph;
+  const result=await f.runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');
+  await assert.rejects(f.execute(result.plan),{code:'RUN_BUDGET_INVALID'});
+  assert.equal(f.writes.length,0);const [record]=f.history.list(f.session.id);
+  assert.equal(record.finalStatus,'NOT_EXECUTED');assert.equal(record.actions[0].requestStatus,'NOT_DISPATCHED');
+  assert.equal(record.actions[0].result,'NOT_EXECUTED');assert.ok(record.finishedAt);
+ }
+});
 
 test('actual v76 Codec/client plans exactly one ordinary action with matching UID, city, and day/UID budget', async t => {
   const f = await fixture(t);

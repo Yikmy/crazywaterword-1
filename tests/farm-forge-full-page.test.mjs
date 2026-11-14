@@ -698,9 +698,10 @@ test('unified business form maps explicit task rewards and daily drivers without
  const h=await unifiedForm('loop'),before=h.requests.length;
  unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],rounds:2,everyMs:3000,budget:{resources:[],quotas:[],uids:[]}});
  for(const [kind,id] of [['main','1'],['branch','2'],['achievement','1001'],['daily','8001'],['daily-activity','3'],['daily-gift','']])unifiedAdd(h,'tasks',kind,id);
- for(const [kind,id] of [['daily','8002'],['daily-activity','4'],['daily-gift',''],['free-recruit',''],['free-gold',''],['trial-challenge',''],['pirate-sweep','9007199254740991']])unifiedAdd(h,'dailies',kind,id);
+ h.node('wf-unified-pirate-city').value='9';
+ for(const [kind,id] of [['daily','8002'],['daily-activity','4'],['daily-gift',''],['free-recruit',''],['free-gold',''],['trial-challenge',''],['pirate-sweep','2147483647']])unifiedAdd(h,'dailies',kind,id);
  assert.deepEqual(unifiedDraft(h).tasks,[{kind:'main',taskId:1},{kind:'branch',taskId:2},{kind:'achievement',taskId:1001},{kind:'daily',taskId:8001},{kind:'daily-activity',tierId:3},{kind:'daily-gift',packId:'赠礼'}]);
- assert.deepEqual(unifiedDraft(h).dailies,[{taskId:8002,action:'claim'},{kind:'daily-activity',tierId:4,action:'claim'},{kind:'daily-gift',packId:'赠礼',action:'claim'},{taskId:1002,action:'perform'},{taskId:1006,action:'perform'},{taskId:1009,action:'perform'},{taskId:1010,action:'perform',parameters:{uid:9007199254740991}}]);
+ assert.deepEqual(unifiedDraft(h).dailies,[{taskId:8002,action:'claim'},{kind:'daily-activity',tierId:4,action:'claim'},{kind:'daily-gift',packId:'赠礼',action:'claim'},{taskId:1002,action:'perform'},{taskId:1006,action:'perform'},{taskId:1009,action:'perform'},{taskId:1010,action:'perform',parameters:{uid:2147483647,cityId:9}}]);
  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
 });
 
@@ -2492,4 +2493,27 @@ test('named cooldown WAIT history renders original bounds safely and never resto
 for(const entry of ['tasks','dailies','loop'])test('unified named cooldown form retains explicit wait without authorizing '+entry,async()=>{
  const h=await unifiedForm(entry),phase=entry==='tasks'?'tasks':'dailies';unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});unifiedAdd(h,phase,'free-recruit-cooldown','1000');const draft=unifiedDraft(h);assert.deepEqual(draft[phase],[{type:'WAIT',cooldown:{kind:'FREE_RECRUIT',maxWaitMs:1000}}]);assert.match(h.node('wf-unified-target-label').textContent,/最多等待毫秒/);assert.match(h.node('wf-unified-steps').textContent,/具名免费招募冷却.*1000.*不解除拒绝或UNKNOWN/);const g=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES}).graph;assert.equal(g.nodes.filter(n=>n.type==='WAIT').length,1);assert.equal(g.nodes.some(n=>n.type==='ACTION'),false);assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});
  for(const value of ['','0','-1','1.5','1e3','60001',' 1000','1000 ','01','<img src=x>']){const before=h.node('wf-unified-intent').value;unifiedAdd(h,phase,'free-recruit-cooldown',value);assert.equal(h.node('wf-unified-intent').value,before);}const stale=descendants(h.node('wf-unified-steps')).find(n=>n.dataset?.unifiedStep);h.run("selectAccount('B');selectAccount('A')");const before=h.node('wf-unified-intent').value;stale.click();assert.equal(h.node('wf-unified-intent').value,before);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
+});
+
+test('Dailies and Loop pirate form requires exact int32 UID and city and clears account draft inputs',async()=>{
+ for(const entry of ['dailies','loop']){
+  const h=await unifiedForm(entry),before=h.requests.length;
+  unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],budget:{resources:[],quotas:[],uids:[]}});
+  unifiedAdd(h,'dailies','pirate-sweep','7');assert.equal(unifiedDraft(h).dailies.length,0);
+  assert.equal(h.node('wf-unified-pirate-city').disabled,false);
+  for(const field of ['wf-unified-target','wf-unified-pirate-city'])for(const value of ['','0','-1','1.5','1e3','01',' 9','9 ','2147483648']){
+   h.node('wf-unified-target').value='7';h.node('wf-unified-pirate-city').value='9';h.node(field).value=value;
+   const source=h.node('wf-unified-intent').value;h.node('wf-unified-add').click();
+   assert.equal(h.node('wf-unified-intent').value,source,field+' '+value);
+  }
+  h.node('wf-unified-pirate-city').value='2147483647';unifiedAdd(h,'dailies','pirate-sweep','2147483647');
+  assert.deepEqual(unifiedDraft(h).dailies,[{taskId:1010,action:'perform',parameters:{uid:2147483647,cityId:2147483647}}]);
+  assert.match(h.node('wf-unified-steps').textContent,/精确城市 ID：2147483647/);
+  const compiled=compileUnifiedExecution(unifiedDraft(h),{modules:GAMEPLAY_MODULES});assert.equal(compiled.blocked.length,0);
+  unifiedLoad(h,{...unifiedDraft(h),dailies:[{taskId:1010,parameters:{uid:7,cityId:9,allowLowerLevel:true}},{taskId:1002}]});
+  unifiedStep(h,'dailies:0','1').click();assert.deepEqual(unifiedDraft(h).dailies[1].parameters,{uid:7,cityId:9,allowLowerLevel:true});
+  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+  h.node('wf-unified-kind').value='free-gold';h.node('wf-unified-kind').onchange();assert.equal(h.node('wf-unified-pirate-city').disabled,true);
+  h.run("selectAccount('B')");assert.equal(h.node('wf-unified-pirate-city').value,'');
+ }
 });
