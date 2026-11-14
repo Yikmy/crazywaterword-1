@@ -75,3 +75,8 @@ test('cancelled late second observation cannot append or replace the first persi
  const running=f.runner.start(f.session.id,f.graph);await pending;f.runner.stop();const result=await running;const bytes=f.fs.readFileSync(f.file,'utf8');release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(result.status,'CANCELLED');assert.equal(result.trace.filter(r=>r.navalObservation).length,1);assert.equal(f.fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.writes.length,0);
 });
+
+for(const dimension of ['playerId','worldId'])test('Loop current client '+dimension+' drift between persisted observations stops the next Registry read',async t=>{
+ const f=await navalWorkflowFixture(t);f.state.onUpdate=run=>{if(run.trace.filter(r=>r.navalObservation).length===1)f.session.client.factContext[dimension]='44';};
+ const result=await f.runner.start(f.session.id,f.graph);assert.equal(result.status,'CANCELLED');assert.equal(f.reads.filter(r=>r.name==='WorldInfoRequest').length,1);assert.equal(result.trace.filter(r=>r.navalObservation).length,1);assert.equal(f.writes.length,0);
+});

@@ -758,3 +758,19 @@ test('stop during checkpoint persistence prevents late investigation and preserv
  {onUpdate:async state=>{if(state.currentNode==='q'&&state.status==='RUNNING'){entered();await pending;}}});
  const running=f.runner.start(f.session.id,graph());await active;f.runner.stop();finish();assert.equal((await running).status,'CANCELLED');assert.equal(invoked,0);assert.equal(f.released(),1);
 });
+
+for(const field of ['playerId','worldId'])for(const change of ['replace','delete'])test('Workflow cannot consume prior batch confirmation after client '+field+' '+change,async()=>{
+ const f=fixture();f.session.player={playerId:'9007199254740993',worldId:'9'};f.session.client.factContext={playerId:'9007199254740993',worldId:'9'};
+ await f.runner.start(f.session.id,graph());f.runs.push(f.success());if(change==='delete')delete f.session.client.factContext[field];else f.session.client.factContext[field]=field==='playerId'?'9007199254740994':'10';
+ assert.equal(f.runner.getLiveRunId(),null);const result=await f.runner.resume();assert.equal(result.status,'CANCELLED');assert.equal(result.plan,null);assert.equal(result.trace.some(row=>row.type==='VERIFY'),false);assert.equal(f.calls.filter(row=>row[0]==='plan').length,1);assert.equal(f.released(),1);
+});
+for(const field of ['playerId','worldId'])for(const phase of ['survey','plan'])test('late '+phase+' cannot publish a Workflow authorization pause after client '+field+' drift',async()=>{
+ let release,entered;const pending=new Promise(resolve=>{entered=resolve;}),f=fixture({[phase==='survey'?'surveyModule':'plan']:async()=>{entered();return new Promise(resolve=>{release=resolve;});}});
+ f.session.client.factContext={playerId:'9007199254740993',worldId:'9'};const running=f.runner.start(f.session.id,graph());await pending;f.session.client.factContext[field]=field==='playerId'?'9007199254740994':'10';
+ release(phase==='survey'?{available:true}:structuredClone(f.plan));const result=await running;assert.equal(result.status,'CANCELLED');assert.equal(result.plan,null);assert.equal(result.trace.some(row=>row.result==='AWAITING_AUTHORIZATION'),false);assert.equal(f.released(),1);
+ if(phase==='survey')assert.equal(f.calls.some(row=>row[0]==='plan'),false);
+});
+test('Workflow client role scope preserves equivalent exact Long, string and safe numeric representations',async()=>{
+ const f=fixture();f.session.client.factContext={playerId:{low:1,high:2097152,unsigned:false},worldId:'9'};await f.runner.start(f.session.id,graph());
+ f.session.client.factContext.playerId='9007199254740993';f.session.client.factContext.worldId=9;f.runs.push(f.success());assert.equal((await f.runner.resume()).status,'COMPLETED');assert.equal(f.released(),1);
+});
