@@ -66,7 +66,7 @@ function productionPlanningView(facts,view,config) {
 }
 export function viewCoreOrders(facts, options = {}) {
   const args = context(options), result = planOrderExecution(facts, { ...args, ledger: new ResourceLedger(facts.stockReliable === true ? facts.stock : null), selections: [] });
-  return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated(row, args)), candidates: result.rows.map(row => gated(row, args)), notes: result.notes };
+  return { module: 'orders', mode: args.mode, orders: result.rows.map(({ action, ...row }) => gated(row, args)), candidates: result.rows.map(row => gated({ ...row, parameters: {} }, args)), notes: result.notes };
 }
 export function planCoreOrders(facts, options = {}) {
   const args = context(options), ids = selections(options.selections, args.mode);
@@ -79,7 +79,7 @@ export function planCoreOrders(facts, options = {}) {
 }
 function viewCityDomain(id, facts, options = {}) {
   const args = context(options), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
-  const candidates = view.candidates.filter(row => kinds(id).has(row.actionType)).map(row => gated({ ...row, module: id }, args));
+  const candidates = view.candidates.filter(row => kinds(id).has(row.actionType)).map(row => gated({ ...row, module: id, parameters: {} }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
     : { module: id, ...planning, stock: view.stock, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };

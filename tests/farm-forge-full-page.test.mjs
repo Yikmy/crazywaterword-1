@@ -2517,3 +2517,24 @@ test('Dailies and Loop pirate form requires exact int32 UID and city and clears 
   h.run("selectAccount('B')");assert.equal(h.node('wf-unified-pirate-city').value,'');
  }
 });
+
+test('production professional candidate imports its explicit empty business contract into Loop without new requests or budget',async()=>{
+ const spec={module:'production',actionId:'city:startProduce:factory-one:cloth',actionType:'startProduce',parameters:{},
+  target:{buildingId:'factory-one',productId:'cloth'},costs:[{id:'wood',num:1}],blockedReason:'NO_FREE_FACTORY_SLOT',facts:{factories:[],productionRecommendations:[]}};
+ const h=await loaded(spec),before=h.requests.length,button=unifiedCandidateButton(h,spec);
+ assert.ok(button);assert.equal(button.disabled,false);button.click();
+ const draft=unifiedDraft(h);assert.deepEqual(draft.world,[{module:'production',parameters:{},selection:{actionId:spec.actionId}}]);
+ assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const graph=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES}).graph;
+ assert.deepEqual(graph.nodes.find(node=>node.type==='ACTION').selection,{actionId:spec.actionId});
+ const stale=button;h.run("selectAccount('B')");const source=h.node('wf-unified-intent').value;stale.click();assert.equal(h.node('wf-unified-intent').value,source);
+});
+
+test('production Loop bridge keeps candidates without an explicit parameter contract disabled',async()=>{
+ const spec={module:'production',actionId:'city:startProduce:factory-one:cloth',actionType:'startProduce',parameters:{},
+  target:{buildingId:'factory-one',productId:'cloth'},costs:[{id:'wood',num:1}],blockedReason:'NO_FREE_FACTORY_SLOT',facts:{factories:[],productionRecommendations:[]}};
+ const h=await loaded(spec),load=h.node('gp-production-load').click();await tick();const result=data(spec);delete result.view.candidates[0].parameters;
+ h.respond('/api/gameplay',result,{module:'production'});await load;
+ const button=unifiedCandidateButton(h,spec);assert.equal(button.disabled,true);const before=h.requests.length;
+ button.click();assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+});

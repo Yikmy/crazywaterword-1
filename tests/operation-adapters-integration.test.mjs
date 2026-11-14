@@ -192,3 +192,19 @@ for(const key of ['accountId','playerId','worldId','generation','connectionId','
   await assert.rejects(f.service.survey(f.session),{code:'CANCELLED'});assert.deepEqual(f.service.view(f.session.id),before);assert.equal(f.session.busy,null);assert.deepEqual(f.writes,[]);assert.deepEqual(f.history.list(f.session.id),[]);
  }finally{f.cleanup();}
 });
+
+test('registered core Service projection preserves explicit empty parameters for the Loop UI without exposing transport actions',async()=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=fixture();
+ try{
+  for(const [module,kind]of [['orders','SUBMIT'],['city','build'],['production','startProduce']]){
+   f.service.saveModuleConfig(f.session.id,{module,config:{enabled:true}});
+   const response=JSON.parse(JSON.stringify(await f.service.surveyModule(f.session,module,{})));
+   assert.equal(response.accountId,f.session.id);assert.equal(response.module,module);
+   const candidate=response.view.candidates.find(row=>row.actionType===kind&&row.executable);assert.ok(candidate);
+   assert.deepEqual(candidate.parameters,{});assert.equal(Object.hasOwn(candidate,'action'),false);
+   const compiled=compileUnifiedExecution({entry:'loop',world:[{module,parameters:candidate.parameters,selection:{actionId:candidate.actionId}}],budget:{resources:[{id:'wood',num:4}],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});
+   assert.deepEqual(compiled.blocked,[]);assert.deepEqual(compiled.graph.nodes.find(row=>row.type==='ACTION').selection,{actionId:candidate.actionId});
+  }
+  assert.equal(f.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
+ }finally{await f.cleanup();}
+});
