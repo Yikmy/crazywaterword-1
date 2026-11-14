@@ -190,6 +190,7 @@ function gpRenderDomain(id,view){
  const table=(title,headers,rows)=>{box.appendChild(gpEl('h3',title));const element=gpEl('table'),heading=gpEl('tr');for(const label of headers)heading.appendChild(gpEl('th',label));element.appendChild(heading);for(const row of rows){const tr=gpEl('tr');for(const value of row)tr.appendChild(gpEl('td',show(value)));element.appendChild(tr);}box.appendChild(element);};
  if(id==='trade'){
   box.appendChild(gpEl('p','当前港口观察 · '+show(view?.status)+' · '+show(view?.reason)+'；只读预览不代表可售或到账。'));
+  const hours=view?.tradingHours;box.appendChild(gpEl('p','每日贸易时段：'+show(hours?.status)+' · '+(hours?.range?hours.range.startHour+'–'+hours.range.endHour+' 时':'未知')+' · '+show(hours?.reason)+'；账号时区未精确确认，须所有受支持时区均处于开放时段。'));
   table('海商王账户与船舱',['周期','港口','船级','贸易币 coins','maxCoins 原值','profit 原值','已用容量','配置容量','剩余容量'],[[view?.period,view?.cargo?.cityId,view?.cargo?.cargoLv,view?.balances?.coins,view?.balances?.maxCoins,view?.balances?.profit,view?.capacity?.used,view?.capacity?.total,view?.capacity?.remaining]]);
   table('当前港口行情',['货物 ID','名称','价格','stock 原值'],(view?.prices||[]).map(row=>[row.goodsId,row.name,row.price,row.stock]));
   table('持有货物',['批次 PID','货物','数量','买入单价','来源港口'],(view?.holdings||[]).map(row=>[row.pid,row.name||row.goodsId,row.num,row.buyPrice,row.cityId]));

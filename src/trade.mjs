@@ -1,6 +1,7 @@
 import { readTradeActivitySnapshot } from './client.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
+import { PIRATE_QUOTA_EVIDENCE } from './pirate-quota.mjs';
 // W18 / C521-C523: current-port observation and exact single buy/non-loss sale.
 import { createHash } from 'node:crypto';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -15,8 +16,8 @@ const uint=v=>Number.isInteger(v)&&v>=0&&v<=2147483647,positive=v=>uint(v)&&v>0;
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const plain=(v,keys)=>v!==null&&typeof v==='object'&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&own(v,k));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
-const live=new WeakMap(),tables=['TradeGoodsCfg','TradeShipCfg','ModuleOpenCfg'];
-export const TRADE_EVIDENCE=Object.freeze({source:'Fixed v76 TradeUtil.ts / TradeModel.ts / TradeSellPop.ts / TradeBuyPop.ts',scope:'CURRENT_PORT_RESPONSE_ONLY',semantics:'TradeShipCfg supplies capacity and profitMargin. Non-loss sale preview = buyPrice*num + ceil((price-buyPrice)*num*(10000+profitMargin)/10000). Buy quantity is bounded by maxCount-stock, remaining capacity and coins/price; exact price*num debit. Preview is not income or eligibility.',realGame:'REAL_UNVERIFIED'});
+const live=new WeakMap(),tables=['TradeGoodsCfg','TradeShipCfg','ModuleOpenCfg','ActivityTradeCfg'];
+export const TRADE_EVIDENCE=Object.freeze({source:'Fixed v76 TradeUtil.ts / TradeModel.ts / TradeSellPop.ts / TradeBuyPop.ts / TradeCityShop.ts / TradeUtil.canTrade',scope:'CURRENT_PORT_RESPONSE_ONLY',semantics:'TradeShipCfg supplies capacity and profitMargin. Non-loss sale preview = buyPrice*num + ceil((price-buyPrice)*num*(10000+profitMargin)/10000). Buy quantity is bounded by maxCount-stock, remaining capacity and coins/price; exact price*num debit. Preview is not income or eligibility.',realGame:'REAL_UNVERIFIED'});
 export function validateTradeParameters(v={}){
  if(plain(v,[])&&Reflect.ownKeys(v).length===0)return {};
  if(plain(v,['action','goodsId','cityId','num'])&&v.action==='buy'&&['goodsId','cityId','num'].every(k=>own(v,k)&&positive(v[k])))return {action:'buy',goodsId:v.goodsId,cityId:v.cityId,num:v.num};
@@ -85,6 +86,25 @@ function preview(holding,price,ship,currentCity){
  if(total>BigInt(Number.MAX_SAFE_INTEGER)||profit>BigInt(Number.MAX_SAFE_INTEGER))return {...result,reason:'TRADE_PREVIEW_OVERFLOW'};
  return {...result,profit:Number(profit),total:Number(total),status:'PREVIEW',reason:null};
 }
+// Reuse the fixed client's already evidenced originLang timezone set. This does
+// not identify an account's timezone or supply a game-day/reset policy.
+function tradingHours(f,config){
+ const common={source:'Fixed v76 TradeCityShop._onClickItem / TradeUtil.canTrade / ActivityTradeCfg',profile:PIRATE_QUOTA_EVIDENCE.profile,offsetsMinutes:[...PIRATE_QUOTA_EVIDENCE.clockOffsetsMinutes],actualTimezone:null,range:null};
+ const unknown=reason=>({...common,status:'UNKNOWN',reason});
+ const row=configRow(config,'ActivityTradeCfg','key','海商王贸易时间'),raw=get(row,'value'),match=typeof raw==='string'?/^([0-9]{1,2})-([0-9]{1,2})$/.exec(raw):null;
+ if(!match||Number(match[1])>=Number(match[2])||Number(match[2])>24)return unknown('TRADE_HOURS_CONFIG_UNKNOWN');
+ common.range={startHour:Number(match[1]),endHour:Number(match[2])};
+ const owner=live.get(f),time=current(f)&&owner?clockOf(owner.client,f.context):null;
+ if(!time||!f.clock.start||!f.clock.end)return unknown('TRADE_CLOCK_UNKNOWN');
+ const decisions=[];for(const bounds of [f.clock.start,f.clock.end,time])for(const offset of common.offsetsMinutes){
+  const low=bounds.earliestMs+offset*60000,high=bounds.latestMs+offset*60000,day=Math.floor(low/86400000),sameDay=day===Math.floor(high/86400000),open=day*86400000+common.range.startHour*3600000,close=day*86400000+common.range.endHour*3600000;
+  decisions.push(!sameDay?null:low>=open&&high<close?true:high<open||low>=close?false:null);
+ }
+ if(decisions.some(value=>value===null))return unknown('TRADE_HOURS_BOUNDARY_UNCERTAIN');
+ if(decisions.every(value=>value===true))return {...common,status:'OPEN',reason:null};
+ if(decisions.every(value=>value===false))return {...common,status:'CLOSED',reason:'TRADE_HOURS_CLOSED'};
+ return unknown('TRADE_HOURS_POLICIES_OR_OBSERVATIONS_DISAGREE');
+}
 function observationTrade(f,{config=f?.configEvidence}={}){
  const valid=current(f),info=infoOf(valid?f.first:null),after=infoOf(valid?f.last:null),start=valid?f.clock.start:null,end=valid?f.clock.end:null;
  const complete=info.period!==null&&info.balances&&info.goods&&info.cargo;
@@ -99,7 +119,7 @@ function observationTrade(f,{config=f?.configEvidence}={}){
  const prices=(rows??[]).map(row=>({...row,name:typeof get(configRow(cfg,'TradeGoodsCfg','goodsId',row.goodsId),'itemName')==='string'?configRow(cfg,'TradeGoodsCfg','goodsId',row.goodsId).itemName:null}));
  const quotes=holdings.map(row=>preview(row,rows?.find(p=>p.goodsId===row.goodsId)?.price??null,ship,info.cargo?.cityId));
  const reason=!valid?'TRADE_CONTEXT_UNKNOWN':!complete?'TRADE_INFO_INCOMPLETE':!start||!end?'TRADE_CLOCK_UNKNOWN':start.earliestMs<info.cargo.moveEndTime*1000?'TRADE_TRAVELLING':!stable?'TRADE_STATE_CHANGED':!rows?'TRADE_PRICES_UNKNOWN':null;
- return {module:'trade',readOnly:true,scope:'CURRENT_PORT_RESPONSE_ONLY',status:reason?'UNKNOWN':'OBSERVED',reason,period:info.period,balances:info.balances,cargo:info.cargo,holdings,prices,quotes,capacity:{used:usedCapacity,total:capacity,remaining:remainingCapacity},candidates:[],blocked:[{actionType:'BUY',code:'EXPLICIT_TARGET_REQUIRED',reason:'须明确港口、货物和数量后重新探测精确成本'},{actionType:'SELL',code:'EXPLICIT_TARGET_REQUIRED',reason:'须明确港口、持货批次和数量后重新探测；全批预览不是授权'},{actionType:'MOVE',code:'NOT_IMPLEMENTED',reason:'路线、移动及加速需独立合同'}],notes:[...(f?.notes??[]),'仅当前港口响应；前后货舱相同不证明原子快照。stock 仅显示服务端原值，不解释为可买数量。maxCoins/profit 保留原字段含义，不推导余额上限。预计售得不计入库存、预算或历史到账。']};
+ return {module:'trade',tradingHours:tradingHours(f,matching?cfg:null),readOnly:true,scope:'CURRENT_PORT_RESPONSE_ONLY',status:reason?'UNKNOWN':'OBSERVED',reason,period:info.period,balances:info.balances,cargo:info.cargo,holdings,prices,quotes,capacity:{used:usedCapacity,total:capacity,remaining:remainingCapacity},candidates:[],blocked:[{actionType:'BUY',code:'EXPLICIT_TARGET_REQUIRED',reason:'须明确港口、货物和数量后重新探测精确成本'},{actionType:'SELL',code:'EXPLICIT_TARGET_REQUIRED',reason:'须明确港口、持货批次和数量后重新探测；全批预览不是授权'},{actionType:'MOVE',code:'NOT_IMPLEMENTED',reason:'路线、移动及加速需独立合同'}],notes:[...(f?.notes??[]),'仅当前港口响应；前后货舱相同不证明原子快照。stock 仅显示服务端原值，不解释为可买数量。maxCoins/profit 保留原字段含义，不推导余额上限。预计售得不计入库存、预算或历史到账。']};
 }
 const saleRequest='TradeSellRequest',saleResponse='TradeSellResponse';
 const saleCostSource='Fixed v76 TradeSellPop._onSellProp: exact cityId/pid/sellNum; no resource debit. Non-loss preview formula verified against TradeShipCfg. No purchase, route, reward claim or RUBY.';
@@ -116,7 +136,7 @@ function saleCandidate(f,{config=f?.configEvidence,moduleConfig={enabled:false}}
  const required=configRow(config,'ModuleOpenCfg','moduleId','海商王'),minimum=positive(get(required,'playerLevel'))?required.playerLevel:null;
  const liveState=live.get(f),time=liveState?clockOf(liveState.client,f.context):null,window=f?.activity?.period;
  const configMatches=same(tables.map(n=>config?.tables?.[n]??null),tables.map(n=>f?.configEvidence?.tables?.[n]??null));
- let reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!configMatches?'TRADE_CONFIG_CHANGED':view.status!=='OBSERVED'?'TRADE_PORT_OBSERVATION_UNKNOWN':minimum===null?'TRADE_MODULE_LEVEL_UNKNOWN':f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!time||!f.clock.start||!f.clock.end||!positive(window?.period)||window.period!==period||[f.clock.start,f.clock.end,time].some(c=>c.earliestMs<window.startTime*1000||c.latestMs>=window.endTime*1000)?'TRADE_PERIOD_OR_CLOCK_UNKNOWN':!holding||holding.cityId===p.cityId||beforeState.cargo.cityId!==p.cityId||p.num>holding.num?'TRADE_EXACT_HOLDING_OR_PORT_UNKNOWN':!quote||quote.status!=='PREVIEW'?'TRADE_NON_LOSS_QUOTE_UNKNOWN':quote.total+beforeState.player.coins>2147483647?'TRADE_COINS_OVERFLOW':!['gotAchieveRwdId','gotReportRwdId','guildReportNum'].every(k=>get(f.first,k)===get(f.last,k))?'TRADE_CLAIM_STATE_CHANGED':![saleRequest,saleResponse].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ let reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!configMatches?'TRADE_CONFIG_CHANGED':view.status!=='OBSERVED'?'TRADE_PORT_OBSERVATION_UNKNOWN':minimum===null?'TRADE_MODULE_LEVEL_UNKNOWN':f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!time||!f.clock.start||!f.clock.end||!positive(window?.period)||window.period!==period||[f.clock.start,f.clock.end,time].some(c=>c.earliestMs<window.startTime*1000||c.latestMs>=window.endTime*1000)?'TRADE_PERIOD_OR_CLOCK_UNKNOWN':view.tradingHours.status!=='OPEN'?view.tradingHours.reason:!holding||holding.cityId===p.cityId||beforeState.cargo.cityId!==p.cityId||p.num>holding.num?'TRADE_EXACT_HOLDING_OR_PORT_UNKNOWN':!quote||quote.status!=='PREVIEW'?'TRADE_NON_LOSS_QUOTE_UNKNOWN':quote.total+beforeState.player.coins>2147483647?'TRADE_COINS_OVERFLOW':!['gotAchieveRwdId','gotReportRwdId','guildReportNum'].every(k=>get(f.first,k)===get(f.last,k))?'TRADE_CLAIM_STATE_CHANGED':![saleRequest,saleResponse].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const goods=holding?beforeState.player.goods.flatMap(r=>r.pid!==p.pid?[copy(r)]:r.num===p.num?[]:[{...r,num:r.num-p.num}]):[];
  const expectedState=holding&&quote?.status==='PREVIEW'?{context:copy(beforeState.context),period,cargo:copy(beforeState.cargo),claims:copy(beforeState.claims),inventory:copy(beforeState.inventory),player:{coins:beforeState.player.coins+quote.total,buySpeedTimes:beforeState.player.buySpeedTimes,goods},receiptRule:{source:'TradeSellResponse.player',fields:['maxCoins','profit'],constraint:'EXACT_TYPED_AND_INDEPENDENT_TRADE_INFO',predicted:false}}:null;
  const target={period,cityId:p.cityId,pid:p.pid,num:p.num},budgetClaims={resources:[],quotas:[{id:'trade:'+period+':holding:'+p.pid,num:p.num}],uids:[{type:'trade-holding',id:period+':'+p.pid}]};
@@ -130,7 +150,7 @@ function buyCandidate(f,{config=f?.configEvidence,moduleConfig={enabled:false}}=
  const total=price&&positive(p.num)?BigInt(price)*BigInt(p.num):null,currency=tradeCurrency(period),minimum=positive(get(required,'playerLevel'))?required.playerLevel:null;
  const source=live.get(f),time=source?clockOf(source.client,f.context):null,window=f?.activity?.period;
  const configMatches=same(tables.map(n=>config?.tables?.[n]??null),tables.map(n=>f?.configEvidence?.tables?.[n]??null));
- const reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!configMatches?'TRADE_CONFIG_CHANGED':view.status!=='OBSERVED'?'TRADE_PORT_OBSERVATION_UNKNOWN':minimum===null?'TRADE_MODULE_LEVEL_UNKNOWN':f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!time||!positive(window?.period)||window.period!==period||[f.clock.start,f.clock.end,time].some(c=>!c||c.earliestMs<window.startTime*1000||c.latestMs>=window.endTime*1000)?'TRADE_PERIOD_OR_CLOCK_UNKNOWN':base?.cargo.cityId!==p.cityId||!market?'TRADE_EXACT_GOODS_OR_PORT_UNKNOWN':maxBuy===null?'TRADE_BUY_LIMIT_UNKNOWN':p.num>maxBuy?'TRADE_BUY_LIMIT_EXCEEDED':total===null||total<=0n||total>2147483647n?'TRADE_BUY_COST_OVERFLOW':f.currencyId!==currency||f.stock.get(currency)!==base.player.coins?'TRADE_COINS_SOURCE_UNKNOWN':!['gotAchieveRwdId','gotReportRwdId','guildReportNum'].every(k=>get(f.first,k)===get(f.last,k))?'TRADE_CLAIM_STATE_CHANGED':!['TradeBuyRequest','TradeBuyResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!configMatches?'TRADE_CONFIG_CHANGED':view.status!=='OBSERVED'?'TRADE_PORT_OBSERVATION_UNKNOWN':minimum===null?'TRADE_MODULE_LEVEL_UNKNOWN':f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!time||!positive(window?.period)||window.period!==period||[f.clock.start,f.clock.end,time].some(c=>!c||c.earliestMs<window.startTime*1000||c.latestMs>=window.endTime*1000)?'TRADE_PERIOD_OR_CLOCK_UNKNOWN':view.tradingHours.status!=='OPEN'?view.tradingHours.reason:base?.cargo.cityId!==p.cityId||!market?'TRADE_EXACT_GOODS_OR_PORT_UNKNOWN':maxBuy===null?'TRADE_BUY_LIMIT_UNKNOWN':p.num>maxBuy?'TRADE_BUY_LIMIT_EXCEEDED':total===null||total<=0n||total>2147483647n?'TRADE_BUY_COST_OVERFLOW':f.currencyId!==currency||f.stock.get(currency)!==base.player.coins?'TRADE_COINS_SOURCE_UNKNOWN':!['gotAchieveRwdId','gotReportRwdId','guildReportNum'].every(k=>get(f.first,k)===get(f.last,k))?'TRADE_CLAIM_STATE_CHANGED':!['TradeBuyRequest','TradeBuyResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const beforeState=base?{...base,market:copy(view.prices)}:null,costs=total!==null&&total>0n&&total<=2147483647n?[{id:currency,num:Number(total)}]:[];
  const target={period,cityId:p.cityId,goodsId:p.goodsId,num:p.num},budgetClaims={resources:copy(costs),quotas:[{id:'trade:'+period+':market:'+p.cityId+':'+p.goodsId,num:p.num}],uids:[{type:'trade-market',id:period+':'+p.cityId+':'+p.goodsId}]};
  const expectedState=base&&costs.length?{context:copy(base.context),period,cargo:copy(base.cargo),claims:copy(base.claims),inventory:copy(base.inventory),player:{coins:base.player.coins-costs[0].num,buySpeedTimes:base.player.buySpeedTimes},receiptRule:{source:'TradeBuyResponse.player',fields:['maxCoins','profit','goods'],constraint:'EXACT_TYPED_AND_INDEPENDENT_TRADE_INFO_SINGLE_HOLDING_INCREASE',predicted:false}}:null;
