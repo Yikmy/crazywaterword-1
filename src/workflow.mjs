@@ -210,7 +210,7 @@ export function validateWorkflow(input, options = {}) {
   if(graph.runPolicy!==undefined){graph.runPolicy=validateRunPolicy(graph.runPolicy);for(const id of graph.runPolicy.modules)registered(registry,id);if(graph.budget===undefined)throw fail('声明运行边界必须同时声明明确累计预算');}
   if (graph.preparation !== undefined) graph.preparation = validatePreparation(graph.preparation);
   const fields = {
-    START: [], STOP: [], BRANCH: [], WAIT: ['durationMs','cooldown'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
+    START: [], STOP: [], BRANCH: [], WAIT: ['durationMs','cooldown'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection','onConfirmedDefeat'],
     CONDITION: ['condition'], RULE: ['condition'], VERIFY: ['module','condition'],
   };
   for (const node of graph.nodes) {
@@ -220,6 +220,7 @@ export function validateWorkflow(input, options = {}) {
     if (['SURVEY','ACTION'].includes(node.type) || node.module !== undefined) registered(registry, node.module, node.type);
     if (node.parameters !== undefined) { if (!plain(node.parameters)) throw fail('业务参数必须为对象'); json(node.parameters); }
     if (['SURVEY','ACTION'].includes(node.type)) { const adapter=registry.get(node.module); if(adapter?.contractVersion===1) validateFunctionParameters(node.module,adapter,node.parameters??{}); }
+    if(node.onConfirmedDefeat!==undefined&&(node.onConfirmedDefeat!=='BRANCH'||node.module!=='stage'||node.parameters?.config?.stopOnDefeat!==true||node.parameters.config.maxAttempts!==1||!Number.isSafeInteger(node.parameters.expectedStage)||node.parameters.expectedStage<1||!graph.runPolicy||graph.runPolicy.maxRounds!==undefined))throw fail('确认战败分支仅支持有明确总边界、同关卡单次主线且不重复轮次');
     if (node.type === 'ACTION') {
       if (typeof node.selection === 'string') { if (!text(node.selection) || node.selection.length > 1000) throw fail('操作选择无效'); }
       else if (plain(node.selection) && node.selection.unique === true) { exact(node.selection, ['unique'], '唯一候选选择'); }
@@ -252,6 +253,15 @@ export function validateWorkflow(input, options = {}) {
       if (edges.length !== 1 || (edges[0].when ?? 'ALWAYS') !== 'ALWAYS') throw fail('普通节点必须有一个无条件出口');
       if (['CONDITION','RULE'].includes(node.type) && nodes.get(edges[0].to).type !== 'BRANCH') throw fail('条件结果必须通过显式分支消费');
     }
+  }
+  for(const node of graph.nodes.filter(node=>node.onConfirmedDefeat!==undefined)){
+    const decision=nodes.get(outgoing.get(node.id)[0]?.to),out=outgoing.get(decision?.id)??[],save=nodes.get(out.find(edge=>edge.when==='PASS')?.to),stop=nodes.get(out.find(edge=>edge.when==='FAIL')?.to);
+    const verification=nodes.get(outgoing.get(save?.id)?.[0]?.to),battle=nodes.get(outgoing.get(verification?.id)?.[0]?.to);
+    const rule=decision?.condition;
+    if(decision?.type!=='CONDITION'||rule?.source!=='run'||rule.operator!=='EQ'||rule.value!=='FAILED'||rule.path?.length!==1||rule.path[0]!=='finalStatus'||out.length!==2||
+      save?.type!=='ACTION'||save.module!=='formation'||verification?.type!=='VERIFY'||verification.module!=='formation'||stop?.type!=='STOP'||
+      battle?.type!=='ACTION'||battle.module!=='stage'||battle.parameters?.expectedStage!==node.parameters.expectedStage||battle.parameters?.config?.stopOnDefeat!==true||battle.parameters.config.maxAttempts!==1)
+      throw fail('确认战败仅可显式分支到下一阵容保存/验证及同关卡单次挑战；胜利出口必须停止');
   }
   const visited = new Set(), visiting = new Set(), order = [];
   function visit(id) { if (visiting.has(id)) throw fail('工作流禁止循环'); if (visited.has(id)) return; visiting.add(id); for (const edge of outgoing.get(id)) visit(edge.to); visiting.delete(id); visited.add(id); order.unshift(id); }
@@ -286,9 +296,9 @@ function confirmedRun(run, plan, accountId, outcome = 'SUCCESS') {
   return run.actions.every(action => ids.includes(action.actionId) && action.result === outcome && (action.verification === 'CONFIRMED' || action.verification?.confirmed === true || action.verification?.status === 'CONFIRMED'));
 }
 // A confirmed mainline defeat is a known failed action, never a success or a
-// permission to advance. All other failed/unconfirmed batches retain UNKNOWN.
-function confirmedStageDefeat(run,plan,accountId){
- if(plan.module!=='stage'||plan.parameters?.config?.stopOnDefeat!==true||plan.actions?.length!==1||!text(plan.planHash)||
+// permission to advance; the explicit graph and current authorization supply it.
+export function confirmedStageDefeat(run,plan,accountId){
+ if(run?.memoryPersistence?.status==='FAILED'||plan.module!=='stage'||plan.parameters?.config?.stopOnDefeat!==true||plan.actions?.length!==1||!text(plan.planHash)||
    run?.planSummary?.planHash!==plan.planHash||!confirmedRun(run,plan,accountId,'FAILED'))return false;
  const action=run.actions[0],status=action.afterState,last=status?.lastResult;
  return action.verification?.status==='CONFIRMED'&&action.requestStatus==='FAILED'&&action.dispatched===true&&action.unresolvedWrite===false&&
@@ -482,6 +492,11 @@ function repeatAfterStop(ctx,node){
       }
       if(matches.length===1&&confirmedStageDefeat(matches[0],ctx.waitingPlan,ctx.accountId)){
         ctx.lastRun=copy(matches[0]);
+        const node=ctx.graph.nodes.find(node=>node.id===ctx.nodeId);
+        if(node?.onConfirmedDefeat==='BRANCH'){
+          await trace(ctx,node,'CONFIRMED_DEFEAT',{actionId:ctx.waitingPlan.actions[0].actionId,batchId:ctx.waitingPlan.batchId,planHash:ctx.waitingPlan.planHash});
+          ctx.waitingPlan=null;ctx.status='RUNNING';ctx.reason=null;ctx.nodeId=next(ctx);await onUpdate(getStatus());current(ctx);return true;
+        }
         await finish(ctx,'FAILED','主线逐场证据已确认战败；按首次战败配置停止，不续跑或重放');
         return false;
       }

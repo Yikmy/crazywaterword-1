@@ -980,14 +980,64 @@ test('cooldown history HTTP restores only original observation without a Session
 });
 
 
-async function recommendationHttpFixture(options={}){
- const app=await harness({includeStage:true,...options}),session=app.ready('A');Object.assign(session.player,{playerId:'17',worldId:7});await app.enable();await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
+async function recommendationHttpFixture({extraPreset=false,...options}={}){
+ const config=structuredClone(cfg);if(extraPreset)config.tables.FormationTypePositionCfg.data.push({id:3,position:[9,5]});
+ const app=await harness({includeStage:true,...options,...(extraPreset?{configOverride:config}:{})}),session=app.ready('A');if(extraPreset){const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{const value=await request(...args);return args[0]==='MyFormationPresetRequest'?{ids:[2,3]}:value;};}Object.assign(session.player,{playerId:'17',worldId:7});await app.enable();await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
  const {createStandaloneStageJournal,projectStageBattleHistory}=await import('../src/stage-history.mjs'),{battleAnalysis}=await import('../src/formation.mjs');
  const journal=createStandaloneStageJournal(app.history,{accountId:'A',playerId:'17',worldId:7,generation:session.generation,connectionId:'source-connection'}),runId='source-defeat',at=new Date().toISOString();
  const analysis=battleAnalysis({initialData:{mainlineStage:41,battleType:1,leftTeam:{presetId:1,members:[{hero:{heroId:'tank'},pos:{x:1,y:3}}]},rightTeams:[{members:[{hero:{heroId:'enemy'},pos:{x:2,y:3}}]}]},stats:{isLeftWin:false,leftHeroDamages:[{heroId:'tank',pos:{x:1,y:3},leftHp:0,statBar:{damage:{physical:1,magic:0,true:0}}}]}});
  journal.start({runId,stage:41,at,config:{}});journal.dispatch({runId,stage:41,attempt:1,at});journal.settle({runId,stage:41,attempt:1,at,result:{stage:41,outcome:'FAILED',isLeftWin:false,playerSide:'LEFT'},analysis});journal.finish({runId,at,kind:'DEFEAT_STOPPED',reason:'synthetic confirmed defeat'});
  const report=projectStageBattleHistory('A',app.history.list('A')).reports[0],payload={reportId:report.reportId,presetId:2,maxAttempts:1};return {app,session,report,payload};
 }
+for(const outcome of ['first-victory','defeat-then-victory','all-defeat','unknown-first'])test('bounded recommendation HTTP finite authorization follows only confirmed same-stage defeat '+outcome,async()=>{
+ const {app,payload,session}=await recommendationHttpFixture({extraPreset:true});try{
+  let battles=0;const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{const value=await request(...args);if(args[0]!=='ChallengeStageRequest')return value;battles++;return {...value,initialData:{...value.initialData,...(outcome==='unknown-first'?{battleType:2}:{})},stats:{...value.stats,isLeftWin:outcome==='first-victory'||outcome==='defeat-then-victory'&&battles===2}};};
+  const prepared=await app.call('/api/formations/recommendation/prepare',{body:{...payload,presetIds:[2,3],maxAttempts:2,maxDurationMs:60000}});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.deepEqual(prepared.data.source.presetIds,[2,3]);assert.equal(app.requests.some(row=>['SaveFormationRequest','ChallengeStageRequest'].includes(row.name)),false);
+  const started=await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});assert.equal(started.status,200,JSON.stringify(started.data));const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,approval={offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true};assert.ok(approval.offer);assert.equal(approval.offer.graph.runPolicy.maxActions,4);assert.equal(battles,0);
+  const authorized=await app.call('/api/workflows/authorize-run',{body:approval});assert.equal(authorized.status,200,JSON.stringify(authorized.data));const terminal=outcome==='all-defeat'?'FAILED':outcome==='unknown-first'?'UNKNOWN':'COMPLETED',done=(await waitForWorkflow(app,terminal)).status;
+  const expected=outcome==='first-victory'||outcome==='unknown-first'?1:2;assert.equal(battles,expected);assert.deepEqual(app.requests.filter(row=>row.name==='ChallengeStageRequest').map(row=>row.body.stage),Array(expected).fill(41));assert.deepEqual(app.requests.filter(row=>row.name==='SaveFormationRequest').map(row=>row.body.formation.presetId),[2,3].slice(0,expected));
+  assert.equal(done.actionPlans,expected*2);assert.equal(done.running,false);assert.equal(done.trace.filter(row=>row.result==='CONFIRMED_DEFEAT').length,outcome==='defeat-then-victory'||outcome==='all-defeat'?1:0);
+  const detail=await app.call('/api/workflows/history?workflowRunId='+done.runId);assert.equal(detail.status,200,JSON.stringify(detail.data));assert.deepEqual(detail.data.preparation.source.presetIds,[2,3]);assert.equal(detail.data.resumable,false);assert.equal((await app.call('/api/workflows/history?workflowRunId='+done.runId,{id:'B'})).status,404);
+  const bytes=fs.readFileSync(app.history.storagePath,'utf8'),restarted=createExecutionHistory({file:app.history.storagePath});assert.equal(restarted.list('A').filter(row=>row.workflowId===done.runId).length,expected*2);assert.equal(restarted.unresolved('A'),outcome==='unknown-first');assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);
+  assert.notEqual((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);assert.equal(battles,expected);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+test('bounded recommendation per-batch authorization requires four fresh original permits across confirmed defeat',async()=>{
+ const {app,payload,session}=await recommendationHttpFixture({extraPreset:true});try{
+  let battles=0;const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{const value=await request(...args);if(args[0]!=='ChallengeStageRequest')return value;return {...value,stats:{...value.stats,isLeftWin:++battles===2}};};
+  const prepared=await app.call('/api/formations/recommendation/prepare',{body:{...payload,presetIds:[2,3],maxAttempts:2,maxDurationMs:60000}});assert.equal(prepared.status,200);assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+  const batches=new Set();for(let i=0;i<4;i++){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;assert.equal(waiting.plan.module,i%2?'stage':'formation');assert.equal(app.requests.filter(r=>['SaveFormationRequest','ChallengeStageRequest'].includes(r.name)).length,i);assert.equal(batches.has(waiting.plan.batchId),false);batches.add(waiting.plan.batchId);
+   const permit=await app.approve(waiting.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);assert.equal((await app.call('/api/workflows/resume',{body:{}})).status,200);
+  }
+  const done=(await waitForWorkflow(app,'COMPLETED')).status;assert.equal(done.trace.filter(row=>row.result==='CONFIRMED_DEFEAT').length,1);assert.equal(battles,2);assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+for(const mode of ['refused-next-save','unconfirmed-next-save','role','world','generation','connection','configuration','write-intent','result-persistence','memory-persistence','deadline'])test('bounded recommendation stops further dispatch at original shared boundary '+mode,async()=>{
+ const {app,payload,session}=await recommendationHttpFixture({extraPreset:true});const put=app.history.put,list=app.history.list;try{
+  let battles=0,saves=0;const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{
+   if(args[0]==='SaveFormationRequest'&&++saves===2){if(mode==='refused-next-save')throw Object.assign(Error('synthetic definite refusal'),{code:'SERVER_ERROR',serverError:1});if(mode==='unconfirmed-next-save')return {formation:structuredClone(args[1].formation)};}
+   const value=await request(...args);if(args[0]!=='ChallengeStageRequest')return value;battles++;
+   if(mode==='role')session.player.playerId='18';if(mode==='world')session.player.worldId=8;if(mode==='generation')session.generation++;if(mode==='connection')session.connectionId='changed';
+   if(mode==='configuration')app.operations.saveModuleConfig('A',{module:'formation',config:{enabled:false,mainlineEnabled:false}});
+   if(mode==='deadline')await new Promise(resolve=>setTimeout(resolve,650));
+   return {...value,stats:{...value.stats,isLeftWin:false}};
+  };
+  const prepared=await app.call('/api/formations/recommendation/prepare',{body:{...payload,presetIds:[2,3],maxAttempts:2,maxDurationMs:mode==='deadline'?500:60000}});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  if(mode==='memory-persistence'){let pending=false;app.history.put=record=>{const result=put(record);if(record.module==='stage'&&record.actions.some(row=>row.result==='FAILED')&&!record.finishedAt)pending=true;return result;};app.history.list=(...args)=>{if(pending){pending=false;throw Error('synthetic execution memory origin unavailable');}return list(...args);};}
+  if(mode==='write-intent'||mode==='result-persistence')app.history.put=record=>{if(record.module==='stage'&&(mode==='write-intent'?record.actions.some(row=>row.requestStatus==='DISPATCHING'):record.finishedAt))throw Object.assign(Error('synthetic bounded persistence failure'),{code:'HISTORY_UNAVAILABLE'});return put(record);};
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;assert.equal((await app.call('/api/workflows/authorize-run',{body:{offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true}})).status,200);
+  let done;for(let i=0;i<100;i++){done=(await app.call('/api/workflows')).data.status;if(!done.running)break;await new Promise(resolve=>setTimeout(resolve,15));}await app.operations.settle('A');done=(await app.call('/api/workflows')).data.status;
+  assert.ok(['FAILED','UNKNOWN','STOPPED','CANCELLED','BLOCKED'].includes(done.status),JSON.stringify({status:done.status,reason:done.reason}));assert.equal(battles,mode==='write-intent'?0:1);assert.equal(saves,mode.endsWith('next-save')?2:1);assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.equal(app.requests.filter(row=>row.name==='ChallengeStageRequest').length,battles);
+  if(mode==='memory-persistence')assert.equal(app.history.list('A').find(row=>row.module==='stage'&&row.workflowId===done.runId).memoryPersistence.status,'FAILED');
+  assert.notEqual((await app.call('/api/workflows/resume',{body:{}})).status,200);assert.equal(battles,mode==='write-intent'?0:1);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{app.history.put=put;app.history.list=list;await app.close();}
+});
+for(const patch of [{presetIds:[2,2],maxDurationMs:1000},{presetIds:[3,2],maxDurationMs:1000},{presetIds:[2,3]},{maxDurationMs:1000},{presetIds:[2,3],maxDurationMs:86400001}])test('bounded recommendation HTTP rejects malformed scope before domain reads '+JSON.stringify(patch),async()=>{
+ const {app,payload}=await recommendationHttpFixture({extraPreset:true});try{const before=app.requests.length,read=await app.call('/api/formations/recommendation/prepare',{body:{...payload,...patch}});assert.equal(read.status,400,JSON.stringify(read.data));assert.equal(app.requests.length,before);}finally{await app.close();}
+});
+
 test('recommendation HTTP stores confirmed defeat as FAILED and stops original Workflow without another save or battle',async()=>{
  const {app,payload,session}=await recommendationHttpFixture();try{
   const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{const value=await request(...args);return args[0]==='ChallengeStageRequest'?{...value,stats:{...value.stats,isLeftWin:false}}:value;};

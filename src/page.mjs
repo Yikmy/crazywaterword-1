@@ -336,8 +336,8 @@ export const PAGE = `<!doctype html>
     <div class="bar"><label>基准战报 <select id="stages-battle-before" aria-label="基准战报"></select></label><label>对照战报 <select id="stages-battle-after" aria-label="对照战报"></select></label></div>
     <div id="stages-battle-comparison" class="dim" aria-live="polite">尚无可比较战报。</div>
     <h2>战败建议与有限续跑</h2>
-    <p class="dim">选择同角色世界当前关卡的战败记录，按客户端职业顺序预览指定已解锁模板。准备只生成工作流图，不保证更优；保存阵容与有限主线仍须原授权和独立复读，首次战败或UNKNOWN停止。</p>
-    <div class="bar"><label>来源战败 <select id="stages-recommendation-report"></select></label><label>目标模板 <input id="stages-recommendation-preset" type="number" min="1" step="1"></label><label>最多尝试 <input id="stages-recommendation-attempts" type="number" min="1" max="200" step="1" value="1"></label><button id="stages-recommendation-prepare" disabled>调查并准备建议工作流</button></div>
+    <p class="dim">选择同角色世界当前关卡的战败记录，按客户端职业顺序预览指定已解锁模板。准备只生成工作流图，不保证更优；保存阵容与有限主线仍须原授权和独立复读。单模板首次战败停止；明确候选顺序时，仅同关卡确认战败才换到下一候选，胜利、候选耗尽、到限、拒绝或UNKNOWN停止。</p>
+    <div class="bar"><label>来源战败 <select id="stages-recommendation-report"></select></label><label>目标模板 <input id="stages-recommendation-preset" type="number" min="1" step="1"></label><label>最多尝试 <input id="stages-recommendation-attempts" type="number" min="1" max="200" step="1" value="1"></label><label>有限候选模板顺序（逗号分隔，首项同目标模板；留空使用单模板） <input id="stages-recommendation-presets" type="text"></label><label>候选总时长（秒） <input id="stages-recommendation-duration" type="number" min="1" max="86400" step="1" value="300"></label><button id="stages-recommendation-prepare" disabled>调查并准备建议工作流</button></div>
     <div id="stages-recommendation-hint" class="dim" role="status"></div>
   </section>
   <section id="tab-idle" class="hidden">
@@ -1596,7 +1596,7 @@ function resetStages() {
   $('stages-status').textContent = '选择账号后读取已有运行状态。';
   $('stages-countdown').textContent = ''; $('stages-history').textContent = '尚无记录。';
   $('stages-delay-policy').textContent = '';
-  clear($('stages-recommendation-report'));$('stages-recommendation-preset').value='';$('stages-recommendation-attempts').value='1';$('stages-recommendation-hint').textContent='';$('stages-recommendation-prepare').disabled=true;
+  clear($('stages-recommendation-report'));$('stages-recommendation-preset').value='';$('stages-recommendation-attempts').value='1';$('stages-recommendation-presets').value='';$('stages-recommendation-duration').value='300';$('stages-recommendation-hint').textContent='';$('stages-recommendation-prepare').disabled=true;
   clear($('stages-battle-before')); clear($('stages-battle-after')); $('stages-battle-comparison').textContent='尚无可比较战报。';
 }
 function stageConfig() {
@@ -1619,7 +1619,7 @@ function stageControls() {
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
   const recommendationBlocked=!current||Boolean(snapshot.busy)||!stagesData?.available||!snapshot.connected||snapshot.state!=='READY'||busy||runner.uncertain===true||!stageRecommendationEditable();
-  for(const id of ['stages-recommendation-report','stages-recommendation-preset','stages-recommendation-attempts'])$(id).disabled=recommendationBlocked;
+  for(const id of ['stages-recommendation-report','stages-recommendation-preset','stages-recommendation-attempts','stages-recommendation-presets','stages-recommendation-duration'])$(id).disabled=recommendationBlocked;
   $('stages-recommendation-prepare').disabled=recommendationBlocked||!$('stages-recommendation-report').value;
   for (const id of ['stages-enabled', 'stages-stop-on-defeat', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = busy;
 }
@@ -1706,15 +1706,17 @@ $('stages-recommendation-report').onchange=stageControls;
 $('stages-recommendation-prepare').onclick=async()=>{
  if($('stages-recommendation-prepare').disabled||stagesActionPending||!stageRecommendationEditable())return;
  const scope=viewGuard.begin('stage-recommendation'),editor=captureStageRecommendationEditor();
- const reportId=$('stages-recommendation-report').value,presetText=$('stages-recommendation-preset').value,attemptText=$('stages-recommendation-attempts').value;
- const active=()=>viewGuard.current(scope)&&snapshot.connected&&snapshot.state==='READY'&&!snapshot.busy&&editor.current()&&reportId===$('stages-recommendation-report').value&&presetText===$('stages-recommendation-preset').value&&attemptText===$('stages-recommendation-attempts').value;
+ const reportId=$('stages-recommendation-report').value,presetText=$('stages-recommendation-preset').value,attemptText=$('stages-recommendation-attempts').value,sequenceText=$('stages-recommendation-presets').value,durationText=$('stages-recommendation-duration').value;
+ const active=()=>viewGuard.current(scope)&&snapshot.connected&&snapshot.state==='READY'&&!snapshot.busy&&editor.current()&&reportId===$('stages-recommendation-report').value&&presetText===$('stages-recommendation-preset').value&&attemptText===$('stages-recommendation-attempts').value&&sequenceText===$('stages-recommendation-presets').value&&durationText===$('stages-recommendation-duration').value;
  try{
   const integer=(value,max)=>{if(!/^[1-9][0-9]*$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)>max)throw Error('模板须为正int32，最多尝试须为1至200的明确整数');return Number(value);};
   const payload={reportId,presetId:integer(presetText,2147483647),maxAttempts:integer(attemptText,200)};
+  if(sequenceText.trim()){const ids=sequenceText.split(',').map(value=>integer(value.trim(),2147483647));if(ids.length>10||new Set(ids).size!==ids.length||ids[0]!==payload.presetId||payload.maxAttempts>ids.length)throw Error('有限候选须最多10个不同模板，首项同目标模板，总尝试不超过候选数');payload.presetIds=ids;payload.maxDurationMs=integer(durationText,86400)*1000;}
   stagesActionPending=true;stageControls();$('stages-recommendation-hint').textContent='正在调查原阵容并核对持久战败来源；准备不执行写操作。';
   const data=await stageMutation('/api/formations/recommendation/prepare',payload,scope);
   if(!active())return;if(data.graph?.preparation?.source?.reportId!==reportId||data.graph.preparation.source.accountId!==scope.account)throw Error('建议来源与所选账号战报不匹配');
-  editor.accept(data.graph);$('wf-result').textContent=JSON.stringify({source:data.source,limitation:data.limitation},null,2);$('wf-hint').textContent='已加载战败建议图。请检查来源、目标站位及尝试上限，保存图后由原流程逐批授权。';$('stages-recommendation-hint').textContent=data.limitation||'已准备原工作流图，尚未保存阵容或开战。';
+  if(payload.presetIds){const actual=data.graph.preparation.source;if(actual.decisionRule!=='ORDERED_CLIENT_CAREER_LAYOUT'||JSON.stringify(actual.presetIds)!==JSON.stringify(payload.presetIds.slice(0,payload.maxAttempts))||actual.maxAttempts!==payload.maxAttempts||actual.maxDurationMs!==payload.maxDurationMs||data.graph.runPolicy?.maxActions!==payload.maxAttempts*2||data.graph.runPolicy.maxDurationMs!==payload.maxDurationMs)throw Error('有限候选或期限与明确选择不匹配');}
+  editor.accept(data.graph);$('wf-result').textContent=JSON.stringify({source:data.source,limitation:data.limitation},null,2);$('wf-hint').textContent=payload.presetIds?'已加载有限换阵图。请检查候选顺序、总开战次数和总期限，再按原流程逐批或明确授权本次有限运行。':'已加载战败建议图。请检查来源、目标站位及尝试上限，保存图后由原流程逐批授权。';$('stages-recommendation-hint').textContent=data.limitation||'已准备原工作流图，尚未保存阵容或开战。';
  }catch(error){if(viewGuard.current(scope))$('stages-recommendation-hint').textContent='准备失败：'+error.message;}
  finally{if(viewGuard.current(scope)){stagesActionPending=false;stageControls();}}
 };

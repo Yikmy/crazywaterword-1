@@ -1,5 +1,5 @@
-import {projectStageBattleHistory,prepareStageRecommendation} from './stage-history.mjs';
-import { validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent, projectWorkflowReasonHistory } from './workflow.mjs';
+import {projectStageBattleHistory,prepareStageRecommendation,validateStageRecommendationSequence} from './stage-history.mjs';
+import { confirmedStageDefeat, validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent, projectWorkflowReasonHistory } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
 import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -290,7 +290,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function prepareExtremeFormationSource(session,payload) {const parameters=validateExtremeFormationParameters(payload);return withExtremeFormationRead(session,'PREPARE',parameters);}
 
   async function prepareStageRecommendationSource(session,payload){
-    exact(payload,['reportId','presetId','maxAttempts']);
+    exact(payload,['reportId','presetId','maxAttempts','presetIds','maxDurationMs']);
+    validateStageRecommendationSequence(payload);
     if(typeof payload.reportId!=='string'||!payload.reportId||payload.reportId.trim()!==payload.reportId||payload.reportId.length>1000||!Number.isSafeInteger(payload.presetId)||payload.presetId<1||payload.presetId>2147483647||!Number.isSafeInteger(payload.maxAttempts)||payload.maxAttempts<1||payload.maxAttempts>200)throw error('须明确原战报ID、阵型模板及1至200次上限','INVALID_INPUT',400);
     const release=acquire(session,'operations:STAGE_RECOMMENDATION'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
@@ -303,7 +304,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       if(identity!==observationIdentity(session,client)||dependency!==dependencies()||sourceHash!==operationDigest(source()))throw error('建议准备期间身份、配置或来源战报已变化','CANCELLED');
       const runner=session.stageClient===client?session.stageRunner?.getStatus():null,progress=runner?.nextStage??session.player?.mainlineStage;
       if(runner?.running||runner?.inFlight||runner?.uncertain)throw error('旧主线运行尚未确定停止','STAGE_RECOMMENDATION_UNAVAILABLE');
-      const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,moduleConfig,now:clock()});
+      const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,...(Object.hasOwn(payload,'presetIds')?{presetIds:payload.presetIds}:{}),...(Object.hasOwn(payload,'maxDurationMs')?{maxDurationMs:payload.maxDurationMs}:{}),moduleConfig,now:clock()});
       const graph=validateWorkflow(result.graph,{modules}).workflow;cacheModule(session.id,'formation',facts,options);
       return {accountId:session.id,...result,graph};
     }finally{release();}
@@ -536,7 +537,14 @@ function authorizeWorkflowPlan(session,payload){
     }).finally(() => {
       record.finishedAt = now();
       const success=record.finalStatus==='SUCCESS', standaloneSuccess=success&&!entry.workflowId;
-      record.runBudget=success?{...budget.runBudget.snapshot(),...(standaloneSuccess?{state:'CLOSED',outcome:'SUCCESS'}:{})}:budget.runBudget.close(['UNKNOWN','CANCELLED','RATE_LIMITED','FAILED'].includes(record.finalStatus)?record.finalStatus:'STOPPED');
+      // Retain the existing parent only for this graph's explicitly declared
+      // same-stage defeat branch. It grants no new batch permit or retry.
+      const parent=entry.workflowId?workflowBudgets.get(session.id):null,node=parent?.contract?.graph.nodes.find(node=>node.id===entry.public.workflowNodeId);
+      let confirmedDefeatBranch=false;
+      if(parent?.runId===entry.workflowId&&node?.onConfirmedDefeat==='BRANCH'&&observationIdentity(session,client)===entry.sourceIdentity&&confirmedStageDefeat(record,entry.public,session.id)){
+        try{assertWorkflowApprovalScope(session,parent);confirmedDefeatBranch=true;}catch{/* Changed ownership, dependencies or deadline close the parent below. */}
+      }
+      record.runBudget=success||confirmedDefeatBranch?{...budget.runBudget.snapshot(),...(standaloneSuccess?{state:'CLOSED',outcome:'SUCCESS'}:{})}:budget.runBudget.close(['UNKNOWN','CANCELLED','RATE_LIMITED','FAILED'].includes(record.finalStatus)?record.finalStatus:'STOPPED');
       try {
         history.put(record); if(standaloneSuccess)budget.runBudget.close('SUCCESS');
         // Publish only after the complete original result is durable. The proof

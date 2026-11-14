@@ -68,10 +68,10 @@ test('comparison never mutates the selected reports or invents a delta for a dif
  after.analysis.leftTeam.members[0].heroId='different';after.analysis.leftHeroDamages[0].heroId='different';const result=compareStageBattles(before,after);assert.equal(result.heroes.length,2);assert.ok(result.heroes.every(row=>row.damageDelta===null));
 });
 
-async function recommendationFixture(){
+async function recommendationFixture({extraPreset=false}={}){
  const run=record(),report=projectStageBattleHistory('A',[run]).reports[0];report.analysis.leftTeam.presetId=1;
- const config={tables:{HeroCfg:{data:[{id:'hero',career:'坦克'}]},FormationHeroNumCfg:{data:[{heroNum:1,mainlineStage:0}]},FormationTypePositionCfg:{data:[{id:1,position:[1,2]},{id:2,position:[5,2]}]}}},player={playerId:context.playerId,worldId:context.worldId,mainlineStage:41};
- const protocol=Object.fromEntries(['GetFormation','MyFormationPreset','AllHero','SaveFormation'].flatMap(n=>[[n+'Request',{}],[n+'Response',{}]])),client={connected:true,async request(name){return name==='GetFormationRequest'?{formation:{presetId:1,petUid:'9007199254740993',heroPositions:[{heroId:'hero',pos:{x:1,y:2}}]}}:name==='MyFormationPresetRequest'?{ids:[2]}:{heroes:[{heroId:'hero'}]};}};
+ const config={tables:{HeroCfg:{data:[{id:'hero',career:'坦克'}]},FormationHeroNumCfg:{data:[{heroNum:1,mainlineStage:0}]},FormationTypePositionCfg:{data:[{id:1,position:[1,2]},{id:2,position:[5,2]},...(extraPreset?[{id:3,position:[9,2]}]:[])]}}},player={playerId:context.playerId,worldId:context.worldId,mainlineStage:41};
+ const protocol=Object.fromEntries(['GetFormation','MyFormationPreset','AllHero','SaveFormation'].flatMap(n=>[[n+'Request',{}],[n+'Response',{}]])),client={connected:true,async request(name){return name==='GetFormationRequest'?{formation:{presetId:1,petUid:'9007199254740993',heroPositions:[{heroId:'hero',pos:{x:1,y:2}}]}}:name==='MyFormationPresetRequest'?{ids:extraPreset?[2,3]:[2]}:{heroes:[{heroId:'hero'}]};}};
  const facts=await surveyFormation(client,protocol,{config,player}),options={accountId:'A',player,progress:41,presetId:2,maxAttempts:3,moduleConfig:{enabled:true,mainlineEnabled:true}};
  return {report,facts,options,prepare(){return prepareStageRecommendation(this.report,this.facts,this.options);}};
 }
@@ -88,4 +88,27 @@ for(const mode of ['account','role','world','mode','victory','unknown','side','p
 test('battle recommendation source schema rejects arbitrary authority, mismatching links and executable state',async()=>{
  const f=await recommendationFixture(),source=f.prepare().source;
  for(const patch of [{permit:'x'},{declarativeOnly:false},{rule:'BEST_FORMATION'},{reportId:'unbound'},{attempt:0},{maxAttempts:201},{playerId:'01'},{worldId:'9223372036854775808'},{analysisHash:'abc'},{accountId:' '}])assert.throws(()=>validateStageRecommendationSource({...source,...patch}),{code:'INVALID_STAGE_RECOMMENDATION'});
+});
+
+
+test('bounded recommendation compiles explicit ordered candidates as one finite original DAG',async()=>{
+ const f=await recommendationFixture({extraPreset:true});Object.assign(f.options,{presetIds:[2,3],maxAttempts:2,maxDurationMs:60000});const prepared=f.prepare();
+ assert.deepEqual(prepared.source.presetIds,[2,3]);assert.equal(prepared.source.maxAttempts,2);assert.equal(prepared.source.maxDurationMs,60000);assert.equal(prepared.source.decisionRule,'ORDERED_CLIENT_CAREER_LAYOUT');assert.deepEqual(prepared.graph.runPolicy,{maxDurationMs:60000,maxActions:4,modules:['formation','stage']});
+ const actions=prepared.graph.nodes.filter(row=>row.type==='ACTION');assert.equal(actions.length,4);assert.deepEqual(actions.filter(row=>row.module==='formation').map(row=>row.parameters.presetId),[2,3]);assert.ok(actions.every(row=>row.selection.unique===true));
+ const battles=actions.filter(row=>row.module==='stage');assert.ok(battles.every(row=>row.parameters.expectedStage===41&&row.parameters.config.maxAttempts===1&&row.parameters.config.stopOnDefeat===true));assert.equal(battles[0].onConfirmedDefeat,'BRANCH');assert.equal(Object.hasOwn(battles[1],'onConfirmedDefeat'),false);assert.equal(prepared.resumable,false);assert.equal(prepared.requiresAuthorization,true);
+ const {validateWorkflow}=await import('../src/workflow.mjs'),{formationModule}=await import('../src/formation.mjs');assert.equal(validateWorkflow(prepared.graph,{modules:{formation:formationModule,stage:{id:'stage',survey(){},view(){},plan(){},verify(){}}}}).valid,true);
+ prepared.source.presetIds.reverse();assert.deepEqual(f.prepare().source.presetIds,[2,3]);
+});
+test('bounded recommendation clips candidates to the explicit total battle count and changes graph identity with scope',async()=>{
+ const f=await recommendationFixture({extraPreset:true});Object.assign(f.options,{presetIds:[2,3],maxAttempts:1,maxDurationMs:60000});const one=f.prepare();assert.deepEqual(one.source.presetIds,[2]);assert.equal(one.graph.runPolicy.maxActions,2);assert.equal(one.graph.nodes.some(row=>row.onConfirmedDefeat),false);
+ f.options.maxAttempts=2;const two=f.prepare();assert.notEqual(one.graph.id,two.graph.id);f.options.maxDurationMs++;assert.notEqual(two.graph.id,f.prepare().graph.id);
+});
+for(const mode of ['duplicate','first-mismatch','too-many','missing-duration','zero-duration','large-duration','too-many-attempts','locked','unknown-template'])test('bounded recommendation refuses invalid or unavailable candidate scope '+mode,async()=>{
+ const f=await recommendationFixture({extraPreset:true});Object.assign(f.options,{presetIds:[2,3],maxAttempts:2,maxDurationMs:60000});
+ if(mode==='duplicate')f.options.presetIds=[2,2];if(mode==='first-mismatch')f.options.presetIds=[3,2];if(mode==='too-many')f.options.presetIds=Array.from({length:11},(_,i)=>i+2);if(mode==='missing-duration')delete f.options.maxDurationMs;if(mode==='zero-duration')f.options.maxDurationMs=0;if(mode==='large-duration')f.options.maxDurationMs=86400001;if(mode==='too-many-attempts')f.options.maxAttempts=3;if(mode==='locked')f.facts.unlockedPresetIds=[2];if(mode==='unknown-template')f.options.presetIds=[2,9];
+ assert.throws(()=>f.prepare(),error=>['INVALID_STAGE_RECOMMENDATION','STAGE_RECOMMENDATION_UNAVAILABLE'].includes(error.code));
+});
+test('bounded source rejects a changed rule, duplicate candidates, count or implicit deadline',async()=>{
+ const f=await recommendationFixture({extraPreset:true});Object.assign(f.options,{presetIds:[2,3],maxAttempts:2,maxDurationMs:60000});const source=f.prepare().source;
+ for(const patch of [{decisionRule:'RETRY_UNKNOWN'},{presetIds:[2,2]},{maxAttempts:1},{maxDurationMs:null},{presetIds:[3,2]}])assert.throws(()=>validateStageRecommendationSource({...source,...patch}),{code:'INVALID_STAGE_RECOMMENDATION'});
 });
