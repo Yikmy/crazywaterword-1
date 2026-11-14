@@ -306,10 +306,10 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
 const liveFestivalActivities = new WeakMap();
 function resetFestivalActivities(client, reason) {
   const previous=liveFestivalActivities.get(client);
-  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null});
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason});
 }
 function invalidateFestivalActivities(client, reason) {
-  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;}
+  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;}
 }
 function festivalContextCurrent(client,state) {
   return vipCurrentContext(client,state)&&['playerId','worldId'].every(k=>!vipOwn(client.factContext,k)||vipIdentity(vipValue(client.factContext,k))===state.identity?.[k]);
@@ -336,6 +336,28 @@ export function readFestivalActivitySnapshot(client,expected=null) {
   if(!state||state.invalid||!state.seeded||!state.snapshot||expected&&['accountId','generation','connectionId'].some(k=>vipValue(expected,k)!==state.context[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.reason??'FESTIVAL_CONTEXT_OR_PUSH_UNKNOWN',activities:null,observedAt:null,seq:null};
   return {...common,status:'OBSERVED',reliable:true,reason:null,...state.context,...state.identity,...structuredClone(state.snapshot)};
 }
+
+function updateGuildShipActivity(client,body,seq,receivedAt) {
+  const state=liveFestivalActivities.get(client);
+  if(!state||state.invalid)return;
+  state.guildShipSnapshot=null;state.guildShipReason='GUILD_SHIP_PERIOD_UNKNOWN';
+  if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'ACTIVITY_CONNECTION_OR_IDENTITY_CHANGED');return;}
+  const period=vipValue(body,'period'),values=Object.fromEntries(['period','startTime','endTime'].map(key=>[key,vipValue(period,key)]));
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||Object.values(values).some(n=>!Number.isInteger(n)||n<0||n>2147483647)||
+      (values.period===0?(values.startTime!==0||values.endTime!==0):values.startTime>=values.endTime))return;
+  state.guildShipSnapshot={seq,observedAt:new Date(receivedAt).toISOString(),period:values};state.guildShipReason=null;
+}
+export function readGuildShipActivitySnapshot(client,expected=null) {
+  // Apply the original activity transport invalidation even if no festival
+  // fragment has arrived. Both observations share login and stream ownership.
+  readFestivalActivitySnapshot(client);
+  const state=liveFestivalActivities.get(client),common={source:'SCGuildShipActivity.period',scope:'ACCEPTED_STREAM_PERIOD_ONLY',executable:false};
+  const identity=state?{...state.context,...state.identity}:{};
+  if(!state||state.invalid||!state.seeded||!state.guildShipSnapshot||expected&&['accountId','generation','connectionId','playerId','worldId'].some(k=>vipValue(expected,k)!==identity[k]))
+    return {...common,status:'UNKNOWN',reliable:false,reason:state?.guildShipReason??state?.reason??'GUILD_SHIP_PERIOD_NOT_OBSERVED',period:null,seq:null,observedAt:null};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.guildShipSnapshot)};
+}
+
 export const FESTIVAL_ACTIVITY_OBSERVATION_EVIDENCE=Object.freeze({protocolSha256:LIVE_VIP_LEVEL_EVIDENCE.protocolSha256,source:'SCAllActivity.festivalActivities / DispFestivalActivity / DispSubActivity.dailyActive / DailyActiveDetail.checkInId',scope:'Transport observation only; no eligibility, game day, independent claim reread or automatic execution',realGame:'REAL_UNVERIFIED'});
 
 export class GameClient extends EventEmitter {
@@ -829,6 +851,7 @@ export class GameClient extends EventEmitter {
     if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
     if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
     if (name === 'SCAllActivity') updateFestivalActivities(this,body,seq,receivedAt);
+    if (name === 'SCGuildShipActivity') updateGuildShipActivity(this,body,seq,receivedAt);
     if (name === 'SCEWorldOrderDelivery') observeMonthCardDelivery(this, body, seq);
     if (name === 'MonthCardResponse') observeMonthCardResponse(this, body, seq, receivedAt);
     this.emit('message', { seq, name, body });

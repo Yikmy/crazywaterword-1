@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
+import { readGuildShipActivitySnapshot } from './client.mjs';
+import { toSnapshotJson } from './game.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 // Alliance adapter only; the shared service owns authorization and transport.
 // Evidence: cached GuildHelpRequest/Pop:1455-1459, GuildCityArmyPop:1445,
 // GuildChestPop:1441, GuildUtil:1533, static protocol and configuration.
@@ -23,11 +27,11 @@ export function allianceId(v) {
   return n>0n && n<=9223372036854775807n ? n.toString() : null;
 }
 
-export const ALLIANCE_DEFAULT_CONFIG=Object.freeze({enabled:false,help:false,cancel:false,claimAid:false,ask:false,orders:false,welfare:false,fort:false,tech:false,memberIds:[],itemIds:[],priorityMemberIds:[],priorityItemIds:[],stockItemIds:[],stockReserveQuantities:[],dailyBudgetItemIds:[],dailyBudgetQuantities:[],maxDailyHelps:0,maxActionsPerPlan:1});
+export const ALLIANCE_DEFAULT_CONFIG=Object.freeze({enabled:false,help:false,cancel:false,claimAid:false,ask:false,orders:false,welfare:false,fort:false,tech:false,ship:false,memberIds:[],itemIds:[],priorityMemberIds:[],priorityItemIds:[],stockItemIds:[],stockReserveQuantities:[],dailyBudgetItemIds:[],dailyBudgetQuantities:[],maxDailyHelps:0,maxActionsPerPlan:1});
 export function validateAllianceConfig(input={}){
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!Object.hasOwn(ALLIANCE_DEFAULT_CONFIG,k)))throw Error('联盟配置包含未知字段');
   const c=copy({...ALLIANCE_DEFAULT_CONFIG,...input});
-  for(const k of ['enabled','help','cancel','claimAid','ask','orders','welfare','fort','tech'])if(typeof c[k]!=='boolean')throw Error('联盟开关必须为布尔值');
+  for(const k of ['enabled','help','cancel','claimAid','ask','orders','welfare','fort','tech','ship'])if(typeof c[k]!=='boolean')throw Error('联盟开关必须为布尔值');
   for(const k of ['memberIds','priorityMemberIds'])if(!Array.isArray(c[k])||c[k].length>100||c[k].some(id=>typeof id!=='string'||allianceId(id)!==id)||!unique(c[k],id=>id))throw Error('联盟配置成员ID无效');
   for(const k of ['itemIds','priorityItemIds','stockItemIds','dailyBudgetItemIds'])if(!Array.isArray(c[k])||c[k].length>100||c[k].some(id=>!text(id)||id.length>200)||!unique(c[k],id=>id))throw Error('联盟配置物品ID无效');
   for(const [ids,nums] of [['stockItemIds','stockReserveQuantities'],['dailyBudgetItemIds','dailyBudgetQuantities']])if(!Array.isArray(c[nums])||c[nums].length!==c[ids].length||c[nums].some(n=>quantity(n)===null||typeof n!=='number'||n>1e9))throw Error('联盟库存线或日预算无效');
@@ -65,6 +69,7 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
 }
 
 function parametersOf(p={}) {
+  if(p&&['action','shipId','crewId'].some(k=>Object.hasOwn(p,k)))return shipParameters(p);
   if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'].includes(k))) throw Error('联盟参数不在业务白名单');
   if(Object.hasOwn(p,'itemId')||Object.hasOwn(p,'num'))return validateAllianceFortParameters(p);
   const out={};
@@ -135,7 +140,7 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
 export function seasonFromWorldId(value) { const worldId=quantity(value); return worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null; }
 
 export async function surveyAlliance(client,protocol,{config=null,player=null,signal,stop,parameters={},moduleConfig={},timeout=8000}={}){
-  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);const notes=[],available=Object.keys(protocol??{}),observations={},context=allianceFortContext(client,player),options={signal,stop};
+  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);if(parameters.action==='ship-order')return surveyAllianceShip(client,protocol,{config,player,signal,stop,parameters,moduleConfig,timeout});const notes=[],available=Object.keys(protocol??{}),observations={},context=allianceFortContext(client,player),options={signal,stop};
   const observationKeys={GuildInfoRequest:'guild',GuildCityInfoRequest:'cities',CityFortInfoRequest:'fort',AllItemRequest:'items',AllResourceRequest:'resources'};
   const get=async(name,body={})=>{assertExecutionActive(client,options);const response=name.replace(/Request$/,'Response');
     if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': 协议不可用');return null;}
@@ -159,6 +164,7 @@ export async function surveyAlliance(client,protocol,{config=null,player=null,si
 }
 export function allianceView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateAllianceConfig(moduleConfig);const candidates=[],blocked=[],notes=[...(f.notes??[])];
+  if(parameters.action==='ship-order')return shipView(f,{config,parameters,moduleConfig});
   const tech=allianceTechView(f,{config,parameters});
   const fort=f.fortFacts?viewAllianceFort(f.fortFacts,{config,moduleConfig,parameters:Object.fromEntries(['cityId','itemId','num'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]))}):null;
   if(parameters.itemId!==undefined)return {guildId:f.guildId,playerId:f.playerId,fort,candidates:(fort?.candidates??[]).filter(c=>c.executable),blocked:(fort?.candidates??[]).filter(c=>!c.executable),notes:[...notes,...(fort?.notes??[])],members:[],technologies:[],dailyLimits:{ask:null,help:null}};
@@ -224,7 +230,8 @@ export function planAlliance(f,options={}){
 }
 const increase=(b,a,id,n)=>b.stockReliable&&a.stockReliable&&quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(a.stock.get(id)??0)-(b.stock.get(id)??0)>=n;
 const consume=(b,a,costs)=>b.stockReliable&&a.stockReliable&&costs.every(({id,num})=>quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(b.stock.get(id)??0)-(a.stock.get(id)??0)>=num);
-export function verifyAlliance(op,b,a,response){
+export function verifyAlliance(op,b,a,response,options={}){
+  if(op.actionType==='shipOrder')return verifyAllianceShip(op,b,a,options);
   if(op.actionType==='donateFort')return verifyAllianceFort(op,b.fortFacts,a.fortFacts,response);
   if(!b.guildId||b.guildId!==a.guildId||b.playerId!==a.playerId)return false;const t=op.target,time=gameTimeBounds(a),beforeTime=gameTimeBounds(b);
   if(op.actionType==='upgradeTech'){
@@ -240,3 +247,120 @@ export function verifyAlliance(op,b,a,response){
   return false;
 }
 export const allianceModule=Object.freeze({id:'alliance', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf,defaultConfig:ALLIANCE_DEFAULT_CONFIG,validateConfig:validateAllianceConfig,survey:surveyAlliance,view:allianceView,plan:planAlliance,verify:verifyAlliance});
+
+const shipLiveFacts=new WeakMap(),shipInt=n=>Number.isInteger(n)&&n>=0&&n<=2147483647,shipPos=n=>shipInt(n)&&n>0;
+const shipOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
+const shipDense=v=>Array.isArray(v)&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>shipOwn(v,i)).every(Boolean);
+const shipTables=['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'];
+const shipSource='v76 GuildShipCargoPop._onConfirm/_sendOrderRequest; GuildShipModel.setData/_fillBoradingShipsToMine; GuildShipUtil.maxShipNum/isOpen; ModelManager._onSCGuildShipAct';
+export const ALLIANCE_SHIP_EVIDENCE=Object.freeze({source:shipSource,requirement:'BIZ-R05',request:'GuildShipOrderRequest',response:'NO_DEDICATED_RESPONSE',scope:'EXPLICIT_OWNED_CARGO_SINGLE_CABIN',captain:'BLOCKED_EVIDENCE_HERO_OCCUPANCY',reward:'NOT_CLAIMED_OR_PREDICTED',realGame:'REAL_UNVERIFIED'});
+function shipParameters(p) {
+ const keys=Reflect.ownKeys(p??{});
+ if(!p||![Object.prototype,null].includes(Object.getPrototypeOf(p))||keys.length!==3||keys.some(k=>!['action','shipId','crewId'].includes(k)||!Object.hasOwn(Object.getOwnPropertyDescriptor(p,k)??{},'value'))||
+    p.action!=='ship-order'||!shipPos(p.shipId)||!shipPos(p.crewId))throw Object.assign(Error('商船补货须明确action=ship-order、正int32 shipId/crewId，禁止购买补料'),{code:'INVALID_PARAMETERS',statusCode:400});
+ return {action:p.action,shipId:p.shipId,crewId:p.crewId};
+}
+const shipConfigSnapshot=c=>Object.fromEntries(shipTables.map(n=>[n,structuredClone(c?.tables?.[n]??null)]));
+function shipCatalog(c,worldId) {
+ const season=allianceId(worldId)?Number(BigInt(worldId)/1000000n%1000n):null;
+ const params=c?.tables?.GuildShipParamCfg?.data,ships=c?.tables?.GuildShipCfg?.data,opens=c?.tables?.ModuleOpenCfg?.data,items=c?.tables?.ItemCfg?.data;
+ if(!shipPos(season)||![params,ships,opens,items].every(shipDense)||!params.length||!ships.length||!items.length||
+    params.some(r=>!shipPos(r?.season)||!shipPos(r?.shipNum))||!unique(params,r=>r.season)||
+    ships.some(r=>!shipPos(r?.shipId)||!shipPos(r?.num))||!unique(ships,r=>r.shipId)||
+    items.some(r=>!text(r?.id))||!unique(items,r=>r.id))return null;
+ const selected=params.filter(r=>r.season<=season).sort((a,b)=>a.season-b.season).at(-1),open=opens.filter(r=>r?.moduleId==='联盟商船');
+ if(!selected||open.length!==1||!shipPos(open[0].playerLevel))return null;
+ return {season,maximum:selected.shipNum,minimumLevel:open[0].playerLevel,cabinCounts:ships.map(r=>[r.shipId,r.num]),itemIds:items.filter(r=>['原料','农产品','加工品'].includes(r.type)).map(r=>r.id)};
+}
+function parseShipRows(raw,cat) {
+ if(!shipDense(raw)||!unique(raw,r=>r?.shipId))return null;const out=[];
+ for(const row of raw){
+  if(!['shipId','type','state','cabin'].every(k=>shipOwn(row,k))||!shipPos(row.shipId)||![1,2].includes(row.state)||!shipPos(row.type)||!shipDense(row.cabin)||!unique(row.cabin,r=>r?.crewId))return null;
+  const count=cat?.cabinCounts.find(([type])=>type===row.type)?.[1];
+  if(count===undefined||row.cabin.length!==count)return null;
+  const leaderId=shipOwn(row,'leader')?(allianceId(row.leader?.playerId)??(shipOwn(row.leader,'playerId')&&String(row.leader.playerId)==='0'?null:undefined)):null;
+  if(leaderId===undefined)return null;const cabin=[];
+  for(const slot of row.cabin){
+   if(!shipOwn(slot,'crewId')||!shipPos(slot.crewId)||!shipDense(slot.order)||!slot.order.length)return null;
+   const playerId=shipOwn(slot,'player')?(allianceId(slot.player?.playerId)??(shipOwn(slot.player,'playerId')&&String(slot.player.playerId)==='0'?null:undefined)):null;
+   if(playerId===undefined||slot.order.some(a=>!shipOwn(a,'type')||a.type!==0||!shipOwn(a,'id')||!cat.itemIds.includes(a.id)||!shipOwn(a,'num')||quantity(a.num)===null||quantity(a.num)<=0||['RUBY','钻石'].includes(a.id))||!unique(slot.order,a=>a.id))return null;
+   cabin.push({crewId:slot.crewId,playerId,order:slot.order.map(a=>({id:a.id,num:quantity(a.num)})).sort((a,b)=>a.id.localeCompare(b.id))});
+  }
+  const preparedEndTime=shipOwn(row,'preparedEndTime')&&shipInt(row.preparedEndTime)?row.preparedEndTime:null;
+  const mvEndTime=shipOwn(row,'mvEndTime')&&shipInt(row.mvEndTime)?row.mvEndTime:null;
+  if(row.state===1&&preparedEndTime===null||row.state===2&&mvEndTime===null)return null;
+  out.push({shipId:row.shipId,type:row.type,state:row.state,preparedEndTime,mvEndTime,leaderId,cabin:cabin.sort((a,b)=>a.crewId-b.crewId)});
+ }
+ return out.sort((a,b)=>a.shipId-b.shipId);
+}
+function decodeShip(raw,context,cat) {
+ const inventory=parseOperationInventory(raw.items,raw.resources);
+ const ships=cat&&shipOwn(raw.ships,'ship')&&shipOwn(raw.ships,'ownRun')&&shipOwn(raw.ships,'period')&&shipPos(raw.ships.period)?parseShipRows(raw.ships.ship,cat):null,ownRun=cat?parseShipRows(raw.ships?.ownRun,cat):null;
+ const guildId=allianceId(raw.guild?.guild?.guildId),merged=new Map();
+ if(ships&&ownRun){for(const row of [...ships,...ownRun]){if(merged.has(row.shipId)&&stable(merged.get(row.shipId))!==stable(row))return null;merged.set(row.shipId,row);}}
+ if(!ships||!ownRun||!guildId||guildId!==context.guildId||!inventory.stockReliable)return null;
+ return {period:raw.ships.period,guildId,ships:ships,allShips:[...merged.values()].sort((a,b)=>a.shipId-b.shipId),stock:inventory.stock,stockReliable:true};
+}
+const shipStock=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
+const shipState=f=>({context:f.context,period:f.decoded.period,guildId:f.decoded.guildId,allShips:f.decoded.allShips,inventory:shipStock(f.stock)});
+const shipDigest=f=>stable({parameters:f.parameters,context:f.context,config:f.configSnapshot,catalog:f.catalog,period:f.activity,playerLevel:f.playerLevel,activityStable:f.activityStable,available:f.available,inputs:f.inputs,sourceAt:f.sourceAt,decoded:f.decoded,state:f.state,stock:[...f.stock],stockReliable:f.stockReliable});
+async function surveyAllianceShip(client,protocol,{config,player,signal,stop,parameters,moduleConfig,timeout=8000}) {
+ const context=allianceFortContext(client,player),activity=readGuildShipActivitySnapshot(client,context),cat=shipCatalog(config,context.worldId),notes=[],options={signal,stop},sourceAt={},raw={};
+ const queries={guild:['GuildInfoRequest','GuildInfoResponse'],ships:['GuildShipRequest','GuildShipResponse'],items:['AllItemRequest','AllItemResponse'],resources:['AllResourceRequest','AllResourceResponse']};
+ await Promise.all(Object.entries(queries).map(async([key,[request,response]])=>{
+  assertExecutionActive(client,options);raw[key]=null;
+  if(!protocol?.[request]||!protocol?.[response]){notes.push(request+': PROTOCOL_UNAVAILABLE');return;}
+  try{raw[key]=await awaitExecution(client.request(request,{},response,timeout,{signal}),client,options);sourceAt[key]=Date.now();}
+  catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push(request+': UNKNOWN');}
+ }));
+ assertExecutionActive(client,options);if(stable(context)!==stable(allianceFortContext(client,player)))throw Object.assign(Error('商船调查账号角色世界联盟或连接变化'),{code:'CANCELLED'});
+ const afterActivity=readGuildShipActivitySnapshot(client,context),inputs=toSnapshotJson(raw),decoded=decodeShip(raw,context,cat);
+ const facts={module:'alliance',parameters,context,activity,activityStable:stable(activity)===stable(afterActivity),catalog:cat,configSnapshot:shipConfigSnapshot(config),inputs,sourceAt,decoded,notes,available:Object.keys(protocol??{}),playerLevel:quantity(player?.level),
+  stock:decoded?.stock??new Map(),stockReliable:decoded!==null};
+ facts.state=decoded?shipState(facts):null;shipLiveFacts.set(facts,{client,player,config,digest:shipDigest(facts)});return facts;
+}
+function shipAuthority(f,config) {
+ const live=shipLiveFacts.get(f);config??=live?.config;
+ if(!live||shipDigest(f)!==live.digest||quantity(live.player?.level)!==f.playerLevel||stable(f.context)!==stable(allianceFortContext(live.client,live.player))||stable(f.configSnapshot)!==stable(shipConfigSnapshot(config))||
+    !f.decoded||!f.activityStable||f.activity.status!=='OBSERVED'||!f.activity.reliable||stable(f.activity)!==stable(readGuildShipActivitySnapshot(live.client,f.context))||
+    !Number.isSafeInteger(f.context.generation)||f.context.generation<0||!text(f.context.accountId)||!allianceId(f.context.playerId)||!allianceId(f.context.worldId)||!allianceId(f.context.guildId)||!text(f.context.connectionId)||
+    Object.values(f.sourceAt).length!==4||Object.values(f.sourceAt).some(at=>!Number.isFinite(at)||at>Date.now()||Date.now()-at>30000))return false;
+ return true;
+}
+function shipCandidate(f,{config,parameters=f.parameters,moduleConfig={}}={}) {
+ const p=shipParameters(parameters),live=shipLiveFacts.get(f),time=live?gameTimeBounds(readGameTime(live.client)):{earliest:null,latest:null},d=f.decoded,period=f.activity.period,cat=f.catalog;
+ const ship=d?.ships.find(row=>row.shipId===p.shipId),cabin=ship?.cabin.find(row=>row.crewId===p.crewId),costs=cabin?.order??[];
+ let reason=null;
+ if(!moduleConfig.enabled||!moduleConfig.ship)reason='MODULE_DISABLED';
+ else if(!shipAuthority(f,config))reason='SHIP_SOURCE_OR_CONTEXT_UNKNOWN';
+ else if(!Number.isSafeInteger(f.playerLevel)||f.playerLevel<cat.minimumLevel)reason='SHIP_MODULE_LOCKED';
+ else if(!shipPos(period?.period)||period.period!==d.period||time.earliest===null||time.latest===null||time.earliest<period.startTime||time.latest>=period.endTime)reason='SHIP_PERIOD_OR_CLOCK_UNKNOWN';
+ else if(!ship||!cabin)reason='SHIP_EXACT_CABIN_UNKNOWN';
+ else if(ship.state!==1||!ship.leaderId||ship.preparedEndTime<=time.latest)reason='SHIP_NOT_BOARDABLE';
+ else if(cabin.playerId!==null)reason='SHIP_CABIN_OCCUPIED';
+ else if(d.allShips.some(row=>row.shipId===p.shipId&&(row.leaderId===f.context.playerId||row.cabin.some(c=>c.playerId===f.context.playerId))))reason='SHIP_ALREADY_BOARDED';
+ else {
+  const mine=d.allShips.filter(row=>(row.leaderId===f.context.playerId||row.cabin.some(c=>c.playerId===f.context.playerId))&&(row.state===1||row.mvEndTime>time.earliest));
+  if(mine.length>=cat.maximum)reason='SHIP_PARTICIPATION_LIMIT';
+  else if(costs.some(c=>(f.stock.get(c.id)??0)<c.num))reason='SHIP_OWNED_MATERIAL_INSUFFICIENT';
+ }
+ const expected=f.state?structuredClone(f.state):null;
+ if(expected&&ship&&cabin){expected.allShips.find(row=>row.shipId===p.shipId).cabin.find(row=>row.crewId===p.crewId).playerId=f.context.playerId;
+  for(const cost of costs){const row=expected.inventory.find(r=>r.id===cost.id);if(row)row.num-=cost.num;}expected.inventory=expected.inventory.filter(r=>r.num>0);}
+ const target={guildId:f.context.guildId,period:d?.period??null,shipId:p.shipId,crewId:p.crewId},identity=createHash('sha256').update(stable({target,state:f.state,expected,costs,config:f.configSnapshot,activity:f.activity.period})).digest('hex');
+ return {module:'alliance',capabilityId:'BIZ-R05',actionId:actionIdOf('shipOrder',target),actionType:'shipOrder',target,parameters:p,costs:structuredClone(costs),costSource:shipSource,beforeState:structuredClone(f.state),expectedState:expected,identity,
+  executable:reason===null,blockedReason:reason,label:'联盟商船补货并登船 '+p.shipId+' / '+p.crewId,...(reason===null?{action:{request:'GuildShipOrderRequest',response:null,body:{shipId:p.shipId,crewId:p.crewId}}}:{})};
+}
+function shipView(f,options) {
+ const row=shipCandidate(f,options);return {guildId:f.context.guildId,playerId:f.context.playerId,candidates:row.executable?[row]:[],blocked:row.executable?[]:[row],notes:f.notes,members:[],technologies:[],dailyLimits:{ask:null,help:null},
+  ship:{selected:{shipId:f.parameters.shipId,crewId:f.parameters.crewId},period:structuredClone(f.activity.period),source:f.activity.source,status:f.activity.status,maximum:f.catalog?.maximum??null,ships:structuredClone(f.decoded?.ships??[]),evidence:ALLIANCE_SHIP_EVIDENCE}};
+}
+function verifyAllianceShip(op,b,a,options={}) {
+ const failed=reason=>({confirmed:false,reason}),live=shipLiveFacts.get(b);
+ if(!live||!shipAuthority(b,options.config)||!shipAuthority(a,options.config)||stable(b.context)!==stable(a.context)||stable(b.activity.period)!==stable(a.activity.period)||Object.keys(b.sourceAt).some(k=>a.sourceAt[k]<b.sourceAt[k]))return failed('商船权威来源、周期、身份或完整复读失效');
+ const expected=shipCandidate(b,{...options,moduleConfig:{enabled:true,ship:true}});
+ if(!expected.executable||['target','parameters','costs','costSource','beforeState','expectedState','identity','action'].some(k=>stable(op[k])!==stable(expected[k]))||op.actionType!=='shipOrder')return failed('商船单舱请求、资格或精确成本不匹配');
+ const time=gameTimeBounds(readGameTime(live.client));if(time.latest===null||time.latest>=b.activity.period.endTime||time.latest>=b.decoded.ships.find(s=>s.shipId===op.target.shipId).preparedEndTime)return failed('商船活动或准备窗口已结束，不能确认归属');
+ if(stable(a.state)!==stable(expected.expectedState))return failed('独立商船和完整库存复读未确认精确扣料、本人单舱归属及其他状态不变');
+ return {confirmed:true,reason:'独立GuildShipResponse确认同周期同船同舱本人归属，完整库存精确扣料；未领取或预测航行奖励',afterState:structuredClone(a.state)};
+}

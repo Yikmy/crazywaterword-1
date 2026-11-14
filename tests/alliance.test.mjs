@@ -92,3 +92,197 @@ test('daily alliance order rejects absent invalid and unrelated business declara
  for(const p of [undefined,{},null,[],{cityId:0},{cityId:-1},{cityId:1.5},{cityId:'1'},{cityId:2147483648},{cityId:1,season:1},{cityId:1,itemIds:['小麦']},{cityId:1,reqIds:['1']},{cityId:1,techId:1,targetLevel:2},{cityId:1,itemId:'小麦',num:1},{cityId:1,request:'FinishGuildOrderRequest'}])assert.throws(()=>allianceOrderSelection(p));
  assert.deepEqual(allianceOrderSelection({cityId:2147483647}),{actionId:'alliance:finishOrder:'+encodeURIComponent(JSON.stringify({cityId:2147483647}))});
 });
+
+import {GameClient} from '../src/client.mjs';
+import {createCodec} from '../src/codec.mjs';
+import {loadConfig} from '../src/config.mjs';
+import {executeBusinessOperation} from '../src/business-functions.mjs';
+import {operationBudgetClaims,createRunBudgetContext} from '../src/resource-ledger.mjs';
+import {assertPaymentAllowed} from '../src/actions.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createExecutionHistory} from '../src/execution-history.mjs';
+import {createOperationService} from '../src/operation-service.mjs';
+import {GAMEPLAY_MODULES} from '../src/function-registry.mjs';
+import {createWorkflowRunner,validateWorkflow} from '../src/workflow.mjs';
+const shipCodec=createCodec(wireProtocol),shipActual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
+const shipParams={action:'ship-order',shipId:41,crewId:1};
+async function shipFixture(t,{apply=true,accountId='synthetic-ship',connectionId='offline-ship',generation=3}={}){
+ const state={stock:new Map([['木材',10],['鱼',8],['unrelated',9]]),resources:[{res:3,amount:100}],reads:[],writes:[],overrides:{},now:1800000000,period:7,onRead:null,onWrite:null};
+ const cabin=crewId=>({crewId,order:[{type:0,id:'木材',num:2},{type:0,id:'鱼',num:3}]});
+ state.ship={shipId:41,type:1,state:1,leader:{playerId:'19'},preparedEndTime:state.now+100,cabin:[cabin(1),cabin(2)]};state.ownRun=[];
+ const sockets=[];class Socket{
+  constructor(){this.readyState=0;sockets.push(this);}
+  send(bytes){assert.equal(this.readyState,1);shipCodec.decode(bytes);}
+  close(){this.readyState=3;}
+  open(){this.readyState=1;this.onopen?.();}
+  receive(name,body,seq=0){this.onmessage?.({data:shipCodec.encode(name,seq,body)});}
+ }
+ const client=new GameClient({protocol:wireProtocol,accountId,generation,WebSocketImpl:Socket});client.on('error',()=>{});
+ client.factContext={accountId,generation,connectionId};const pending=client.connect({}),socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:'1000001',level:20,guildId:'10'}});await pending;
+ client.gameClock={reset(){},read:()=>({status:'TRUSTED',reliable:true,nowMs:state.now*1000,earliestMs:state.now*1000,latestMs:state.now*1000})};
+ state.seq=0;state.publish=(period={period:state.period,startTime:state.now-100,endTime:state.now+1000})=>socket.receive('SCGuildShipActivity',{period},++state.seq);state.publish();
+ const options={config:{tables:Object.fromEntries(['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'].map(k=>[k,structuredClone(shipActual.tables[k])]))},player:{playerId:'9007199254740993',worldId:'1000001',guildId:'10',level:20},parameters:{...shipParams},moduleConfig:{enabled:true,ship:true}};
+ client.request=async(n,b,r)=>{wire(n,b);state.reads.push(n);await state.onRead?.(n);
+  let value=n==='GuildInfoRequest'?{guild:{guildId:'10'}}:n==='GuildShipRequest'?{period:state.period,ship:[state.ship],ownRun:state.ownRun}:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;
+  if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected ship read '+n);const decoded=wire(r,value);state.onDecoded?.(n,decoded);return decoded;
+ };
+ client.sendWatch=async(n,b,opts={})=>{wire(n,b);opts.beforeDispatch?.();state.writes.push({name:n,body:structuredClone(b)});if(apply){const slot=state.ship.cabin.find(c=>c.crewId===b.crewId);slot.player={playerId:options.player.playerId};for(const cost of slot.order)state.stock.set(cost.id,state.stock.get(cost.id)-cost.num);}await state.onWrite?.();return {status:'UNKNOWN'};};
+ t.after(()=>client.stop());return {state,client,options,socket};
+}
+async function shipReady(t,extra){const f=await shipFixture(t,extra),facts=await surveyAlliance(f.client,wireProtocol,f.options),view=allianceView(facts,f.options);assert.equal(view.candidates.length,1,JSON.stringify(view.blocked));const operation=planAlliance(facts,{...f.options,selections:[view.candidates[0].actionId]}).actions[0];assert.ok(operation);return {...f,facts,operation};}
+const shipBudget=f=>{const {accountId,generation,connectionId}=f.facts.context,scope={accountId,generation,connectionId,runId:'ship-run'},limits=operationBudgetClaims(f.operation);return {scope,limits,batchId:'ship-batch',runBudget:createRunBudgetContext({scope,limits})};};
+const shipExecute=f=>executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget:shipBudget(f)});
+test('merchant owned cargo uses original adapter and independent ship plus complete inventory verification',async t=>{
+ const f=await shipReady(t);assert.deepEqual(f.state.reads,['GuildInfoRequest','GuildShipRequest','AllItemRequest','AllResourceRequest']);assert.deepEqual(f.operation.action,{request:'GuildShipOrderRequest',response:null,body:{shipId:41,crewId:1}});assert.deepEqual(f.operation.costs,[{id:'木材',num:2},{id:'鱼',num:3}]);assert.equal(f.operation.capabilityId,'BIZ-R05');const result=await shipExecute(f);assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(f.state.writes.length,1);assert.equal(f.state.stock.get('木材'),8);assert.equal(f.state.stock.get('鱼'),5);assert.match(result.verification.reason,/未领取或预测/);
+});
+
+test('merchant strict input and D6 exclude purchase, premium, empty costs and transport overrides',async t=>{
+ for(const p of [{action:'ship-order'}, {...shipParams,crewId:0},{...shipParams,shipId:2147483648},{...shipParams,crewId:'1'},{...shipParams,buy:false},{...shipParams,costs:[]},{...shipParams,request:'GuildShipOrderRequest'}]){
+  const f=await shipFixture(t);f.options.parameters=p;await assert.rejects(surveyAlliance(f.client,wireProtocol,f.options));assert.equal(f.state.reads.length,0);
+ }
+ const a={request:'GuildShipOrderRequest',body:{shipId:41,crewId:1},costs:[{id:'木材',num:2}]};assert.doesNotThrow(()=>assertPaymentAllowed(a));
+ for(const body of [{shipId:41},{...a.body,crewId:0},{...a.body,shipId:'41'},{...a.body,buy:false},{...a.body,universal:false}])assert.throws(()=>assertPaymentAllowed({...a,body}));
+ for(const costs of [undefined,[],[{id:'RUBY',num:1}],[{id:'4',num:1}],[{id:'GOLD',num:1}],[{id:'原料自选包',num:1}],[{id:'木材',num:0}],a.costs.concat(a.costs)])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+});
+const shipNegativeCases=[
+ ['disabled',f=>f.options.moduleConfig.ship=false],
+ ['level',f=>f.options.player.level=17],
+ ['clock',f=>f.client.gameClock.read=()=>({status:'UNKNOWN',reliable:false})],
+ ['period',f=>f.state.period=8],
+ ['future',f=>f.state.publish({period:7,startTime:f.state.now+1,endTime:f.state.now+1000})],
+ ['ended',f=>f.state.publish({period:7,startTime:f.state.now-100,endTime:f.state.now})],
+ ['closed',f=>f.state.publish({period:0,startTime:0,endTime:0})],
+ ['missing-window',f=>f.socket.receive('SCGuildShipActivity',{period:{period:7}},++f.state.seq)],
+ ['no-leader',f=>delete f.state.ship.leader],
+ ['late-preparation',f=>f.state.ship.preparedEndTime=f.state.now],
+ ['moving',f=>{f.state.ship.state=2;f.state.ship.mvEndTime=f.state.now+100;}],
+ ['occupied',f=>f.state.ship.cabin[0].player={playerId:'21'}],
+ ['own-captain',f=>f.state.ship.leader={playerId:f.options.player.playerId}],
+ ['own-other-cabin',f=>f.state.ship.cabin[1].player={playerId:f.options.player.playerId}],
+ ['limit',f=>{f.state.ownRun=[42,43].map(shipId=>({...structuredClone(f.state.ship),shipId,leader:{playerId:f.options.player.playerId}}));}],
+ ['uncertain-expired-count',f=>{f.state.ownRun=[42,43].map(shipId=>({...structuredClone(f.state.ship),shipId,state:2,mvEndTime:f.state.now,leader:{playerId:f.options.player.playerId}}));f.client.gameClock.read=()=>({status:'TRUSTED',reliable:true,nowMs:f.state.now*1000,earliestMs:f.state.now*1000-100,latestMs:f.state.now*1000+100});}],
+ ['stock',f=>f.state.stock.set('木材',1)],
+ ['item-missing',f=>f.state.stock.delete('木材')],
+ ['missing-inventory',f=>f.state.overrides.AllItemRequest={}],
+ ['missing-resources',f=>f.state.overrides.AllResourceRequest=Error('missing')],
+ ['guild',f=>f.state.overrides.GuildInfoRequest={guild:{guildId:'11'}}],
+ ['world',f=>f.options.player.worldId='2000001'],
+ ['missing-config',f=>delete f.options.config.tables.GuildShipCfg],
+ ['duplicate-config',f=>f.options.config.tables.GuildShipCfg.data.push(structuredClone(f.options.config.tables.GuildShipCfg.data[0]))],
+ ['wrong-item-type',f=>f.options.config.tables.ItemCfg.data.find(r=>r.id==='木材').type='通用'],
+ ['missing-state',f=>delete f.state.ship.state],
+ ['missing-deadline',f=>delete f.state.ship.preparedEndTime],
+ ['missing-type',f=>delete f.state.ship.type],
+ ['missing-material-type',f=>f.state.onDecoded=(n,d)=>{if(n==='GuildShipRequest')delete d.ship[0].cabin[0].order[0].type;}],
+ ['duplicate-material',f=>f.state.ship.cabin[0].order.push(structuredClone(f.state.ship.cabin[0].order[0]))],
+ ['zero-cost',f=>f.state.ship.cabin[0].order[0].num=0],
+ ['partial-cabins',f=>f.state.ship.cabin.pop()],
+ ['duplicate-cabin',f=>f.state.ship.cabin[1].crewId=1],
+ ['ownRun-conflict',f=>f.state.ownRun=[{...structuredClone(f.state.ship),leader:{playerId:'22'}}]],
+ ['missing-ownRun',f=>f.state.onDecoded=(n,d)=>{if(n==='GuildShipRequest')delete d.ownRun;}],
+];
+for(const [label,mutate] of shipNegativeCases)test('merchant eligibility blocks '+label,async t=>{
+ const f=await shipFixture(t);mutate(f);const facts=await surveyAlliance(f.client,wireProtocol,f.options),v=allianceView(facts,f.options);assert.equal(v.candidates.length,0,JSON.stringify(v));assert.equal(v.blocked.length,1);assert.equal(f.state.writes.length,0);
+});
+test('merchant exactly completed own moving ships no longer occupy participation capacity',async t=>{
+ const f=await shipFixture(t);f.state.ownRun=[42,43].map(shipId=>({...structuredClone(f.state.ship),shipId,state:2,mvEndTime:f.state.now,leader:{playerId:f.options.player.playerId}}));const facts=await surveyAlliance(f.client,wireProtocol,f.options);assert.equal(allianceView(facts,f.options).candidates.length,1);
+});
+for(const field of ['account','role','world','guild','connection','generation','config','level','fact-level','fact-activity','fact-stock','fact-state','cloned-facts','stale','period'])test('merchant current authority rejects drift '+field,async t=>{
+ const f=await shipReady(t);let facts=f.facts;
+ if(field==='account')f.client.factContext.accountId='B';
+ if(field==='role')f.options.player.playerId='22';
+ if(field==='world')f.options.player.worldId='2000001';
+ if(field==='guild')f.options.player.guildId='11';
+ if(field==='connection')f.client.factContext.connectionId='next';
+ if(field==='generation')f.client.factContext.generation++;
+ if(field==='config')f.options.config.tables.GuildShipParamCfg.revision=2;
+ if(field==='level')f.options.player.level=30;
+ if(field==='fact-level')facts.playerLevel=99;
+ if(field==='fact-activity')facts.activityStable=false;
+ if(field==='fact-stock')facts.stock.set('木材',100);
+ if(field==='fact-state')facts.state.allShips[0].leaderId='22';
+ if(field==='cloned-facts')facts=structuredClone(facts);
+ if(field==='stale')facts.sourceAt.guild-=31000;
+ if(field==='period')f.state.publish({period:8,startTime:f.state.now-100,endTime:f.state.now+1000});
+ assert.equal(allianceView(facts,f.options).candidates.length,0);assert.equal(f.state.writes.length,0);
+});
+for(const mode of ['no-effect','wrong-owner','wrong-debit','extra-stock','missing-after','period-change','late-window'])test('merchant independent settlement stays UNKNOWN '+mode,async t=>{
+ const f=await shipReady(t,{apply:mode!=='no-effect'});f.state.onWrite=()=>{
+ if(mode==='wrong-owner')f.state.ship.cabin[0].player.playerId='21';
+ if(mode==='wrong-debit')f.state.stock.set('木材',9);
+ if(mode==='extra-stock')f.state.resources[0].amount++;
+ if(mode==='missing-after')f.state.overrides.GuildShipRequest=Error('timeout');
+ if(mode==='period-change'){f.state.period=8;f.state.publish({period:8,startTime:f.state.now-100,endTime:f.state.now+1000});}
+ if(mode==='late-window')f.state.now+=100;
+ };
+ const result=await shipExecute(f);assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(result.unresolvedWrite,true);assert.equal(f.state.writes.length,1);assert.equal(f.client.uncertainWrites.size,1);
+});
+test('merchant target, cost, expected outcome and request tampering never dispatch',async t=>{
+ for(const mutate of [o=>o.target.crewId=2,o=>o.costs[0].num=1,o=>o.action.body.crewId=2,o=>o.expectedState.inventory[0].num=99,o=>o.identity='changed']){
+ const f=await shipReady(t);mutate(f.operation);const result=await shipExecute(f);assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);
+ }
+});
+test('merchant shared ledger and parent resource limits cannot fund two uses',async t=>{
+ const f=await shipReady(t),ledger=new ResourceLedger(new Map([['木材',2],['鱼',3]]));assert.equal(planAlliance(f.facts,{...f.options,selections:[f.operation.actionId],ledger}).actions.length,1);assert.equal(planAlliance(f.facts,{...f.options,selections:[f.operation.actionId],ledger}).actions.length,0);
+ const budget=shipBudget(f);budget.limits={resources:[{id:'木材',num:1},{id:'鱼',num:3}],quotas:[],uids:[]};budget.runBudget=createRunBudgetContext({scope:budget.scope,limits:budget.limits});const result=await executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget});assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);
+});
+test('merchant cancellation stops reads and late applied response stays UNKNOWN',async t=>{
+ const f=await shipReady(t),abort=new AbortController();let release;f.state.onWrite=()=>new Promise(r=>release=r);const pending=executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget:shipBudget(f),signal:abort.signal});for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);abort.abort();release();assert.equal((await pending).status,'UNKNOWN');assert.equal(f.state.writes.length,1);
+ const g=await shipFixture(t),stopped=new AbortController();stopped.abort();await assert.rejects(surveyAlliance(g.client,wireProtocol,{...g.options,signal:stopped.signal}));assert.equal(g.state.reads.length,0);
+});
+async function shipService(t,{file=null,apply=true,connectionId='offline-ship'}={}){
+ const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-ship-')):null;file??=path.join(dir,'history.json');const f=await shipFixture(t,{apply,connectionId}),durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}};
+ const session={id:'synthetic-ship',client:f.client,player:f.options.player,generation:3,connectionId,state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
+ const service=createOperationService({protocol:wireProtocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:f.options.moduleConfig})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
+ const send=f.client.sendWatch.bind(f.client);f.client.sendWatch=async(...args)=>{f.state.saved=structuredClone(journal.at(-1));return send(...args);};
+ t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
+ const plan=async()=>{const read=await service.surveyModule(session,'alliance',shipParams),row=read.view.candidates[0];assert.ok(row,JSON.stringify(read.view.blocked));return service.plan(session,{module:'alliance',mode:'Manual',parameters:shipParams,selections:[row.actionId]});};
+ const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true});
+ const run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
+ return {...f,file,session,service,durable,history,plan,authorize,run};
+}
+for(const apply of [true,false])test('merchant Service persists intent and restart never replays UNKNOWN '+apply,async t=>{
+ const f=await shipService(t,{apply}),p=await f.plan(),{permit,record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN',JSON.stringify(record.actions));assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.saved.runBudget.reserved.resources,p.resourceBudget);assert.throws(()=>f.service.execute(f.session,permit));
+ const restored=await shipService(t,{file:f.file});assert.equal(restored.durable.list(f.session.id)[0].finalStatus,record.finalStatus);if(!apply){await assert.rejects(restored.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restored.state.writes.length,0);}
+});
+for(const mode of ['disk','cancel','account','config','period'])test('merchant Service rejects before dispatch '+mode,async t=>{
+ const f=await shipService(t),p=await f.plan();if(mode==='account'){f.session.id='B';assert.throws(()=>f.authorize(p));return;}if(mode==='config'){f.options.config.tables.GuildShipCfg.revision=2;assert.throws(()=>f.authorize(p));return;}
+ const permit=f.authorize(p);if(mode==='cancel')f.session.abort.abort();
+ else {const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT')){if(mode==='disk')throw Error('disk');f.state.period=8;f.state.publish({period:8,startTime:f.state.now-100,endTime:f.state.now+1000});}return put(row);};}
+ try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,0);
+});
+test('merchant refusal uses shared durable memory across reconnect until business facts change',async t=>{
+ const f=await shipService(t,{apply:false});f.state.onWrite=()=>{throw Object.assign(Error('definite refusal'),{code:'REJECTED'});};assert.equal((await f.run(await f.plan())).record.finalStatus,'REJECTED');const next=await shipService(t,{file:f.file,connectionId:'next'});await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});next.state.stock.set('木材',11);assert.equal((await next.plan()).actions.length,1);assert.equal(next.state.writes.length,0);
+});
+test('merchant Registry Workflow shares authorization, parent budget and execution history',async t=>{
+ const f=await shipService(t),read=await f.service.surveyModule(f.session,'alliance',shipParams),row=read.view.candidates[0],claims=operationBudgetClaims(row);
+ const graph={version:1,id:'merchant-flow',name:'Merchant',budget:claims,nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'alliance',parameters:shipParams,selection:row.actionId},{id:'v',type:'VERIFY',module:'alliance'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());let result=await runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(result.plan);result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'a');assert.equal(f.state.writes.length,1);
+});
+
+for(const mode of ['account','role','world','guild','connection','generation','config','level','expired','lost-source'])test('merchant final dispatch guard sends zero after intent drift '+mode,async t=>{
+ const f=await shipReady(t),result=await executeBusinessOperation(f.client,wireProtocol,f.operation,{...f.options,adapter:allianceModule,allowMutate:true,budget:shipBudget(f),onStage(stage){if(stage!=='DISPATCH_INTENT')return;
+ if(mode==='account')f.client.factContext.accountId='B';
+ if(mode==='role')f.options.player.playerId='21';
+ if(mode==='world')f.options.player.worldId='2000001';
+ if(mode==='guild')f.options.player.guildId='11';
+ if(mode==='connection')f.client.factContext.connectionId='new';
+ if(mode==='generation')f.client.factContext.generation++;
+ if(mode==='config')f.options.config.tables.GuildShipCfg.revision=2;
+ if(mode==='level')f.options.player.level=30;
+ if(mode==='expired')f.state.now+=100;
+ if(mode==='lost-source')f.socket.receive('SCGuildShipActivity',{period:{period:7}},++f.state.seq);
+ }});assert.equal(result.dispatched,false,JSON.stringify(result));assert.equal(f.state.writes.length,0);
+});
+for(const mode of ['account','role','world','guild','connection','generation'])test('merchant late applied effect stays UNKNOWN after identity drift '+mode,async t=>{
+ const f=await shipReady(t);f.state.onWrite=()=>{
+ if(mode==='account')f.client.factContext.accountId='B';
+ if(mode==='role')f.options.player.playerId='21';
+ if(mode==='world')f.options.player.worldId='2000001';
+ if(mode==='guild')f.options.player.guildId='11';
+ if(mode==='connection')f.client.factContext.connectionId='new';
+ if(mode==='generation')f.client.factContext.generation++;
+ };const result=await shipExecute(f);assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);
+});

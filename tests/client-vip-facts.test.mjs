@@ -342,3 +342,36 @@ test('daily cache revisions follow accepted '+name+' without adding reset trigge
  socket.receive('SCDailyTaskReset',{dailyResetTime:1000},2);assert.equal(readDailyResetEvent(f.client).cursor,1);assert.equal(readDailyResetEvent(f.client).cacheRevision,1);
  socket.receive(name,body,4);assert.equal(readDailyResetEvent(f.client).reliable,false);
 });
+
+test('guild ship activity period comes only from accepted private transport and retains explicit zero closure',async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());assert.equal(read(f.client).status,'UNKNOWN');const socket=await f.ready({result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:9}});
+ f.client.emit('message',{name:'SCGuildShipActivity',seq:1,body:{period:{period:7,startTime:100,endTime:200}}});assert.equal(read(f.client).status,'UNKNOWN');
+ socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:200}},1);const value=read(f.client);assert.equal(value.status,'OBSERVED');assert.equal(value.reliable,true);assert.equal(value.source,'SCGuildShipActivity.period');assert.equal(value.playerId,'9007199254740993');assert.deepEqual(value.period,{period:7,startTime:100,endTime:200});assert.equal(value.executable,false);
+ value.period.period=999;assert.equal(read(f.client).period.period,7);assert.equal(read({factContext:f.client.factContext}).status,'UNKNOWN');assert.equal(read(f.client,{accountId:'other',generation:3,connectionId:'vip-connection',playerId:'9007199254740993',worldId:'9'}).status,'UNKNOWN');
+ socket.receive('SCGuildShipActivity',{period:{period:0,startTime:0,endTime:0}},2);assert.deepEqual(read(f.client).period,{period:0,startTime:0,endTime:0});assert.equal(socket.sent.filter(row=>row.name==='GuildShipOrderRequest'||row.name==='GuildShipSeekRequest').length,0);
+});
+for(const mode of ['duplicate','gap','decode','zero-seq','role','world','account','generation','connection','socket','stop'])test('guild ship period respects original stream isolation: '+mode,async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:200}},1);
+ if(mode==='duplicate'){socket.receive('SCGuildShipActivity',{period:{period:8,startTime:100,endTime:200}},1);assert.equal(read(f.client).period.period,7);return;}
+ if(mode==='gap'){socket.receive('SCGuildShipActivity',{period:{period:8,startTime:100,endTime:200}},3);socket.receive('SCGuildShipActivity',{period:{period:8,startTime:100,endTime:200}},2);}
+ else if(mode==='decode')f.client.onMessage(new Uint8Array([255]));
+ else if(mode==='zero-seq')socket.receive('SCGuildShipActivity',{period:{period:8,startTime:100,endTime:200}},0);
+ else if(mode==='role')f.client.factContext.playerId='2';
+ else if(mode==='world')f.client.factContext.worldId='18';
+ else if(mode==='account')f.client.factContext.accountId='B';
+ else if(mode==='generation')f.client.factContext.generation++;
+ else if(mode==='connection')f.client.factContext.connectionId='replacement';
+ else if(mode==='socket')f.client.socket={};
+ else f.client.stop();
+ assert.equal(read(f.client).status,'UNKNOWN');assert.equal(read(f.client).period,null);
+});
+test('invalid guild ship period clears only its observation and cannot reuse a prior valid window',async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()]},1);let seq=2;
+ for(const period of [null,{}, {period:7,startTime:100},{period:7,endTime:200},{startTime:100,endTime:200},{period:-1,startTime:100,endTime:200},{period:7,startTime:200,endTime:100},{period:7,startTime:100,endTime:100},{period:0,startTime:100,endTime:200}]){
+  socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:200}},seq++);assert.equal(read(f.client).status,'OBSERVED');socket.receive('SCGuildShipActivity',period===null?{}:{period},seq++);assert.equal(read(f.client).status,'UNKNOWN');assert.equal(read(f.client).period,null);assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');
+ }
+});
+test('guild ship period cannot survive reconnection or late callbacks and follows original sequence wrap',async t=>{
+ const {readGuildShipActivitySnapshot:read}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),old=socket.onmessage;socket.receive('SCGuildShipActivity',{period:{period:7,startTime:100,endTime:200}},MAX_SEQ);socket.receive('SCGuildShipActivity',{period:{period:8,startTime:200,endTime:300}},1);assert.equal(read(f.client).period.period,8);assert.equal(read(f.client).seq,1);
+ f.client.stop();await f.ready();assert.equal(read(f.client).status,'UNKNOWN');old({data:codec.encode('SCGuildShipActivity',2,{period:{period:8,startTime:200,endTime:300}})});assert.equal(read(f.client).status,'UNKNOWN');
+});
