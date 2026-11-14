@@ -188,7 +188,7 @@ export const FUNCTION_CONTRACTS = freeze({
     implementation: { mode: 'EXISTING_EXECUTOR_ADAPTER', actions: ['SUBMIT'], conditionalActions: [{ actionType: 'REFRESH', requires: 'Trusted original survey proof of a reliably free refresh; business parameters cannot supply it' }],
       blockedCapabilities: [blocked('C126:REFRESH_WITHOUT_PROOF', 'Production free-refresh quota evidence is currently unavailable'), blocked('C124:GOLD_REWARD_RULE', 'This adapter does not implement the gold-order reward product requirement', 'NOT_IMPLEMENTED')] },
     verification: verification('verify', 'src/core-operation-adapters.mjs#verifyCoreOperation', 'Original executeOrderOperation authoritative checks; only original wrapper WeakMap receipt confirms', { executionMethod: 'execute', genericExecutorSubstitution: false }),
-    dependencyVersions: dependencies(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg']),
+    dependencyVersions: dependencies(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg', 'config.BuildingCfg', 'config.BuildingProduceCfg']),
   }),
   city: contract('city', ['C101', 'C102', 'C103', 'C104', 'C116'], ['P1-2', 'P2-1'], ['src/core-operation-adapters.mjs#cityModule', 'src/city-operations.mjs#surveyCityOperations', 'src/city-operations.mjs#executeCityAction'], {}, {
     implementation: { mode: 'EXISTING_EXECUTOR_ADAPTER', actions: ['build', 'upgrade', 'finishUpgrade', 'collectProduct', 'speedUpUpgrade'], blockedCapabilities: [blocked('PREMIUM_OR_AD_SPEED', 'Only existing proven item acceleration path is permitted')] },

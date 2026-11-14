@@ -1,16 +1,16 @@
 // Static wrappers over the existing core functions. Transport, resource algorithms,
 // authoritative verification, account locking and durable history stay with their owners.
-import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming } from './order-execution.mjs';
+import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView } from './order-execution.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
-import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, orderProductionWait, observeProductionQueueClocks } from './production-planning.mjs';
+import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, observeProductionQueueClocks } from './production-planning.mjs';
 
 import { readGameTime } from './state-facts.mjs';
 import { makeTypeResolver } from './world.mjs';
-import { stockFromResponses, safeResourceQuantity } from './resource-ledger.mjs';
+import { safeResourceQuantity } from './resource-ledger.mjs';
 import { toSnapshotJson } from './game.mjs';
 
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -57,7 +57,8 @@ export async function surveyCoreOperations(client, protocol, options = {}) {
   return surveyOrderExecution(client, protocol, { ...options, survey: surveyCityOperations });
 }
 // Orders alone adds the catalogued total-effects read. This observation never
-// enters write candidates, resource reservations, permits or refresh eligibility.
+// grants stock, resource reservations, permits or refresh eligibility. Explicit
+// user wait rules may filter candidates using this same captured projection.
 export async function surveyOrdersOperations(client, protocol, options = {}) {
   const identity = () => JSON.stringify(['accountId','generation','playerId','worldId','connectionId'].map(key => client.factContext?.[key] ?? null).concat(client.connectionId ?? null));
   const capturedIdentity = identity();
@@ -91,19 +92,6 @@ export async function surveyOrdersOperations(client, protocol, options = {}) {
   }
   current();
   return { ...facts, orderProductionObservation: { effects, serverTimeMs } };
-}
-function ordersProductionView(facts, config, requirements) {
-  const resolve = makeTypeResolver(config);
-  const buildings = Array.isArray(facts.rawOnWater?.building) ? facts.rawOnWater.building.map(row => ({ ...row, type: typeof row?.buildingId === 'string' ? resolve(row.buildingId) : null })) : null;
-  let stock = null;
-  const items = facts.rawAllItem?.items, resources = facts.rawAllResource?.list;
-  if (facts.stockReliable === true && Array.isArray(items) && Array.isArray(resources)
-    && items.every(row => typeof (row?.itemId ?? row?.id) === 'string' && (row.itemId ?? row.id).trim() && safeResourceQuantity(row.num ?? row.count) !== null)
-    && resources.every(row => Number.isSafeInteger(row?.res) && safeResourceQuantity(row.amount) !== null)
-    && new Set(items.map(row => row.itemId ?? row.id)).size === items.length
-    && new Set(resources.map(row => row.res)).size === resources.length) stock = stockFromResponses(facts.rawAllItem, facts.rawAllResource);
-  return orderProductionWait(config, { requirements, stock, buildings,
-    effects: facts.orderProductionObservation?.effects ?? null, serverTimeMs: facts.orderProductionObservation?.serverTimeMs ?? null });
 }
 // Explicit production survey reuses the existing city/order read set; only the
 // two already-catalogued appointment facts are added, never a second Snapshot.
@@ -194,7 +182,7 @@ async function executeCore(id, client, protocol, operation, options = {}) {
   // OrderExecution owns rule/identity/quota verification; CityAction owns
   // Automatic policy rechecks and authoritative state verification.
   const result = id === 'orders'
-    ? await executeOrderOperation(client, protocol, operation, { ...args, survey: surveyCityOperations })
+    ? await executeOrderOperation(client, protocol, operation, { ...args, survey: args.rules.rules.some(rule => rule.enabled && rule.type === 'MAX_PRODUCTION_WAIT') ? surveyOrdersOperations : surveyCityOperations })
     : await executeCityAction(client, protocol, operation, { ...args, survey: surveyCoreOperations });
   return retainProof(operation, result);
 }
@@ -204,7 +192,7 @@ function tableVersions(config, names) {
 }
 function dependencies(id, options = {}) {
   const args = context(options);
-  const tableNames = id === 'orders' ? ['WorkerOrderCfg', 'WorkerSpecOrderCfg']
+  const tableNames = id === 'orders' ? ['WorkerOrderCfg', 'WorkerSpecOrderCfg', 'BuildingCfg', 'BuildingProduceCfg']
     : id === 'city' ? ['BuildingCfg', 'BuildingUpgradeCfg']
       : ['BuildingCfg', 'BuildingProduceCfg', 'BuildingProduceParamCfg', 'GameParamCfg', ...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"]];
   return { moduleConfig: args.moduleConfig, config: tableVersions(args.config, tableNames),
@@ -227,6 +215,7 @@ function coreRejectionIdentity(operation,{context}={}) {
     // A changing global observation never expires a refusal for the same order.
     // Keep the declared threshold, source and decision; omit only the read count.
     for(const row of result.ruleResult.ruleResults??[])if(row.type==='OBSERVED_ORDER_COUNT'&&row.countObservation)delete row.countObservation.value;
+    for(const row of result.ruleResult.ruleResults??[])if(row.type==='MAX_PRODUCTION_WAIT'&&row.waitObservation)delete row.waitObservation.leadSeconds;
   }else{
     if(!operation.expectedState)return null;
     result.expectedState=structuredClone(operation.expectedState);
@@ -240,7 +229,7 @@ export const ordersModule = Object.freeze({ ...shared, survey: surveyOrdersOpera
   capabilities: Object.freeze(['C121', 'C122', 'C123', 'C125', 'C126', 'C128']),
   view: viewCoreOrders, plan: planCoreOrders, execute: (client, protocol, operation, options) => executeCore('orders', client, protocol, operation, options),
   dependencyVersions: options => dependencies('orders', options),
-  dependencyKeys: Object.freeze(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg']),
+  dependencyKeys: Object.freeze(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg', 'config.BuildingCfg', 'config.BuildingProduceCfg']),
   evidence: evidence(['src/order-execution.mjs:surveyOrderExecution', 'src/order-execution.mjs:planOrderExecution', 'src/order-execution.mjs:executeOrderOperation']) });
 export const cityModule = Object.freeze({ ...shared, id: 'city', label: '城市建设', capabilities: Object.freeze(['C101', 'C102', 'C103', 'C104', 'C116']),
   view: (facts, options) => viewCityDomain('city', facts, options), plan: (facts, options) => planCityDomain('city', facts, options),

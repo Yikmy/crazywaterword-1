@@ -541,18 +541,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     };
     const waterFact = captured('OnWaterRequest'), effectFact = captured('GameEffectRequest');
     const progress = observeOrderProgress(waitConfig, { orderOfTheDay: waterFact?.value?.orderOfTheDay, effects: effectFact?.value });
-    const results = evaluateOrders(orders, inventory, policy, { localTimeMs: Date.now(), observedOrderCount: progress.completed.value });
     const factoryRows = waterFact && Array.isArray(water.raw.building) ? water.raw.building.map(b => ({ ...b, type: typeof b?.buildingId === 'string' ? resolveWaitType(b.buildingId) : null })) : null;
     const serverTimeMs = waterFact && Number.isSafeInteger(waterFact.provenance.serverTime) && waterFact.provenance.serverTime >= 0 ? waterFact.provenance.serverTime : null;
     const estimateStock = waterFact && captured('AllItemRequest') && captured('AllResourceRequest') && itemsKnown && resourcesKnown && invalidItems.size === 0
       && new Set(itemData.raw.items.map(row => row.itemId ?? row.id)).size === itemData.raw.items.length
       && new Set(resourceData.raw.list.map(row => row.res)).size === resourceData.raw.list.length ? stockFromResponses(itemData.raw, resourceData.raw) : null;
+    const productionWaits = orders.map(order => orderProductionWait(waitConfig, { requirements: order.requirements, stock: estimateStock, buildings: factoryRows, effects: effectFact?.value ?? null, serverTimeMs }));
+    const results = evaluateOrders(orders, inventory, policy, { localTimeMs: Date.now(), observedOrderCount: progress.completed.value, productionWaits });
     return { ...base, status: 'SUCCESS', error: null,
       progress,
       orders: orders.map((order, index) => {
         const totals = new Map();
         for (const need of order.requirements ?? []) totals.set(need.id, (totals.get(need.id) ?? 0) + need.num);
-        return { order, result: results[index], refreshTiming: observeOrderRefreshTiming(waterFact?.value?.workerOrder?.[index], { serverTimeMs }), productionWait: orderProductionWait(waitConfig, { requirements: order.requirements, stock: estimateStock, buildings: factoryRows, effects: effectFact?.value ?? null, serverTimeMs }), inventoryFacts: [...totals].map(([id, required]) => {
+        return { order, result: results[index], refreshTiming: observeOrderRefreshTiming(waterFact?.value?.workerOrder?.[index], { serverTimeMs }), productionWait: productionWaits[index], inventoryFacts: [...totals].map(([id, required]) => {
           const available = inventory.has(id) ? inventory.get(id) : 0;
           return { id, required: Number.isSafeInteger(required) ? required : null, available,
             missing: available === null || !Number.isSafeInteger(required) ? null : Math.max(0, required - available) };

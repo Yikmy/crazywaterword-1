@@ -8,6 +8,7 @@ export const ORDER_RULE_TYPES = Object.freeze([
   { type: 'INVENTORY_AVAILABLE', label: '库存充足' },
   { type: 'LOCAL_TIME_WINDOW', label: '上海本地策略时窗' },
   { type: 'OBSERVED_ORDER_COUNT', label: '已观察完成计数筛选' },
+  { type: 'MAX_PRODUCTION_WAIT', label: '生产等待投影上限' },
 ].map(Object.freeze));
 
 const types = new Set(ORDER_RULE_TYPES.map(({ type }) => type));
@@ -51,6 +52,9 @@ export function validateOrderRules(config) {
     } else if (rule.type === 'MAX_ITEM_COUNT') {
       if (!keysOnly(params, ['itemId', 'value']) || !text(params.itemId) || !count(params.value)) invalid('数量上限需要原始物品 ID 和非负安全整数');
       clean = { itemId: params.itemId, value: params.value };
+    } else if (rule.type === 'MAX_PRODUCTION_WAIT') {
+      if (!keysOnly(params, ['value']) || !count(params.value)) invalid('等待投影上限需要用户明确的非负安全整数秒数');
+      clean = { value: params.value };
     } else if (rule.type === 'OBSERVED_ORDER_COUNT') {
       if (!keysOnly(params, ['value', 'operator']) || !count(params.value) || params.value > 2147483647 || !['LT', 'LTE'].includes(params.operator)) invalid('完成计数筛选需要明确非负int32阈值及LT/LTE；不代表每日剩余额度');
       clean = { value: params.value, operator: params.operator };
@@ -94,8 +98,17 @@ function inventoryResult(requirements, inventory) {
   return { status: 'PASS', missing: [], explanation: '本订单所需物品库存充足' };
 }
 
-function checkRule(rule, order, requirements, inventory, localTimeMs, observedOrderCount) {
+function checkRule(rule, order, requirements, inventory, localTimeMs, observedOrderCount, productionWait) {
   const params = rule.params;
+  if (rule.type === 'MAX_PRODUCTION_WAIT') {
+    const known = object(productionWait) && productionWait.scope === 'CAPTURED_SERVER_TIME_PROJECTION' && productionWait.executable === false
+      && count(productionWait.leadSeconds) && (productionWait.status === 'PROJECTED' || productionWait.status === 'IN_STOCK' && productionWait.leadSeconds === 0);
+    const waitObservation = { scope: 'CAPTURED_SERVER_TIME_PROJECTION', executable: false, status: known ? productionWait.status : 'UNKNOWN', leadSeconds: known ? productionWait.leadSeconds : null, refreshEligibility: null };
+    const waitPolicy = { value: params.value };
+    if (!known) return { status: 'UNKNOWN', waitObservation, waitPolicy, explanation: '生产等待投影未知；不把缺失资料视为零等待或允许刷新' };
+    const pass = productionWait.leadSeconds <= params.value;
+    return { status: pass ? 'PASS' : 'FAIL', waitObservation, waitPolicy, explanation: '生产等待投影' + (pass ? '满足' : '超过') + '用户上限 ' + params.value + ' 秒；仍需实际库存，收取与刷新须分别核验' };
+  }
   if (rule.type === 'OBSERVED_ORDER_COUNT') {
     const known = Number.isInteger(observedOrderCount) && observedOrderCount >= 0 && observedOrderCount <= 2147483647;
     const countObservation = { status: known ? 'OBSERVED' : 'UNKNOWN', value: known ? observedOrderCount : null, source: 'OnWaterResponse.orderOfTheDay.orderNum', period: 'UNKNOWN', gameDay: null, refreshEligibility: null };
@@ -136,7 +149,7 @@ function checkRule(rule, order, requirements, inventory, localTimeMs, observedOr
 
 const notChecked = () => ({ status: 'SKIPPED', missing: [], explanation: '尚未执行最终库存判断' });
 
-export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(), { localTimeMs, observedOrderCount } = {}) {
+export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(), { localTimeMs, observedOrderCount, productionWait } = {}) {
   const result = {
     orderId: object(order) && (text(order.index) || count(order.index)) ? order.index : null,
     decision: 'NEEDS_REVIEW', ruleResults: [], explanation: [], firstFailedRuleId: null, inventory: notChecked(),
@@ -154,8 +167,8 @@ export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(
       result.ruleResults.push({ ...base, status: 'SKIPPED', explanation: !rule.enabled ? '规则已禁用' : '未评估：' + stoppedReason });
       continue;
     }
-    const checked = input.error ? { status: 'UNKNOWN', explanation: input.error } : checkRule(rule, order, input.requirements, inventory, localTimeMs, observedOrderCount);
-    result.ruleResults.push({ ...base, status: checked.status, explanation: checked.explanation, ...(checked.strategyWindow ? { strategyWindow: checked.strategyWindow } : {}), ...(checked.countObservation ? { countObservation: checked.countObservation, countPolicy: checked.countPolicy } : {}) });
+    const checked = input.error ? { status: 'UNKNOWN', explanation: input.error } : checkRule(rule, order, input.requirements, inventory, localTimeMs, observedOrderCount, productionWait);
+    result.ruleResults.push({ ...base, status: checked.status, explanation: checked.explanation, ...(checked.strategyWindow ? { strategyWindow: checked.strategyWindow } : {}), ...(checked.countObservation ? { countObservation: checked.countObservation, countPolicy: checked.countPolicy } : {}), ...(checked.waitObservation ? { waitObservation: checked.waitObservation, waitPolicy: checked.waitPolicy } : {}) });
     result.explanation.push('优先级 ' + rule.priority + '：' + checked.explanation);
     if (checked.status === 'FAIL') {
       result.firstFailedRuleId = rule.id;
@@ -175,11 +188,11 @@ export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(
 
 // The default remains the existing independent, read-only preview. A composed plan
 // injects its shared resource ledger; no network, clock or Action dependency is added.
-export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules(), { ledger = null, localTimeMs, observedOrderCount } = {}) {
+export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules(), { ledger = null, localTimeMs, observedOrderCount, productionWaits } = {}) {
   if (!Array.isArray(orders)) return [evaluateOrder(null, inventory, rulesConfig, { localTimeMs, observedOrderCount })];
-  return orders.map((order) => {
+  return orders.map((order, index) => {
     const ids = Array.isArray(order?.requirements) ? order.requirements.map((row) => row?.id) : [];
-    const result = evaluateOrder(order, ledger ? ledger.inventory(ids) : inventory, rulesConfig, { localTimeMs, observedOrderCount });
+    const result = evaluateOrder(order, ledger ? ledger.inventory(ids) : inventory, rulesConfig, { localTimeMs, observedOrderCount, productionWait: productionWaits?.[index] });
     if (ledger && result.decision === 'RECOMMEND_SUBMIT' && !ledger.reserve(order.requirements)) {
       result.decision = 'NEEDS_REVIEW';
       result.inventory = { status: 'UNKNOWN', missing: [], explanation: '共享资源预算无法预留，停止提交建议' };

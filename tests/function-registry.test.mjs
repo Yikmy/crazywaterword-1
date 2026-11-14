@@ -40,7 +40,7 @@ const tablesByModule = { trade:['TradeGoodsCfg','TradeShipCfg','ModuleOpenCfg'],
   alliance: ['GuildParamCfg','GuildOrderNumCfg','GuildTechCfg','TechUnlockCfg','WorldFortCfg','FortDonateMaterialCfg','FortParamCfg','FortSeasonUnlockCfg','ItemCfg'],
   museum: ['MuseumExpeditionStageCfg','MuseumExpeditionTeamCfg','MuseumExpeditionConditionCfg','MuseumExploreTimeFactorCfg','MuseumAchievementCfg','MuseumAreaCfg','MuseumAreaIndicatorCfg','MuseumDisplayCaseCfg','AntiqueBaseCfg'],
   fleet: ['CityCfg','AttackCityConsumeCfg','FormationTypePositionCfg','FormationHeroNumCfg','HeroCfg'],
-  treasure: ['GameplayOpenCfg','WorldParamCfg'], naval: [], stage: [], orders: ['WorkerOrderCfg','WorkerSpecOrderCfg'],
+  treasure: ['GameplayOpenCfg','WorldParamCfg'], naval: [], stage: [], orders: ['WorkerOrderCfg','WorkerSpecOrderCfg','BuildingCfg','BuildingProduceCfg'],
   city: ['BuildingCfg','BuildingUpgradeCfg'], production: ['BuildingCfg','BuildingProduceCfg','BuildingProduceParamCfg','GameParamCfg',...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"]],
 };
 const stageParameters = (formationEnabled = false) => ({ config: { enabled: true, retryDelaySeconds: 0, maxAttempts: 1, maxStage: null, stopOnDefeat: true, formation: { enabled: formationEnabled, presetId: formationEnabled ? 2 : null } } });

@@ -793,6 +793,7 @@ function orderRuleParams(type) {
   if (type === 'ITEM_FORBIDDEN' || type === 'ITEM_REQUIRED') return { itemIds: [] };
   if (type === 'MIN_EXPERIENCE') return { value: 700, operator: 'GT' };
   if (type === 'MAX_ITEM_COUNT') return { itemId: '', value: 1 };
+  if (type === 'MAX_PRODUCTION_WAIT') return { value: null };
   if (type === 'OBSERVED_ORDER_COUNT') return { value: null, operator: 'LT' };
   if (type === 'LOCAL_TIME_WINDOW') return { start: '', end: '', timeZone: 'Asia/Shanghai' };
   return {};
@@ -857,6 +858,9 @@ function renderOrderRulesEditor() {
     } else if (rule.type === 'MAX_ITEM_COUNT') {
       addField('限制的原始物品 ID', itemInput('itemId', rule.params.itemId || '', (value) => { rule.params.itemId = value.trim(); }));
       addField('需求数量上限', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));
+    } else if (rule.type === 'MAX_PRODUCTION_WAIT') {
+      addField('用户明确等待上限（秒）', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));
+      fields.appendChild(el('span', 'dim', '仅比较当前队列与效果的等待投影；资料未知转人工检查。通过后仍需实际库存；不会自动排产或收取，刷新须有独立资格。每次执行前重新调查。'));
     } else if (rule.type === 'OBSERVED_ORDER_COUNT') {
       addField('完成计数比较', select([['LT', '<'], ['LTE', '≤']], rule.params.operator, 'operator', (value) => { rule.params.operator = value; }));
       addField('用户明确阈值', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));

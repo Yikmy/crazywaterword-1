@@ -172,7 +172,7 @@ export function orderProductionWait(config,{requirements,stock,buildings,effects
   }
  }
  return {...base,status:'PROJECTED',reason:null,leadSeconds:lead,items,allocations,reservedExistingStock:ledger.reservationSummary().resources,
-  assumptions:['按物品ID顺序分配到已知可用工厂，复用排队产物；不是最短工期证明。','效果和队列保持本快照状态；新排产仅使用现有材料，不使用预计收益。','成品仍须独立授权收取和复读，估计不会改规则建议、库存或刷新资格。']};
+  assumptions:['按物品ID顺序分配到已知可用工厂，复用排队产物；不是最短工期证明。','效果和队列保持本快照状态；新排产仅使用现有材料，不使用预计收益。','成品仍须独立授权收取和复读，估计不增加库存或刷新资格；仅用户明确的等待规则可筛选投影。']};
 }
 
 // Fixed FactoryQueueItem compares finishTime to timer.getServerTime (seconds).

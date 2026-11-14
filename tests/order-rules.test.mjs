@@ -26,7 +26,7 @@ test('configuration canonicalization sorts by priority and never aliases editabl
   result.rules[0].params.itemIds.push('new-id');
   assert.deepEqual(input.rules[1].params.itemIds, [itemId]);
   assert.deepEqual(input.rules.map(({ id }) => id), ['experience', 'forbidden']);
-  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE', 'LOCAL_TIME_WINDOW', 'OBSERVED_ORDER_COUNT']);
+  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE', 'LOCAL_TIME_WINDOW', 'OBSERVED_ORDER_COUNT', 'MAX_PRODUCTION_WAIT']);
 });
 
 test('unsupported versions, rule types, duplicate ids/priorities and invalid parameters fail closed', () => {
@@ -232,3 +232,18 @@ for(const observedOrderCount of [undefined,null,-1,NaN,Infinity,1.5,2147483648,'
 for(const params of [{value:null},{value:-1},{value:1.5},{value:2147483648},{operator:'GTE'},{operator:'lt'},{period:'daily'},{orderNum:0},{source:'rewardedNum'}])test('observed order count rejects ambiguous user policy '+JSON.stringify(params),()=>{const rule=countRule();Object.assign(rule.params,params);assert.throws(()=>validateOrderRules(rules(rule)),/完成计数筛选/);});
 for(const [onFail,decision]of [['KEEP','RECOMMEND_KEEP'],['REFRESH','RECOMMEND_REFRESH'],['REVIEW','NEEDS_REVIEW']])test('observed order count retains original failure advice '+onFail,()=>{const result=evaluateOrder(order(),inventory(),rules(countRule(4,'LT',onFail)),{observedOrderCount:4});assert.equal(result.decision,decision);assert.equal(result.inventory.status,'SKIPPED');});
 test('observed order count rule respects first failure, disabled rules and independent stock',()=>{const r=countRule();r.enabled=false;assert.equal(evaluateOrder(order(),inventory(),rules(r)).decision,'RECOMMEND_SUBMIT');assert.equal(evaluateOrder(order(),new Map(),rules(countRule()),{observedOrderCount:3}).decision,'RECOMMEND_KEEP');const first=forbidden({params:{itemIds:[breadId]}}),next=countRule();next.priority=2;assert.deepEqual(evaluateOrder(order(),inventory(),rules(first,next)).ruleResults.map(r=>r.status),['FAIL','SKIPPED']);});
+
+
+const waitRule=(value=200,onFail='KEEP')=>({id:'wait-limit',priority:1,type:'MAX_PRODUCTION_WAIT',enabled:true,params:{value},onFail});
+const waitProjection=(leadSeconds=200,status='PROJECTED')=>({scope:'CAPTURED_SERVER_TIME_PROJECTION',executable:false,status,leadSeconds});
+for(const [seconds,value,pass]of [[0,0,true],[199,200,true],[200,200,true],[201,200,false],[Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER,true]])test('explicit production wait threshold boundary '+seconds+'/'+value,()=>{
+ const p=waitProjection(seconds),cfg=rules(waitRule(value)),before=structuredClone({p,cfg}),result=evaluateOrder(order(),inventory(),cfg,{productionWait:p});assert.equal(result.ruleResults[0].status,pass?'PASS':'FAIL');assert.equal(result.decision,pass?'RECOMMEND_SUBMIT':'RECOMMEND_KEEP');assert.deepEqual(result.ruleResults[0].waitObservation,{...p,refreshEligibility:null});assert.deepEqual(evaluateOrders([order()],inventory(),cfg,{productionWaits:[p]})[0],result);assert.deepEqual({p,cfg},before);
+});
+for(const p of [null,undefined,{},waitProjection(null),waitProjection(-1),waitProjection('0'),waitProjection(0,'UNKNOWN'),waitProjection(1,'IN_STOCK'),{...waitProjection(),executable:true},{...waitProjection(),scope:'local'},waitProjection(Infinity),waitProjection(0.5)])test('production wait unknown never implies zero or refresh '+JSON.stringify(p),()=>{
+ const result=evaluateOrder(order(),inventory(),rules(waitRule(200,'REFRESH')),{productionWait:p});assert.equal(result.decision,'NEEDS_REVIEW');assert.equal(result.ruleResults[0].status,'UNKNOWN');assert.equal(result.ruleResults[0].waitObservation.leadSeconds,null);
+});
+for(const value of [null,undefined,-1,0.5,'0',Number.MAX_SAFE_INTEGER+1])test('production wait requires explicit safe integer seconds '+String(value),()=>{assert.throws(()=>validateOrderRules(rules({...waitRule(),params:{value}})));});
+for(const [onFail,decision]of [['KEEP','RECOMMEND_KEEP'],['REFRESH','RECOMMEND_REFRESH'],['REVIEW','NEEDS_REVIEW']])test('production wait preserves existing failure advice '+onFail,()=>{assert.equal(evaluateOrder(order(),inventory(),rules(waitRule(199,onFail)),{productionWait:waitProjection()}).decision,decision);});
+test('production wait is a filter and never supplies actual inventory or free refresh eligibility',()=>{
+ const result=evaluateOrder(order(),new Map(),rules(waitRule()),{productionWait:waitProjection()});assert.equal(result.ruleResults[0].status,'PASS');assert.equal(result.decision,'RECOMMEND_KEEP');const disabled=waitRule();disabled.enabled=false;assert.equal(evaluateOrder(order(),inventory(),rules(disabled)).decision,'RECOMMEND_SUBMIT');assert.equal(evaluateOrder(order(),inventory(),rules(waitRule(0)),{productionWait:waitProjection(0,'IN_STOCK')}).decision,'RECOMMEND_SUBMIT');assert.throws(()=>validateOrderRules(rules({...waitRule(),params:{value:200,productionWait:waitProjection()}})));const a=evaluateOrder(order(),inventory(),rules(waitRule(100,'REFRESH')),{productionWait:waitProjection(200)}),b=evaluateOrder(order(),inventory(),rules(waitRule(100,'REFRESH')),{productionWait:waitProjection(190)});assert.equal(a.ruleResults[0].explanation,b.ruleResults[0].explanation);
+});

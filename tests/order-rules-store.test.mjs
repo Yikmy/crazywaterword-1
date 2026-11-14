@@ -135,3 +135,7 @@ test('explicit local strategy window roundtrips in original account store withou
 test('observed order count original account store persists explicit zero threshold without an observation or reset policy',()=>{
  reset();const cfg={version:1,enabled:true,rules:[{id:'observed-count',priority:1,type:'OBSERVED_ORDER_COUNT',enabled:true,params:{value:0,operator:'LTE'},onFail:'REVIEW'}]};saveOrderRules('A',cfg);const bytes=fs.readFileSync(ORDER_RULES_PATH,'utf8');assert.deepEqual(loadOrderRules('A').config,cfg);safeDefault(loadOrderRules('B'));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);assert.doesNotMatch(bytes,/orderNum|observedOrderCount|gameDay|resetsAt/);const bad=structuredClone(cfg);bad.rules[0].params.period='daily';assert.throws(()=>saveOrderRules('A',bad));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);
 });
+
+test('original account store persists explicit wait seconds without projected facts',()=>{
+ reset();const cfg={version:1,enabled:true,rules:[{id:'wait-limit',priority:1,type:'MAX_PRODUCTION_WAIT',enabled:true,params:{value:0},onFail:'KEEP'}]};saveOrderRules('A',cfg);const bytes=fs.readFileSync(ORDER_RULES_PATH,'utf8');assert.deepEqual(loadOrderRules('A').config,cfg);safeDefault(loadOrderRules('B'));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);assert.doesNotMatch(bytes,/leadSeconds|serverTimeMs|productionWait/);const bad=structuredClone(cfg);bad.rules[0].params.value=null;assert.throws(()=>saveOrderRules('A',bad));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);
+});

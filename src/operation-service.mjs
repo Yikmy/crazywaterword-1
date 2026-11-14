@@ -15,6 +15,7 @@ import { collectOperationRecovery, buildVerifiedReceipt, RECOVERY_DISPATCH_CONTR
 import { toSnapshotJson } from './game.mjs';
 import { createExecutionHistory, runHasUnresolvedWrites, actionNeedsReconciliation, actionWasUncertain } from './execution-history.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from './order-execution.mjs';
+import { surveyOrdersOperations } from './core-operation-adapters.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { GAMEPLAY_MODULES, listBusinessFunctions } from './function-registry.mjs';
 import { createModuleSettings } from './gameplay-settings.mjs';
@@ -41,7 +42,7 @@ function evidence(result) {
 // Session, GameClient, ledger and executors remain the owners of transport and execution safety.
 // This small coordinator binds their existing functions to one displayed, single-use batch.
 export function createOperationService({ protocol, getConfig = () => null, loadRules, history = createExecutionHistory(), clock = Date.now, loadProduction = loadProductionPolicy, saveProduction = saveProductionPolicy,
-  survey = (client, wire, opts) => surveyOrderExecution(client, wire, { ...opts, survey: surveyCityOperations }),
+  survey = (client, wire, opts) => opts.rules?.rules?.some(rule => rule.enabled && rule.type === 'MAX_PRODUCTION_WAIT') ? surveyOrdersOperations(client, wire, opts) : surveyOrderExecution(client, wire, { ...opts, survey: surveyCityOperations }),
   orderPlanner = planOrderExecution, cityPlanner = planCityOperations, cityViewer = cityView,
   orderExecute = executeOrderOperation, cityExecute = executeCityAction,
   assertWriter = () => {}, recoveryCollect = collectOperationRecovery,
@@ -201,7 +202,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     try {
       const identity=observationIdentity(session,client);
       const config = getConfig(), rules = loadRules(session.id).config;
-      const facts = await survey(client, protocol, { config, player: session.player, signal: session.abort.signal });
+      const facts = await survey(client, protocol, { config, rules, player: session.player, signal: session.abort.signal });
       current(session, generation, client);
       if(observationIdentity(session,client)!==identity)throw error('账号角色、世界或连接来源身份已变化','CANCELLED');
       cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
@@ -502,7 +503,7 @@ function authorizeWorkflowPlan(session,payload){
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
         const result = await executor(client, protocol, operation, { ...(operation.module==='orders'?{clock}:{}),config: entry.config, rules: loadRules(session.id).config, player: session.player,
           rewardBinding: operation.module==='orders'?{...record.executionContext,runId:record.runId,batchId:entry.public.batchId,actionId:operation.actionId,identity:operation.identity,orderIndex:operation.target.index}:null, rewardContext:()=>executionContext(session),
-          allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
+          allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(['city','orders'].includes(operation.module) ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
           ...(executor === businessExecute ? { onStage(stage) {
             if (!BUSINESS_EXECUTION_STAGES.includes(stage)) throw error('执行证据阶段无效', 'HISTORY_UNAVAILABLE');
             if (stage === 'DISPATCH_INTENT') row.dispatchEvidence = { version: 1, contract: RECOVERY_DISPATCH_CONTRACT, state: 'MAY_HAVE_DISPATCHED' };
