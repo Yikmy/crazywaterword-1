@@ -209,10 +209,12 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function surveyModule(session, id, parameters = {}, { workflowId = null, signal = null } = {}) {
     const adapter = adapterFor(id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
     const release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
-    try { const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
+    try {
+      const surveyIdentity=()=>operationDigest({context:executionContext(session),client:toSnapshotJson(['accountId','playerId','worldId','generation','connectionId'].map(key=>client.factContext?.[key]??null))}),identity=surveyIdentity();
+      const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
       assertExecutionActive(client,{signal:surveySignal});
       const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
-      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId)throw error('工作流已停止或替换', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
+      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||surveyIdentity()!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
   async function surveyAntiqueAttributes(session,payload={}) {

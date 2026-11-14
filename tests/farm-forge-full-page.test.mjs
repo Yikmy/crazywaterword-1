@@ -2311,3 +2311,38 @@ test('mailbox Workflow history renders partial and legacy coverage safely and ig
  const late=h.node('wf-history-read').click();await tick();h.run("selectAccount('B')");h.respond('/api/workflows/history',history);await late;assert.equal(h.node('wf-history-detail').textContent,'');
  assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+test('professional read-only naval page adds exact Loop SURVEY without enabling writes or sending a request',async()=>{
+ const h=await boot(),loading=h.node('gp-naval-load').click();h.respond('/api/gameplay',{accountId:'A',module:'naval',csrfToken:'synthetic-csrf-A',config:{enabled:false,rules:[]},status:{running:false,blocked:false},view:{candidates:[],targets:[],worldReliable:false}},{module:'naval'});await loading;
+ const parameters={screenCenter:{x:7,y:-3},minimumPower:'9007199254740993',excludeGuildIds:['9007199254740995']};
+ h.node('gp-naval-parameters').value=JSON.stringify(parameters);h.node('gp-naval-parameters').oninput();
+ const before=h.requests.length,button=h.node('gp-naval-unified-survey');assert.equal(button.disabled,false);button.click();
+ const intent=unifiedDraft(h);assert.equal(intent.entry,'loop');assert.deepEqual(intent.world,[{type:'SURVEY',module:'naval',parameters}]);assert.deepEqual(intent.budget,{resources:[],quotas:[],uids:[]});
+ assert.match(h.node('wf-unified-steps').textContent,/naval.*只读SURVEY.*不自动选择、授权或执行动作/);assert.doesNotMatch(h.node('wf-unified-steps').textContent,/未指定精确候选/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const preparing=h.node('wf-unified-prepare').click();assertMutation(h.pending('/api/workflows/prepare'),'/api/workflows/prepare',intent);const compiled=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES});h.respond('/api/workflows/prepare',{accountId:'A',...compiled});await preparing;
+ assert.equal(JSON.parse(h.node('wf-json').value).nodes[1].type,'SURVEY');assert.equal(writes(h,'/api/operations/plan').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('Loop survey copy uses current parameters and rejects stale callbacks and account returns',async()=>{
+ const spec=cases.find(s=>s.module==='mail'),h=await loaded(spec,{disabled:true}),button=h.node('gp-mail-unified-survey'),old=button.onclick;
+ h.node('gp-mail-parameters').value=JSON.stringify({action:'enumerate',maxPages:2});h.node('gp-mail-parameters').oninput();
+ const source=h.node('wf-unified-intent').value;old();assert.equal(h.node('wf-unified-intent').value,source);button.click();assert.deepEqual(unifiedDraft(h).world,[{type:'SURVEY',module:'mail',parameters:{action:'enumerate',maxPages:2}}]);
+ const stale=button.onclick;h.run("selectAccount('B');selectAccount('A')");const after=h.node('wf-unified-intent').value;assert.equal(button.disabled,true);stale();assert.equal(h.node('wf-unified-intent').value,after);assert.equal(writes(h).length,0);
+});
+
+test('Loop survey copy rejects invalid parameters and missing mail bounds without rewriting the draft',async()=>{
+ const spec=cases.find(s=>s.module==='mail'),h=await loaded(spec,{disabled:true});
+ for(const source of ['{','[]','null','{"action":"enumerate"}','{"action":"enumerate","maxPages":0}','{"action":"enumerate","maxPages":101}','{"action":"enumerate","maxPages":"2"}']){
+  h.node('gp-mail-parameters').value=source;h.node('gp-mail-parameters').oninput();const before=h.node('wf-unified-intent').value;h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,before);assert.match(h.node('gp-mail-hint').textContent,/加入只读调查失败/);
+ }
+ assert.equal(writes(h).length,0);
+});
+
+test('Loop survey copy preserves Tasks and Dailies declarations, full lists and active execution locks',async()=>{
+ const spec=cases.find(s=>s.module==='mail'),h=await loaded(spec,{disabled:true});h.node('gp-mail-parameters').value='{"pageNo":2}';h.node('gp-mail-parameters').oninput();
+ for(const entry of ['tasks','dailies']){
+  unifiedLoad(h,{entry,tasks:[],dailies:[],world:[],budget:{resources:[{id:'wood',num:10}],quotas:[],uids:[]}});const source=h.node('wf-unified-intent').value;h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-mail-hint').textContent,/先将原声明入口改为 Loop/);
+ }
+ unifiedLoad(h,{entry:'loop',world:Array.from({length:48},()=>({type:'SURVEY',module:'mail',parameters:{pageNo:0}})),budget:{resources:[],quotas:[],uids:[]}});const source=h.node('wf-unified-intent').value;h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-mail-hint').textContent,/最多48项/);
+ const loading=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf-A',status:{running:true,status:'RUNNING'},graphs:[],history:[]});await loading;assert.equal(h.node('gp-mail-unified-survey').disabled,true);h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,source);assert.equal(writes(h).length,0);
+});

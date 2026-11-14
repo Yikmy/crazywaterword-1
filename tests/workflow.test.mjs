@@ -704,3 +704,26 @@ test('unique ACTION candidate survey receives the same Workflow cancellation fen
  const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>true,operations:{async surveyModule(_session,_module,_parameters,options){signal=options.signal;entered();return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(Error('cancelled'),{code:'CANCELLED'})),{once:true}));},plan(){planned++;throw Error('must not plan');},history:()=>({runs:[]})}});
  const running=runner.start(session.id,g);await waiting;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);runner.stop();assert.equal((await running).status,'CANCELLED');assert.equal(signal.aborted,true);assert.equal(session.abort.signal.aborted,false);assert.equal(planned,0);
 });
+
+test('Loop world explicit SURVEY compiles original Registry reads and preserves default ACTION semantics',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const result=compileUnifiedExecution({entry:'loop',world:[{type:'SURVEY',module:'naval',parameters:{}},{module:'mail',parameters:{pageNo:0,action:'read',emailId:'1'},selection:{actionId:'specific-mail'}}],rounds:2,budget:unifiedBudget},{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(result.blocked,[]);assert.deepEqual(result.graph.nodes.map(n=>n.type),['START','SURVEY','ACTION','SURVEY','ACTION','STOP']);
+ for(const row of result.graph.nodes.filter(n=>n.type==='SURVEY')){assert.equal(row.module,'naval');assert.deepEqual(row.parameters,{});assert.equal(Object.hasOwn(row,'selection'),false);}
+ assert.deepEqual(result.graph.nodes[2].selection,{actionId:'specific-mail'});assert.equal(simulateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
+});
+
+test('Loop world SURVEY rejects ignored selections, unknown types, transport fields and missing mail enumeration bounds',()=>{
+ const base={entry:'loop',world:[{type:'SURVEY',module:'fixture',parameters:{targetId:'one'}}],budget:unifiedBudget};
+ for(const patch of [{selection:'one'},{selection:null},{type:'survey'},{type:null},{type:'VERIFY'},{module:'unknown'},{request:'InjectedRequest'},{parameters:{request:'InjectedRequest'}},{parameters:[]},{parameters:null}])assert.throws(()=>compileUnifiedExecution({...base,world:[{...base.world[0],...patch}]},{modules}),{code:'WORKFLOW_INVALID'});
+ for(const entry of ['tasks','dailies'])assert.throws(()=>compileUnifiedExecution({...base,entry},{modules}),{code:'WORKFLOW_INVALID'});
+ assert.equal(compileUnifiedExecution({...base,world:[{module:'fixture',selection:'one',type:'ACTION'}]},{modules}).graph.nodes[1].type,'ACTION');
+});
+
+test('Loop world mail SURVEY shares explicit enumeration bounds without becoming a writable node',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const build=parameters=>compileUnifiedExecution({entry:'loop',world:[{type:'SURVEY',module:'mail',parameters}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES});
+ assert.throws(()=>build({action:'enumerate'}),{code:'WORKFLOW_INVALID'});
+ for(const parameters of [{action:'enumerate',maxPages:0},{action:'enumerate',maxPages:101},{action:'enumerate',maxPages:2,selection:'all'}])assert.throws(()=>build(parameters),{code:'INVALID_PARAMETERS'});
+ const result=build({action:'enumerate',maxPages:2});assert.equal(result.graph.nodes[1].type,'SURVEY');assert.equal(Object.hasOwn(result.graph.nodes[1],'selection'),false);
+});

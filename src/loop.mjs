@@ -197,7 +197,15 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(module==='pirate-sweep'&&(!Number.isSafeInteger(parameters.uid)||parameters.uid<1)){blocked.push({phase,index,reason:'EXACT_PIRATE_TARGET_REQUIRED',taskId:row.taskId});continue;}
         }
       } else {
-        exact(row,['module','parameters','selection']);module=row.module;parameters=row.parameters??{};selection=row.selection??selection;
+        exact(row,['type','module','parameters','selection']);module=row.module;parameters=row.parameters??{};
+        if(Object.hasOwn(row,'type')&&!['SURVEY','ACTION'].includes(row.type))invalid('Loop其他玩法仅接受SURVEY或ACTION');
+        if(row.type==='SURVEY'){
+          if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||Array.isArray(row.parameters)))invalid('只读SURVEY业务参数须为对象');
+          if(Object.hasOwn(row,'selection'))invalid('只读SURVEY不接受动作选择');
+          if(module==='mail'&&parameters.action==='enumerate'&&!Object.hasOwn(parameters,'maxPages'))invalid('邮箱枚举须明确1至100页的上限');
+          steps.push({type:'SURVEY',phase,index,module,parameters});continue;
+        }
+        selection=row.selection??selection;
       }
       steps.push({phase,index,module,parameters,selection});
     }

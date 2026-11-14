@@ -88,3 +88,20 @@ test('HTTP compiled Tasks and Loop mailbox surveys persist exact coverage and re
   assert.equal((await app.call('/api/workflows')).data.status.status,'IDLE');assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
  }finally{await app.close();}
 });
+
+test('HTTP Loop world SURVEY uses original mail Function and persists each bounded partial observation without a batch',async()=>{
+ let app=await harness(),runId;
+ try{
+  const base={entry:'loop',world:[{type:'SURVEY',module:'mail',parameters:{action:'enumerate',maxPages:1}}],rounds:2,budget:{resources:[],quotas:[],uids:[]}};
+  assert.equal((await app.call('/api/workflows/prepare',{body:base})).status,403);await app.call('/api/workflows');
+  for(const patch of [{selection:'all'},{type:'VERIFY'},{module:'unknown'},{parameters:{request:'InjectedRequest'}},{parameters:{action:'enumerate'}},{parameters:null}])assert.equal((await app.call('/api/workflows/prepare',{body:{...base,world:[{...base.world[0],...patch}]}})).status,400);
+  assert.equal(app.reads.length,0);const prepared=await app.call('/api/workflows/prepare',{body:base});assert.equal(prepared.status,200);assert.deepEqual(prepared.data.graph.nodes.map(n=>n.type),['START','SURVEY','SURVEY','STOP']);
+  app.ready('A').mailPage=mailboxResponse(11);assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+  let result;for(let i=0;i<100;i++){result=await app.call('/api/workflows');if(result.data.status.status==='COMPLETED')break;await new Promise(resolve=>setTimeout(resolve,5));}assert.equal(result.data.status.status,'COMPLETED');runId=result.data.status.runId;
+  const history=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(history.status,200);assert.equal(history.data.surveys.length,2);
+  for(const row of history.data.surveys){assert.equal(row.module,'mail');assert.equal(row.mailbox.status,'PARTIAL');assert.equal(row.mailbox.readPages,1);assert.equal(row.mailbox.observedMails,10);assert.equal(row.mailbox.allPagesComplete,false);assert.equal(row.mailbox.atomicSnapshot,false);assert.equal(row.mailbox.reason,'MAIL_PAGE_LIMIT_REACHED');}
+  assert.deepEqual(history.data.nodes,[]);assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+  assert.deepEqual(app.reads.map(r=>r.body),[{pageNo:0},{pageNo:0}]);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
+ }finally{await app.close();}
+ app=await harness();try{const history=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(history.status,200);assert.equal(history.data.surveys.length,2);assert.equal(history.data.resumable,false);assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});}finally{await app.close();}
+});
