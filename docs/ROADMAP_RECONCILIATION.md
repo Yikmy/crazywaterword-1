@@ -1,6 +1,6 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration，本批W07装备首级提交树（父b4c5f64）；当前状态及提交引用随本批更新。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
+当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@b2a0f56；本次只核对b4c5f64后的装备增量及当前文档引用，不新增玩法或重写源码。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
 
 > 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
@@ -13,7 +13,7 @@
 | W05 PARTIAL | 港口专业货舱/逐物品缺货、明确装货及到港领取已有 | 补原范围其余允许分支 | D6/未知成本/未证身份仅冻结具体操作；不推导全包完成 | fleet最近32656af；原领域提交保留 | 原fleet/HTTP/PAGE专项；本轮未重跑 |
 | W10 PARTIAL | 科技专业树、下一等级/实际扣点及复读已接原联盟链 | 原科技重置独立合同 | 重置成本/资格/恢复缺证 | 原科技提交保留；alliance最近72c6388 | 原alliance-tech/共享测试；本轮未重跑 |
 | W14 PARTIAL | Fleet编队/维修/移动及港口子集已有 | 原攻击/加速/资源田/其他模式有据合同 | 模式结果、宣战成本/身份和非premium加速缺；MOVE非攻击 | fleet最近32656af；原成果保留 | 原fleet/naval/共享测试；本轮未重跑 |
-| W22 PARTIAL | 9a85396已完成原M/C/P/S/Inventory、源码/API/UI/Workflow/测试全表对齐及README/PHASE4纠偏；b4c5f64只核后续7个提交，更新当前Git基线、W19/W20/W21提交引用及具体缺证，不重复全库审计 | 按§12.4继续原DAG；全范围完成冻结后统一R7/R8 | 各领域完整范围未齐；R7/R8 NOT_RUN | b4c5f64；完整对账9a85396、前次1536835 | b4c5f64文档差分校验PASS：M16/C95/P42/S8/Inventory273、W22/R8/E24/X18精确ID集合与9a85396一致；C53/38/4、P10/31/1、Inventory187/76/10状态计数保持；原5输入字节及未暂存状态保留，diff检查通过。9a85396的137路径/26模块/27合同/48查询/三入口WAIT属于原核验证据，本批未重复执行；未新跑功能测试，不计平台验收 |
+| W22 PARTIAL | 9a85396完整对账及b4c5f64增量复核保留；本次逐集合核M/C/P/S/Inventory/W/R/E/X，并核b2a0f56装备领域、D6、Contract、API/专业页、Workflow与测试接入，修正Git及下一项引用。README唯一基线已一致；PHASE4首段消除固定源码版本歧义 | 优先W08/C209有限确认战败后的换阵决策；随后W04/BIZ-R16h用户策略时窗，见§12.4。缺证操作局部冻结，全范围冻结后R7/R8 | 全范围未齐；C228上限经验、Pet队列/空领取目标仍缺权威结算身份；R7/R8 NOT_RUN | 本次文档提交（父b2a0f56）；前次b4c5f64、完整对账9a85396 | 本次静态校验：M16/C95/P42/S8/Inventory273、W22/R8/E24/X18精确ID集合与9a85396相同；C53/38/4、P10/31/1、Inventory187/76/10不变；当前表122个src/tests路径存在，原5输入字节及未暂存状态保留，diff通过。不重跑功能测试；b2a0f56六文件1015/1015仅沿用历史证据，不计本次或R7/R8 |
 | W03 PARTIAL | 保留原资产archive/verify/restore及普通凭证显式导入。本批修复原worlds.listWorlds/listGroup/describeRole/describeWorld：真实Codec的角色ID、列表区服键、出生服和当前世界均按精确signed int64保留，安全值仍数值、大值十进制字符串；不改原通用normalize。缺失/继承默认/非法/冲突身份为未知，列表缺失不补空。原GET /api/worlds复用busy锁及activeTask，响应复核账号/角色/世界/连接/代次与client事实，旧读取不释放后继锁。原区服页面分别展示各身份，读取中清空、错账号拒绝；enter/输入继续禁用 | 既有角色实际切换继续核目标绑定/禁止隐式新建及UNKNOWN恢复合同；该操作缺证期间继续W19原Workflow无动作原因及归属 | 原LoginRequest仅worldId目标，没有角色ID/出生服条件或existingRoleOnly；列表观察不保证未来登录不会隐式新建，故切服写产品链未闭合，不能以本次只读修复标写完成。map-1/上游来源哈希缺证，归档complete=false；扫码/捕获未开放。R7/R8未执行 | c87947b；凭证导入b78878e及原资产成果保留 | 2026-11-15：server-runtime/account-view/cli-safety三文件106/106 PASS，0 fail/cancel/skip/todo，12.81秒。含真实本地Codec大int64、合服键分离、坏/缺失/冲突/原型默认、只读/零隐式连接、账号隔离、九种迟到身份变化、互斥/断开/后继锁、原POST enter403及CLI读凭证前写拒绝；3源语法/diff检查通过。全为合成凭证/回环HTTP/离线Codec，REAL_UNVERIFIED |
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
 | W16 PARTIAL | 原任务/日活跃/赠礼、单封邮件及有界枚举、挂机等级、三类周礼包/周芯片任务及可信每日缓存失效保留。本批原Tasks每日订单复用13fef97计数观察，缺字段不补零；OrderDailyRewardCfg缺失/坏值/重复/含season或worldOpenDays但未有适用上下文时档位UNKNOWN，不合并成全赛季阈值、不生成该领取计划。主支线/成就独立观察继续；原Tasks API和页面显示观察值及周期未知 | W19原Tasks/Loop每日订单显式只读调查已接原Orders Function SURVEY（本批W19行）；继续其余有据奖励/周期合同，领奖写合同缺证保留 | 每日订单适用赛季/开服日、空请求实际领取目标与奖励归属及周期缺证；单一无上下文配置只保留原纯阈值算术，不证明真实领取。邮件实例附件归属、VIP礼包复读、日周周期/签到/挂机时段原缺证保留；UNKNOWN零重放，W16仍PARTIAL，R7/R8未执行 | eb045b1；每日缓存56ea228/2da3e5e、成就c0a6f24及原成果保留 | 2026-11-15：原生命周期/Tasks领域、缓存HTTP、账号页面和统一Workflow4文件333/333 PASS，0 fail/cancel/skip/todo；真实Codec区分缺省/明确零、跨赛季45档不混入、坏配置/重复/倒置阈值、独立主线保留、复用已有water零额外查询、原HTTP写入口403及Workflow禁写回归。与本轮W04测试存在重叠，不累计为平台总数；仅离线合成，REAL_UNVERIFIED |
@@ -28,7 +28,7 @@
 | W04 PARTIAL | 保留原生产及22319dd统一调查等待投影。本批原订单领域增加共用只读progress/refreshTiming，接原Orders Function、缓存规则API/页面及Workflow候选卡片。明确orderNum和rewardedNum分别显示完成观察/已领奖阈值；固定v76 WorkerOrderUtil/WorkerOrderDaily证明OrderParamCfg上限+效果18，仅投影差额。单条refreshTime按采集时服务器时间显示等待；到点仍ELAPSED_UNCONFIRMED，必须复读，缺失wire标量不补零 本批原队列的具名时钟WAIT见W19，仅同目标到点复读，不证明收取结算。 | W19队列时钟WAIT已接；保留每日订单SURVEY及其历史，继续原全天量等有据子项，缺证写资格不开放 | OrderOfTheDay只有orderNum/rewardedNum，无周期ID/重置时点，period固定UNKNOWN；客户端上限/差额不是实际额度，等待标记不是免费刷新资格。策略时窗、全天生产、最终金币、免费刷新、批量农田结算原缺证保留，W04仍PARTIAL；R7/R8未执行 | 13fef97；生产等待f87f028/统一调查22319dd保留 | 2026-11-15：7文件定向395个不同用例PASS，0 fail/cancel/skip/todo；领域/Adapter/缓存HTTP/两类页面5文件230，原共享Service/Workflow164，公共HTTP仅Orders具名Codec用例1。覆盖明确零/原型默认零、坏值/重复/溢出、缺来源/跨账号代次/重启、已过等待时点不变资格、候选成本不变及安全DOM；本地配置/Codec/合成传输，REAL_UNVERIFIED |
 | W11 PARTIAL | 保留博物馆及古董成长成果；静态复核既有v76 FragExchangePop明确fragItemId为目标古董专属碎片，已纠正请求与D6校验；成本仍为对应品质万能碎片，独立复读验证1:1净入且古董状态不变 | 继续原博物馆结算/领取恢复身份与古董剩余分支 | 博物馆结算及领取缺精确可恢复身份的操作继续冻结；不得把配置或typed提示当最终到账 | ac64891 | 2026-11-13：antique-advanced领域/Service及actions-safety三文件76/76 PASS，0 fail/cancel/skip/todo，17.28秒；保留全部负例并新增旧错误源ID和错误目标ID拒绝。合成传输，REAL_UNVERIFIED |
 | W06 PARTIAL | 英雄显式 fragment-exchange 接入原 heroes Function/Registry/OperationService/API/专业页/Workflow；对应品质自有万能碎片按明确数量1:1兑换目标专属碎片，所有英雄及其他库存不变，兑换与升星分别授权；自动混用万能碎片升星仍冻结 | 继续原碎片/背包剩余兑换合同及其他依赖已满足分支 | 其他兑换需各自明确身份、成本与结算证据；无 dedicated Response 的兑换只凭新完整库存净入确认，缺失或迟到均 UNKNOWN，无自动重放 | dec9005；古董目标ID纠正ac64891 | 2026-11-13：英雄领域/Service/专武回归、D6、合同/注册/设置、HTTP/完整页面九文件478/478 PASS，0 fail/cancel/skip/todo，9.60秒；覆盖四品质固定配置、零初始库存、篡改、父预算、持久意图、重启/隔离/迟到、表单编辑及既有扫荡控件回归。仅本地Codec/合成传输，REAL_UNVERIFIED |
-| W07 PARTIAL | 原正等级升级/红装红徽章成长、空槽穿戴、专武及Pet FEED保留。新增显式initial-level：当前完整镜像明确level0，EquipUpDecomposeCfg第1级明确upgradeCost=0，单次0→1且库存不变；复用原装备Adapter、D6具名费用证据、Registry/Service/History/Memory、HTTP/专业页及Workflow。默认LEVEL仍要求正等级/正精铁，零费仍预留同装备UID；独立Equips/AllHero及全库存复读，迟到/未确认保持UNKNOWN | 继续C228徽章到达等级上限的精确经验结算、BIZ-R08培育队列可恢复身份；缺证操作分别冻结 | 徽章上限经验落点、替换成长转移/旧物/返还、专武未激活状态、PetBreed新队列及GetMaturePet空请求目标仍缺证；W07整体PARTIAL，R7/R8未执行 | 本批提交（父b4c5f64）；徽章88fd646、Pet42a85e7及原成果保留 | 2026-11-15：equipment-growth领域/Service、actions-safety、Function Contract/Registry和完整PAGE六文件1015/1015 PASS，0 fail/cancel/skip/todo，17.52秒。覆盖真实离线Codec/固定第1行、明确0与缺省分离、零库存/错误费用/UID、完整复读、持久化失败零发送、UNKNOWN/重启/取消迟到/五维隔离、跨重连拒绝记忆、原HTTP显式授权及Workflow父预算。原正成本/默认零级拒绝断言保持；新增夹具对裁剪历史及实际SURVEY阶段的假设已修正。4源语法/diff通过，先前100/908项与本结果重叠不累计；REAL_UNVERIFIED |
+| W07 PARTIAL | 原正等级升级/红装红徽章成长、空槽穿戴、专武及Pet FEED保留。新增显式initial-level：当前完整镜像明确level0，EquipUpDecomposeCfg第1级明确upgradeCost=0，单次0→1且库存不变；复用原装备Adapter、D6具名费用证据、Registry/Service/History/Memory、HTTP/专业页及Workflow。默认LEVEL仍要求正等级/正精铁，零费仍预留同装备UID；独立Equips/AllHero及全库存复读，迟到/未确认保持UNKNOWN | C228上限结算与BIZ-R08培育/领取已核具体缺证，暂冻结该操作；继续原W08有据决策与W04本地策略 | 徽章上限经验落点、替换成长转移/旧物/返还、专武未激活状态、PetBreed新队列及GetMaturePet空请求目标仍缺证；W07整体PARTIAL，R7/R8未执行 | b2a0f56；徽章88fd646、Pet42a85e7及原成果保留 | 2026-11-15：equipment-growth领域/Service、actions-safety、Function Contract/Registry和完整PAGE六文件1015/1015 PASS，0 fail/cancel/skip/todo，17.52秒。覆盖真实离线Codec/固定第1行、明确0与缺省分离、零库存/错误费用/UID、完整复读、持久化失败零发送、UNKNOWN/重启/取消迟到/五维隔离、跨重连拒绝记忆、原HTTP显式授权及Workflow父预算。原正成本/默认零级拒绝断言保持；新增夹具对裁剪历史及实际SURVEY阶段的假设已修正。4源语法/diff通过，先前100/908项与本结果重叠不累计；REAL_UNVERIFIED |
 
 | W08 PARTIAL | 保留3a0641b持久阵容证明与此前主线/远征阵容、具名队伍、极限复制及战报比较。本批同账号角色世界、当前关卡的确认战败，经原Formation职业布局生成具体站位与有限Stage图；原Service只读准备、精确API/页面加载原编辑器，保存与开战分别重新授权和独立复读。expectedStage固定首关，来源引用随原Workflow持久历史只读保存，不提供授权或恢复资格 | 继续其他模式阵容/战斗及W08未交付范围；转回W19原可信策略与尚缺Function接线，缺证操作各自冻结 | 首败、UNKNOWN、确定拒绝或关卡变化不继续开战；准备期间角色/世界/连接/代次/来源变化取消，账号忙时拒绝配置修改。推荐仅客户端职业规则，不保证改阵更优，不循环改阵；其他模式SIDE/次数/归属及原远征UNKNOWN恢复身份等缺证保留。W08仍PARTIAL，R7/R8未执行 | 6466ac2；原成果保留 | 2026-11-14：11文件按范围验证；其中九文件1097/1097 PASS，修正新增schema清单及误触后恢复的原断言后，仅复跑公共合同/HTTP两文件161/161 PASS（41.54秒），最终0失败/取消/跳过/todo；覆盖原Formation/Stage/Workflow/持久历史/Registry/整页，新增建议、关卡绑定、拒绝/UNKNOWN零续跑、调查竞态、迟到页面及重启只读测试。仅离线合成传输，REAL_UNVERIFIED |
 
@@ -66,9 +66,9 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 | 核对项 | 本轮实际结果 |
 |---|---|
 | 开发根目录 | //zhangnas/app/crazywaterword；初始aibot-crazywaterword为另一仓库，不在其中施工 |
-| 分支/HEAD | codex/phase-4-alliance-integration / 本批W07首级装备提交树（父b4c5f64）；未修改main |
-| 远端关系 | 2026-11-15前批文档核对安全fetch：origin/codex/phase-4-alliance-integration=f87f028；cb57431领先13提交、落后0，无分叉。后续本地提交另计；未push/merge |
-| 工作区 | 本批修改前tracked/staged均干净；修改原装备领域、D6、合同、专业页及6个已有测试，配套README/本表。原5份未跟踪输入保持未跟踪、未暂存，未建目录/Store/报告。未读取真实账号/Token、未连接游戏 |
+| 分支/HEAD | codex/phase-4-alliance-integration / b2a0f56；本次对账提交以此为父，未修改main |
+| 远端关系 | 2026-11-15本次安全fetch确认origin/codex/phase-4-alliance-integration=f87f028；b2a0f56领先15提交、落后0，无分叉。本次文档提交另计；未push/merge |
+| 工作区 | 本次核对前tracked/staged均干净；仅更新本表及PHASE4的基线说明，README当前引用已一致。原5份未跟踪输入保持原字节、未跟踪、未暂存，未建目录/Store/报告。未读取真实账号/Token、未连接游戏 |
 | 历史/权限 | PHASE1–4原提交和证据保留；允许离线施工与本地提交；push/merge/reset/rebase/clean及真实游戏操作仍未授权 |
 | 目录约束 | 沿用既有src/tests/tools/docs/data/work；不新建仓库、worktree、目录或报告 |
 
@@ -1565,7 +1565,14 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 - W19 / C604/C606、S7：05796b1/7068a90原Workflow无动作原因、捕获身份及共享记忆已交付。本批完成原记忆卡→精确Workflow历史的只读导航（父7068a90），三文件238/238；只GET历史，不装载图/计划，核原definition和身份，旧引用/迟到/轮询/在途刷新均不替换所选历史，不重复施工。本批已核memoryInput仅从原拒绝生成UNTIL_IDENTITY_CHANGE，free-recruit冷却明确eligibility=null/executable=false/autoResume=false；现有来源未提供拒绝专属的到期或日界证明，因此该策略接线局部BLOCKED_EVIDENCE，不重复造时钟或让WAIT解锁。独立领域继续。
 - 保留W19通用cooldown/gameDay policyCoverage=false；W04全天量/最终金币/免费刷新、W09互助、W11结算、W13捕鱼等仍按原C/W/X冻结具体缺证操作。已有生产日报Service/API/UI、统一入口、历史导航和7类事件不重复施工。所有独立原范围完成冻结后才统一R7，再生成E01–E24具体R8授权清单。
 
-本批W07/C229显式零费首级0→1已沿原equipment-growth闭环，六文件1015/1015，默认正等级行为保留；不重复施工。下一独立项为C228徽章到达等级上限的精确经验结算，随后BIZ-R08培育队列可恢复身份，分别沿原badge-growth/pet-operations核权威字段后接同一执行链。已有低于上限升级和FEED不重做；缺字段只冻结该操作并继续下一项。W04/C124最终金币、X03免费刷新已有明确缺证结论，本批没有新来源，不再重复静态搜索并维持关闭。
+b2a0f56已交付W07/C229显式零费首级0→1，六文件1015/1015为既有定向证据；默认正等级、徽章低于上限及Pet FEED均不重做。C228的固定BadgeUtil在达到阈值/上限时未明确写回经验，成本证据不能证明服务端经验落点；BIZ-R08的PetBreedRequest仅petId/universal、没有房间/队列条件，GetMaturePetRequest为空，缺新队列归属和可恢复领取目标，继续具体BLOCKED_EVIDENCE。没有新来源前不重复静态搜索，也不把这些条目列为下一轮必过任务。
+
+下一批依赖已满足的原范围工作：
+
+- W08 / C209、P3-4：沿stage-history已有确认战败、职业布局及Formation→Stage准备图，补明确有限次数的换阵决策/续跑合同；复用原Workflow、Registry、Service及历史。先区分确认战败与UNKNOWN/拒绝，明确当前关卡、候选耗尽和停止条件，再接原API/页面的显式选择及授权；不新增调度器或复制战斗逻辑。定向覆盖保存复读、预算/次数、首败分支、未知零续跑、重启和迟到隔离。其他战斗模式仍各自缺证。
+- W04 / BIZ-R16h：沿现有订单规则、生产等待投影和用户策略配置补明确策略时窗的解释/筛选，保持KEEP/REFRESH/REVIEW；先以用户明确配置定义本地窗口，接原API/UI/Function及派发复核。用户窗口不需要伪装成游戏日界；权威周期、最终金币和免费刷新资格仍分别UNKNOWN。此项不新增定时器，不授予自动刷新或到点重放权限。按领域/Adapter/现有接口与页面影响范围定向验证。
+
+W19的通用冷却/日界仍待拒绝专属权威来源；已有7类事件、三类WAIT、统一Loop/Tasks/Dailies和历史/记忆导航不重复实现。两项实施均不改变当前PARTIAL、R7/R8或原验收范围。
 
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
