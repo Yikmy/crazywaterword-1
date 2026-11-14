@@ -444,7 +444,7 @@ function authorizeWorkflowPlan(session,payload){
     const generation = session.generation, client = session.client, signal = session.abort.signal;
     let budget;
     try { const parent=entry.workflowId?workflowBudgets.get(session.id).context:createRunBudgetContext({scope:parentScope(session,record.runId),limits:entry.public.budgetClaims}); const limits=entry.public.budgetClaims; budget={runBudget:parent,scope:parentScope(session,entry.workflowId??record.runId),batchId:entry.public.batchId,limits,ledger:parent.child(entry.stock,{batchId:entry.public.batchId,scope:parentScope(session,entry.workflowId??record.runId),limits})}; record.runBudget=parent.snapshot(); history.put(record); } catch(cause) { record.finalStatus='NOT_EXECUTED';record.stopReason=cause.message;record.finishedAt=now();try{history.put(record);}finally{run.running=false;release();}throw cause; }
-    let activeMemoryOperation=null;
+    let activeMemoryOperation=null, pendingFormationProof=null;
     const authorizedCurrent = () => {
       current(session, generation, client);
       if(observationIdentity(session,client)!==entry.sourceIdentity)throw error('账号角色、世界或连接来源身份已变化','NOT_EXECUTED');
@@ -463,6 +463,7 @@ function authorizeWorkflowPlan(session,payload){
         current(session, generation, client);
         if (!entry.dependencyHash && operationDigest(loadRules(session.id).config) !== entry.rulesHash) throw error('执行期间规则变化，停止后续操作', 'NOT_EXECUTED');
         const operation = entry.operations[index], row = record.actions[index]; activeMemoryOperation=operation;
+        if(operation.module==='formation'){formationProofs.delete(session.id);pendingFormationProof=null;}
         row.requestStatus = 'DISPATCHING'; row.timestamp = now(); history.put(record);
         const originalAdapter = entry.adapter ? modules[operation.module] : null;
         // Observe the original fresh planner; transport and verification stay shared.
@@ -485,7 +486,7 @@ function authorizeWorkflowPlan(session,payload){
           } } : {}) });
         if (operation.module === 'formation') {
           formationProofs.delete(session.id);
-          if (operation.actionType === 'SAVE' && result.status === 'SUCCESS' && result.verification?.status === 'CONFIRMED') formationProofs.set(session.id, { generation, client, operation: clone(operation), batchId: entry.public.batchId, planHash: entry.public.planHash });
+          if (operation.actionType === 'SAVE' && result.status === 'SUCCESS' && result.verification?.status === 'CONFIRMED') pendingFormationProof = { generation, client, sourceIdentity:entry.sourceIdentity, operation: clone(operation), batchId: entry.public.batchId, planHash: entry.public.planHash };
         }
         Object.assign(row, evidence(result), { result: result.status ?? 'UNKNOWN', timestamp: now() });
         row.requestStatus = result.requestStatus ?? result.status ?? 'UNKNOWN';
@@ -508,7 +509,12 @@ function authorizeWorkflowPlan(session,payload){
       record.finishedAt = now();
       const success=record.finalStatus==='SUCCESS', standaloneSuccess=success&&!entry.workflowId;
       record.runBudget=success?{...budget.runBudget.snapshot(),...(standaloneSuccess?{state:'CLOSED',outcome:'SUCCESS'}:{})}:budget.runBudget.close(['UNKNOWN','CANCELLED','RATE_LIMITED','FAILED'].includes(record.finalStatus)?record.finalStatus:'STOPPED');
-      try { history.put(record); if(standaloneSuccess)budget.runBudget.close('SUCCESS'); }
+      try {
+        history.put(record); if(standaloneSuccess)budget.runBudget.close('SUCCESS');
+        // Publish only after the complete original result is durable. The proof
+        // belongs to the approved account/role/world/connection, never a later one.
+        if(success&&pendingFormationProof&&observationIdentity(session,client)===entry.sourceIdentity)formationProofs.set(session.id,pendingFormationProof);
+      }
       catch (cause) { record.finalStatus = 'UNKNOWN'; record.stopReason = cause.message; record.runBudget=budget.runBudget.close('UNKNOWN'); }
       run.running = false; release();
     });
@@ -521,8 +527,10 @@ function authorizeWorkflowPlan(session,payload){
       const adapter=adapterFor('formation'), moduleConfig=moduleSettings.get(session.id,'formation').config;
       if(moduleConfig.enabled!==true || moduleConfig.mainlineEnabled!==true) throw error('请启用本账号阵容及主线组合', 'FORMATION_REQUIRED');
       const proof=formationProofs.get(session.id);
-      if(!proof || proof.generation!==generation || proof.client!==client || proof.operation.target.presetId!==requested.presetId) throw error('先预览、授权保存目标阵容并完成复读，再启动主线', 'FORMATION_REQUIRED');
+      const sameProof=()=>proof&&formationProofs.get(session.id)===proof&&proof.generation===generation&&proof.client===client&&proof.sourceIdentity===observationIdentity(session,client)&&proof.operation.target.presetId===requested.presetId;
+      if(!sameProof()){formationProofs.delete(session.id);throw error('先在当前账号角色世界及连接下预览、授权保存目标阵容并完成持久复读，再启动主线', 'FORMATION_REQUIRED');}
       const facts=await adapter.survey(client,protocol,{config:getConfig(),player:session.player,signal:session.abort.signal}); current(session,generation,client);
+      if(!sameProof()){formationProofs.delete(session.id);throw error('阵容复读期间账号角色世界或连接已变化，须重新授权保存','FORMATION_REQUIRED');}
       const formationKey=value=>operationDigest({...value,heroPositions:[...value.heroPositions].sort((a,b)=>a.heroId.localeCompare(b.heroId))});
       if(facts.reliability?.formation!==true || formationKey(facts.formation)!==formationKey(proof.operation.action.body.formation)) throw error('当前阵容已变化，请重新保存授权', 'FORMATION_CHANGED');
       cacheModule(session.id,'formation',facts,{moduleConfig,config:getConfig()});
