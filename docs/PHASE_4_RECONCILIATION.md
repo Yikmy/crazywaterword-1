@@ -1,10 +1,10 @@
-# PHASE 4 — Roadmap Reconciliation & System Integration
+# PHASE 4 — Roadmap Reconciliation & System Integration（历史报告）
 
-日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文是本轮权威增量；不改写原Master、原Inventory或历史验收。
+日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文保留当时版本的历史增量；不改写原Master、原Inventory或历史验收。当前唯一进度基线为[ROADMAP_RECONCILIATION](ROADMAP_RECONCILIATION.md)，本报告旧状态表和审批表不覆盖其当前状态。
 
 ## 1. 权威路线图与Git基线
 
-原始权威：docs/baseline.md《Capability Mapping & Master Development Plan》V1.0，规划基线61ce3c0。原PHASE4第776行起明确为Alliance Platform、C301–C307。docs/ROADMAP_RECONCILIATION.md自标Planning Only，提出R1–R8/22工作包，属于参考建议，未获本轮替换原阶段授权。PHASE3 Delta与扩展任务也不能代替原Master。
+原始权威：docs/baseline.md《Capability Mapping & Master Development Plan》V1.0，规划基线61ce3c0。原PHASE4第776行起明确为Alliance Platform、C301–C307。当时ROADMAP的Planning Only是历史状态；Owner后续已授权原COMPLETE_CRAZYWATER_PLATFORM_R1_R8按R1–R8/W01–W22依赖DAG持续离线施工。原Master范围保留，当前状态仅由ROADMAP当前表维护；PHASE3 Delta不代替原Master。
 
 已完整读取Master、PHASE1/2/3 Acceptance、PHASE2/3 Delta、PHASE2 Real E2E；Inventory 1–1419行由并行审计完整复读，无截断；以源码/测试复核结论。根目录和检查的适用父目录未发现AGENTS.md/TREE.md，不创建替代。历史PHASE3报告的Master Development Plan.md当前实际文件恢复为docs/baseline.md。三维表15,208字节、非空。
 
@@ -14,7 +14,9 @@
 
 PHASE3本轮可明确实施的离线功能完成，仍待Owner阶段验收。提前交付原PHASE4/5/6/8的部分能力，不等于这些原阶段通过。本轮已批准推进PHASE4，但未授权真实游戏写入。
 
-## 2. 原Master全部阶段对账
+后续源码已补齐本报告当时标缺的科技单升、极限来源复制、Stage逐场持久历史、共享拒绝记忆、父预算、唯一Console写所有者、有限日周/可信事件和原生拖拽等子集。此说明仅纠正历史适用范围，不另建当前账本；完整程度、API/UI/Workflow/测试及真实边界统一见ROADMAP的M/C/P/S/Inventory表。原测试数量、失败和真实业务写0帧保持历史原义，不能作为当前重新执行结果。
+
+## 2. 原Master全部阶段对账（2026-11-11历史快照）
 
 状态口径：DONE仅指已说明范围的离线能力具备源码和测试；写功能缺真实/最终验收记PARTIAL。BLOCKED必须保留缺失的身份、成本或语义，不凭文档PASS认定功能。逐C账本在附录。
 
@@ -35,7 +37,7 @@ Pxxx：P0/P1现账号/Explorer与原始浏览可用；P2建设/生产/订单已�
 
 S1手动/S2单次与现Stage S4已实现；S3缓存轮询不等于游戏轮询；S5通用定时、S6业务事件调度NOT_STARTED；S7有限图节点PARTIAL；S8订单/联盟/海战三值规则PARTIAL，无全平台通用规则引擎。D1–D9由现计划授权/Session锁/预算/取消/UNKNOWN/D6实现单进程受控子集；多进程owner和全legacy路径接入仍PARTIAL。
 
-## 3. A–D事项账本
+## 3. A–D事项账本（历史快照）
 
 | 类别/事项 | 状态 | 源码/测试/验收证据与影响 |
 |---|---|---|

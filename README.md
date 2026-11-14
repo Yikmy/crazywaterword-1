@@ -1,13 +1,10 @@
 # crazywaterword
 
-PHASE 3 已加入阵容、联盟、博物馆、世界宝藏、舰队与海战规则的受控 Function，以及可视化有限 Workflow。所有新玩法默认关闭，ACTION 仍需具体计划与单次授权；未知业务语义保持阻塞。当前仅完成离线/合成验证，详见 [PHASE 3 验收报告](docs/PHASE_3_ACCEPTANCE.md) 与 [能力增量](docs/PHASE_3_CAPABILITY_DELTA.md)。
+当前进度唯一基线是 [ROADMAP_RECONCILIATION](docs/ROADMAP_RECONCILIATION.md)（2026-11-14，源码 fc68c50）。原目标 COMPLETE_CRAZYWATER_PLATFORM_R1_R8 保留 M0–M15、95C、42P、8S 和 273 Inventory；工程尚未完成，R7 全量离线与 R8 真实验收均未执行。PHASE 1–4 报告保留各自版本的历史证据。
 
-当前 Web Console 保留显式登录、只读采集、本地账号管理及独立主线 Stage 门控。PHASE 2 增加居民订单、城市建设和生产的具体批次预览、预算授权与执行历史；旧通用游戏写路由、自动循环和网页抓包入口继续关闭。本次交付仅做离线验证，详见 [PHASE 2 验收报告](docs/PHASE_2_ACCEPTANCE.md)。
+本项目通过游戏 WebSocket 协议提供只读数据浏览、具体业务计划和受控执行。现有 OperationService、Function Registry、ResourceLedger、ExecutionHistory 与有限 Workflow 共用账号、连接、授权、预算、D6、取消及 UNKNOWN 保护。26 个静态模块加原 Stage 已注册；每个模块的可执行子集和缺证操作见唯一进度基线，注册不代表完整玩法交付。
 
-微信小游戏《疯狂水世界》的**协议侧挂机工具**：不开游戏界面，直接用游戏自己的 WebSocket 协议完成
-日常任务、领奖、英雄养成、海面世界的收成品/排产/交单/建造/升级，并附带一个本地网页控制台。
-
-不是模拟器、不是图像识别、不是内存修改 —— 全程只收发游戏客户端本来就会发的那些报文。
+Tasks、Dailies 和有限 Loop 的页面入口将明确选择编译为原 Workflow。生成计划、检查具体操作和父预算后，仍须明确授权。旧通用写路由及独立 CLI 游戏写已拒绝；只读、dry 和离线工具按原边界保留。当前交付以离线合成测试为主，历史真实证据仅适用于报告列出的版本和场景。
 
 ---
 
@@ -37,15 +34,15 @@ node src/app.mjs assets restore
 
 ## 它是什么
 
-| 能力 | 说明 |
+| 能力 | 当前范围 |
 |---|---|
-| 登录 | 用抓包拿到的真实凭证连接网关，支持多账号 |
-| 任务 | 主线、支线、成就、每日订单档位奖励的自动领取 |
-| 日常 | 17 项日常任务的自动完成 + 任务奖励 + 活跃度宝箱 + 每日免费赠礼 |
-| 英雄 | 升级、升星、升技能（判定条件照抄客户端红点逻辑） |
-| 海面世界 | 收成品、竣工、建造新建筑、交居民订单、按订单缺口排产、余料升级、加速 |
-| 自动循环 | 上面三块按轮执行，可只读探测、可长期挂机 |
-| 网页控制台 | 本地页面，中文业务视图，一键领取 / 一键完成 / 自动循环 / 账号与凭证管理 |
+| 账号与数据 | 显式登录、账号隔离、48项查询及缓存浏览；28解析、20原始 |
+| 任务与日常 | 主线、支线、成就和日常任务受控单领；7个明确日常驱动可接有限图，其他缺证分支保留 |
+| 英雄与阵容 | 单项养成、装备/徽章/专武成长子集、完整队伍预设及极限来源复制 |
+| 城市与生产 | 建造升级、收取排产、明确农田种收及订单提交；免费刷新和最终金币仍缺证 |
+| 专业玩法 | 港口、联盟、博物馆、扫荡、贸易等受控子集；钓鱼仅只读，具体边界见路线图 |
+| 编排与历史 | 原生有限图、父预算、有限日周/可信事件、持久拒绝及UNKNOWN历史；重启只读 |
+
 
 ## 它不是什么
 
@@ -108,11 +105,11 @@ node src/app.mjs            # 默认就是这个
 
 浏览器打开 `http://127.0.0.1:17321`。页面上：
 
-- **总览** —— 账号卡、资源与库存（带游戏自己的图标）、一键领取；
-- **挂机** —— 工厂/订单/建筑/空位、资源田报告、执行一轮、自动循环开关；
-- **英雄** —— 英雄卡片与养成计划；
-- **日常** —— 日常任务表（中文，并说明「为什么不可做」）；
-- **账号** —— 多账号切换、扫码添加、凭证查看（默认打码）。
+- **总览与Explorer**：浏览已有快照、可靠性、库存和原始响应；刷新须已有READY会话。
+- **城市、生产、订单及专业玩法**：显式探测、选择具体操作、生成计划、检查预算并授权。
+- **Tasks / Dailies / Loop**：准备原Workflow有限执行图，缺证业务显示原因。
+- **Workflow与历史**：节点编辑、运行状态、逐场/批次/动作查询、拒绝及UNKNOWN审计。
+- **账号与设置**：账号切换、独立配置和资产诊断；网页扫码/抓包及真实凭证回显未开放。
 
 ---
 
@@ -133,17 +130,16 @@ node src/app.mjs <子命令> [参数]
 | `accounts <list\|use\|label\|remove\|show>` | 多账号管理 |
 | `config [表名]` | 列出本地配置表 / 打印某张表 |
 | `actions` | 列出所有动作及其协议消息名 |
-| `act <id> [k=v …]` | 手动发一条动作（改状态的要 `--yes`） |
-| `loot [--dry]` | 一键领取：邮件、任务、成就、挂机、建筑产物/成品、活跃度宝箱、每日赠礼 |
-| `tasks [--dry]` | 主线 / 支线 / 成就 / 每日订单档位 |
-| `dailies [--dry] [--paid]` | 日常任务闭环 |
-| `heroes [--dry]` | 英雄养成 |
-| `world [--dry] [--speed-up] [--reroll]` | 海面世界一轮 |
-| `field [gridIdx]` | 资源田报告 / 占田 / 弃田 |
-| `loop [--rounds N] [--every 秒]` | 自动循环（`--rounds 0` = 一直跑） |
+| `act <id> [k=v …]` | 动作目录和只读能力保留；独立游戏写在读凭证前拒绝 |
+| `loot [--dry]` | 原领取清单dry保留；写入改用页面具体Function |
+| `tasks [--dry]` | 原任务只读/dry保留；统一Tasks入口选择具名任务 |
+| `dailies [--dry] [--paid]` | 原日常只读/dry保留；统一入口只支持已证驱动，--paid不解除D6 |
+| `heroes [--dry]` | 原英雄只读/dry保留；写使用统一计划授权 |
+| `world [--dry] [--speed-up] [--reroll]` | 原海面只读/dry保留；写使用原OperationService |
+| `field [gridIdx]` | 资源田只读报告；独立占领/放弃写拒绝 |
+| `loop [--rounds N] [--every 秒]` | 旧独立写循环拒绝；页面有限Loop准备原Workflow，不开放无限循环 |
 
-**任何会改变账号状态的命令都必须显式授权**：CLI 加 `--yes` 或 `CW_ALLOW_MUTATE=1`，
-网页请求体里带 `confirm: true`。不加就只打印计划，一个字节都不发出去。
+**游戏写入使用已有READY Session上的具体计划与单次或有限run授权**，同时检查账号、连接代次、Origin/CSRF、预算、D6和持久化。`--yes`、`CW_ALLOW_MUTATE=1`、`--paid`或`confirm:true`都不能单独授权，也不能恢复关闭的独立写入口。
 
 常用环境变量：`CW_ACCOUNT`（选账号）、`CW_PORT`（控制台端口）、`CW_DATA_DIR`、
 `CW_CONFIG_PACK`、`CW_PROXY_PORT`、`CW_NO_BROWSER`、`CW_DEBUG`。
@@ -152,13 +148,13 @@ node src/app.mjs <子命令> [参数]
 
 ## Game Data Explorer（MVP 只读）
 
-在现有控制台的「数据探索器」页中，点击「读取已有快照」浏览当前账号最近一次手动采集的 Snapshot。按 12 个业务域筛选，或搜索业务名称、Request、Response；左侧选择查询，右侧同时展开原始 JSON 与已有业务解析。目录唯一来源为 `src/data-catalog.mjs`：48 项查询，其中 27 项复用 `summarize()`，另外 21 项直接展示原始响应。
+在现有控制台的「数据探索器」页中，点击「读取已有快照」浏览当前账号最近一次手动采集的 Snapshot。按 12 个业务域筛选，或搜索业务名称、Request、Response；左侧选择查询，右侧同时展开原始 JSON 与已有业务解析。目录唯一来源为 `src/data-catalog.mjs`：48 项查询，其中 28 项有解析视图（包括钓鱼图鉴），另外 20 项展示原始响应。
 
 只读接口：`GET /api/data-explorer?account=<精确账号ID>&domain=<可选业务域ID>`。返回查询名称、响应类型、解析来源、`SUCCESS` / `FAILED` / `NOT_EXECUTED`、采集时间、错误、`raw` 与 `parsed`；只读取已有 `session.snapshot`，不创建 Runtime、不连接或刷新游戏。失败和未执行的响应及解析为 `null`，不会被替换为成功的空数组或零值。
 
 「复制脱敏 JSON」和「导出脱敏 JSON」保存当前筛选结果，沿用服务端递归脱敏。新采集的原始解码响应保存在 `snapshot.raw`；超出 JavaScript 安全整数范围的 int64 以十进制字符串保存。业务模块继续使用既有归一化数据。旧快照仅有归一化数据时，界面会提示无法恢复之前的整数精度，可通过原有手动刷新获得新快照。
 
-原有任务、海面、英雄、日常的只读页面和业务模块继续复用；游戏写操作路由保持关闭。Explorer 不包含 48 项入口查询以外的额外探针，也不为没有解析器的字段推测含义。
+原有任务、海面、英雄、日常的只读页面和业务模块继续复用；旧通用游戏写操作路由保持关闭；明确业务写走原受控接口。Explorer 不包含 48 项入口查询以外的额外探针，也不为没有解析器的字段推测含义。
 
 ---
 
@@ -193,28 +189,29 @@ Rule Contract v1：
 - POST /api/order-rules，body={config}：只保存账号独立规则 JSON。
 - POST /api/order-rules/preview，body={config}：用当前编辑配置对已有 Snapshot 模拟，不保存配置、不创建 Runtime、不发游戏请求。
 
-预览复用 surveyWorld() 的现有需求、经验和库存解析，显示实际缓存订单数、规则轨迹、首败、库存事实和解释。四个订单独立使用同一份库存，未跨订单预留，不能将各单建议视为可同时执行的提交计划。现有游戏写操作白名单保持关闭；没有提交、刷新、生产或资源消耗。最低金币规则尚无可靠的订单金币奖励解析，本阶段不提供。
+预览复用 surveyWorld() 的现有需求、经验和库存解析，显示实际缓存订单数、规则轨迹、首败、库存事实和解释。四个订单独立使用同一份库存，未跨订单预留，不能将各单建议视为可同时执行的提交计划。此Snapshot模拟接口不提交、刷新或消耗资源；受控订单执行使用下文独立计划链。普通/特殊订单基础金币已有配置预览，最终加成、取整和事前总金币仍缺证，MIN_GOLD不开放。
 
 ---
 
 ## 自动闯关（STEP 4）
 
-新增独立「自动闯关」页和账号级 Stage Runner。配置仅用于本次运行，不自动持久化：
+现有「自动闯关」页和账号级Stage Runner保留。配置仅用于明确启动的本次运行，示例：
 
 ```json
 {
   "enabled": false,
   "retryDelaySeconds": 10,
   "maxAttempts": null,
-  "maxStage": null
+  "maxStage": null,
+  "stopOnDefeat": false
 }
 ```
 
-总尝试次数包含胜利和战败；留空不限制。仅明确战败才等待配置间隔并重试同一关，成功后清零连续失败并推进本地预期关卡。每次响应必须带本次关卡号和显式布尔 `stats.isLeftWin`。超时、断线、顶号、解码错误、未知结果及无法归因的 Prompt 立即停止，不自动重发；不发送跳过请求。历史最多保留当前运行最近 200 条，随控制台重启清空。
+总尝试次数包含胜利和战败；留空不限制。仅明确战败才等待配置间隔并重试同一关，成功后清零连续失败并推进本地预期关卡。每次响应必须带本次关卡号和显式布尔 `stats.isLeftWin`。超时、断线、顶号、解码错误、未知结果及无法归因的 Prompt 立即停止，不自动重发；不发送跳过请求。当前运行内存窗口最多200条；逐场事件另由原stage-history持久化，重启仅可查询，不恢复战斗、等待或授权。首败停止可在页面明确开关。
 
 **主线阵营映射已由 STEP 4-B1 授权。** 仅 `MAINLINE_CHALLENGE` 的 `ChallengeStageRequest → ChallengeStageResponse` 使用 `PLAYER_SIDE_LEFT`，玩家获胜等于 `stats.isLeftWin`。依据 STEP 4-A 第 137 关真实响应：16 个装备/徽章实例 UID 唯一匹配左队、右队命中 0。证据路径和 SHA256 记录在 `src/stages.mjs` 的 `MAINLINE_SIDE_AUTHORIZATION`；无需运行时读取本地诊断材料。生产适配器要求响应实际存在 `battleType=BT_MAINLINE(1)`，继续检查胜负字段自有布尔值和响应关卡。未知模式、其他请求/响应或其他 battleType 仍以 `SIDE_UNVERIFIED` 拒绝；核心 Function 未提供可信适配器时也仍拒绝。HTTP、配置和环境变量不能指定阵营或扩大授权范围。
 
-接口均要求精确 `account` ID：
+接口均要求精确 `account` ID；写入口同时校验同源 Origin、JSON 和页面 CSRF：
 
 - `GET /api/stages`：只读已有 Runner 状态，不创建 Runtime、不触发查询。
 - `POST /api/stages/start`：body=`{config,confirm:true}`，进入独立写操作授权；还需配置启用、已有 READY 会话、已授权的主线阵营适配器及无其他在途任务。核心 Function 另要求 `allowMutate:true`。
@@ -222,7 +219,7 @@ Rule Contract v1：
 
 同账号只能有一个 Runner；不同账号独立。运行或旧战斗未决时阻止完整采集，已有 Snapshot/Explorer 浏览不受影响。页面关闭不停止服务端任务，再打开读取状态即可。断开、删除和关闭控制台会取消 Runner。停止无法撤销已发出的战斗；未决请求锁保留，迟到结果不能更新历史或新运行。结果不确定时必须显式重新连接并取得新的登录关卡，不能原连接直接重启。
 
-胜利后的 `stage + 1` 是本地预期进度；界面明确标注，不冒充重新读取的服务端状态。服务器拒绝、关卡不符或未知上限均停止。既有通用游戏写路由保持关闭，居民订单策略仍只读。
+胜利后的 `stage + 1` 是本地预期进度；界面明确标注，不冒充重新读取的服务端状态。服务器拒绝、关卡不符或未知上限均停止。既有通用游戏写路由保持关闭；订单策略模拟只读，具体提交走原受控Operations接口。
 
 ---
 
@@ -308,17 +305,16 @@ docs/
 
 这些边界是**有意保留**的，不是还没做：
 
-- 写操作一律要 `--yes` / `CW_ALLOW_MUTATE=1` / 网页 `confirm: true`，且在连网关**之前**就检查。
+- 写操作绑定具体计划、身份、预算和单次或有限run授权；独立CLI写在读凭证前拒绝，旧参数不能覆盖。
 - **不花钻石**。加速只花「加速器」道具（`SpeedUpCostParam.type` 恒为 2；1 = 钻石、3 = 广告都不使用）。
-  点金与折扣店默认跳过，要勾 `--paid` 才做。
+  普通免费点金使用独立零支出合同；钻石点金和未证折扣购买保持拒绝，`--paid`不覆盖D6。
 - **不买任何付费礼包**（含 12 元那个「自动生产」礼包）。
 - 建造/升级材料不齐时，客户端会弹「用钻石补」——本工具**不补**，跳过等下一轮。
-- 默认**不拒单**（`--reroll` 才开，且跟客户端一样拒绝重刷）。
+- 免费刷新缺权威次数/冷却，规则可给建议，执行冻结；`--reroll`不能补足证据。
 - **不使用** `LoginRequest` 的 `testAccount` / `superToken` —— 那是绕过鉴权的开发者后门。
 - 抓包系统改动仅在**当前用户**范围内（`certutil -user`、HKCU），CLI 显式确认后才开始；恢复采用写前记录、精确快照、进程锁和退出钩子。强制终止后的恢复需再次运行恢复命令。
 - 凭证保存在本机受控账号文件，普通日志、HTTP/SSE 和快照导出递归脱敏；网页不提供原始凭证回显。
-- 账号的自动循环**每轮都是「先只读探测 → 算计划 → 再执行」**，所以没什么可做时计划自然为空，
-  不会重复发同样的请求；被服务端拒过的动作会跨轮记住不再重试。
+- 原有限Loop每轮重新探测和规划，共享持久拒绝/UNKNOWN；未知结果不自动重放，WAIT不解除拒绝或未决。冷却和游戏日界仅接受权威来源，Service通用cooldown/gameDay覆盖仍未闭合。
 
 ---
 
@@ -359,9 +355,9 @@ Manual 每批一项；Hybrid 的订单提交逐单授权、刷新可组成具体
 
 订单、建筑与生产的规划共用一个 `ResourceLedger`；执行共用独立的保守账本，每次消耗前重读余额，旧快照和新收取不会补回已预留预算。同一账号与 Stage、完整采集互斥，不同账号可并行，已有缓存可继续浏览。请求响应与业务成功分开记录，只有权威复读确认目标变化才能成功。停止仅阻止后续操作；已发送未确认的操作保留 UNKNOWN、预算和指纹，不自动重试。
 
-本地文件 `data/production-policy.json`、`data/execution-history.json` 均被 Git 忽略。历史采用原子替换，发送前及每步结果后持久化，包含脱敏的前后状态、规则轨迹、库存、预留和复核结果。异常退出后仅恢复查看，未决批次继续阻止新写入及 Stage，不自动恢复执行；损坏文件保留并阻断执行。暂无用于清除未决的网页按钮，应保留证据等待人工复核，不能删除历史来绕过保护。
+本地文件 `data/production-policy.json`、`data/execution-history.json` 均被 Git 忽略。历史采用原子替换，发送前及每步结果后持久化，包含脱敏的前后状态、规则轨迹、库存、预留和复核结果。异常退出后仅恢复查看，未决批次继续阻止新写入及 Stage，不自动恢复执行；损坏文件保留并阻断执行。现有恢复预览/复读/确认只在严格证明下追加reconciliation：APPLIED限同原连接及代次的零成本Formation完整复读，NOT_APPLIED限持久未派发证明；其他、重连或重启仍STILL_UNKNOWN。不能删除历史或自动重放绕过保护。
 
-生产日报按上海日期汇总本工具历史中已确认的生产开始/收取次数，仅在产出减少与可靠库存增加数量一致时统计收取材料。它不代表游戏完整全天产量。免费刷新配额/冷却缺少可靠来源时，REFRESH 仅显示建议，执行保持禁用；MIN_GOLD 继续缺少可靠金币奖励来源。钻石、付费礼包及开发者凭证限制不变。
+生产日报按上海日期汇总本工具历史中已确认的生产开始/收取次数，仅在产出减少与可靠库存增加数量一致时统计收取材料。它不代表游戏完整全天产量。免费刷新配额/冷却缺少可靠来源时，REFRESH 仅显示建议，执行保持禁用；基础金币已有配置预览，但最终金币公式和MIN_GOLD事前资格仍缺可靠来源。钻石、付费礼包及开发者凭证限制不变。
 
 新增接口均要求精确 `?account=<id>`：
 
@@ -378,13 +374,13 @@ Manual 每批一项；Hybrid 的订单提交逐单授权、刷新可组成具体
 
 新增 POST 同时校验 Host、同源 Origin、JSON 和页面 CSRF 请求头；`confirm:true` 不能单独授权。没有开放 Request 或 Action 通用入口。
 
-能力映射和原始 Inventory 的增量见 [PHASE 2 Capability Delta](docs/PHASE_2_CAPABILITY_DELTA.md)。原始 Master Development Plan 对应工作区的 `docs/baseline.md`，执行状态见验收报告；用户提供的原始输入文件保留在工作区，不混入功能提交。本阶段结束后等待验收，不自动开始 PHASE 3。
+能力映射和原始 Inventory 的增量见 [PHASE 2 Capability Delta](docs/PHASE_2_CAPABILITY_DELTA.md)。原始Master对应工作区的`docs/baseline.md`，原输入保留。当前状态仅见ROADMAP_RECONCILIATION；PHASE2报告是历史证据。Owner已授权按原DAG连续离线开发，真实操作仍需R7后单独批准。
 
 
 ## PHASE 4：原路线图对齐与联盟科技
 
-原 Master 的 PHASE 4 是 Alliance C301–C307；本轮范围、95项能力对账、公共执行边界和剩余决策见 [PHASE 4 Reconciliation](docs/PHASE_4_RECONCILIATION.md)。PHASE 3 离线交付与 PHASE 2 的真实写入未验收记录继续保留。
+原Master的PHASE4是Alliance C301–C307；[PHASE4报告](docs/PHASE_4_RECONCILIATION.md)保存2026-11-11历史快照，当前范围和进度仅见[ROADMAP_RECONCILIATION](docs/ROADMAP_RECONCILIATION.md)。PHASE 3 离线交付与 PHASE 2 的真实写入未验收记录继续保留。
 
 联盟页按精确玩家/请求 ID 展示成员、求助、额度和科技。帮助额度或冷却未知仍阻断；DonateFort 仍是堡垒建设。科技配置新增默认关闭的 tech 开关，选择 {techId,targetLevel} 后重新探测，仅允许当前等级加一级。成本取真实赛季配置的 techPointCost + techPointCostGrowth × 当前等级，使用公会科技点或联盟职级科技点；可信 worldId 来自当前 Session，阶段来自 SeasonTaskStage，不能由页面伪造。升级复用原 OperationService 的精确计划、预算、单次授权、账号互斥和执行器；关联响应、科技新读等级和实际扣点全部匹配才确认成功。没有新增通用写入口，D6 继续硬拒钻石。
 
-共享业务执行器的历史新增 SURVEY、RESOURCE_PREFLIGHT、DISPATCH_INTENT、DISPATCHED、RESPONSE / OBSERVATION_ENDED、VERIFY、VERIFIED。DISPATCHED 仅表示调用传输方法；响应和观察结束均不代表业务成功。阶段保存失败在发送前停止，发送后保持 UNKNOWN。旧 orders/city/Stage 自定义执行路径保留原有历史粒度。本轮仅离线/合成验证，不代表真实账号验收，也不提供跨进程写所有权、持续调度或 UNKNOWN 自动解除。
+共享业务执行器的历史新增 SURVEY、RESOURCE_PREFLIGHT、DISPATCH_INTENT、DISPATCHED、RESPONSE / OBSERVATION_ENDED、VERIFY、VERIFIED。DISPATCHED 仅表示调用传输方法；响应和观察结束均不代表业务成功。阶段保存失败在发送前停止，发送后保持 UNKNOWN。旧 orders/city/Stage 自定义执行路径保留原有历史粒度。后续已加入唯一Console跨进程写所有者、有限日周/可信事件和持久历史。恢复仅覆盖上述严格证明子集，其他UNKNOWN继续封锁。离线/合成证据不代表真实账号验收；完整范围和缺口见唯一进度基线。

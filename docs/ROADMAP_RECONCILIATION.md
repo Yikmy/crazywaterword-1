@@ -1,13 +1,19 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-审计日期：2026-11-11（Asia/Shanghai）。源码基线：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。Planning Only；本报告的新增Function/API均为未来施工约定，本轮没有实施。
+当前核对日期：2026-11-14（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration@fc68c50。2026-11-11的a505019规划与PHASE1–4保留历史用途；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
 
-> 当前执行状态以本页当前工作包状态及附录D交接为准：COMPLETE_CRAZYWATER_PLATFORM_R1_R8 保持 ACTIVE；原 Planning Only 内容与 D.1–D.28 保留为历史证据。
+> 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
 2026-11-12 执行策略按 Owner 的 REDUCE_GATE_AND_TOKEN_OVERHEAD 修正：沿用原 R/W/E/X 与需求编号，只保留统一运行时安全合同、具体业务缺证操作和最终 R7/R8 控制。R1–R6 按影响范围定向测试，冻结后统一 R7 全量；只维护下表，不新增 Gate、阶段或原子报告。账号、授权、预算、D6、UNKNOWN 持久化与零自动重放要求不变。
 
 | 工作包 | 已完成能力 | 当前下一项 | 真正阻塞 | 最后提交 | 对应测试 |
 |---|---|---|---|---|---|
+| W01 PARTIAL | 唯一Console所有者、CLI独立写拒绝、Stage共同门控和有限证据恢复已有 | 维持原合同，按领域权威证据扩恢复 | 通用恢复缺独立证明，重连/重启及其他领域STILL_UNKNOWN | 26ed68d；当前执行链fc68c50 | 原writer-ownership/recovery/Service/API专项；本轮未重跑 |
+| W02 PARTIAL | 26静态模块加Stage、27合同、原核心Adapter及父资源/配额/UID预算已有 | 随原剩余领域补合同/Registry | 注册或协议存在不能证明未闭合写可执行 | 原公共实现保留；合同104755d | 原Contract/Registry/共享测试；本轮未重跑 |
+| W05 PARTIAL | 港口专业货舱/逐物品缺货、明确装货及到港领取已有 | 补原范围其余允许分支 | D6/未知成本/未证身份仅冻结具体操作；不推导全包完成 | fleet最近32656af；原领域提交保留 | 原fleet/HTTP/PAGE专项；本轮未重跑 |
+| W10 PARTIAL | 科技专业树、下一等级/实际扣点及复读已接原联盟链 | 原科技重置独立合同 | 重置成本/资格/恢复缺证 | 原科技提交保留；alliance最近72c6388 | 原alliance-tech/共享测试；本轮未重跑 |
+| W14 PARTIAL | Fleet编队/维修/移动及港口子集已有 | 原攻击/加速/资源田/其他模式有据合同 | 模式结果、宣战成本/身份和非premium加速缺；MOVE非攻击 | fleet最近32656af；原成果保留 | 原fleet/naval/共享测试；本轮未重跑 |
+| W22 PARTIAL | 当前需求与Inventory追踪、历史边界和交付约束已维护 | 全范围完成后集成冻结，统一R7，再生成R8清单 | 领域/API/UI/Workflow未全；R7/R8 NOT_RUN | 本行文档提交（父fc68c50） | 文档静态校验PASS：M16/C95/P42/S8/Inventory273及W22/R8/E24/X18，135路径存在、原5输入指纹不变；不是平台验收 |
 | W03 PARTIAL | 保留原固定清单/协议配置地图同字节加载、只读资产API/设置页；本批原assets CLI支持archive/verify/restore。归档仅收录清单校验通过资产，嵌入完整清单身份与具体缺口；原清单及已登记归档指纹独立校验，恢复全目标预检、仅独占创建缺失文件，已有冲突/部分写入/链接均保留并拒绝。当前协议及配置已保留为work/runtime-assets.cwassets.gz（1901461字节，指纹见原RUNTIME_ASSETS.json）；原设置页展示只读记录及离线命令 | 继续原地图资产与上游来源恢复；迁移携带原清单和已保留归档后先verify再显式restore，不自动恢复或下载 | map-1仍缺失及来源/哈希未知，归档complete=false；原始协议包/CDN版本仍未记录，保留本地字节不证明上游来源或真实玩法通过。固定v76仅有地图资源名，不推断包版本/URL；R7/R8未执行 | 本行所在提交（父20424c1）；固定资产加载及原只读诊断成果保留 | 2026-11-14：资产/CLI安全/服务器运行时/完整PAGE四文件685/685 PASS，0 fail/cancel/skip/todo；新增14项覆盖可重复归档/空白目标完整恢复、缺图、损坏/重复/越界/来源篡改、归档指纹独立验证、预检冲突/迟到新文件/中断零覆盖、链接拒绝、固定CLI零账号读取/零连接、只读记录与DOM。首轮新夹具文件symlink权限及普通指南token字样误判已纠正，未放宽业务断言。实际archive后verify磁盘复核通过，SHA-256记于原清单；历史398/398等独立保留不累计。仅离线文件/合成传输，REAL_UNVERIFIED |
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
 | W16 PARTIAL | 保留原任务/日活跃/赠礼/单封邮件读领、挂机等级及三类周礼包和周芯片具名任务；原mail Function已有显式有界只读枚举；本批Tasks/Loop经原SURVEY接线并保存只读覆盖摘要，停止透传取消信号；复用Registry/Service/Workflow/原API/专业页。固定v76 AllMailModel.hasNextPage/nextPageNo及GameConstants.MAIL_PAGE_SIZE=10证明总数和页边界；逐页总数稳定、页长匹配且精确ID唯一才确认观察覆盖，保存来源页供原单封重新探测，零自动授权或写入  本批每日缓存关联原私有重置流/游标，采集前后连续性与复读标记一致才保持有效；重置/竞态/失源/身份变化仅将DailyTaskInfo投影为UNKNOWN，保留原始快照及独立赠礼/成就/免费点金观察，不自动采集或写入。 同一固定DailyTaskModel已核验SCDailyTaskUpdate替换任务、SCDailyWeeklyReset清空周活跃与已领列表；本批沿用原私有流记录cacheRevision，仅失效缓存，不生成新调度事件，重复帧/伪造公开emit无效。| 继续原W19有证据合同接入及W16其他独立能力；邮件实例附件需单独身份/归属与完整池结算合同，缺证仅冻结对应操作 | 邮件协议无快照版本，分页覆盖完成不证明原子一致；批量及实例附件仍BLOCKED_EVIDENCE；DispAttachment的heroes/equips/antiques仅为字符串列表，不提供新实例UID或重复转化的结算映射。周芯片换轮、VIP礼包独立复读、日周权威周期、每日订单身份、签到和挂机时段结算原缺证保留；UNKNOWN持久零重放；R7/R8未执行，W16仍PARTIAL | 本行所在提交（父56ea228）；每日重置缓存56ea228/可信重置2da3e5e及原成果保留 | 2026-11-14：Client来源/生命周期、Workflow、运行时/HTTP/日常领域/完整PAGE七文件1065/1065 PASS（32.71秒），0 fail/cancel/skip/todo。新增6项先6失败后定向7/7通过，覆盖进度/周重置来源修订、伪造/重复帧、原reset游标零变化、缺口失源、采集竞态、独立观察保留/原始缓存不变/零自动请求；前批790/790独立保留不累计。只静态核验已有固定模块，测试仅离线Codec/合成传输，REAL_UNVERIFIED |
@@ -28,13 +34,25 @@
 
 R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的独立真实操作授权。
 
+| 目标/阶段 | 当前状态 | 判定边界 |
+|---|---|---|
+| COMPLETE_CRAZYWATER_PLATFORM_R1_R8 | 产品未完成；按Owner要求持续施工 | 期望ACTIVE；本次Goal工具仍返回BLOCKED且接口无resume，本轮未重置/新建/完成目标；工程工作继续 |
+| R1 | PARTIAL | 公共保护/合同子集已有；来源资产及完整原DoD未闭合 |
+| R2 | PARTIAL | 核心业务和成长子集已有；剩余领域缺口按W/C冻结 |
+| R3 | PARTIAL | 联盟/Museum/扫荡/日常子集已有；原完整范围未齐 |
+| R4 | PARTIAL | 钓鱼/舰队/活动/贸易部分已有；复杂结算及完整业务缺 |
+| R5 | PARTIAL | Workflow/记忆/有限调度已有；全入口与权威策略未齐 |
+| R6 | PARTIAL | 专业API/UI持续集成；42P和全业务冻结条件未满足 |
+| R7 | NOT_RUN | 全范围完成冻结后统一回归；历史局部测试不代替 |
+| R8 | NOT_RUN / 待单独授权 | R7后E01–E24具体账号/请求/次数/预算/风险/清理清单 |
+
 ## 1. 结论、计数与范围
 
 保留原Master的M0–M15，共 **16个工程产品模块（12个直接玩法模块+4个平台/整合模块）**；同时保留Inventory的18个业务域视图，二者是归并关系。原始表有 **95项Cxxx、42项Pxxx、8类Sx**；baseline补齐D1–D9。Inventory有 **273个唯一条目**：PLT43、DEX9、DAT48、BIZ116、ORD22、STG17、FRM8、PRO10。273含细粒度子能力、别名、参考实现和非C扩展，不与95相加。
 
-95项Function独立分类：**EXISTING_FUNCTION 48，PARTIAL 29，PROTOCOL_ONLY 16，NOT_IMPLEMENTED 2**。48包含C409的D6硬拒绝，正向业务已有47项；人工确认不能解除D6。需要新增当前仓库业务Function的明确需求为 **18项（16仅协议+2未实现）**，另外29项要扩展/补链。“新增”允许提取本地参考成熟算法，不能理解为从零开发。已有Function不等于UI、调度、恢复和真实验收全部完成。
+95项Function按当前源码分类：**EXISTING_FUNCTION 53，PARTIAL 38，PROTOCOL_ONLY 4**，清单见5.1。EXISTING_FUNCTION仅指行内范围的函数存在，不表示API/UI/Workflow/真实验收全完成；C409以D6硬拒绝实现需求。附录A保留全部273项ID及交付边界。
 
-外部证据阻塞作为独立维度逐项列出，不与上述分类相加；95项中14项必要闭环为BLOCKED_EVIDENCE，完整ID见第5节。a505019新增写能力均REAL_UNVERIFIED；旧真实读取/主线证据保留版本和范围，不能删除也不能外推。
+本次核对基线codex/phase-4-alliance-integration@fc68c50；已fetch的远端fd7e0b4为本地祖先。原目标范围未完成，按原依赖DAG继续。PHASE1–4及附录B/C/D均为各自标注版本的历史证据，不覆盖本文件当前表。
 
 后续拆成 **6个开发阶段R1–R6、统一离线回归R7、统一真实E2E R8，共8阶段**；工程工作包共22个；最终真实验收为24组E01–E24。模块、工作包、阶段、场景组不混算。开发期间连续推进依赖已满足的工作，仅证据确实缺失或最终真实操作授权时停相关分支，不按页面逐项等真实验收。
 
@@ -42,50 +60,31 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 
 | 核对项 | 本轮实际结果 |
 |---|---|
-| 初始目录 | //zhangnas/app/aibot-crazywaterword；独立Git，master无提交，无可解析HEAD，原型及未跟踪.gitignore |
-| 开发根目录 | //zhangnas/app/crazywaterword；本报告写入此仓库docs |
-| 分支/HEAD | codex/phase-3-advanced-gameplay / a50501910e8308771d3b6899cd4d48992e8c4012；与Owner给定一致 |
-| main/merge-base | 均61ce3c020ea8abedd9e70387c88528b6a8fe055b |
-| 与main关系 | git rev-list --left-right --count main...HEAD = 0 / 18；无分叉待合并 |
-| PHASE1/2祖先 | da41d1c；972f81a、52b7824、9d97065完整存在 |
-| PHASE3 | git rev-list --count 9d97065..HEAD =14；没有HEAD之后修复 |
-| 已跟踪变动 | 开始git diff与git diff --cached均空，无未提交修改 |
-| 原未跟踪5份 | CAPABILITY_INVENTORY.md；docs/baseline.md；docs/blueprint.md；docs/标准三维度拆分表单.md；docs/PHASE_2_REAL_E2E_ACCEPTANCE.md |
-| 本地远端引用 | origin/main=4094a69；main相对此引用ahead1；未fetch或联网查GitHub。未推送以本地引用和历史记录为据 |
-| 目录约束 | 仓库含隐藏目录及可访问NAS祖先未找到AGENTS.md/TREE.md；沿用src/tests/tools/docs/data/work，不新增目录 |
-
-PHASE3祖先顺序：c22d3f7 Formation →7e147bc Alliance →e7f79e8 Museum →4b3fded共享设置/事实 →0db2187 Treasure →3dbd4d6 Fleet →378d975 Naval →19ba83a runtime/stage →7717e6b Workflow →09084fe Fleet预算/委任隔离 →f0bd3eb阵容重应用 →86b43ab UI →f300a35 API →a505019文档。
-
-本轮只新增本报告；不reset/rebase/clean/checkout、不合并main、不stage/commit/push、不写data/work/E2E、不读账号凭证/Token、不启Runtime/Stage/MITM、不连接游戏。普通沙箱无法访问NAS后，经自动审批执行指定仓库审计命令；没有自动审批拒绝后仍继续的动作。PowerShell工具忽略workdir，实际采用显式Set-Location；一次首次文档写入因Provider路径格式失败，未产生文件，已改用明确UNC目标。
-
-原输入开始SHA256（结束复核不变）：
-
-| 文件 | SHA256 |
-|---|---|
-| CAPABILITY_INVENTORY.md | 33a040e52e62ebacaa682e315e0187857e9c12578ac85801e958f3d9764f2b4a |
-| docs/baseline.md | 74b243da49562f02907e941037736e6c168ba01770e3cb7e06852233be0452a6 |
-| docs/标准三维度拆分表单.md | baeca896e6f16b6d34121bbe9e85bf90538045927a9bce56cde859b81ee81f32 |
-| docs/PHASE_2_REAL_E2E_ACCEPTANCE.md | 1e54b13ccb229c9fbc4668c9be8f0e2c870696a0c4ae6054ad323003285dd2d5 |
-| docs/blueprint.md | da6249caa761b80d0a56e2d5122a9cec17fcc1f24778a01fdc4394edad27e6c3 |
+| 开发根目录 | //zhangnas/app/crazywaterword；初始aibot-crazywaterword为另一仓库，不在其中施工 |
+| 分支/HEAD | codex/phase-4-alliance-integration / fc68c50；最近提交为同航段具名WAIT接入 |
+| 远端关系 | 已安全fetch指定开发分支；origin开发分支fd7e0b4是本地祖先，本地领先8提交，无需覆盖或合并 |
+| 工作区 | 本轮仅修改README、PHASE_4_RECONCILIATION及本文件；保留原5份未跟踪输入，未读账号/Token、未连接游戏 |
+| 历史/权限 | PHASE1–4原提交和证据保留；允许离线施工与本地提交；push/merge/reset/rebase/clean及真实游戏操作仍未授权 |
+| 目录约束 | 沿用既有src/tests/tools/docs/data/work；不新建仓库、worktree、目录或报告 |
 
 ## 3. 原Master阶段对账
 
-完整读取baseline、Inventory、三维表、PHASE1/2/3验收、PHASE2/3增量及PHASE2真实验收；文档只作索引，判定使用当前Function、调用者、白名单、UI事件、测试及本地协议。baseline称九阶段，实际PHASE0–9共10条。阶段报告内部M1/M2/M3只是该阶段分组，不替换原Master模块编号。
+原Master PHASE0–9与M0–M15、R1–R8是不同索引，均保留。历史报告的局部DONE不代表本版本最终验收。当前模块逐项见§6；原始输入与历史验收保持原文。
 
-| 原阶段 | 源码核对结果 | 本路线图处理 |
+| 原阶段 | 当前源码核对结果 | 原路线图处理 |
 |---|---|---|
-| 0 Baseline/Mapping | 原表PHASE1时为空，当前恢复非空；本次重新核对95项 | 保留原文，增补当前账本 |
-| 1 Shared Safety | 安全修复实际存在；不等于跨进程和恢复已完整 | R1补交付级公共保护 |
-| 2 City/Production/Orders | 已有受控执行闭环；日报/金币/刷新及真实写仍缺 | R2补缺，R8真实验收 |
-| 3 Formation/Battle | 保存复读/战报已实现；自动换阵仅推荐，极限复制缺 | R2补齐 |
-| 4 Alliance | 已提前部分实现；Help/Ask/赛季限额阻塞、科技仅协议 | R3完成 |
-| 5 Fleet/CityWar | 编队/维修/停止/移动/港口已有；监听/跟随/攻击/道具加速未全 | R4完成 |
-| 6 Museum/Secondary | 展陈/收益/出发/道具加速已有；结算领奖缺身份；扫荡配额/钓鱼缺 | R3/R4完成 |
-| 7 Activities/Trade | 旧日常/任务/原始数据存在；周活动/VIP/军备/贸易缺链 | R3/R4完成 |
-| 8 Workflow | 有限DAG/图编辑已实现；注册覆盖、元数据、持久记忆、S5/S6/跨节点预算缺 | R1先适配，R5完成 |
-| 9 Integration/Release | 未完成 | R6集成→R7离线→R8真实 |
+| 0 Baseline/Mapping | 原编号完整，当前表重核95C/42P/8S/273Inventory | 保留原文与唯一进度基线 |
+| 1 Shared Safety | Writer所有权、父预算、持久拒绝/UNKNOWN及有限恢复已接；通用冷却/日界来源未闭合 | R1已交付子集保留，具体缺证局部冻结 |
+| 2 City/Production/Orders | 受控写、基础金币预览、单田收种及生产投影已有；全天量/最终金币/免费刷新缺 | R2继续补缺，R8真实验收 |
+| 3 Formation/Battle | 极限来源复制、具名整队、图纸解锁、Stage逐场持久历史已有；全模式与自动换阵未全 | R2继续原剩余项 |
+| 4 Alliance | 成员/订单/福利/科技单升/Fort/商船补货和船长已有；帮助求助及科技重置缺 | R3具体缺证操作冻结 |
+| 5 Fleet/CityWar | 编队/维修/移动/港口/有界观察已有；攻击/加速/跨视野跟随未全 | R4继续 |
+| 6 Museum/Secondary | Museum出发/缺料、古董成长、精确扫荡、钓鱼只读已有；结算身份/奖励/捕鱼缺 | R3/R4继续 |
+| 7 Activities/Trade | 任务/邮件/免费招募点金/试炼/部分周活动及贸易单步写已有；完整周期/活动/贸易策略缺 | R3/R4继续 |
+| 8 Workflow | 26静态模块+Stage、父预算、持久记忆、有限日周与可信事件、原生拖拽已有；全目录/全策略来源未闭合 | W19提前推进，R5继续 |
+| 9 Integration/Release | 专业API/UI与定向测试持续集成；全范围未冻结，R7/R8 NOT_RUN | R6→R7→R8；不反复执行最终验收 |
 
-实际交付PHASE3是Advanced Gameplay & Workflow，提前包含原PHASE4/5/6/8子功能，不能整体继承这些原阶段PASS。Owner本轮连续开发模式取代历史每功能停等真实验收；后续仍独立提交/保留离线证据，路线图批准不自动授权真实账号操作。
+离线连续开发已有Owner授权；不再按每功能人工审批。真实操作仍须在R7后提交E01–E24具体账号/请求/次数/预算/风险/清理范围，单独授权。
 
 ## 4. PHASE1–3核验与历史证据
 
@@ -123,148 +122,144 @@ selftest素材检查按原条件跳过，与Node0skip分开。本轮仅读测试
 | docs/PHASE_2_REAL_E2E_ACCEPTANCE.md @9d97065 | 首轮两次五查询10/10、三模块只读和建设预览 | 获批升级的新鲜复查遇心跳超时；authorize/execute未调用，无permit/runId，业务写帧0；订单/建筑/生产写与真实History/UNKNOWN恢复未验；该次未跑48查询 |
 
 client.mjs:7–9仍TICK/PING=1000ms，历史约1105ms首Pong未处理只有单样本。先补脱敏时序/事件循环观测，不直接调大超时、重写Client、换Token或自动重连。
-### 4.5 PHASE3七域复核（以当前源码覆盖历史TODO）
+### 4.5 PHASE3七域的当前复用边界
 
-| 域 | 当前真实实现与后续提交核对 | 当前仍缺 / 施工归属 |
+| 域 | 当前已实现子集 | 剩余边界 |
 |---|---|---|
-| Formation | survey/校验/完整SaveFormation+GetFormation复读、手动布局/重新应用/旧队恢复、职业布局推荐存在；f0bd3eb已补重新应用，不能沿用早期缺失结论 | automatic:false；无极限复制/自动保存续跑；原模板普通解锁/具名整队及其他模式范围待补，W08 |
-| Alliance | 成员识别、help规则与请求构造、取消/领取/福利存在；不能写成成员识别尚无实现 | production survey的helpAllowance/helpUsage/season仍null；ask无body；科技/商船/Fort各独立闭环，W09/W10 |
-| Museum | 出发/道具加速、展陈/展柜展区升级/收益/成就存在 | Complete与Reward独立，pending身份与恢复来源未证；专业缺货/藏品培养另补W11 |
-| Treasure | Stats/List/Rank/Defence、合规无人防守派舰及MyFleets.treasureLootUid确认已实现，treasure.mjs:20/54/87 | 派遣不等争夺/占有/战果/领奖完成；W14独立子域，不并入Museum |
-| Fleet | 编队/维修阈值模式预算/优先级/停止维修/关闭autoFight/移动/港口货物与领奖存在；09084fe等补预算隔离，编队不能再判仅协议 | 非零pet绑定、敌城几何/攻击/宣战/胜负、合法道具加速、原资源田和在线奖剩余链；W05/W14 |
-| Naval Rules | 当前WorldInfo只读、精确playerId过滤、三值有序规则与原因轨迹存在 | CURRENT_RESPONSE_ONLY不是全图持续定位；监听/跟随/动态攻击未闭环，W15 |
-| Workflow | 有限DAG、静态模块调用、条件/WAIT/逐批暂停授权、持久图与RECOVERED_STOPPED存在；86b43ab/f300a35页面/API集成已落地 | Registry未覆盖全平台、元数据/父run预算/跨轮记忆/日周事件调度/拖拽专业交互未全；W02/W19/W20/W21 |
+| Formation | 完整SAVE/复读、具名整队、普通图纸解锁、极限来源复制、主线及远征模式子集 | 自动换阵续跑/其他模式未全；W08 |
+| Alliance | 精确成员/请求、订单福利、科技单升、Fort普通捐赠、商船补货和应聘船长 | 帮助/求助权威额度冷却、科技重置、收益/隐藏跨玩法占用缺；W09/W10 |
+| Museum | 展陈/收益/成就/出发/道具加速/逐物品缺料，独立古董成长子集 | Complete/Reward可恢复身份与结算缺；W11 |
+| Treasure | 既有Stats/List/Rank/Defence及无人防守目标派舰、精确MyFleets关联 | 派遣不证明争夺/占有/战果/领奖；W14，不并入Museum |
+| Fleet | 编队/维修模式阈值预算优先序/停止维修/移动/港口及专业缺货 | 非零pet绑定、攻击宣战/结果、非premium加速、资源田写及在线奖未全；W05/W14 |
+| Naval Rules | 有界WorldInfo精确筛选、三值规则、同查询规则响应哈希比较 | CURRENT_RESPONSE_ONLY非全图持续身份；跟随/动态攻击缺；W15 |
+| Workflow | 原生拖拽/有限DAG/父预算/run授权、持久图/历史/记忆、有限日周/可信事件和两类具名WAIT | 全业务目录/入口及权威cooldown/gameDay来源未闭合；W19/W20/W21 |
 
-源码与各领域tests的逐项证据见第5节、附录A/B。PHASE3最后提交a505019仅文档，f300a35之后没有功能修复提交，故不能将交付报告剩余缺口凭推测视为已关闭；同时上述后期已完成的Fleet编队/维修预算/阵容重应用也不再重复开发。
+当前证据以§5/6及附录A的源码和测试索引为准；附录B和PHASE3报告保留a505019历史快照，不把旧缺口重新当待建架构，也不将新增离线能力标为真实验收。
 
 ## 5. 原始95项需求账本（独立维度）
 
 以下每行保留原C编号和原能力名。Function四类互斥；Protocol为已确认编码类型/调用语义证据，BLOCKED_EVIDENCE另列。profile不是总体评级：它仅把重复的12维检查值展开到每行，局部覆盖以备注为准。EXISTING_UI只表示声明范围已有界面；通用JSON页不算专业业务页全部完成。N/A是该只读能力不需要消费/授权执行基础，不等于缺失。
 
-| Profile | 实际调用者→GameClient/API/UI | 参数/权限(第6项) | Ledger / OperationService / History(7–9项) | 取消/超时/迟到/UNKNOWN(10项) | 离线(11项) / 真实(12项) |
+| Profile | 调用者 / GameClient / API / UI（2–5） | 权限（6） | Ledger / Service / History（7–9） | 生命周期（10） | 离线 / 真实（11–12） |
 |---|---|---|---|---|---|
-| P 平台/本地存储 | app/server→账号/Session；指定API；UI存在但扫码等原P仍PARTIAL | 既有校验/账号键，Stage门控差异见W01 | 只读/本地配置N/A；执行历史按具体调用，非全量 | Session generation/stop；本地坏文件fail-closed | H1/H2/H3历史对应tests；a505019 REAL_UNVERIFIED，旧登录证据限定版本 |
-| R 只读/纯计算 | CLI/server/Snapshot/Explorer→GameClient.request或缓存/纯函数；GET或preview；UI EXISTING_UI或原始范围PARTIAL | 可靠性/数量/账号scope；无写许可 | Ledger仅库存计算/预览可选；Operation写N/A；本地读历史N/A | 底层请求保护；collectState仍有失败outcome；不是业务写UNKNOWN恢复 | 历史selftest/catalog/explorer/rules；旧48/48限定历史，当前REAL_UNVERIFIED |
-| O Phase2受控业务 | page→operations API→Order/City wrapper→runWorld→GameClient | 严格参数/Origin/CSRF/精确账号/一次permit | 三者均接入；规划和执行账本分离，同批共享 | 全部接入；已派不明保持UNKNOWN并持久阻断，无恢复入口 | H2+H3；order-execution/city-operations/operations-*；真实只读局部，写REAL_UNVERIFIED |
-| G 注册业务/Workflow | gameplay-page/Workflow→gameplay survey/operations plan-authorize-execute→静态adapter→GameClient | 严格参数/账号模块配置/Origin/CSRF/动作ID绑定 | 写入execute路径三者接入；只读survey/view不消耗Ledger且不写ExecutionHistory，PLAN不作已执行历史；单批Ledger非整图累计预算 | execution+client+generation；静默后verify；无权威恢复入口 | H3 gameplay-*/领域tests（仅已有分支）；新增写REAL_UNVERIFIED |
-| L 旧CLI/局部链 | app/loop→旧Function→GameClient；读API/预览UI有；旧写HTTP被READ_ONLY_ROUTE拒 | allowMutate/D6/局部前检；非统一permit | World/Hero有Ledger；日常部分成本仅文字；Operation/持久History未全 | Phase1逐步取消/超时/迟到已接；多typed只确认响应，静默UNKNOWN；缺业务权威复读 | H1/H3 existing selftest/execution；缺新增分支测试；当前REAL_UNVERIFIED |
-| S Standalone Stage | page→stages start/stop/status→原Runner→GameClient | needConfirm/config/锁/未决保护；未复用operations Origin/CSRF | 不直接消费账本；Standalone未写全量History；Stage Function外层走Operation | runId/generation/Abort/倒计时/迟到/UNKNOWN/限频已有 | Stage系列H1/H3；历史B3局部REAL_VERIFIED，当前冷却/战败停止/新版本REAL_UNVERIFIED |
-| Q 仅协议/参考 | 无目标业务调用者→无GameClient业务接入；无可执行API；UI为NOT_IMPLEMENTED或仅阻塞占位 | 不得从协议存在推断校验/授权已完成 | 均未接入该业务；参考预算不算目标实现 | 仅底层可复用，业务生命周期尚未实现 | codec存在≠该业务OFFLINE_VERIFIED；业务NOT_IMPLEMENTED；REAL_UNVERIFIED |
-| N 未实现 | 无Function/调用者/GameClient/API/UI | 未实现 | 未接入 | 未实现 | 无业务离线或真实证据 |
-| B 禁止能力 | 所有现有业务执行者→assertPaymentAllowed；无允许消费UI | D6不可override | Ledger/Action均硬拒钻石；禁止路径无成功History | 派发前NOT_EXECUTED，不制造UNKNOWN | actions/dailies安全H1/H3；本轮无真实付费尝试 |
+| T 平台/底座 | 原server/app/Client及本地账号与工具，精确API；行内范围 | 账号校验/脱敏/原安全合同，非任意请求授权 | 本地工具N/A；所有者和持久存储按实际模块；非独立业务账本 | 连接/代次/迟到/所有者fence；传输不证明业务成功 | 行内tests；本批仅文档校验；当前REAL_UNVERIFIED |
+| R 只读/纯计算 | 原Collector/survey/缓存及专业只读区；浏览缓存零请求 | 账号scope/来源/可靠性/时效，无写许可 | 只读N/A；Service可管理survey，不是写历史 | 失败/缺失保持UNKNOWN，不伪装零或成功 | 行内读tests；历史真实仅§4.4，当前REAL_UNVERIFIED |
+| G 注册/共享业务 | 原Registry→Adapter→Service/Executor→GameClient；原API/专业页 | 精确参数/身份/Origin/CSRF/计划哈希/单次或有限run授权/D6 | 原Ledger及父资源/配额/typed UID预算、Service、ExecutionHistory/WorkflowHistory/拒绝记忆；survey不消费写预算 | 写前持久化、独立复读、取消/迟到/UNKNOWN零重放；有限恢复见W01 | 行内领域和共享tests仅证明已实现分支；当前REAL_UNVERIFIED |
+| L 本地规划/投影 | 原订单/生产纯计算及本地配置；原API/专业页 | 精确账号/结构及配置来源，预测值非服务端事实 | 规划可引用原Ledger；无独立游戏写，N/A不表示执行完成 | 缺失保守，不补库存或推定全天覆盖 | 行内算法tests；不代表真实最终奖励/全天量 |
+| S Stage/战报 | 原StageRunner或有限Stage Function/只读战报；原API/UI/首败开关 | READY/精确账号/Origin/CSRF/所有者/互斥/主线LEFT/未决/授权 | 空成本；Function接原Service/父预算；原stage-history逐场持久，战报读N/A | runId/generation/取消/限频/迟到；重启只读，不恢复战斗许可 | 原Stage/历史tests；历史137关、156胜/157限频限定§4.4；当前REAL_UNVERIFIED |
+| B 禁止消费 | 原Action/Service/Registry拒绝路径，无允许钻石消费UI | D6不可override，Owner授权不放宽 | 派发前拒绝，无正向消费成功账本 | NOT_EXECUTED不伪造UNKNOWN | 原D6负向tests；正向消费EXCLUDE，不做真实尝试 |
 
-H1=da41d1c历史459测试；H2=9d97065历史609；H3=f300a35实现树/a505019文档845。OFFLINE_VERIFIED仅指这些版本中对应已实现分支；PARTIAL/纯协议需求整体不能继承该标签。C行Function为第1项，源符号证据为第2项调用者入口结合profile；profile逐项展开3–12项。未带目录的源码名如accounts.mjs均指当前仓库src/accounts.mjs；tests/及其他显式路径按原路径；行号对应a505019。
+第1维为行内Function状态，2–12维按本表与源码/边界合读。源码与tests是当前索引，不表示本轮重新运行；已有结果以顶部W对应提交记录为准，不累计。当前真实验收未执行，协议、注册或离线通过不等于完整业务/真实通过。
 
 | C ID | 原能力 | Function | Profile | Protocol/外证 | 当前Function与源码 | 缺口/边界 | 工作包 |
 |---|---|---|---|---|---|---|---|
-| C001 | 凭证→Session 建立 | EXISTING_FUNCTION | P | 已用类型/本地计算已核 | accounts.mjs:loadStore/upsertAccount; server.mjs:91/237 newSession/connect | Session建立存在，扫码产品入口仍隐藏/禁止 | W03 |
-| C002 | 账号隔离 | EXISTING_FUNCTION | P | 已用类型/本地计算已核 | server.mjs:91/115/163; accounts.mjs | 账号Session/配置/快照隔离存在；跨进程所有者见W01 | W01 |
-| C003 | 世界/区服切换 | EXISTING_FUNCTION | L | 已用类型/本地计算已核 | worlds.mjs:68 enterWorld; app.mjs:139 | CLI进入存在；Web enter在白名单前被拒；任意worldId可能创建角色 | W03 |
-| C004 | 状态采集（只读） | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | game.mjs:7/98/131 ENTRY_QUERIES/collectState/summarize | 48基础查询，27解析21原始，不新建清单 | W03 |
-| C005 | 协议调用（通用） | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | client.mjs:211/266; proto.mjs:44; codec.mjs:15 | 通用传输内部可复用；不开放任意HTTP请求 | W01 |
-| C101 | 建筑信息读取 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | world.mjs:86 surveyWorld; city-operations.mjs:38/131 | 建筑信息与业务页面已有 | W04 |
-| C102 | 建筑升级前置校验 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | world.mjs:209 planWorld; city-operations.mjs:167 | 材料/等级/人口/队列前检已有；未知不计划 | W04 |
-| C103 | 建筑升级执行 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | city-operations.mjs:221 executeCityAction; world.mjs:469 | 升级授权与权威复读已有，真实未验 | W04 |
-| C104 | 建造执行 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | city-operations.mjs:167/221; actions.mjs BuildBuilding | 仅服务端已有level0槽；不是任意地图新坐标建造 | W04 |
-| C111 | 工厂状态读取 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | surveyCityOperations/cityView; world.mjs:86 | 工厂/队列/空位/成品可靠性已有 | W04 |
-| C112 | 生产报表聚合 | PARTIAL | O | 类型存在/部分语义 BLOCKED_EVIDENCE | production-report.mjs:36 summarizeProductionHistory | 仅工具确认事件，完整全天产量null；需完整事件覆盖或Owner缩减口径 | W04 |
-| C113 | 库存缺口计算 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | production-policy.mjs:61 productionShortages | 合并订单需求扣库存/在产/成品；UNKNOWN不作零 | W04 |
-| C114 | 自动生产决策 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | production-policy.mjs:101 selectProductionCandidates; planWorld | 本批策略已有，持续轮询属于调度缺口 | W04 |
-| C115 | 生产提交执行 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | executeCityAction/runWorld StartFactoryProduce | 启动/即时完成复读已有 | W04 |
-| C116 | 成品收取/竣工 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | executeCityAction GainFactoryProduce/CollectBuildingProduct/FinishUpgradeBuilding | 数量双证据确认；真实未验 | W04 |
-| C121 | 居民需求读取 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | order-execution.mjs:92 surveyOrderExecution; surveyWorld | 需求源OnWater，缺数组不是权威空 | W04 |
-| C122 | 需求物品解析 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | decorateOrderSurvey; world.mjs:86; resourceCosts | 物品ID/安全数量解析已有 | W04 |
-| C123 | 订单库存缺口 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | evaluateOrders; planOrderExecution; ResourceLedger | 跨订单预算分配已有，不把独立模拟当批量预留 | W04 |
-| C124 | 订单奖励计算 | PARTIAL | R | 类型存在/部分语义 BLOCKED_EVIDENCE | surveyWorld rewardExp; order-rules.mjs:113 | EXP存在，金币/MIN_GOLD可靠来源缺失 | W04 |
-| C125 | 订单规则评估 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | order-rules.mjs validateOrderRules/evaluateOrder/evaluateOrders | 五类规则/优先级/解释轨迹已有 | W04 |
-| C126 | 订单提交执行 | PARTIAL | O | 类型存在/部分语义 BLOCKED_EVIDENCE | order-execution.mjs:104/146 planOrderExecution/executeOrderOperation | SUBMIT闭环已有；免费REFRESH proof生产缺失 | W04 |
-| C127 | 规则持久化 | EXISTING_FUNCTION | P | 已用类型/本地计算已核 | order-rules-store.mjs loadOrderRules/saveOrderRules | 精确账号原子保存及坏文件保护已有 | W03 |
-| C128 | 执行历史记录 | EXISTING_FUNCTION | O | 已用类型/本地计算已核 | execution-history.mjs:16; operation-service.mjs:256 | 订单持久历史存在；恢复解除见W01 | W01 |
-| C131 | 港口货物读取 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:18/134 surveyFleet/fleetView | CargoShips读取和通用Fleet展示已有 | W05 |
-| C132 | 港口缺货识别 | PARTIAL | G | 已用类型/本地计算已核 | fleet.mjs:119/141 buildCandidates/planFleet | 成本/余额阻断有；required/have/missing明细与高亮缺 | W05 |
-| C133 | 提交货物执行 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:127/194 cargoFill/verifyFleet | FillCargoShip typed+精确货格filled复读已有 | W05 |
-| C134 | 领取港口奖励 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:129/198 cargoClaim/verifyFleet | 到港状态消费+奖励回包已有；E2E加库存核对 | W05 |
-| C141 | 寻宝状态读取 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | museum.mjs:40/58 surveyMuseum/museumView | 探索次数/进度/状态可读，COMPLETE_UNSETTLED独立 | W11 |
-| C142 | 寻宝缺货识别 | PARTIAL | G | 已用类型/本地计算已核 | museum.mjs:61/93/175 | 成本/库存线阻断有，missing明细未形成 | W11 |
-| C143 | 冒险寻宝执行 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | museum.mjs:95/188 MuseumStartExplore/verifyMuseum | 出发和道具加速Function存在，结算领奖另计C144 | W11 |
-| C144 | 领取寻宝奖励 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | museum.mjs:74 blocked; proto MuseumCompleteExplore/MuseumReward | 两个动作独立，缺可恢复pending身份，不可用收益代替 | W11 |
-| C151 | 海面扫荡 | PARTIAL | L | 已用类型/本地计算已核 | dailies.mjs:376 DAILY_DRIVERS[1010] | PirateSweep执行有，权威次数/配额检查和复读缺 | W12 |
-| C152 | 钓鱼 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | proto StartFishing/StartFishingResponse/GainBigFish/DrawFishReward | 无生产调用链；FishEncyclopedia只是图鉴 | W13 |
-| C201 | 当前关卡读取 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | stages.mjs:114 createStageRunner; server.mjs stageView | mainlineStage当前读取已有 | W08 |
-| C202 | 挑战关卡执行 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | stages.mjs createStageRunner/parseStageResult | ChallengeStage执行已有，保持主线专属证据 | W08 |
-| C203 | 战斗结果解析 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | stages.mjs:85 parseStageResult/resolveMainlineChallengeSide | 严格关卡/Boolean/BT_MAINLINE/LEFT已有 | W08 |
-| C204 | 关卡循环控制 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | stages.mjs:114 createStageRunner | 顺序长任务/可取消等待/最大尝试和目标已有 | W08 |
-| C205 | 限频处理 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | stages.mjs stageError; execution.mjs executionOutcome | RATE_LIMITED独立停止；原表等待重试被D8安全修订取代 | W08 |
-| C206 | 敌方阵容抓取 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | formation.mjs:180/198 battleAnalysis | 消费已有rightTeams，不额外挑战取数据 | W08 |
-| C207 | 我方阵容抓取 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | formation.mjs:180/198; surveyFormation | 实际leftTeam与当前GetFormation来源分开 | W08 |
-| C208 | 战斗结果分析 | EXISTING_FUNCTION | S | 已用类型/本地计算已核 | formation.mjs:198 battleAnalysis; stages.mjs:255 | 伤害/存活/战败保守分析存在；长期比较留W08 | W08 |
-| C209 | 自动换阵决策 | PARTIAL | G | 已用类型/本地计算已核 | formation.mjs:234 recommendFormations | 只有CLIENT_CAREER_LAYOUT推荐，automatic:false；无自动保存续跑闭环 | W08 |
-| C211 | 当前阵容查询 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | formation.mjs:98/154 surveyFormation/viewFormation | 主线当前阵容独立读，petUid精度保留 | W08 |
-| C212 | 已解锁阵型查询 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | formation.mjs:69/98 catalogFrom/surveyFormation | 解锁布局列表存在，preset不是整队存档 | W08 |
-| C213 | 阵容保存/切换前置校验 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | formation.mjs:52/69/120 validateFormationParameters/candidate | 归属/人数/职业/站位/宠物校验已有 | W08 |
-| C214 | 阵容保存/切换执行 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | formation.mjs:161/170 planFormation/verifyFormation | SaveFormation typed与GetFormation全量一致才确认 | W08 |
-| C215 | 一键复制"极限通关"站位 | NOT_IMPLEMENTED | N | 本地算法需求 | formation.mjs:234仅职业重排；无极限复制算法 | 定义源战报/敌我英雄映射/缺人/坐标变换再实现 | W08 |
-| C221 | 角色升级前置校验 | EXISTING_FUNCTION | L | 已用类型/本地计算已核 | heroes.mjs:39/66 maxHeroLevelFor/planHeroes | 成长等级和材料前检已有，复用Ledger | W06 |
-| C222 | 角色升级执行 | PARTIAL | L | 已用类型/本地计算已核 | heroes.mjs:221/275 runHeroPlan/sendHero | 等级CLI写存在，sendWatch后UNKNOWN；缺权威Hero复读/API/UI/History | W06 |
-| C223 | 角色升星前置校验/执行 | PARTIAL | L | 已用类型/本地计算已核 | heroes.mjs:221/282 HeroStarUp | typed回复直接SUCCESS，缺权威复读和产品桥 | W06 |
-| C224 | 技能升级前置校验/执行 | PARTIAL | L | 已用类型/本地计算已核 | heroes.mjs:56/221/275 skillLevelMinStar/runHeroPlan | 技能预算/星级校验有，缺执行后权威确认与产品桥 | W06 |
-| C225 | 专武等级前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto HeroExclusiveLevelUp; reference heroGrow.mjs:629 | 目标无专武成长Function，先提取参考成本算法 | W07 |
-| C226 | 专武星级前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto HeroExclusiveStarUp/HeroExclusiveNextUpResponse; ref heroGrow | 目标无业务，Response不能按同名猜造 | W07 |
-| C227 | 纹章替换前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto BadgeReplace/PutOnBadge; ref heroGrow.mjs:629 | 纹章实例替换未接目标，H确认与唯一UID预留必须 | W07 |
-| C228 | 纹章升级前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto EnhanceBadge; ref heroGrow planBadgeEnhance | 纹章升级目标无业务，复用参考校验而非预算器 | W07 |
-| C229 | 装备升级前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto EnhanceEquip; ref heroGrow/equip | 装备升级目标无业务，材料与实例身份复读必需 | W07 |
-| C230 | 装备替换前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto EquipReplace/PutOnEquip; ref heroGrow | 装备替换目标无业务，不自动分解/不可逆扩域 | W07 |
-| C301 | 联盟求助单识别 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | alliance.mjs:84/99 surveyAlliance/allianceView | reqId精确绑定成员求助单，已有展示 | W09 |
-| C302 | 联盟成员识别 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | alliance.mjs:92 titleList.members | 成员ID识别已实现，专业列表UI可改进 | W09 |
-| C303 | 按成员捐赠前置校验/执行 | PARTIAL | G | 类型存在/部分语义 BLOCKED_EVIDENCE | alliance.mjs:36/96/113 allianceHelpRules | 规则与help构造有，生产helpAllowance/helpUsage=null，永阻 | W09 |
-| C304 | 按物品捐赠前置校验/执行 | PARTIAL | G | 类型存在/部分语义 BLOCKED_EVIDENCE | allianceHelpRules/planAlliance; alliance.mjs:52 | 共用按itemIds规则，不建第二捐赠器；配额证据缺 | W09 |
-| C305 | 自动求助前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | alliance.mjs:120 ASK_COOLDOWN_UNKNOWN | 配置/协议有，无ask body/执行复读，阈值/日限/冷却缺 | W09 |
-| C306 | 联盟科技状态读取 | EXISTING_FUNCTION | R | 已用类型/本地计算已核 | game.mjs:34 GuildTechInfo; data-catalog.mjs:48 | 原始只读存在，科技树UI未实现 | W10 |
-| C307 | 联盟科技升级前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto UpgradeGuildTechRequest/Response | 无业务适配；补前置/成本/权限/目标等级/复读 | W10 |
-| C401 | 舰队编组读取 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:18/24/134 | MyFleets+OnWater队伍读取已有，不用MyFleets代替阵容复读 | W14 |
-| C402 | 舰队编组修改前置校验/执行 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:97/105/165 FleetSaveFormation | 无非零宠物范围编组可执行；非零宠物绑定证据另列受限分支 | W14 |
-| C403 | 地图目标读取 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | naval-rules.mjs:52/69 surveyNaval/navalView; world.mjs地图 | 当前WorldInfo城市/玩家/舰队和资源田可读；非全地图 | W15 |
-| C404 | 目标监听 | PARTIAL | G | 已用类型/本地计算已核 | naval-rules.mjs:67/87 observations | 单次观察/规则有，有限持续监听/事件游标缺 | W15 |
-| C405 | 跟随指定玩家 | PARTIAL | G | 类型存在/部分语义 BLOCKED_EVIDENCE | naval-rules.mjs:42/75/91 | 精确玩家过滤有，跨视野稳定定位/跟随事件流缺 | W15 |
-| C406 | 攻击派遣前置校验/执行 | PARTIAL | G | 类型存在/部分语义 BLOCKED_EVIDENCE | fleet.mjs:56/114/190 movementCost/fleetMove | 仅移动已实现；攻击/宣战/胜负/权限语义缺 | W14 |
-| C407 | 修船前置校验/执行 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | fleet.mjs:38/72/88/141/181 | 维修阈值/单价/计划汽油上限/优先级/停止已有 | W14 |
-| C408 | 加速前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | fleet.mjs:134 blocked SpeedUpFleet/Repair/Cargo | 无D6允许的道具加速候选；不能用RUBY补齐 | W14 |
-| C409 | 钻石使用规则评估 | EXISTING_FUNCTION | B | 已用类型/本地计算已核 | actions.mjs:277 assertPaymentAllowed | D6统一硬拒绝已实现；正向钻石消费EXCLUDE | W01 |
-| C410 | 动态攻击决策 | PARTIAL | G | 类型存在/部分语义 BLOCKED_EVIDENCE | naval-rules.mjs:10/94 evaluateNavalRules/planNaval | 三值观察规则有，动态攻击选择与授权派遣无 | W15 |
-| C501 | 活动识别 | PARTIAL | R | 已用类型/本地计算已核 | game.mjs Snapshot Week/Season; data-catalog | 有活动数据，无完整活动身份/开放状态聚合 | W16 |
-| C502 | 活动任务读取 | PARTIAL | R | 已用类型/本地计算已核 | dailies.mjs:421 surveyDailies; tasks.mjs:63 surveyTasks | 部分任务读取，不能当全部周/季活动任务 | W16 |
-| C503 | 活动任务执行前置校验/执行 | PARTIAL | L | 已用类型/本地计算已核 | dailies.mjs:539 runDailies; tasks.mjs:190 runTasks | 部分日常驱动/领奖存在，活动全量和Operation桥缺 | W16 |
-| C511 | 邮件领取 | PARTIAL | L | 已用类型/本地计算已核 | actions.mjs emailQuickGet; app.mjs loot | 仅已读附件QuickGotReadEmail，静默UNKNOWN，未读/复读/UI链缺 | W16 |
-| C512 | VIP 礼包领取 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto GotVipDailyRewardRequest | 无生产调用，月卡权益不等于VIP礼包 | W16 |
-| C513 | 商城礼包领取（日/周） | PARTIAL | L | 已用类型/本地计算已核 | dailies.mjs:135/583 planDailyGift/claimDailies | 免费日赠礼已复读；原需求免费周礼包未全 | W16 |
-| C514 | 周活动补给礼包领取 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | proto WeekLotteryFreePack/WeekChipGotFree等候选 | 缺具体周补给身份/资格契约，不按名称混认 | W17 |
-| C515 | 周活动每日任务执行 | PARTIAL | L | 已用类型/本地计算已核 | game.mjs WeekInfo/WeekOrderInfo; DrawWeeklyReward | 周状态/周活跃不等于活动每日任务闭环 | W17 |
-| C516 | 周活动奖励领取 | PARTIAL | L | 已用类型/本地计算已核 | dailies.mjs:81/611 planChests | 周活跃箱已有，活动奖励语义未全 | W17 |
-| C517 | 军备竞赛奖励领取 | PROTOCOL_ONLY | Q | 类型存在/部分语义 BLOCKED_EVIDENCE | proto Season/Ranking/活动候选；无军备业务映射 | 须识别活动ID/领取档位/资格与权威复读来源 | W17 |
-| C521 | 海商王价格读取 | PARTIAL | R | 已用类型/本地计算已核 | dailies.mjs:340 TradeInfo probe | 原始TradeInfo可读，价格/商品/港口业务模型缺 | W18 |
-| C522 | 低买高卖预期计算 | NOT_IMPLEMENTED | N | 本地算法需求 | reference tradeKing.mjs:585 planBuy仅参考 | 目标无收益算法；先移植只读模型和可靠卖点 | W18 |
-| C523 | 自动买卖前置校验/执行 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto TradeBuy/TradeSellRequest/Response; ref planTradeKing | 无目标买卖适配；商会币需专用成本语义，不能全局放开Buy | W18 |
-| C524 | 自动巡航 | PROTOCOL_ONLY | Q | 类型存在，业务待接 | proto TradeMove/TradeSpeedRequest/Response; reference tradeKing | 无目标巡航；仅已证实非钻石路径可用 | W18 |
-| C601 | 只读探测（每轮首步） | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | workflow.mjs:136; operation-service.mjs:92 surveyModule | 现有SURVEY可用，复用基础Snapshot，不建第二collector | W02 |
-| C602 | 计划生成 | PARTIAL | G | 已用类型/本地计算已核 | operation-service.mjs:103; workflow.mjs:137 | 计划合同存在，orders/city/production/heroes等未全注册 | W02 |
-| C603 | 动作执行（单条/整轮） | PARTIAL | G | 已用类型/本地计算已核 | business-functions.mjs:12 executeBusinessOperation; OperationService | 共用执行有，旧执行链未全适配 | W02 |
-| C604 | 跨轮记忆 | PARTIAL | L | 已用类型/本地计算已核 | loop.mjs:15/102 rejected; tasks/dailies rejected参数 | 仅进程内跨轮记忆，持久冷却/拒绝/日界缺 | W19 |
-| C605 | 顺序执行引擎 | EXISTING_FUNCTION | G | 已用类型/本地计算已核 | workflow.mjs:110 createWorkflowRunner | 有限DAG顺序执行已实现；S5/S6另补 | W20 |
-| C606 | 运行状态/历史查询 | PARTIAL | G | 已用类型/本地计算已核 | operation-service.mjs:256; workflow.mjs:206/235 | 已有持久操作/图历史，Standalone Stage/旧Loop未全接与关联字段缺 | W19 |
-| C607 | Function 注册表 | PARTIAL | G | 已用类型/本地计算已核 | function-registry.mjs:9/10; server.mjs:132/133 | 6玩法+stage，缺完整目录/schema/C-P-S/授权/取消/验证元数据 | W02 |
+| C001 | 凭证→Session 建立 | EXISTING_FUNCTION | T | 当前有限范围已核；最终未验 | src/server.mjs；tests/server-runtime.test.mjs | 唯一Console所有权、显式Session/凭证校验及脱敏；扫码捕获仍走独立授权CLI | W03 |
+| C002 | 账号隔离 | EXISTING_FUNCTION | T | 当前有限范围已核；最终未验 | src/server.mjs；tests/server-runtime.test.mjs | 账号/角色/世界/连接/代次隔离和旧回调保护；选择账号不隐式登录 | W01 |
+| C003 | 世界/区服切换 | PARTIAL | T | 当前有限范围已核；最终未验 | src/server.mjs；tests/server-runtime.test.mjs | 区服只读列表/原enterWorld实现保留；独立CLI写在读凭证前拒绝、网页enter403，安全切服产品链未全 | W03 |
+| C004 | 状态采集（只读） | EXISTING_FUNCTION | R | 当前有限范围已核；最终未验 | src/game.mjs；tests/data-catalog.test.mjs | 固定48查询、28解析/20原始；缓存与显式刷新分离，扩展调查不计入48 | W03 |
+| C005 | 协议调用（通用） | EXISTING_FUNCTION | T | 当前有限范围已核；最终未验 | src/client.mjs；tests/client-lifecycle.test.mjs | 请求关联、ACK及迟到隔离；协议可调用不授予任意Request写权限 | W01 |
+| C101 | 建筑信息读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/city-operations.mjs；tests/city-operations.test.mjs | 建筑信息与业务页面已有 | W04 |
+| C102 | 建筑升级前置校验 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/city-operations.mjs；tests/city-operations.test.mjs | 材料/等级/人口/队列前检已有；未知不计划 | W04 |
+| C103 | 建筑升级执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/city-operations.mjs；tests/city-operations.test.mjs | 升级授权与权威复读已有，真实未验 | W04 |
+| C104 | 建造执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/city-operations.mjs；tests/city-operations.test.mjs | 仅服务端已有level0槽；不是任意地图新坐标建造 | W04 |
+| C111 | 工厂状态读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | 工厂/队列/空位/成品可靠性已有 | W04 |
+| C112 | 生产报表聚合 | PARTIAL | L | 当前有限范围已核；最终未验 | src/production-report.mjs；tests/production-report.test.mjs | 工具已确认历史按日期和覆盖区间汇总；游戏全天总产量及权威日界未闭合 | W04 |
+| C113 | 库存缺口计算 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | 订单优先缺口、在产/成品抵扣及共享库存；收入不自动扩额 | W04 |
+| C114 | 自动生产决策 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | 原排产及种子/过剩作物水位接入生产策略，缺配置不推测数量 | W04 |
+| C115 | 生产提交执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | registered production复用原city链、共享预算、写前调查和写后复读 | W04 |
+| C116 | 成品收取/竣工 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 | W04 |
+| C121 | 居民需求读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 需求源OnWater，缺数组不是权威空 | W04 |
+| C122 | 需求物品解析 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 物品ID/安全数量解析已有 | W04 |
+| C123 | 订单库存缺口 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 跨订单预算分配已有，不把独立模拟当批量预留 | W04 |
+| C124 | 订单奖励计算 | PARTIAL | L | 当前有限范围已核；最终未验 | src/order-rewards.mjs；tests/order-rewards.test.mjs | 经验和已证基础金币预览已有；最终金币倍率/结算公式缺证 | W04 |
+| C125 | 订单规则评估 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 规则/三值评估/库存复查已有；免费刷新资格缺证继续冻结 | W04 |
+| C126 | 订单提交执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 明确单单提交已受控并独立确认订单替换及完成数；免费刷新另行缺证 | W04 |
+| C127 | 规则持久化 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 精确账号原子保存及坏文件保护已有 | W03 |
+| C128 | 执行历史记录 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/order-execution.mjs；tests/order-execution.test.mjs | 原History持久化、run/batch/action查询及未决保守保护 | W01 |
+| C131 | 港口货物读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | CargoShips读取和通用Fleet展示已有 | W05 |
+| C132 | 港口缺货识别 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | cargoShortageView逐物品缺货及专业页已有；不自动购买 | W05 |
+| C133 | 提交货物执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | FillCargoShip typed+精确货格filled复读已有 | W05 |
+| C134 | 领取港口奖励 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | 到港状态消费+奖励回包已有；E2E加库存核对 | W05 |
+| C141 | 寻宝状态读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/museum.mjs；tests/museum.test.mjs | 探索次数/进度/状态可读，COMPLETE_UNSETTLED独立 | W11 |
+| C142 | 寻宝缺货识别 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/museum.mjs；tests/museum.test.mjs | Museum缺料逐项明细和API/专业页已有，不证明结算资格 | W11 |
+| C143 | 冒险寻宝执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/museum.mjs；tests/museum.test.mjs | 出发和道具加速Function存在，结算领奖另计C144 | W11 |
+| C144 | 领取寻宝奖励 | PROTOCOL_ONLY | G | 当前有限范围已核；最终未验 | src/museum.mjs；tests/museum.test.mjs | Complete/Reward空请求缺可恢复pending身份与奖励归属，BLOCKED_EVIDENCE | W11 |
+| C151 | 海面扫荡 | PARTIAL | G | 当前有限范围已核；最终未验 | src/pirate-operations.mjs；tests/pirate-operations.test.mjs | 精确UID/city单目标扫荡和配额/计次已接；奖励归属、目标变化及日界仍缺证 | W12 |
+| C152 | 钓鱼 | PARTIAL | R | 当前有限范围已核；最终未验 | src/fishing-view.mjs；tests/fishing-view.test.mjs | 等级/库存/容量/图鉴门槛只读已接；DrawFishReward/GainBigFish身份与结算缺证 | W13 |
+| C201 | 当前关卡读取 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | mainlineStage当前读取已有 | W08 |
+| C202 | 挑战关卡执行 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | ChallengeStage执行已有，保持主线专属证据 | W08 |
+| C203 | 战斗结果解析 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | 严格关卡/Boolean/BT_MAINLINE/LEFT已有 | W08 |
+| C204 | 关卡循环控制 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | 有限次数/终点、胜利推进、战败停止开关、取消及倒计时已有 | W08 |
+| C205 | 限频处理 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | RATE_LIMITED独立停止；不自动重试限频或UNKNOWN | W08 |
+| C206 | 敌方阵容抓取 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | 消费已有rightTeams，不额外挑战取数据 | W08 |
+| C207 | 我方阵容抓取 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | 实际leftTeam与当前GetFormation来源分开 | W08 |
+| C208 | 战斗结果分析 | EXISTING_FUNCTION | S | 当前有限范围已核；最终未验 | src/stages.mjs；tests/stage-history.test.mjs | 持久战报、同角色世界关卡差异和保守建议；缺分析保持未知 | W08 |
+| C209 | 自动换阵决策 | PARTIAL | G | 当前有限范围已核；最终未验 | src/stage-history.mjs；tests/stage-history.test.mjs | 确认战败可准备有限Formation→Stage图，保存/开战分别授权；无自动循环换阵 | W08 |
+| C211 | 当前阵容查询 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/formation.mjs；tests/formation.test.mjs | 主线及远征阵容分模式读取 | W08 |
+| C212 | 已解锁阵型查询 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/formation.mjs；tests/formation.test.mjs | 解锁模板及图纸解锁独立Function已有 | W08 |
+| C213 | 阵容保存/切换前置校验 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/formation.mjs；tests/formation.test.mjs | 归属/人数/职业/站位/宠物校验已有 | W08 |
+| C214 | 阵容保存/切换执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/formation.mjs；tests/formation.test.mjs | 保存/应用/恢复均新计划独立复读，具名完整队伍已接 | W08 |
+| C215 | 一键复制"极限通关"站位 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/extreme-formations.mjs；tests/extreme-formations-service.test.mjs | 当前关卡极限战报精确来源核验及站位准备已接；不继承开战授权 | W08 |
+| C221 | 角色升级前置校验 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 成长等级和材料前检已有，复用Ledger | W06 |
+| C222 | 角色升级执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 英雄单次升级经heroes/Service及英雄全池/库存复读 | W06 |
+| C223 | 角色升星前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 自有专属碎片单次升星与明确1:1万能兑换已有；自动混用万能碎片升星仍冻结 | W06 |
+| C224 | 技能升级前置校验/执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 明确技能槽单次升级、前置及资源独立复读已接 | W06 |
+| C225 | 专武等级前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 已激活专武单次升级已接；未激活状态与激活分支缺证 | W07 |
+| C226 | 专武星级前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/hero-operations.mjs；tests/hero-service.test.mjs | 已激活专武单次升星已接；未激活/其他成长分支未闭合 | W07 |
+| C227 | 纹章替换前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/badge-growth.mjs；tests/badge-growth.test.mjs | 自有闲置徽章穿空槽已接；BadgeReplace转移/旧物/返还缺证 | W07 |
+| C228 | 纹章升级前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/badge-growth.mjs；tests/badge-growth.test.mjs | 精确经验差额单级且低于上限、红徽章单星已有；上限经验落点缺证 | W07 |
+| C229 | 装备升级前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/equipment-growth.mjs；tests/equipment-growth.test.mjs | 正等级单级、红装精炼/单星已有；level0等受限分支未闭合 | W07 |
+| C230 | 装备替换前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/equipment-growth.mjs；tests/equipment-growth.test.mjs | 自有装备穿同类空槽已接；EquipReplace转移/旧物/返还缺证 | W07 |
+| C301 | 联盟求助单识别 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | reqId精确绑定成员求助单，已有展示 | W09 |
+| C302 | 联盟成员识别 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 精确成员ID及专业列表已有 | W09 |
+| C303 | 按成员捐赠前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 按成员帮助规则有；服务端总额度/冷却缺证，不生成可执行help | W09 |
+| C304 | 按物品捐赠前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 按物品帮助共用原合同，不把本地历史当服务端额度 | W09 |
+| C305 | 自动求助前置校验/执行 | PROTOCOL_ONLY | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 求助阈值/日限/冷却与结算缺证，无ask写合同 | W09 |
+| C306 | 联盟科技状态读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 赛季科技状态、前置及专业树展示已有 | W10 |
+| C307 | 联盟科技升级前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/alliance.mjs；tests/alliance-tech.test.mjs | 单级科技升级及精确扣点复读已接；原范围科技重置尚缺完整合同 | W10 |
+| C401 | 舰队编组读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | MyFleets+OnWater队伍读取已有，不用MyFleets代替阵容复读 | W14 |
+| C402 | 舰队编组修改前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | 无非零宠物范围编组可执行；非零宠物绑定证据另列受限分支 | W14 |
+| C403 | 地图目标读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/naval-rules.mjs；tests/naval-rules.test.mjs | WorldInfo当前视野、精确ID及资源田读取，不宣称全图完整 | W15 |
+| C404 | 目标监听 | PARTIAL | G | 当前有限范围已核；最终未验 | src/naval-rules.mjs；tests/naval-rules.test.mjs | 有限Loop调查及同查询规则摘要/变化计数已有；非跨视野持续目标身份 | W15 |
+| C405 | 跟随指定玩家 | PARTIAL | G | 当前有限范围已核；最终未验 | src/naval-rules.mjs；tests/naval-rules.test.mjs | 当前精确玩家筛选已有，跨视野定位/跟随事件来源缺证 | W15 |
+| C406 | 攻击派遣前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | 原移动/维修委托已有；攻击/宣战/胜负及参战归属未闭合 | W14 |
+| C407 | 修船前置校验/执行 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | 维修/停止、优先序及最大汽油预算已有；自然恢复仅观察 | W14 |
+| C408 | 加速前置校验/执行 | PROTOCOL_ONLY | G | 当前有限范围已核；最终未验 | src/fleet.mjs；tests/fleet.test.mjs | SpeedUpFleet/Repair/Cargo无已证非钻石完整写候选，BLOCKED_EVIDENCE | W14 |
+| C409 | 钻石使用规则评估 | EXISTING_FUNCTION | B | 当前有限范围已核；最终未验 | src/actions.mjs；tests/actions-safety.test.mjs | D6硬拒钻石/付费及开发凭证；正向消费EXCLUDE，人工授权不豁免 | W01 |
+| C410 | 动态攻击决策 | PARTIAL | G | 当前有限范围已核；最终未验 | src/naval-rules.mjs；tests/naval-rules.test.mjs | 三值观察规则有，动态攻击选择与授权派遣无 | W15 |
+| C501 | 活动识别 | PARTIAL | R | 当前有限范围已核；最终未验 | src/daily-checklist.mjs；tests/daily-checklist.test.mjs | 日常/周活动及私有签到推送片段可读，不构造完整活动目录 | W16 |
+| C502 | 活动任务读取 | PARTIAL | R | 当前有限范围已核；最终未验 | src/daily-checklist.mjs；tests/daily-checklist.test.mjs | 主/支/成就/每日/周芯片任务观察已有；全部活动任务未闭合 | W16 |
+| C503 | 活动任务执行前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/task-rewards.mjs；tests/task-rewards.test.mjs | 已证奖励及七类日常驱动通过原Function；其他任务按具体合同冻结 | W16 |
+| C511 | 邮件领取 | PARTIAL | G | 当前有限范围已核；最终未验 | src/mail.mjs；tests/mail-claim.test.mjs | 有界分页、单封读领及可结算附件已有；批量/实例附件归属缺证 | W16 |
+| C512 | VIP 礼包领取 | PARTIAL | R | 当前有限范围已核；最终未验 | src/daily-checklist.mjs；tests/daily-checklist.test.mjs | VIP等级和礼包资格独立观察；真实领取资格及独立结算未闭合 | W16 |
+| C513 | 商城礼包领取（日/周） | PARTIAL | G | 当前有限范围已核；最终未验 | src/task-rewards.mjs；tests/task-rewards.test.mjs | 免费日赠礼及三类周礼包已接；全部日周归属/周期未闭合 | W16 |
+| C514 | 周活动补给礼包领取 | PARTIAL | G | 当前有限范围已核；最终未验 | src/task-rewards.mjs；tests/task-rewards.test.mjs | 周转盘/翻牌/芯片明确免费固定礼包已接；其他周补给合同缺证 | W17 |
+| C515 | 周活动每日任务执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/task-rewards.mjs；tests/task-rewards.test.mjs | 具名周芯片任务及签到观察已有；末项换轮和其他活动日任务缺证 | W17 |
+| C516 | 周活动奖励领取 | PARTIAL | G | 当前有限范围已核；最终未验 | src/task-rewards.mjs；tests/task-rewards.test.mjs | 日活跃和已证周奖励子集已有；周活跃周期归属/完整活动奖未闭合 | W17 |
+| C517 | 军备竞赛奖励领取 | PROTOCOL_ONLY | R | 当前有限范围已核；最终未验 | src/daily-checklist.mjs；tests/daily-checklist.test.mjs | 原始赛季/排名只读不等于军备档位领取合同，BLOCKED_EVIDENCE | W17 |
+| C521 | 海商王价格读取 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/trade.mjs；tests/trade.test.mjs | 明确当前港口价格/库存/持货/容量和可信时段；非所有目的地价格 | W18 |
+| C522 | 低买高卖预期计算 | PARTIAL | G | 当前有限范围已核；最终未验 | src/trade.mjs；tests/trade.test.mjs | 单次非亏损卖出预期公式已有；跨港低买高卖完整收益策略缺证 | W18 |
+| C523 | 自动买卖前置校验/执行 | PARTIAL | G | 当前有限范围已核；最终未验 | src/trade.mjs；tests/trade.test.mjs | 单次买/卖及商会币成本独立复读已有；自动多段策略未完成 | W18 |
+| C524 | 自动巡航 | PARTIAL | G | 当前有限范围已核；最终未验 | src/trade.mjs；tests/trade.test.mjs | Radar移动、自有道具仍未来终点加速/时钟WAIT已有；到达/补购/巡航收益缺证 | W18 |
+| C601 | 只读探测（每轮首步） | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/operation-service.mjs；tests/operation-service.test.mjs | 原Registry survey及Workflow SURVEY/具名WAIT调查，无新collector | W02 |
+| C602 | 计划生成 | PARTIAL | G | 当前有限范围已核；最终未验 | src/operation-service.mjs；tests/operation-service.test.mjs | 26静态玩法+server Stage具体计划及父预算；全范围业务未齐 | W02 |
+| C603 | 动作执行（单条/整轮） | PARTIAL | G | 当前有限范围已核；最终未验 | src/operation-service.mjs；tests/operation-service.test.mjs | Service/Executor统一已交付写；旧Web写403/CLI独立写拒绝，未映射业务仍未交付 | W02 |
+| C604 | 跨轮记忆 | PARTIAL | G | 当前有限范围已核；最终未验 | src/execution-memory.mjs；tests/execution-memory-service.test.mjs | 持久拒绝/UNKNOWN/身份变化及关联已有；Service cooldown/gameDay覆盖仍false | W19 |
+| C605 | 顺序执行引擎 | EXISTING_FUNCTION | G | 当前有限范围已核；最终未验 | src/workflow.mjs；tests/workflow.test.mjs | 原Runner有限顺序/条件/WAIT/重复、逐批及有限run授权；未新增调度器 | W20 |
+| C606 | 运行状态/历史查询 | PARTIAL | G | 当前有限范围已核；最终未验 | src/stage-history.mjs；tests/workflow-execution-history.test.mjs | run→definition/node→batch→action及独立Stage逐场持久历史已有；全业务仍未齐 | W19 |
+| C607 | Function 注册表 | PARTIAL | G | 当前有限范围已核；最终未验 | src/function-registry.mjs；tests/function-registry.test.mjs | 26静态玩法+server Stage，共27份schema/元数据；登记不等于全部分支可执行 | W02 |
 
 
 G-R/G-P覆盖：C131/C141/C211/C212/C301/C302/C401/C403/C601属于只读survey/view，不消耗Ledger、不创建写许可、不记业务ExecutionHistory；C602是PLAN，使用规划预算模拟但未执行，不把其输出当执行历史。C132/C142/C209/C404/C405/C410等规划/观察子功能同理；只有真正执行的候选继承G写入路径。C606历史查询是本地读取。Function状态和相邻模块的执行底座不能互相替代。
 
 ### 5.1 可复算的需求状态清单
 
-- EXISTING_FUNCTION（48）：C001、C002、C003、C004、C005、C101、C102、C103、C104、C111、C113、C114、C115、C116、C121、C122、C123、C125、C127、C128、C131、C133、C134、C141、C143、C201、C202、C203、C204、C205、C206、C207、C208、C211、C212、C213、C214、C221、C301、C302、C306、C401、C402、C403、C407、C409、C601、C605。
-- PARTIAL（29）：C112、C124、C126、C132、C142、C151、C209、C222、C223、C224、C303、C304、C404、C405、C406、C410、C501、C502、C503、C511、C513、C515、C516、C521、C602、C603、C604、C606、C607。
-- PROTOCOL_ONLY（16）：C144、C152、C225、C226、C227、C228、C229、C230、C305、C307、C408、C512、C514、C517、C523、C524。
-- NOT_IMPLEMENTED（2）：C215、C522。
-- BLOCKED_EVIDENCE（14）：C112、C124、C126、C144、C152、C303、C304、C305、C405、C406、C408、C410、C514、C517。它是与Function交叉的证据维度。
+- EXISTING_FUNCTION（53）：C001、C002、C004、C005、C101、C102、C103、C104、C111、C113、C114、C115、C116、C121、C122、C123、C125、C126、C127、C128、C131、C132、C133、C134、C141、C142、C143、C201、C202、C203、C204、C205、C206、C207、C208、C211、C212、C213、C214、C215、C221、C222、C224、C301、C302、C306、C401、C403、C407、C409、C521、C601、C605。
+- PARTIAL（38）：C003、C112、C124、C151、C152、C209、C223、C225、C226、C227、C228、C229、C230、C303、C304、C307、C402、C404、C405、C406、C410、C501、C502、C503、C511、C512、C513、C514、C515、C516、C522、C523、C524、C602、C603、C604、C606、C607。
+- PROTOCOL_ONLY（4）：C144、C305、C408、C517。
 
-18个当前无业务Function的需求=PROTOCOL_ONLY+NOT_IMPLEMENTED；其余29个部分需求仍需补功能，不可因已有局部Function而排除工程工作。C402非零宠物舰队、敌城几何缺失等是当前明确受限的分支（不可据此缩减完整Inventory范围），另列风险；14的统计固定为上述95原始需求中已确认阻塞必要闭环的集合。非C扩展的证据阻塞不加入该数；完整产品仍受8.1及附录全部原ID证据闸门约束。
+Function分类描述行内范围，不是最终通过数；缺证按原W/X和行内限制。本轮仅文档静态校验，测试路径不表示重跑，R7/R8均NOT_RUN。
+
 ## 6. 产品树、原业务域与三维交叉映射
 
 以下保留Inventory的18个业务域，不将示例树当新产品定义；括号为原Master归并模块及C编号。跨域相同C只拥有一个业务Function，多页引用不复制执行链。
@@ -275,7 +270,7 @@ CrazyWater Platform
 │ ├─账号/凭证/Session/Runtime/世界区服
 │ └─配置、账号切换和生命周期 [同时服务全部业务]
 ├─02 数据浏览/Explorer [M1：C004/C005及各领域只读C]
-│ ├─48查询/27解析/21原始、可靠性、精度、来源
+│ ├─48查询/28解析/20原始、可靠性、精度、来源
 │ └─缓存浏览/显式刷新/导出
 ├─03 城市建设 [M2：C101–104]
 ├─04 资源与生产 [M2：C111–116；与M3/M4共享缺口]
@@ -305,93 +300,107 @@ CrazyWater Platform
 
 原Master模块一览：M0 Platform Runtime；M1 Data Center；M2 City & Production；M3 Resident Orders；M4 Port & Trade Cargo；M5 Museum & Exploration；M6 Sea Sweep & Fishing；M7 Hero Growth；M8 Formation & Battle Analysis；M9 Mainline Automation；M10 Alliance；M11 Fleet & City War；M12 Activities & Dailies；M13 Trade King；M14 Workflow & Scheduler；M15 Shared Execution Services。M1按读模型跨模块引用C，不重复计需求。
 
+当前16模块状态如下；PARTIAL覆盖完整原范围，已实现子集的离线证据不等于最终产品完成。各模块本版本真实验收均未执行（历史精确边界见§4.4）。
+
+| 模块 | 原名称 | 状态 | 工作包 | 当前范围与剩余边界 |
+|---|---|---|---|---|
+| M0 | Platform Runtime | PARTIAL | W01/W03 | 账号/连接/所有权及来源检查已有；安全导入产品化、地图来源与资产缺口保留 |
+| M1 | Data Center | PARTIAL | W03 | 48查询（28解析/20原始）、可靠性与钓鱼解析已有；全业务完整读模型未闭合 |
+| M2 | City & Production | PARTIAL | W04 | 建筑/生产/单田种收/水位与委任投影已有；完整全天量及批量农田结算缺 |
+| M3 | Resident Orders | PARTIAL | W04 | 规则/提交/库存/基础金币预览已有；最终金币公式与免费刷新额度缺 |
+| M4 | Port & Trade Cargo | PARTIAL | W05 | 港口装货/到港领取/专业缺货已有；完整原港口范围仍受D6及证据限制 |
+| M5 | Museum & Exploration | PARTIAL | W11 | 展陈/收益/出发/缺料及古董成长已有；探索完成/领奖可恢复身份缺 |
+| M6 | Sea Sweep & Fishing | PARTIAL | W12/W13 | 精确目标扫荡与钓鱼只读已有；奖励归属/日界/钓鱼领取及收线缺 |
+| M7 | Hero Growth | PARTIAL | W06/W07 | 等级/星/技能、明确通用碎片兑换、装备/徽章/专武成长子集及Pet投喂已有；替换/激活/培育等缺 |
+| M8 | Formation & Battle Analysis | PARTIAL | W08 | 整队预设/普通解锁/极限复制/战报与建议已有；自动换阵及所有模式未全 |
+| M9 | Mainline Automation | PARTIAL | W08/W19 | Stage门控/逐场持久历史与有限Function已有；真实间隔和战败分支未验 |
+| M10 | Alliance | PARTIAL | W09/W10 | 订单/福利/科技单升/Fort/商船补货与船长已有；帮助/求助/科技重置缺 |
+| M11 | Fleet & City War | PARTIAL | W14/W15 | 编队/维修/移动/港口及有界响应比较已有；攻击/加速/跟随/资源田写合同缺 |
+| M12 | Activities & Dailies | PARTIAL | W16/W17 | 具名任务、邮件、免费招募点金/试炼及部分周奖励已有；VIP/周期/订单档/挂机时段等缺 |
+| M13 | Trade King | PARTIAL | W18 | 当前港报价/精确买卖移动/自有加速及时钟等待已有；目的地报价、策略、到达收益缺 |
+| M14 | Workflow & Scheduler | PARTIAL | W19/W20 | 统一Tasks/Dailies/有限Loop、原生图、父预算/持久历史/有限日周事件已有；全入口覆盖与权威策略未全 |
+| M15 | Shared Execution Services | PARTIAL | W01/W02/W19/W22 | 原Service/Executor/Ledger/History/Registry复用；恢复仅原连接零成本阵容或未派发证明，不是通用恢复 |
+
 ### 6.1 全部42项Pxxx
 
 | P ID | 原页面/面板 | 当前UI维度 | 需求/施工 |
 |---|---|---|---|
-| P0-1 | 账号列表/扫码添加 | PARTIAL：列表已有，扫码隐藏且捕获路由403 | C001/C002；W03 |
-| P0-2 | 账号配置 | PARTIAL：规则/模块配置已有，未覆盖全业务 | C002；W03/W21 |
-| P1-1 | 数据中心总览 | EXISTING_UI | C004；W03 |
-| P1-2 | 建筑生产 | PARTIAL：队列有，完整当日图表缺 | C101/C111/C112；W04 |
-| P1-3 | 英雄阵容 | EXISTING_UI：英雄预览+独立Formation | C211/C212；W06/W08 |
-| P1-4 | 舰队地图 | PARTIAL：Fleet/当前观察有，非完整业务地图 | C401/C403；W14/W15 |
-| P1-5 | 活动联盟 | PARTIAL：联盟详情有，活动聚合缺 | C301/C501；W09/W16 |
-| P1-6 | 原始响应浏览器 | EXISTING_UI：当前48项，原表27为旧口径 | C004/C005；W03 |
-| P2-1 | 建筑管理 | EXISTING_UI：已有槽位/候选/不可升原因 | C101–104；W04 |
-| P2-2 | 资源生产 | PARTIAL：队列/策略已有，完整日报缺 | C111–116；W04 |
-| P2-3 | 居民规则编辑 | EXISTING_UI | C125/C127；W04 |
-| P2-4 | 居民订单预览 | EXISTING_UI | C121–125；W04 |
-| P2-5 | 居民订单执行 | EXISTING_UI：提交+历史；免费刷新安全阻塞 | C126/C128；W04 |
-| P2-6 | 贸易港口 | PARTIAL：Fleet通用货船候选已有，专业缺货明细缺 | C131–134；W05 |
-| P2-7 | 博物馆寻宝 | PARTIAL：通用详情/出发已有，missing/结算领奖缺 | C141–144；W11 |
-| P2-8 | 海面扫荡 | NOT_IMPLEMENTED：日常CLI不等于独立页 | C151；W12 |
-| P2-9 | 钓鱼 | NOT_IMPLEMENTED | C152；W13 |
-| P3-1 | 主线运行 | PARTIAL：已有运行/倒计时，stopOnDefeat只透传无独立开关 | C201/C204/C205；W08 |
-| P3-2 | 阵容对比 | EXISTING_UI：原战报details | C206/C207；W08 |
-| P3-3 | 战斗分析 | EXISTING_UI：保守统计与同角色/世界/关卡持久历史差异比较；缺分析保持未知 | C208；W08 |
-| P3-4 | 自动换阵 | PARTIAL：职业布局建议，无自动闭环开关 | C209；W08 |
-| P3-5 | 阵容管理 | PARTIAL：保存/模板/恢复有，极限复制缺 | C211–215；W08 |
-| P3-6 | 英雄列表 | PARTIAL：基础等级/星级/技能有，专武纹章装备视图缺 | C221–230；W06/W07 |
-| P3-7 | 英雄操作 | NOT_IMPLEMENTED：旧Web写被拒 | C221–230；W06/W07 |
-| P4-1 | 联盟成员/求助单 | EXISTING_UI：通用详情可用 | C301/C302；W09 |
-| P4-2 | 捐赠配置 | PARTIAL：member/item规则有，真实限额闭环阻塞 | C303/C304；W09 |
-| P4-3 | 自动求助配置 | PARTIAL：配置存在，ask无可执行候选 | C305；W09 |
-| P4-4 | 联盟科技 | NOT_IMPLEMENTED：只有Explorer原始数据 | C306/C307；W10 |
-| P5-1 | 舰队编组 | PARTIAL：通用参数/候选保存有，专业表格不足 | C401/C402；W14 |
-| P5-2 | 城战委托单船 | PARTIAL：维修/移动有，攻击与道具加速缺 | C406–408；W14 |
-| P5-3 | 钻石规则 | NOT_IMPLEMENTED，D6明确EXCLUDE；保持禁止 | C409；W01验拒绝 |
-| P5-4 | 监听跟随 | PARTIAL：一次观察筛选有，无持续事件流 | C404/C405；W15 |
-| P5-5 | 动态决策 | PARTIAL：三值规则有，无攻击计划 | C410；W15 |
-| P6-1 | 活动列表 | PARTIAL：原始数据/部分日常展示 | C501–503；W16/W17 |
-| P6-2 | 日常清单 | PARTIAL：旧预览有，7项业务统一执行/定时缺 | C511–517；W16/W17/W20 |
-| P6-3 | 海商王 | NOT_IMPLEMENTED | C521–524；W18 |
-| P7-1 | 工作流画布 | PARTIAL：节点表单/连线/SVG/JSON有，拖拽及全量目录缺 | C607/C602；W02/W20 |
-| P7-2 | 工作流运行 | EXISTING_UI：有限图当前状态；统一所有Runner待W19 | C605/C606；W19/W20 |
-| P7-3 | 历史/跨轮记忆 | PARTIAL：图/批次历史有，持久记忆缺 | C604/C606；W19 |
-| P8-1 | 账号默认设置 | PARTIAL：订单/生产/玩法独立配置已有 | C002；W03/W21 |
-| P8-2 | 敏感操作确认 | PARTIAL：具体批次确认有，统一风险分类缺 | D4/D6；W01/W02 |
-| P8-3 | 全局调度 | NOT_IMPLEMENTED：有限图不是通用日周调度 | S1–S8；W20 |
+| P0-1 | 账号列表/扫码添加 | PARTIAL：账号列表已有；扫码隐藏且捕获路由403，安全导入产品入口未全 | C001/C002；W03 |
+| P0-2 | 账号配置 | PARTIAL：账号独立模块/规则/生产/预算配置已有；未覆盖全业务 | C002；W03/W21 |
+| P1-1 | 数据中心总览 | EXISTING_UI：只读缓存总览/可靠性及显式刷新 | C004；W03 |
+| P1-2 | 建筑生产 | PARTIAL：队列/工具内生产历史日报已有；游戏完整全天图表缺 | C101/C111/C112；W04 |
+| P1-3 | 英雄阵容 | EXISTING_UI：英雄预览与独立阵容页，完整写范围另见P3 | C211/C212；W06/W08 |
+| P1-4 | 舰队地图 | PARTIAL：Fleet/有界世界观察已有；完整地图来源及业务地图缺 | C401/C403；W14/W15 |
+| P1-5 | 活动联盟 | PARTIAL：联盟成员/科技/订单/商船已有；活动完整聚合缺 | C301/C501；W09/W16 |
+| P1-6 | 原始响应浏览器 | EXISTING_UI：48查询，28解析/20原始；原27口径仅历史 | C004/C005；W03 |
+| P2-1 | 建筑管理 | EXISTING_UI：槽位/候选/原因及受控建造升级加速 | C101–104；W04 |
+| P2-2 | 资源生产 | PARTIAL：队列/策略/委任减时/水位/材料包/单田种收已有；完整全天及批量缺 | C111–116；W04 |
+| P2-3 | 居民规则编辑 | EXISTING_UI：规则编辑/排序/账号保存 | C125/C127；W04 |
+| P2-4 | 居民订单预览 | EXISTING_UI：需求/库存/规则/基础金币预览；最终金币未知显式显示 | C121–125；W04 |
+| P2-5 | 居民订单执行 | PARTIAL：提交与持久历史已有；免费刷新执行缺权威额度 | C126/C128；W04 |
+| P2-6 | 贸易港口 | PARTIAL：专业货舱/缺货明细、装货和到港领取已有；其他原范围受D6/证据限制 | C131–134；W05 |
+| P2-7 | 博物馆寻宝 | PARTIAL：缺料/出发、古董属性与成长已有；探索完成/领奖缺身份 | C141–144；W11 |
+| P2-8 | 海面扫荡 | PARTIAL：专业扫荡页有明确城市/UID/配额/单次计划；奖励与日界未闭合 | C151；W12 |
+| P2-9 | 钓鱼 | PARTIAL：专业只读钓鱼等级/库存/容量/图鉴已有；领取/捕鱼缺合同 | C152；W13 |
+| P3-1 | 主线运行 | EXISTING_UI：运行/倒计时/首败停止开关/持久历史已有；真实验证另记 | C201/C204/C205；W08 |
+| P3-2 | 阵容对比 | EXISTING_UI：原战报details与阵容比较 | C206/C207；W08 |
+| P3-3 | 战斗分析 | EXISTING_UI：保守统计及同角色/世界/关卡持久历史比较；缺分析保持未知 | C208；W08 |
+| P3-4 | 自动换阵 | PARTIAL：职业布局建议与准备已有；自动换阵续跑未全 | C209；W08 |
+| P3-5 | 阵容管理 | PARTIAL：完整队伍预设/普通图纸解锁/极限来源复制已有；其他模式未全 | C211–215；W08 |
+| P3-6 | 英雄列表 | PARTIAL：英雄/专武/纹章/装备/锻造/Pet子区已有；原完整成长分支未全 | C221–230；W06/W07 |
+| P3-7 | 英雄操作 | PARTIAL：升级/升星/技能/明确碎片兑换及成长子集接统一计划授权；替换等冻结 | C221–230；W06/W07 |
+| P4-1 | 联盟成员/求助单 | EXISTING_UI：精确玩家/请求/订单/福利及商船明细 | C301/C302；W09 |
+| P4-2 | 捐赠配置 | PARTIAL：member/item规则和Fort捐赠已有；互助额度/冷却缺源 | C303/C304；W09 |
+| P4-3 | 自动求助配置 | PARTIAL：原求助配置保留；无权威阈值/额度/冷却，不产可执行候选 | C305；W09 |
+| P4-4 | 联盟科技 | PARTIAL：科技投影/单级成本/单次升级已有；科技重置未接 | C306/C307；W10 |
+| P5-1 | 舰队编组 | PARTIAL：专业舰队编组、维修模式/顺序和明确移动已有；全原范围未全 | C401/C402；W14 |
+| P5-2 | 城战委托单船 | PARTIAL：维修/移动已有；攻击与舰队道具加速缺权威合同 | C406–408；W14 |
+| P5-3 | 钻石规则 | EXCLUDE：D6硬拒绝钻石；拒绝路径已有，不能通过页面授权放开 | C409；W01验拒绝 |
+| P5-4 | 监听跟随 | PARTIAL：有界观察筛选与当前响应哈希比较已有；跨视野持续身份/跟随未全 | C404/C405；W15 |
+| P5-5 | 动态决策 | PARTIAL：三值规则/只读摘要已有；动态攻击计划未接 | C410；W15 |
+| P6-1 | 活动列表 | PARTIAL：日常/周活动/签到前置观察已有；完整活动与周期资格未全 | C501–503；W16/W17 |
+| P6-2 | 日常清单 | PARTIAL：Tasks/Dailies具名选择转原Workflow，7个日常驱动及部分领奖已有；非17项全自动完成 | C511–517；W16/W17/W20 |
+| P6-3 | 海商王 | PARTIAL：贸易单步买卖/移动/自有加速及同航段WAIT已有；全策略/收益/到达结算缺 | C521–524；W18 |
+| P7-1 | 工作流画布 | PARTIAL：原生节点表单/拖动排序/拖动连线/SVG/JSON已有；全业务目录未齐 | C607/C602；W02/W20 |
+| P7-2 | 工作流运行 | PARTIAL：有限run授权/父预算/节点与批次状态/取消已有；全业务及策略覆盖未齐 | C605/C606；W19/W20 |
+| P7-3 | 历史/跨轮记忆 | PARTIAL：共享持久历史/Stage逐场/拒绝及UNKNOWN关联/重启只读已有；通用冷却/日界来源未闭合 | C604/C606；W19 |
+| P8-1 | 账号默认设置 | PARTIAL：账号独立默认配置与预算表单已有；全42P一致性仍待补齐 | C002；W03/W21 |
+| P8-2 | 敏感操作确认 | PARTIAL：具体计划/单次及有限run授权、D6/拒绝/UNKNOWN已有；全业务风险交互未齐 | D4/D6；W01/W02 |
+| P8-3 | 全局调度 | PARTIAL：原Workflow有限ONCE/DAILY/WEEKLY和4类可信事件已有；通用日界/全事件策略未全 | S1–S8；W20 |
 
 ### 6.2 调度方式及冲突修订
 
-| S | 当前实现 | 交付扩展 |
+| S | 当前实现 | 剩余交付边界 |
 |---|---|---|
-| S1 手动 | Stage/账号/CLI/具体Operation | 统一门控；保留敏感操作显式确认 |
-| S2 单次 | Actions、Operation批次、有限Stage Function | 所有业务共用原Service/效果验证 |
-| S3 轮询 | 缓存UI轮询、旧Loop、业务显式survey | 有界计划轮次；缓存3秒≠向游戏每3秒发48查询；统一时效/预算 |
-| S4 长时 | 成熟StageRunner | 持久事件、finite limits、同账号锁，不重写Runner |
-| S5 定时 | 无通用持久日/周scheduler | 上海时区/日界/错过策略/禁用默认/重启不自动执行未授权写 |
-| S6 事件 | Socket推送/SSE日志存在 | 业务事件身份/去重/游标/有界触发；推送≠可靠最终效果 |
-| S7 工作流 | 有限DAG顺序/条件/等待/逐ACTION授权 | 全目录/总预算/有界调度；不加任意脚本和图内无限环 |
-| S8 条件 | OrderRules/Naval三值/planWorld | 复用业务规则；事实UNKNOWN不派发，规则PASS不等于授权 |
+| S1 手动 | 原Service精确计划/授权；独立Stage门控；CLI只读/离线工具保留 | 独立CLI写在读取凭证前拒绝，参数不代替统一许可 |
+| S2 单次 | 原Operation批次、有限Stage Function、Tasks/Dailies转原Workflow | 已接模块不代表所有原业务已接 |
+| S3 轮询 | 有限Loop编译为原Registry节点，明确轮数/间隔/动作/期限/父预算 | 缓存轮询不等于游戏请求；缺源分支保持UNKNOWN或阻断 |
+| S4 长时 | 原StageRunner与有限Workflow复用所有者/取消/持久历史 | 不恢复未授权写；无限长期委托和全业务范围未齐 |
+| S5 定时 | 原Workflow有限ONCE/DAILY/WEEKLY，Asia/Shanghai、明确missedPolicy与单个所选发生次 | 本地日历不证明游戏日界；重启只读，不恢复计时/授权 |
+| S6 事件 | 原Client私有可信VIP_LEVEL_CHANGED、PLAYER_LEVEL_CHANGED、DAILY_TASK_RESET、DAILY_TASK_PROGRESS触发原有限run | 不采信公开emit或重复/失序事件；全领域事件与日界来源缺 |
+| S7 工作流 | 原有限DAG、条件/数值和两类具名WAIT、父预算、run授权及持久历史 | 仅覆盖已注册有证据业务；UNKNOWN/拒绝不被WAIT清除 |
+| S8 条件 | 原OrderRules/Naval三值/业务plan与工作流条件 | UNKNOWN不派发，规则通过不等于执行授权；非全平台任意规则引擎 |
 
-原表C205“限频等待重试”、C409“批准钻石”与D6/D8冲突，以baseline和本轮保护要求为准：限频独立停止，钻石一律拒绝。记录兼容影响，不改原表。挂机持续执行的未来run授权需有账号、函数白名单、总预算、期限、次数和取消，不能把当前一次permit复制到下一批。该新合同未获后续开发批准前，沿用逐批确认安全模式；可并行完成其他业务。
+原表C205“限频等待重试”、C409“批准钻石”与D6/D8冲突：沿用限频独立停止及钻石硬拒绝。当前有限run授权绑定账号、Function白名单、总预算、期限、次数与取消；重启不恢复授权。不能将定时发生次或WAIT结果当作游戏日界、业务资格或UNKNOWN重放许可。
+
 
 ## 7. 现有Function复用矩阵
 
-| 现有Function/当前源码 | 现有调用者 | 最小接口扩展 | 新业务调用者 | 必需测试 |
-|---|---|---|---|---|
-| GameClient.request/sendWatch/markUnverifiedWrite/confirmWatchedWrite（client.mjs:211/266/331/338） | 全部传输 | 只增脱敏时序/provenance hook；不换关联算法 | Hero/Trade/活动适配器 | client-lifecycle/unverified+新协议codec |
-| newSession/sessionFor/cancelSession/assertCurrent（server.mjs:91/115/163/199） | Web/Stage/Workflow | 单写所有者、统一gate、只读reconcile context | 全业务 | server-runtime/gameplay-locks/跨进程故障 |
-| collectState/summarize/exploreSnapshot/cachedClient（game.mjs:98/131；server.mjs:367） | Snapshot/Explorer/preview | sourceAt/serverTime/scope/version；附加查询登记用途 | 活动聚合/数据视图 | catalog/snapshot-precision/data-safety |
-| ACTIONS/buildBody/assertAllowed/runAction/assertPaymentAllowed（actions.mjs:315/324/335/277） | CLI/world/旧驱动 | 命名精确成本policy；Trade合法币种不可全局移除Buy拒绝 | 业务adapter | actions-safety/D6协议注入 |
-| ResourceLedger/resourceCosts/stockFromResponses/validateResources（resource-ledger.mjs:52/38/24/84） | World/Hero/City/Order/Gameplay | 父run预算、保留线、离散UID/配额独占声明、成本来源 | 成长/捐赠/扫荡/Trade/Workflow | 跨模块争用、UNKNOWN保留、旧余额不补回 |
-| assertExecutionActive/awaitExecution/executionDelay/executionOutcome/stopsExecution（execution.mjs:2/28/51/10/23） | 所有现有执行器 | 复用signal/stop，事件游标取消hook | 轮询/定时/跟随 | 执行前/中/后取消、迟到、限频 |
-| createOperationService（operation-service.mjs:32） | City/Orders/6玩法/Stage Function | dependencyVersions、facts provenance、统一adapter、parentBudget、恢复上下文 | 所有新业务/旧CLI安全桥 | operation-service/adapter集成/API门控 |
-| executeBusinessOperation（business-functions.mjs:12） | 6玩法 | domain verify/响应证据schema，不嵌领域决策 | Hero/Trade/Activity/Fishing | typed成功但无效果→UNKNOWN |
-| createExecutionHistory（execution-history.mjs:16/43） | OperationService | 追加恢复事件/所有者写串行、run-node-action关系/兼容迁移 | Stage/CLI/Workflow/Scheduler | 原子失败/损坏/旧版/崩溃/多进程丢更 |
-| surveyWorld/planWorld/runWorld（world.mjs:86/209/469） | City/Orders/CLI/Loop | 接wrapper，不让页面直接runWorld当成功 | 港口缺口/生产/世界 | resource-budget/city/order |
-| surveyOrderExecution/planOrderExecution/executeOrderOperation（order-execution.mjs:92/104/146） | OperationService | 权威免费proof来源、金币reward provenance | 订单节点/生产需求 | 同index换单/免费额度/成本变化 |
-| surveyCityOperations/cityView/planCityOperations/executeCityAction（city-operations.mjs:38/131/167/221） | 页面/Operation | registry adapter外壳；覆盖可靠新增状态 | City/Production节点 | 原集成预算+复读 |
-| productionShortages/selectProductionCandidates/summarizeProductionHistory（production-policy.mjs:61/101；production-report.mjs:36） | 生产页/日报 | required/have/missing通用展示；完整事件覆盖另证 | Port/Museum视图、报表 | 缺字段不假零、日期/时区/去重 |
-| planHeroes/runHeroPlan（heroes.mjs:66/221） | CLI/预览/Loop | 保留请求构造，增加operation adapter与AllHero权威verify | Hero节点/P3-7 | 逐级成本、typed/静默未复读、换账号 |
-| surveyDailies/runDailies/claimDailies/surveyTasks/runTasks | 旧CLI/Loop/只读页 | domain adapter、权威claim状态、统一配额/记忆 | 统一清单/活动节点 | 免费/VIP/周活动资格隔离 |
-| survey/plan/verifyFormation、battleAnalysis（formation.mjs:98/161/170/198） | Formation/Stage/Fleet | 推荐规则/复制映射/战报源身份 | 自动换阵/极限复制 | 保存前后完整英雄/站位/pet/迟到 |
-| allianceHelpRules/planAlliance（alliance.mjs:36/137） | Alliance | 权威quota/cooldown/season输入，不能接受UI自报 | C303/C304/C305 | 真实survey固定null阻塞测试+证据路径 |
-| survey/plan/verifyMuseum、Fleet、Treasure、evaluateNavalRules | Gameplay/Workflow | pending身份、missing、道具/攻击scope、持续观察契约 | W11/W14/W15 | 领域专项及共享业务执行测试 |
-| createStageRunner/parseStageResult/createStageFunction（stages.mjs:114/85；stage-function.mjs:15） | Standalone/有限节点 | 统一history/gate、配置表单；保留LEFT模式 | Battle/Workflow/Scheduler | 原Stage所有回归不弱化 |
-| validateWorkflow/createWorkflowRunner/createWorkflowStore（workflow.mjs:36/110/206） | 工作流UI/API | registry schemas、父预算、有界重复调度外壳、恢复状态 | 全业务图 | 循环拒绝/单次授权绑定/停止/重启 |
-| createCliOutput/redact/validateCredentials（cli-safety/security） | 全CLI/日志 | 所有新诊断复用安全sink，先脱敏后截断 | 新工具/历史导出 | 合成秘密全格式不泄漏 |
+已实现公共能力直接沿用，只补原需求的真实缺口，不重新建设。
+
+| 当前源码 / 调用链 | 已接能力 | 剩余扩展 / 定向验证 |
+|---|---|---|
+| client / execution / writer-ownership → 原Console | 请求关联、trusted clock、写前fence、取消、所有者 | 新领域只补私有来源与效果验证，不放宽1000ms心跳 |
+| function-registry / function-contracts | 26静态模块加Stage、27合同；City/Orders/Production已接 | 未证写不注册为可执行；变更补公共集成 |
+| resource-ledger / business-functions / operation-service | 原通用执行器、父资源/配额/UID预算、依赖版本、新鲜度、授权 | 复用领域Adapter；预计收益不扩额，UNKNOWN不返预算 |
+| execution-history / execution-memory / stage-history / workflow store | 业务/图/逐场持久历史、run-node-batch-action关联和拒绝/UNKNOWN | 剩余入口关联继续补；cooldown/gameDay来源未闭合 |
+| operation-recovery → Service → API/UI | 证据预览、独立复读与追加确认 | APPLIED仅同原连接代次零成本Formation；NOT_APPLIED仅持久未派发证明，其余STILL_UNKNOWN |
+| city-operations / order-execution / production-planning / farm-operations | 原城市/订单/生产/单田种收与纯投影 | 最终金币、免费刷新、全天量、批量农田按原X冻结 |
+| hero-operations / growth / forge / pet / antique | 原养成、锻造、投喂及古董受控子集 | 替换/激活/培育和结算身份不凭邻近功能推定 |
+| task-rewards / mail / afk-level-rewards / free-* / trial-challenge | 具名奖励、单封读领、等级奖励、免费招募点金及经验试炼 | 周期、VIP、实例附件、时段收益、订单档仍冻结 |
+| alliance / fleet / museum / treasure / trade | 原专业Adapter和API/UI/Workflow子集 | 帮助求助、攻击跟随、探索完成领奖、到达收益缺证局部冻结 |
+| compileUnifiedExecution → 原Registry/Workflow/Service | Tasks/Dailies/有限Loop；7个明确日常驱动，Loop可显式引用原模块 | 继续W19已有Function入口与历史接线，不重开旧写handler |
+| workflow / gameplay-page / page | 原生拖拽、父预算、有限日周/可信事件、数值及两类具名WAIT | 缺冷却/日界保持未知；WAIT不清拒绝/UNKNOWN，不新建调度器 |
 
 ### 7.1 参考实现复用边界
 
@@ -401,29 +410,15 @@ CrazyWater Platform
 
 ## 8. 架构、重复实现与公共前置
 
-公共标准保持：SURVEY → PLAN → VALIDATE → AUTHORIZE → EXECUTE → VERIFY → PERSIST；每阶段有来源/代次/结果。业务适配器拥有领域规则与验证，OperationService拥有计划许可/锁/预算/历史，GameClient拥有传输关联，Workflow只编排调用，页面只编辑参数/展示候选/提交ID。
+沿用原SURVEY → PLAN → VALIDATE → AUTHORIZE → EXECUTE → VERIFY → PERSIST，写前意图必须持久化。Adapter拥有领域语义，OperationService拥有许可/锁/预算/历史，GameClient拥有传输关联，Workflow只编排，页面只编辑和展示。§7所有者、父预算、注册、记忆及历史均已有实现，不得依历史规划再造。
 
-| 问题与证据 | 影响 | 精确扩展/不变量 | 工作包 |
-|---|---|---|---|
-| UNKNOWN持久阻断，但acquire也用于survey（operation-service.mjs:45/72/92）；无解除API | 缺可靠恢复产品链，当前无法靠正常业务survey完成reconcile | 独立只读恢复context读原identity→权威复读→APPLIED/NOT_APPLIED/STILL_UNKNOWN→追加事件；原UNKNOWN不抹掉，证据不足不解锁 | W01 |
-| Session/lockOwners/runs为内存；CLI可另建Client；History put为读改写rename | 同进程隔离≠多进程/NAS单写，原子rename不防丢更新 | 默认选择单服务写所有者+CLI委托/拒绝独立写；Owner要多服务才选租约/CAS；必须有崩溃/NAS失败测试 | W01 |
-| standalone stages/start只有confirm/config，未复用operations Origin/CSRF | 平台授权门控不一致 | 抽最小共同gate供Stage和operations；不批量解禁旧Web白名单 | W01 |
-| 旧Hero/Tasks/Dailies/World/Loop typed存在即可SUCCESS/无统一History | 响应成功≠效果成功，重启失忆 | adapter包装已有Function，按权威验证和持久History确认；不另造业务发送器 | W02/W06/W16/W19 |
-| Registry仅6模块+stage；capabilities默认[]、source默认null | city/order/production不能作为图节点，schema/Cxxx/权限/验证元数据不全 | 扩静态目录和现有survey/view/plan/verify；只注册可信实现，不允许JS/任意Request | W02 |
-| Workflow每ACTION新plan/新Ledger | 单批预算≠整图累计预算，重复新批可突破run总上限 | runBudget父范围只减不返UNKNOWN，子许可绑定具体动作；配额/物资/UID使用统一声明 | W02/W20 |
-| 任意玩法都绑定订单rules/productionPolicy hash（operation-service.mjs:145–168） | 改无关规则导致阵容/联盟计划失效，保守但耦合 | adapter.dependencyVersions声明真实依赖；旧行为兼容过渡，相关变更仍失效 | W02 |
-| 同一次survey/read/validateResources存在重复查询 | 成本/性能增加，但用途不同 | 同阶段可带provenance复用；派发前余额/派发后效果必须新鲜，不用缓存去掉安全复读；同Response类型串行保持 | W03 |
-| alliance/museum可信serverClockOffset；fleet/treasure/naval部分Date.now | 日界/冷却/可用次数可能不一致 | 统一可信clock/provenance/scope和最大误差；缺可靠时钟不授权时间敏感动作 | W03 |
-| OperationService有orders/city特判、设置/阵容证明/图owner/日报 | 职责增长，但当前约260行不构成重写理由 | 新域走adapter，逐步缩专用分支；不预建空架构/大拆目录 | W02 |
-| Stage计时、executionDelay、Workflow WAIT各有循环 | 部分合理领域差异；新页面自行定时会分叉 | 保留原Stage状态机；普通等待复用executionDelay；有界重复由同scheduler而非每页面Runner | W20 |
-| UI已有JSON技术参数、专业业务表不足 | 原P页面“可配置”≠最终产品易用性 | 业务表单/控件调用同Function；技术JSON保留高级查看，常规流程解释决策/成本/原因 | W21 |
-| 协议/配置/地图资源ignored | clone无资产不代表可交付/测试可复现 | W03生成来源/版本/哈希/离线恢复说明，缺资产显式阻塞；不下载新资源代替本轮审计 | W03 |
+当前公共剩余边界：通用恢复仍有限；Service policyCoverage.cooldown/gameDay仍false；完整资产缺map-1及上游来源；全业务/API/UI/Workflow覆盖和最终R7/R8未闭合。旧独立CLI写和旧Web写入口持续拒绝。缺口见顶部W、§5/6和附录A，正常开发检查不新增人工Gate。
 
-协议bundle SHA256=ef6137ef923f0b8b44b10379effe0ac2b3555ffab18b278e03e97b19bf4a4dcc；config SHA256=0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762，本轮本地哈希复核一致。Fishing/VIP/Week/Exclusive/Badge/Equip/Trade请求已通过只加载loadProtocol类型表确认存在，没有创建GameClient或游戏Runtime；类型存在不消除业务证据障碍。
+固定客户端与配置继续复用原RUNTIME_ASSETS清单及历史记录，不在相邻功能重复抄写指纹。类型存在不证明资格、成本、可恢复身份或结算。
 
 ### 8.1 全Inventory交付边界及非C工作包补充
 
-完整产品范围以95项原始Cxxx、原Inventory全部目标能力及其参考子项共同构成。没有Cxxx编号不等于可选，也不因只剩协议/客户端证据就从计划移除。273个Inventory条目继续逐项保留；它们有重复和分层，不能算作273项独立业务需求。下表将目前未实现或部分实现的非C业务明确纳入既有工作包，不新造C编号、不增加目录、不复制参考整模块。证据未齐的能力保留BLOCKED_EVIDENCE并设前置闸门；已授权的独立业务继续连续开发。Owner决策用于裁定真实语义冲突、D6允许路径不存在或确认修改原产品要求，不作为默认将非C整体移出范围的前置批准。
+完整产品范围以95项原始Cxxx、原Inventory全部目标能力及其参考子项共同构成。没有Cxxx编号不等于可选，也不因只剩协议/客户端证据就从计划移除。273个Inventory条目继续逐项保留；它们有重复和分层，不能算作273项独立业务需求。下表保留原非C完整验收合同和工作包归属，已实现子集及当前缺口以附录A同ID行为准，旧“必需扩展”不重复视为未施工任务；原合同，不新造C编号、不增加目录、不复制参考整模块。证据未齐仅将具体操作保留BLOCKED_EVIDENCE；已授权的独立业务继续连续开发。Owner决策用于裁定真实语义冲突、D6允许路径不存在或确认修改原产品要求，不作为默认将非C整体移出范围的前置批准。
 
 D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开发凭证。任意JS/任意协议写接口不属于需求允许的工作流能力，不实现。道具、普通材料、已有权益、免费奖励、只读和本地算法按证据及授权进入交付；名称含加速/解锁/领取不自动等于付费。必须按具体客户端成本/资格路径判定，证据不足保持阻塞而非偷偷排除。
 
@@ -476,7 +471,7 @@ D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开�
 
 ## 9. 后续施工工作包（22项）
 
-工作包是对16产品模块的依赖拆分；同模块可跨阶段施工。建议Function名称是接口意图，实施前必须再次搜索当前Symbol并复用。所有DoD继承D1–D9及第12节治理；任何证据闸门未关闭不得用模拟成功标成真实语义已实现。8.1原Inventory子项是默认完整范围，以下各包逐项接纳，不再另问是否开发无C项。
+工作包是对16产品模块的依赖拆分；同模块可跨阶段施工。下表保留原范围和DoD，不是第二份进度表。New Functions为当时接口意图，顶部W/§7和附录A已确认的Symbol直接复用，禁止重复实现。所有DoD继承D1–D9及第12节治理；任何证据闸门未关闭不得用模拟成功标成真实语义已实现。8.1原Inventory子项是默认完整范围，以下各包逐项接纳，不再另问是否开发无C项。
 
 ### W01 — 公共安全、单写所有者与UNKNOWN恢复
 
@@ -847,7 +842,7 @@ D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开�
 | Requirement IDs | M14/M15；C604/C606，所有业务历史 |
 | Existing Functions | createExecutionHistory/createWorkflowStore；runLoop rejected；Stage history |
 | Required Extensions | run→workflow→node→batch→action关联；Standalone Stage逐场事件；拒绝/冷却/日界持久记忆；版本兼容 |
-| New Functions | executionMemoryStore与history projection/关联查询；不创建新数据库 |
+| New Functions | 原execution-memory与History关联查询已实现，继续全入口接线，不创建新Store或数据库 |
 | Dependencies | W01,W02；可提前并行开发schema，R5完成全业务接入 |
 | Shared Components | 单写所有者/原子store/可信clock/脱敏 |
 | API/UI Scope | P7-2/3统一运行/历史/记忆；按账号/run筛选，恢复只读状态 |
@@ -867,7 +862,7 @@ D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开�
 | Requirement IDs | M14；C601–607/S1–S8；全部原Inventory273条目及8.1非C子项按原ID覆盖，重复条目映射不复制Function |
 | Existing Functions | 原有限DAG/validateWorkflow/createWorkflowRunner/store；StageRunner；W02注册目录 |
 | Required Extensions | 全业务节点、父预算、S3/S5/S6有界触发；一次运行范围授权；图编辑拖拽/条件/优先级；外层重复不改DAG无环 |
-| New Functions | scheduleStore/boundedScheduleRunner最小外壳，调用原Workflow/Operation；禁止任意JS |
+| New Functions | 复用原Workflow runPolicy/Runner/Store和事件来源，只补原缺口，不新建scheduler或任意JS |
 | Dependencies | W04,W05,W07,W08,W09,W10,W11,W12,W13,W15,W16,W17,W18,W19 |
 | Shared Components | 原Session单写/Operation/History/runBudget/可信clock |
 | API/UI Scope | P7-1/2/3/P8-3；明确scope/期限/最大轮次/运行时/停止；条件UNKNOWN显示 |
@@ -916,13 +911,13 @@ D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开�
 | Safety Rules | 所有旧失败证据保留；测试失败修实现不删断言；本轮计划不提交，后续按阶段独立提交 |
 | Offline Tests | 先定向后统一R7全量原npm test等价链；缺资产明示，不吞失败/新增skip |
 | Real E2E Tests | E01–E24，仅R8获独立真实授权后执行 |
-| Definition of Done | 全部W01–W21工作包DoD与外部证据关闭、集成定向检查和离线验收准备完成；冻结待R7验证提交树及资产；R7全量PASS是后续阶段退出门，不作W22前置条件；R8具体请求/预算届时生成 |
+| Definition of Done | 全部W01–W21工作包DoD与外部证据关闭、集成定向检查和离线验收准备完成；冻结待R7验证提交树及资产；R7全量PASS为最终离线验收，不作W22前置条件；R8具体请求/预算届时生成 |
 
 ## 10. 依赖DAG、完整顺序与连续开发规则
 
 ### 10.1 八个执行阶段
 
-| 新阶段 | 工作包/原阶段来源 | 依赖与阶段退出门槛 |
+| 原R阶段 | 工作包/原阶段来源 | 依赖与完成标准（不另设审批） |
 |---|---|---|
 | R1 公共合同与交付安全 | W01/W03可并行→W02；原PHASE1/8/9缺口 | 单写所有者、恢复/门控、facts/clock与静态adapter/父预算合同离线可验 |
 | R2 已有核心业务补齐 | W04/W05/W06/W08并行；W06→W07；原PHASE2/3及Hero | 核心现有执行链补齐且注册；证据障碍只冻结对应分支，不要求真实验收 |
@@ -1513,40 +1508,29 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 | 闸门 | 当前确切缺口 / 应收集证据 | 影响及处理 |
 |---|---|---|
 | X01 完整生产日报 | 当前仅工具确认事件；缺非工具生产/采集/农田等全来源的权威全天覆盖与时间口径 | C112/W04；覆盖不全输出partial/null，不能库存差假算；若游戏无此证据则O02裁定需求调整 |
-| X02 订单金币 | 当前可靠rewardExp而无可靠rewardGold来源/公式与领取变化 | C124/W04；MIN_GOLD条件保持UNKNOWN，不默认为0 |
+| X02 订单金币 | 基础金币配置预览和事后关联已有；最终加成、取整和事前总金币公式缺，MIN_GOLD保持未知 | C124/W04；MIN_GOLD条件保持UNKNOWN，不默认为0 |
 | X03 免费刷新 | 真实生产来源缺免费eligibility/quota/cooldown，proofFor合成测试不是来源 | C126/W04；SUBMIT独立可继续，REFRESH无证不发 |
 | X04 Museum结算身份 | Complete结果与Reward身份/已领状态、断线后pending可恢复来源 | C144/W11；到期/收益/成就不是探索领奖成功 |
-| X05 Fishing全链 | Start/Gain/Reward的前态、杆饵/次数/容量/结果身份、可恢复任务与权威复读 | C152/W13；图鉴不可替代当前任务 |
-| X06 联盟真实限额与赛季 | helpAllowance/helpUsage/season生产值固定null；Ask日限/冷却/阈值及订单season来源 | C303–305/W09；分配字段/配置不能由用户输入伪装权威事实 |
+| X05 Fishing全链 | 等级、库存、容量和图鉴门槛只读已有；DrawFishReward无档位条件，GainBigFish缺可恢复pending身份及过期来源 | C152/W13；图鉴不可替代当前任务 |
+| X06 联盟真实限额与赛季 | 联盟订单、福利、Fort和商船子集已有；帮助总额度、冷却、Ask阈值次数和权威周期缺 | C303–305/W09；分配字段/配置不能由用户输入伪装权威事实 |
 | X07 稳定目标定位 | 当前WorldInfo范围有限；跨视野稳定ID、更新范围、消失/移动来源及跟随含义 | C405/C410/W15；只读过滤可用，不能声称全局跟随 |
 | X08 攻击与模式结果 | 移动、宣战、参战资格、保护/地图油费、模式专属side/result、胜负与收益 | C406/C410及PRO005/STG017/W08/W14/W15；保持SIDE_UNVERIFIED，主线LEFT不外推 |
-| X09 D6内舰队加速 | 已知行军加速客户端为RUBY；修船/货船普通道具路径、成本/身份未证实 | C408/W14；若只有钻石路径，记录D6排除及产品阻塞，不制造合法路径 |
-| X10 周/军备活动身份 | 周补给与周活跃/军备各自activityId/period/档位/资格/领取源，不能互相代替 | C514/C517及C515/516补链/W17；过季保留fixture，真实分支未遇保持未验 |
+| X09 D6内舰队加速 | 舰队非premium道具加速合同未闭合；贸易自有指针SPEED已有不证明舰队加速；钻石D6拒绝 | C408/W14；若只有钻石路径，记录D6排除及产品阻塞，不制造合法路径 |
+| X10 周/军备活动身份 | 三类周免费包与具名周芯片任务已有；周活跃、换轮末任务、军备及完整周期归属缺 | C514/C517及C515/516补链/W17；过季保留fixture，真实分支未遇保持未验 |
 | X11 Fleet非零Pet | OnWater宠物绑定/舰队归属精确字段、UID与完整保存复读 | C402受限分支/W14；已有无非零Pet编队不重写，不能把原需求自动缩小 |
-| X12 联盟商船/Fort | GuildShipOrder/Seek具体body、船长空位资格、费用/crew身份、Fort独立前置及进度 | BIZ-R05/PRO002/W09；cargoFill不等GuildShip、Aid不等Fort |
-| X13 装备厂/Pet/其余养成 | 原参考分项的universal成本、队列、实例归属、普通材料路径及效果 | BIZ-R07/R08/R09/W07；只迁移纯算法和明确分支，不能搬独立预算/客户端 |
-| X14 农田/包/委任 | 原田块状态/成熟单位、作物配置、委任减时公式、种子成本、SelectPack候选与扣包得料 | BIZ-R14/R16a–h/W04；水位是用户策略，非服务器事实；包不明不自动打开 |
-| X15 其他阵容/藏品 | 模板图纸解锁成本、各模式槽位/队伍/pet字段；藏品培养兑换精通的前置与物资 | FRM005/PRO010/PRO007/PRO001/W08/W10/W11；具名队伍是可设计本地合同，非猜游戏专用请求 |
+| X12 联盟商船/Fort | 单船补货、应聘船长和Fort普通捐赠已有；商船收益补购、隐藏跨玩法占用及Fort其余操作未全 | BIZ-R05/PRO002/W09；cargoFill不等GuildShip、Aid不等Fort |
+| X13 装备厂/Pet/其余养成 | 锻造MAKE/PICK、Pet FEED和成长子集已有；通用成本、培育成熟身份、替换未激活及完整实例结算缺 | BIZ-R07/R08/R09/W07；只迁移纯算法和明确分支，不能搬独立预算/客户端 |
+| X14 农田/包/委任 | 单田种收、委任减时水位/种子作物投影和明确自选包已有；批量农田结算/全天覆盖缺，预测不入库存 | BIZ-R14/R16a–h/W04；水位是用户策略，非服务器事实；包不明不自动打开 |
+| X15 其他阵容/藏品 | 普通图纸解锁、整队预设、极限复制、远征阵容和古董成长子集已有；其他模式、科技重置及完整范围未全 | FRM005/PRO010/PRO007/PRO001/W08/W10/W11；具名队伍是可设计本地合同，非猜游戏专用请求 |
 | X16 世界宝藏/资源田 | 派舰后争夺/占有/战果/结算奖励、赛季/次数、资源田占领/放弃权威身份 | BIZ-R11/PRO009及原资源田/W14；派遣成功只确认派遣 |
-| X17 免费日常增强 | 邮件分页/附件、挂机领取依赖、floaterId、合法礼包码、在线免费奖、招募/点金/试炼真实资格 | BIZ-R10/R12a/R15及原子Action/W14/W16；不创建任意领取接口，不自动转付费 |
-| X18 季节活动局身份 | R17a–h开放期/活动券/贡品、敕令session/rune合法0/答案来源、累计奖与签到权威已领 | BIZ-R17a–h/W17；缺答案不随机作答，未知开局不重复开，未遇真实活动不标已验 |
+| X17 免费日常增强 | 邮件有界枚举/单封普通附件、挂机等级奖励、免费招募点金/试炼已有；实例附件/时段收益/VIP/订单档/拾荒码/在线奖缺 | BIZ-R10/R12a/R15及原子Action/W14/W16；不创建任意领取接口，不自动转付费 |
+| X18 季节活动局身份 | 可信签到前置观察已有；完整目录、日界资格成本/领取复读及幽都敕令等局身份仍缺 | BIZ-R17a–h/W17；缺答案不随机作答，未知开局不重复开，未遇真实活动不标已验 |
 
-14是原95项必要闭环的BLOCKED_EVIDENCE需求数，不是X表行数，也不是全部Inventory未知原子分支数量。X01–X18是一组或多组需求共享的证据任务，不能相加计算新需求。缺证据不删除原ID，不把NOT_EXERCISED改通过。只有外证阻塞的子分支停止，已有合法依赖与独立模块继续施工。
+不沿用旧快照14项BLOCKED_EVIDENCE汇总数，冻结按当前需求行和具体操作判断。X01–X18是一组或多组需求共享的证据任务，不能相加计算新需求。缺证据不删除原ID，不把NOT_EXERCISED改通过。只有外证阻塞的子分支停止，已有合法依赖与独立模块继续施工。
 
 ### 12.2 风险与处理优先级
 
-| 风险 | 影响 | 前置措施 / 验收门 |
-|---|---|---|
-| P0 UNKNOWN没有权威解除入口 | 重启后正确阻断但产品无法恢复，误清锁会重复写 | W01追加证据式恢复；原历史/预算保留；E21/E22 |
-| P0 多进程/NAS写所有者缺口 | 单账号多Client或丢失history更新，破坏预算与许可隔离 | W01单服务写所有者/CLI委托；双进程/NAS断连离线测试；E23 |
-| P0 授权/支付边界 | Stage门控差异、新节点可能绕旧白名单，D6可能被H确认误解 | 最小共用gate；命名adapter及静态schema；钻石/开发凭证硬拒，E20负向 |
-| P1 单批预算不是run总预算 | 多节点/多轮累加越过总额，预计收入提前使用 | W02父预算/子预留/UNKNOWN不返；W20累计集成 |
-| P1 历史只读通过被说成真实写通过 | 导致Owner无法判断实际交付风险 | 每条证据绑定Git/工作树/资产/动作和四层结果，PHASE2升级重列E03 |
-| P1 心跳首Pong历史失败 | E01尚可能先阻断最终所有业务真实验收 | W03离线FakeClock/loop delay与脱敏时序；无因果证据不改阈值/Token |
-| P1 证据及活动季节性 | 部分业务不能凭协议名完成或当期无法真实验 | X任务提前静态并行，R7与R8分别记录；季节分支未验证不能宣称完整真实交付 |
-| P1 ignored资产不可复现 | 克隆/新环境缺协议配置地图，测试和运行无可靠基线 | W03本地来源manifest/哈希/恢复说明；缺资产fail-closed |
-| P2 UI/单Service职责增长 | 多页重复决策或再建执行器，提高维护与安全成本 | adapter拥有规则，页面只展示，公共文件单人集成；仅扩真实缺口接口 |
-| P2 需求口径冲突 | 无限循环/自动重试与D8/D9、有成本解锁与D6冲突 | 有界scheduler/明确限频停止；原ID保留，调整原因兼容性写变更记录，不偷改需求 |
+统一运行时合同已有保护，后续必须维持所有者/身份/授权/父预算/持久化/独立复读和UNKNOWN零重放。风险集中在缺证领域错误外推、旧入口绕行、日界/收益/结算身份不足、资产来源缺口及历史离线证据误标当前真实通过。按变更范围定向验证；原1000ms心跳失败证据保留，无因果证据不放宽。全范围冻结后统一R7，R8另授权。
 
 ### 12.3 Owner决策登记（本轮不请求真实操作许可）
 
@@ -1555,9 +1539,9 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 | O01 全产品范围与计数口径 | 原95C、全部原Inventory目标与参考子项、42P及8S均纳计划，273不作为独立需求相加 | 默认完整范围，不要求逐个无C项再次批准。仅全新未在原资料中的需求另列变更；本轮不自行开发 |
 | O02 无权威全量日报 | 若X01证实服务器/客户端无法提供完整全来源日量 | 保留C112未完成；可由Owner明确将需求改为工具确认产量并调整基线/DoD，不能默默把partial当完成 |
 | O03 只有付费实现路径 | X09或其他具体分支若证实仅RUBY/付费 | D6不可解除；Owner可接受禁用描述及明确范围排除，或保留产品阻塞。H确认不能让付费合法 |
-| O04 自动化产品合同 | 原需求含自动切阵/日周/重复运行，现有每ACTION暂停授权 | 推荐保留逐批模式并新增一次有限run合同：账号、能力白名单、具体策略、期限/最大轮次/时长/资源累计上限、撤销与重启不续；不授无限未知动作许可。路线图审阅确认合同后连续实现 |
-| O05 部署写所有者 | 当前是本地Console/NAS文件 | 推荐单服务唯一写所有者+CLI委托，避免先建分布式系统；若要求多服务并发，先调整W01为租约/fencing/CAS并重新评估依赖 |
-| O06 “极限通关”复制源 | C215有原定义但当前无可信源模型 | 先定义合法源战报/同账号/英雄映射、缺英雄处理与预览；本地算法和fixture可先做；不猜未证实查询或随机换英雄 |
+| O04 自动化产品合同 | 原需求含自动切阵/日周/重复运行，现有每ACTION暂停授权 | 已实现并保留逐批模式和有限run合同：账号、能力白名单、具体策略、期限/最大轮次/时长/资源累计上限、撤销与重启不续；不授无限未知动作许可。沿用原实现继续接线，不等逐项审批 |
+| O05 部署写所有者 | 当前是本地Console/NAS文件 | 已实现单Console所有者及独立CLI写拒绝，沿用原fence；若要求多服务并发，先调整W01为租约/fencing/CAS并重新评估依赖 |
+| O06 “极限通关”复制源 | C215可信源调查映射和准备复制已实现 | 复用原extreme-formations API/专业页与Formation链；缺英雄或未知模式保守拒绝，不重复实现复制源 |
 | O07 最终真实验收范围 | R8具体账号、目标、次数、预算、不可逆动作、恢复/清理、活动可用窗口 | R7通过后生成当时新鲜候选的具体清单，再取得一次统一验收范围授权；本报告与历史过期许可不能代替 |
 | O08 过季/未自然出现异常 | 活动窗口、真实败北/限频/账号失效/UNKNOWN可能无法安全重现 | 离线故障证明照常完成，真实状态保留REAL_UNVERIFIED/NOT_EXERCISED；若Owner接受阶段性交付须明示保留项，不能称全场景真实PASS |
 
@@ -1565,321 +1549,316 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 
 ### 12.4 可连续交给Codex的施工合同
 
-1. 每次开工重新检查cwd/branch/HEAD/status/staged/unstaged/untracked与上轮记录；先读适用AGENTS/TREE及本报告、目标工作包、原ID和当前Function。HEAD变化先分析，不reset，不覆盖或删除用户文件，不自动merge main/push。
-2. 一次领取一个边界明确的W包或已声明并行子边界；按第7节复用矩阵搜索Function/调用者/API/UI/测试与成本来源，再提交最小实现方案。仅缺失Symbol才新建，沿用现有目录，不搬整套reference client/server/loop或另建执行器。
-3. 按工作包15字段实现。写前可靠状态/精确身份/成本/权限、共享ResourceLedger与Operation、D6、可撤销取消/Abort、迟到和UNKNOWN保护、权威效果复读、持久History不得为赶进度省掉。只读/纯函数不强行制造写历史或预算消耗。
-4. 先完成原Function到adapter的必要桥接和对应离线测试，再做页面/节点。每个包保留原断言和失败证据；只能修实现或记录真实需求变更，不能删除/降级测试制造PASS。采用真实本地协议编码与合成状态，无真实Token/连接；缺资产/证据显式失败或阻塞。
-5. 实现后运行与变更相关的必要定向测试，记录Git提交/工作树与资产哈希、命令、通过/失败/跳过、首错及未覆盖分支。阶段结束独立提交（未来开发获准后），保留完整原证据和变更兼容性记录；本轮报告不提交。
-6. 完成一个包后更新本报告能力账本/接口复用/依赖/DoD状态与交接，自动选下一个依赖已满足且不冲突的包继续。共享文件由集成人顺序修改，不并行复制公共实现。仅受阻子分支留BLOCKED，其他独立包继续。
-7. R1–R6每阶段的退出门是实现与必要离线证明，无逐页面真实游戏验收。所有计划内包与外证闭合后冻结树进入R7统一全量离线；R7失败修实现并按影响补测，不能带未明失败进入R8。
-8. R7通过后提供E01–E24每个必测子分支的具体账号/目标/请求/预算/耗时/清理清单，Owner审阅授权后统一R8。请求发送、Response、游戏状态变化、权威复读四层分别记录。发生UNKNOWN/限频/首错，停止受影响链保留原证据，不换账号/目标绕保护。
-9. 最终产品完成必须同时满足：原需求全覆盖（D6明确禁用分支有记录）、全部Function/调用者/API/UI/权限/预算/生命周期/History闭环、全部计划离线证明、真实矩阵全部必测分支通过或经Owner书面修改交付范围；剩余未验和外证阻塞不能隐藏。
+按原DAG选依赖已满足的一项，直接复用实现、定向验证和本地提交；具体缺证记原C/W/X后冻结，立即继续独立能力。只维护顶部W和当前需求表，不新增Gate/编号/报告。禁止真实连接、读Token、MITM/CA、push/merge/reset/rebase/clean。原DoD和完整交付条件保持：全范围与API/UI/Workflow/预算/历史/生命周期闭环，R7全量离线和单独授权R8；未验不标通过。
 
-后续交接单最少包含：冻结HEAD/状态；领取W与原C/P/S/Inventory IDs；复用Function及新扩展必要性；依赖已完成证据；修改文件及共享冲突；精确测试与版本；未决X/O及不变量；完成的DoD；下一个可开工W。无需再建立新目录或新编号体系。
+下一批按价值和当前依赖依次推进（本轮只核对文档，不新增玩法）：
+
+- W19 / BIZ-D08、C605、P6-2：核对原日常1008与现有Trade单步合同映射；业务身份可证明时接原compileUnifiedExecution和表单。明确港口/物品/数量/动作、父预算和历史；另用task-rewards只读观察完成状态，不把Trade写成功当作1008完成。缺映射仅冻结该驱动，不创造资格或新贸易算法。
+- W19 / C604/C606、BIZ-L03/L04、S7：未迁移入口补原run→node→batch→action及拒绝/UNKNOWN关联，复用Service/History/Memory；定向覆盖跨Tasks/Dailies/Loop同身份、只读重启、迟到与未决零重放。旧写handler保持403，不重建执行器。
+- W21 / P7-2/P7-3：根据实际统一入口显示所属run/节点/批次和缺证原因，追溯同一Function；只补页面关联差距，不重复已完成表单或历史查询。
+- 若以上仅剩权威冷却/日界外证缺口，保留policyCoverage=false，转原W03地图/来源和其他原包可静态证明的独立缺口。全范围冻结前不提前R7；E01–E24具体R8授权清单仍待所有独立工作完成后生成。
 
 ### 12.5 本轮文件边界与文档校验
 
-本轮输出仅docs/ROADMAP_RECONCILIATION.md；原五份未跟踪输入、原验收/增量报告与全部work/e2e证据保留。没有生产源码/API/协议/权限/业务规则修改，没有完整测试重跑，没有真实账号/Runtime/Stage/代理/CA操作，没有Git提交或推送。文档静态校验结果在末尾登记，不把文档校验称为功能测试通过。
+本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
 
-
-
-## 附录A — 原Inventory 273项逐项源码复核（a505019）
+## 附录A — 原Inventory 273项逐项源码复核（当前fc68c50）
 
 本表按原文ID行顺序保留273项；它们是函数、数据、工具、参考子项、协议族的不同粒度，并非273项独立产品需求。原始95个Cxxx按主表计数；非C项按完整Inventory默认纳入对应工作包；Owner只裁定语义冲突或D6无允许路径，不默认移出交付范围。`EXISTING_FUNCTION`仅指该行标题所述Function存在，UI/API及端到端缺口另看profile和覆盖；PARTIAL不继承原报告结论。所有行必须与以下12维profile连读，行内缺口优先覆盖profile。
 
 | Profile | 1 Function | 2 调用者 | 3 GameClient | 4 API | 5 UI | 6 校验/权限 | 7 Ledger | 8 OperationService | 9 ExecutionHistory | 10 取消/超时/迟到/UNKNOWN | 11 离线测试 | 12 真实游戏 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 行内状态 | collectState/server cachedClient/对应survey | 读链；缓存浏览不发请求 | 既有GET/显式refresh；条目内只读边界 | 总览/Explorer/既有业务预览；非独立写页 | 账号scope、READY/缓存可靠性 | 读能力N/A | 读能力N/A；Phase3survey可经operation管理 | 只读无业务执行历史；采集outcomes保留 | GameClient读取消+generation；失败不当零数据；无写UNKNOWN | tests/data-catalog,explorer-api,server-runtime,snapshot-precision,data-safety；实际条目专项见主表 | REAL_UNVERIFIED(a505019)；旧4094a69+未提交工作树历史48/48 REAL_VERIFIED，后来纳入61ce3c0；Phase2五查询历史另列，不外推当前完整48项 |
+| R | 行内状态 | collectState/server cachedClient/对应survey | 读链；缓存浏览不发请求 | 既有GET/显式refresh；条目内只读边界 | 总览/Explorer/既有业务预览；非独立写页 | 账号scope、READY/缓存可靠性 | 读能力N/A | 读能力N/A；Phase3survey可经operation管理 | 只读无业务执行历史；采集outcomes保留 | GameClient读取消+generation；失败不当零数据；无写UNKNOWN | tests/data-catalog,explorer-api,server-runtime,snapshot-precision,data-safety；实际条目专项见主表 | REAL_UNVERIFIED(fc68c50)；旧4094a69+未提交工作树历史48/48 REAL_VERIFIED，后来纳入61ce3c0；PHASE2首轮10项只读查询历史见§4.4，不外推当前完整48项 |
 | L | 行内状态 | server/page本地配置/纯计算 | N/A：不新增游戏请求 | 对应本地GET/POST或页面纯交互；不是任意写API | 既有配置/预览/日志页面；缺口行覆盖 | 精确账号、结构校验，敏感本地变更确认 | N/A，纯规则可接账本见行 | N/A（本地配置/展示） | N/A或仅读取；不得称写执行已留存 | 页面account+generation；本地错误显式 | tests/account-view,order-rules,order-rules-store,order-rules-api,order-rules-view,data-safety | REAL_UNVERIFIED；本地UI离线不等于游戏通过 |
 | T | 行内状态 | 指定模块/CLI/工具内调用 | 仅底座/指定工具有；纯本地工具N/A | 内部Function或指定安全API；非通用游戏写 | 工具通常无UI；行内已有展示除外 | 参数/凭证/D6/脱敏/路径与归属按模块 | N/A，底座不拥有业务预算 | N/A，底座不当独立执行业务 | N/A，日志/系统journal不等于执行账本 | 底座GameClient/capture有生命周期；本地纯工具N/A；具体工具非统一可取消 | tests/client-lifecycle,client-unverified-write,cli-safety,data-safety,capture-*,mitm-*,proxy-backup；工具selftest历史 | REAL_UNVERIFIED；历史登录/清理证据仅按主报告场景 |
-| C | 行内状态 | app CLI/runLoop/已有runAction或runHeroPlan/runDailies/runTasks | 已接请求发送 | 历史业务Web写路由403；读预览不等于写可达 | 预览可有；写按钮隐藏/缺失 | CLI allowMutate+D6；业务前置强弱见行 | heroes/world已接；普通日常/原子act未统一共享预算，须补适配 | 未统一接入（城市订单专用桥见B） | CLI/loop多内存结果；未统一持久 | PHASE1已逐步取消、迟到及UNKNOWN停止；多数旧写缺权威复读，不认静默成功 | tests/actions-safety,dailies-safety,dailies-state-reliability,resource-budget,execution-lifecycle,cli-safety及selftest；缺业务专项不得外推 | REAL_UNVERIFIED |
-| B | 行内状态 | operation-service → city/order adapter → 原world/action | 已接原GameClient | /api/operations survey/plan/authorize/execute/stop/history | 建筑/生产/订单执行/历史页 | 精确账号、CSRF、计划哈希、单批一次性授权、fresh precheck、D6 | 是：计划与执行共享，不返还未确认消耗 | 是 | 是：账号级原子JSON、恢复未决保守阻塞 | 是：AbortSignal/generation/UNKNOWN/RATE_LIMITED/迟到保留 | tests/city-operations,order-execution,operation-service,operations-api,operation-adapters-integration,execution-history,production-*；历史609@9d97065，后续845回归范围见主报告 | REAL_UNVERIFIED；9d97065只读/预览部分REAL_VERIFIED，0业务写帧 |
-| G | 行内状态 | registered adapter → executeBusinessOperation/OperationService；或WorkflowRunner | adapter survey与写调用；阻塞动作不派发 | /api/gameplay + /api/operations；工作流 /api/workflows | gameplay通用配置/候选/授权页；Workflow有限编辑器 | 精确账号/CSRF、模块严格配置、单批授权、身份/状态/成本复查、D6 | 是；只读/空成本N/A；权威成本缺则阻塞 | 是；纯只读策略无需执行 | 写execute是operation历史；workflow独立store历史；只读survey/view不写业务ExecutionHistory，PLAN不是已执行历史 | 是；UNKNOWN锁/取消/迟到保护继承；未实现动作没有效果确认 | tests/formation,alliance,museum,treasure,fleet,naval-rules,workflow,gameplay-*,stages-formation；历史845+29实现f300a35/记录a505019 | REAL_UNVERIFIED |
-| S | 行内状态 | server direct Stage Runner；可选有限stage Function | 已接ChallengeStage | /api/stages + 有限stage节点operations | 主线页面；配置缺口见行 | LEFT仅主线、READY、账号互斥、未决锁、显式授权 | direct主线无材料ledger；stage操作空成本 | 直启独立；有限stage Function可接OperationService | 直启内存200条；包装执行有持久history，不能冒称全Runner已持久 | AbortSignal、runId/generation、迟到保护、RATE_LIMITED停止；发送与效果须区分 | tests/stages*,stage-function,gameplay-locks,gameplay-execution；历史845+29范围见主报告 | REAL_UNVERIFIED(a505019)；历史旧工作树137关成功、B3的156胜/157限频停止受限REAL_VERIFIED；10–11秒及stopOnDefeat战败分支未真实验证 |
+| C | 行内状态 | 原CLI/旧run保留；目标写未接共享桥 | 旧请求存在不等于允许派发 | 旧通用写/Tasks/Dailies/Loop路由403 | 可有只读预览；非完整受控写页 | 独立CLI写在读凭证前拒绝，参数不覆盖D6 | 旧预算不冒充共享账本 | 目标写未接；已迁移子集列G/B | 旧内存不冒充共享持久历史 | 保留旧取消/迟到保护；不凭响应推定成功 | legacy safety/cli-safety仅证明所测范围 | REAL_UNVERIFIED |
+| B | 行内状态 | operation-service → city/order adapter → 原world/action | 已接原GameClient | /api/operations survey/plan/authorize/execute/stop/history | 建筑/生产/订单执行/历史页 | 精确账号、CSRF、计划哈希、单批一次性授权、fresh precheck、D6 | 是：原Ledger及父资源/配额/UID预算，不返还未确认消耗 | 是 | 是：账号级原子JSON、恢复未决保守阻塞 | 是：AbortSignal/generation/UNKNOWN/RATE_LIMITED/迟到保留 | tests/city-operations,order-execution,operation-service,operations-api,operation-adapters-integration,execution-history,production-*；历史609@9d97065，后续845回归范围见主报告 | REAL_UNVERIFIED；9d97065只读/预览部分REAL_VERIFIED，0业务写帧 |
+| G | 行内状态 | registered adapter → executeBusinessOperation/OperationService；或WorkflowRunner | adapter survey与写调用；阻塞动作不派发 | /api/gameplay + /api/operations；工作流 /api/workflows | 原专业子区/通用候选授权页；原生Workflow编辑器 | 精确账号/CSRF、模块严格配置、单次或有限run授权/父预算、身份/状态/成本复查、D6 | 是；只读/空成本N/A；权威成本缺则阻塞 | 是；纯只读策略无需执行 | 写execute是operation历史；workflow持久store历史/共享execution-memory拒绝与UNKNOWN关联；只读survey/view不写业务ExecutionHistory，PLAN不是已执行历史 | 是；UNKNOWN锁/取消/迟到保护继承；未实现动作没有效果确认 | tests/formation,alliance,museum,treasure,fleet,naval-rules,workflow,gameplay-*,stages-formation；历史845+29实现f300a35/记录a505019 | REAL_UNVERIFIED |
+| S | 行内状态 | 原StageRunner或有限Stage Function | 仅授权MAINLINE ChallengeStage | 原stages或operations/workflows | 运行/首败开关/逐场历史 | 主线LEFT/READY/所有者/互斥/未决/授权 | 空成本；有限Function父动作预算 | 独立Runner保留；有限Function接原Service | stage-history逐场持久；Function关联共享历史 | runId/generation/取消/限频/迟到；重启不恢复战斗 | 原stages*/stage-function/stage-history/共享测试 | REAL_UNVERIFIED；旧137关、156胜/157限频边界见§4.4 |
 | P | PROTOCOL_ONLY或行内PARTIAL | 无目标写调用者；有参考/读探针不计业务写 | 仅底座和可能只读数据；目标写未接 | 无目标写API | 原始Explorer可看不等于业务UI | 业务校验/授权未实现或明确安全阻塞 | 未接目标业务 | 未接目标业务 | 无该写业务历史 | 未形成该写闭环；协议超时规则不能代替业务确认 | 只有协议/codec/读数据可能有测试；无目标业务Offline Verified | REAL_UNVERIFIED |
 | N | NOT_IMPLEMENTED或行内PARTIAL | 无该算法/完整业务调用者；附近基础函数行内列明 | N/A或基础数据已有 | 无该完整业务API | 无完整业务UI | 未实现；证据未知应阻塞 | 未实现该能力预算 | 未实现该业务桥 | 无该业务独立历史 | 未实现该闭环，不推定安全成功 | 无该业务专项通过证据 | REAL_UNVERIFIED |
 
-profile中的测试是继承的相关测试族索引，不能把整个族通过当作任一尚未实现分支已通过；本轮只读取未重跑。所有行保留原 Inventory 作为索引，不把旧基线行号当当前证据；本表行内位置均按当前a505019源码重新定位。
+profile中的测试是继承的相关测试族索引，不能把整个族通过当作任一尚未实现分支已通过；本次文档核对未重跑。所有行保留原 Inventory 作为索引，不把旧基线行号当当前证据；本表按fc68c50逐行核对并移除失效行号。原能力名内“当前未接”等字样是原Inventory历史标题，不是本版状态。DAT仅表示只读查询，不继承所属C的写能力。本版本R7/R8均NOT_RUN。
 
 | 原ID | 原能力名 | Cxxx / 非C补充项 | 当前Function维度 | 当前实际函数 / 源码证据 | 12维Profile | 关键剩余缺口 / 限制 |
 |---|---|---|---|---|---|---|
-| PLT-001 | 平台：本机 Web Console | C001 C002 | EXISTING_FUNCTION | createConsole → PAGE; src/server.mjs:48 | L | 平台本机页面已存在；配置入口覆盖仍有限 |
-| PLT-002 | 账号列表与状态 | C002 | EXISTING_FUNCTION | loadStore/describeAccount; src/accounts.mjs:57,164; src/server.mjs:309 | R | 账号列表建空Session不等于Runtime |
-| PLT-003 | 账号选择/切换活动账号 | C002 | EXISTING_FUNCTION | setActive/pickAccount; src/accounts.mjs:129,135 | L | 切换选择不隐式登录 |
-| PLT-004 | 账号重命名 | C002 | EXISTING_FUNCTION | saveStore; src/accounts.mjs:79 | L | 本地账号标签 |
-| PLT-005 | 删除账号及会话取消 | C002 C606 | EXISTING_FUNCTION | cancelSession/removeAccount; src/server.mjs:163; src/accounts.mjs:122 | L | 取消运行且保留不确定写历史 |
-| PLT-006 | 凭证脱敏元信息展示 | C001 | EXISTING_FUNCTION | describeAccount/redact; src/accounts.mjs:164; src/security.mjs:18 | L | 不公开真实秘密 |
-| PLT-007 | 凭证导入、同账号更新和旧单账号读取 | C001 | EXISTING_FUNCTION | accountFromCredential/upsertAccount/saveStore; src/accounts.mjs:36,88,79 | T | 安全CLI可导入；无产品化Web扫码/导入 |
-| PLT-008 | 鉴权输入校验 | C001 | EXISTING_FUNCTION | validateCredentials; src/security.mjs:60 | T | 正常账号鉴权；D6禁止开发凭证 |
-| PLT-009 | 显式登录和单账号连接 Single-flight | C001 | EXISTING_FUNCTION | connect; src/server.mjs:237; GameClient src/client.mjs:36 | R | 显式connect；single-flight |
-| PLT-010 | 显式断开/关闭/失效清理 | C002 C606 | EXISTING_FUNCTION | cancelSession/GameClient.stop; src/server.mjs:163; src/client.mjs:532 | R | 原心跳超时样本保留；清理不是业务成功 |
-| PLT-011 | 心跳、序号、ACK/NACK、失效通知 | C001 C005 | EXISTING_FUNCTION | sendPing/tryHandlePong/tick; src/client.mjs:367,372,477 | T | 1000ms首Ping超时需离线诊断而非直接放宽 |
-| PLT-012 | 请求关联与迟到响应隔离 | C005 | EXISTING_FUNCTION | request/sendWatch; src/client.mjs:211,266 | T | 迟到/未决保护存在；调用者须验证业务效果 |
-| PLT-013 | 多账号 Session、取消和防旧结果写入 | C002 C605 | EXISTING_FUNCTION | newSession/assertCurrent/activeTask; src/server.mjs:91,199,187 | T | 账号级内存隔离；非跨进程锁 |
-| PLT-014 | 账号页面请求代次 | C002 | EXISTING_FUNCTION | createAccountViewGuard; src/page.mjs:3 | L | 页面scope/generation防旧结果 |
-| PLT-015 | 显式采集和缓存刷新边界 | C004 | EXISTING_FUNCTION | refresh/collectState; src/server.mjs:277; src/game.mjs:98 | R | 48查询采集与缓存浏览分离 |
-| PLT-016 | 总览、缓存明细和 Snapshot 导出 | C004 | EXISTING_FUNCTION | overview/cachedClient/summarize; src/server.mjs:328,367; src/game.mjs:131 | R | 21项仍原始；扩展玩法另做读模型 |
-| PLT-017 | 实时区服列表 | C003 | EXISTING_FUNCTION | listWorlds; src/worlds.mjs:51 | R | 实时只读区服列表 |
-| PLT-018 | 全区服分组和指定区服登录 | C003 | EXISTING_FUNCTION | listGroup/enterWorld; src/worlds.mjs:60,68 | C | CLI已有；Web enter仍403、可能创建角色 |
-| PLT-019 | 运行事件和递归脱敏 | C606 | EXISTING_FUNCTION | emit/trace/redact; src/server.mjs:61,76; src/security.mjs:18 | L | SSE有限内存，不等于所有持久运行历史 |
-| PLT-020 | Web 游戏写权限边界 | C603 C409 | EXISTING_FUNCTION | route gates; src/server.mjs:646; assertPaymentAllowed src/actions.mjs:277 | T | 新增受控operations/gameplay/workflow路由；旧写白名单仍拒绝 |
-| PLT-021 | Stage 状态/开始/停止产品入口 | C201 C202 C203 C204 C205 | EXISTING_FUNCTION | stageView/createStageRunner; src/server.mjs:602; src/stages.mjs:114 | S | 真实挑战和10–11秒限频效果待最终验收 |
-| PLT-022 | 独立凭证捕获并导入 | C001 | EXISTING_FUNCTION | runCaptureCli/createCaptureController; tools/capture-credentials.mjs:18; src/capture.mjs:12 | T | 安全CLI；Web旧捕获handler不可直接解禁 |
-| PLT-023 | 捕获事务和崩溃恢复 | C001 非C:捕获崩溃恢复 | EXISTING_FUNCTION | recoverCapture/startCapture/stopCapture; src/capture.mjs:138,166,266 | T | 本轮未启动或读真实凭证 |
-| PLT-024 | MITM 主机与TLS安全 | 非C:MITM安全 | EXISTING_FUNCTION | createProxy; tools/mitm-proxy.mjs:71 | T | 默认精确主机白名单；不在本轮运行 |
-| PLT-025 | CA生成、只读精确查询与归属清理 | 非C:CA归属 | EXISTING_FUNCTION | queryCurrentUserRoot/createCaManager; tools/mitm-ca.mjs:21,84 | T | 只归属receipt清理；本轮未操作CA |
-| PLT-026 | Windows代理版本化备份和恢复 | 非C:代理恢复 | EXISTING_FUNCTION | createProxySettings; tools/proxy-settings.mjs:19 | T | 版本化备份/恢复；本轮未操作代理 |
-| PLT-027 | B2定向首错诊断与心跳发送白名单 | C001 非C:首错诊断 | EXISTING_FUNCTION | createB2Diagnostics; tools/b2-harness.mjs:4 | T | 真实Phase2首Ping超时留待最终诊断 |
-| PLT-028 | CLI账号管理与开发操作 | C001 C003 C603 | EXISTING_FUNCTION | accountsCli/main; src/app.mjs:686,750 | C | CLI独立显式授权；不能等同Web产品完成 |
-| PLT-029 | CLI日志/导出安全差异（明确待办） | C001 C002 | EXISTING_FUNCTION | createCliOutput/loadCliCredential; src/cli-safety.mjs:8,49; accountsCli src/app.mjs:686 | T | PHASE1已补普通输出脱敏；危险旧展示不作为可用产品入口 |
-| PLT-030 | Protobuf载入和注册器沙箱 | C005 | EXISTING_FUNCTION | loadProtocol; src/proto.mjs:44 | T | ignored生成协议资源需可复现恢复 |
-| PLT-031 | 协议帧编解码、LZ4 | C005 | EXISTING_FUNCTION | createCodec; src/codec.mjs:15; compressBlock/decompressBlock src/lz4.mjs:53,7 | T | 传输实现存在不等于业务完成 |
-| PLT-032 | 协议字段和消息反查 | C005 非C:协议反查 | EXISTING_FUNCTION | fields/findType; tools/describe.mjs:42,30 | T | 部分嵌套显示unknown需生成源码核对 |
-| PLT-033 | 压缩客户端上下文定位 | 非C:压缩客户端定位 | EXISTING_FUNCTION | CLI source; tools/ctx.mjs:1 | T | 纯本地定位工具 |
-| PLT-034 | 微信包解密/解包 | 非C:wxapkg解包 | EXISTING_FUNCTION | decrypt/unpack; tools/wxapkg.mjs:10,24 | T | 运行资产不随Git提交 |
-| PLT-035 | 本地配置表发现、提取和查询 | C004 非C:配置恢复 | EXISTING_FUNCTION | findConfigPack/extractTables/loadConfig; src/config.mjs:29,38,65 | T | 恢复来源/哈希要求保留 |
-| PLT-036 | 固化配置包 | 非C:配置固化 | EXISTING_FUNCTION | CLI source; tools/sync-config.mjs:1 | T | 本轮未同步或访问网络 |
-| PLT-037 | 图集提取和本地展示 | C004 非C:图集显示 | EXISTING_FUNCTION | iconIndex/atlasFile; src/art.mjs:16,59 | R | 缺资源可降级 |
-| PLT-038 | 图集资源同步 | 非C:图集同步 | EXISTING_FUNCTION | sync-art helpers; tools/sync-art.mjs:44 | T | 本轮未同步或网络下载 |
-| PLT-039 | 客户端枚举名称提取 | 非C:枚举名称提取 | EXISTING_FUNCTION | CLI source; tools/build-names.mjs:1 | T | 名称不代表业务Function |
-| PLT-040 | 扩展玩法实时只读探针 | C601 非C:扩展探针 | EXISTING_FUNCTION | runDailiesProbe/runWorldProbe; tools/probe-dailies.mjs:8; tools/probe-world.mjs:9 | C | PHASE1已改安全账号/脱敏；非48项Snapshot；本轮不运行 |
-| PLT-041 | 登录拒绝在线诊断 | 非C:在线登录诊断 | EXISTING_FUNCTION | CLI source; tools/check-login-failure.mjs:1 | C | 在线工具；本轮不执行 |
-| PLT-042 | 离线回归入口 | 非C:离线回归 | EXISTING_FUNCTION | src/selftest.mjs:1; package.json:8; tools/selftest-registry.mjs:1 | T | 历史结果需带提交；本轮未重跑 |
-| PLT-043 | 游戏协议全自动发现/通用工作流设计器 | C607 非C:自动协议发现 | PARTIAL | listBusinessFunctions/createWorkflowRunner; src/function-registry.mjs:10; src/workflow.mjs:110 | G | 有限Workflow存在；自动协议发现仍无；目录覆盖6+stage |
-| DEX-001 | 48 项查询单次采集 | C004 C005 C601 | EXISTING_FUNCTION | collectState; src/game.mjs:98 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-002 | 12 域目录与 48 项浏览 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-003 | 27 个现有业务解析视图 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-004 | 21 个无专门解析的原始响应 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-005 | 状态、错误、采集时间 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-006 | 按域、业务名和协议名搜索 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-007 | 安全 JSON 复制/导出 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-008 | int64 精度保留 | C004 C005 C601 | EXISTING_FUNCTION | toSnapshotJson; src/game.mjs:69 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DEX-009 | 跨账号缓存与迟到响应隔离 | C004 C005 C601 | EXISTING_FUNCTION | DATA_CATALOG/exploreSnapshot; src/data-catalog.mjs:72,91; UI src/page.mjs:1 | R | 48查询、27解析、21原始共用目录；已有历史离线证据；a505019未真实完整48项验收；旧4094a69+未提交版本历史48/48成功，不能跨版本外推 |
-| DAT-001 | 库存道具 / 资源与生产 | C113 C123 C221 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:8; DATA_CATALOG src/data-catalog.mjs:22 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-002 | 玩家资源 / 资源与生产 | C113 C123 C102 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:9; DATA_CATALOG src/data-catalog.mjs:23 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-003 | 英雄 / 英雄养成 | C221 C207 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:10; DATA_CATALOG src/data-catalog.mjs:24 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-004 | 英雄阵型 / 英雄养成 | C211 C207 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:11; DATA_CATALOG src/data-catalog.mjs:25 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-005 | 邮件 / 日常与成长任务 | C511 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:12; DATA_CATALOG src/data-catalog.mjs:26 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-006 | 装备 / 英雄养成（收藏与辅助养成） | C229 C230 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:13; DATA_CATALOG src/data-catalog.mjs:27 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-007 | 徽章 / 英雄养成（收藏与辅助养成） | C227 C228 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:14; DATA_CATALOG src/data-catalog.mjs:28 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-008 | 招募信息 / 招募与商店 | 非C:招募 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:15; DATA_CATALOG src/data-catalog.mjs:29 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-009 | 成就 / 日常与成长任务 | C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:16; DATA_CATALOG src/data-catalog.mjs:30 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-010 | 每日任务与活跃度 / 日常与成长任务 | C502 C503 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:17; DATA_CATALOG src/data-catalog.mjs:31 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-011 | 每日赠礼 / 日常与成长任务（招募与商店） | C513 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:18; DATA_CATALOG src/data-catalog.mjs:32 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-012 | 主线与支线任务 / 日常与成长任务 | C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:19; DATA_CATALOG src/data-catalog.mjs:33 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-013 | 新手引导 / 日常与成长任务 | 非C:新手引导 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:20; DATA_CATALOG src/data-catalog.mjs:34 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-014 | 挂机收益与点金摘要 / 日常与成长任务（资源与生产） | 非C:挂机收益 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:21; DATA_CATALOG src/data-catalog.mjs:35 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-015 | 月卡 / 招募与商店（活动与赛季） | C513 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:22; DATA_CATALOG src/data-catalog.mjs:36 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-016 | 藏品 / 收藏与辅助养成 | 非C:藏品 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:23; DATA_CATALOG src/data-catalog.mjs:37 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-017 | 建筑、生产与居民订单 / 城市建设（资源与生产、居民订单） | C101 C111 C121 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:24; DATA_CATALOG src/data-catalog.mjs:38 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-018 | 鱼类图鉴 / 收藏与辅助养成 | C152 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:25; DATA_CATALOG src/data-catalog.mjs:39 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-019 | 货船 / 舰队与航海 | C131 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:26; DATA_CATALOG src/data-catalog.mjs:40 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-020 | 英雄任命 / 英雄养成 | C221 非C:委任 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:27; DATA_CATALOG src/data-catalog.mjs:41 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-021 | 聊天记录 / 公会与联盟 | 非C:聊天 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:28; DATA_CATALOG src/data-catalog.mjs:42 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-022 | 游戏效果 / 收藏与辅助养成 | 非C:游戏效果 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:29; DATA_CATALOG src/data-catalog.mjs:43 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-023 | 公会摘要 / 公会与联盟 | C302 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:30; DATA_CATALOG src/data-catalog.mjs:44 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-024 | 我的舰队 / 舰队与航海（世界地图） | C401 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:31; DATA_CATALOG src/data-catalog.mjs:45 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-025 | 海盗击杀记录 / 城战与战斗（舰队与航海） | C151 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:32; DATA_CATALOG src/data-catalog.mjs:46 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-026 | 我的资源田 / 世界地图 | C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:33; DATA_CATALOG src/data-catalog.mjs:47 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-027 | 公会科技 / 公会与联盟 | C306 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:34; DATA_CATALOG src/data-catalog.mjs:48 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-028 | 公会订单 / 公会与联盟（居民订单） | 非C:联盟订单 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:35; DATA_CATALOG src/data-catalog.mjs:49 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-029 | 阵型预设 / 英雄养成 | C212 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:36; DATA_CATALOG src/data-catalog.mjs:50 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-030 | 赛季任务阶段 / 活动与赛季（日常与成长任务） | C501 C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:37; DATA_CATALOG src/data-catalog.mjs:51 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-031 | 世界 Boss / 城战与战斗（活动与赛季） | 非C:世界Boss | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:38; DATA_CATALOG src/data-catalog.mjs:52 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-032 | 限时 Boss 开放信息 / 城战与战斗（活动与赛季） | 非C:限时Boss | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:39; DATA_CATALOG src/data-catalog.mjs:53 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-033 | 宠物 / 收藏与辅助养成 | 非C:海兽 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:40; DATA_CATALOG src/data-catalog.mjs:54 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-034 | 赛季排名信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:41; DATA_CATALOG src/data-catalog.mjs:55 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-035 | 周活动 / 活动与赛季 | C501 C515 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:42; DATA_CATALOG src/data-catalog.mjs:56 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-036 | 关卡状态 / 城战与战斗 | C201 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:43; DATA_CATALOG src/data-catalog.mjs:57 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-037 | 周订单 / 活动与赛季（居民订单） | C515 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:44; DATA_CATALOG src/data-catalog.mjs:58 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-038 | 日常计数 / 日常与成长任务 | C502 C503 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:45; DATA_CATALOG src/data-catalog.mjs:59 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-039 | 雷达 / 世界地图 | C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:46; DATA_CATALOG src/data-catalog.mjs:60 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-040 | 环境皮肤 / 收藏与辅助养成 | 非C:环境皮肤 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:47; DATA_CATALOG src/data-catalog.mjs:61 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-041 | 渠道奖励信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:48; DATA_CATALOG src/data-catalog.mjs:62 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-042 | 限时券 / 招募与商店（活动与赛季） | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:49; DATA_CATALOG src/data-catalog.mjs:63 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-043 | 赛季卡 / 活动与赛季（招募与商店） | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:50; DATA_CATALOG src/data-catalog.mjs:64 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-044 | 海盗 / 城战与战斗（世界地图） | C151 C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:51; DATA_CATALOG src/data-catalog.mjs:65 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-045 | 玩家头像框 / 收藏与辅助养成 | 非C:头像框 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:52; DATA_CATALOG src/data-catalog.mjs:66 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-046 | Churn 信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:53; DATA_CATALOG src/data-catalog.mjs:67 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-047 | Ultra 开放信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:54; DATA_CATALOG src/data-catalog.mjs:68 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| DAT-048 | 黑名单 / 公会与联盟 | 非C:黑名单 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs:55; DATA_CATALOG src/data-catalog.mjs:69 | R | 这里只确认只读采集/已有解析，原DATA_ONLY维度保留；不证明对应玩法写入 |
-| BIZ-A01 | 资源与生产：领取挂机本段收益 | 非C:挂机收益 | EXISTING_FUNCTION | ACTIONS.afkDraw → runAction; src/actions.mjs:52,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A02 | 日常成长：领取挂机等级奖励 | 非C:挂机奖励 | EXISTING_FUNCTION | ACTIONS.afkLevelDraw → runAction; src/actions.mjs:59,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A03 | 日常成长：提升挂机等级 | 非C:挂机升级 | EXISTING_FUNCTION | ACTIONS.afkUpgrade → runAction; src/actions.mjs:67,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A04 | 生产：收取工厂成品 | C116 | EXISTING_FUNCTION | ACTIONS.factoryGain → runAction; src/actions.mjs:75,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A05 | 城市：收取建筑产物 | C116 | EXISTING_FUNCTION | ACTIONS.buildingCollect → runAction; src/actions.mjs:83,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A06 | 城市：确认已到期建筑竣工 | C116 | EXISTING_FUNCTION | ACTIONS.buildingFinish → runAction; src/actions.mjs:91,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A07 | 城市：切换自动工作 | 非C:自动工作 | EXISTING_FUNCTION | ACTIONS.buildingAutoWork → runAction; src/actions.mjs:99,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A08 | 生产：设置自动生产产品 | C114 | EXISTING_FUNCTION | ACTIONS.factoryAutoProduce → runAction; src/actions.mjs:107,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A09 | 日常：领取单条任务奖励 | C503 | EXISTING_FUNCTION | ACTIONS.dailyTaskDraw → runAction; src/actions.mjs:115,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A10 | 成就：领取奖励 | 非C:成就领奖 | EXISTING_FUNCTION | ACTIONS.achievementDraw → runAction; src/actions.mjs:123,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A11 | 邮箱：一键领取已读邮件附件 | C511 | EXISTING_FUNCTION | ACTIONS.emailQuickGet → runAction; src/actions.mjs:131,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A12 | 日常：领取活跃宝箱 | C503 | EXISTING_FUNCTION | ACTIONS.dailyRewardDraw → runAction; src/actions.mjs:140,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A13 | 周常：领取活跃宝箱 | C516 | EXISTING_FUNCTION | ACTIONS.weeklyRewardDraw → runAction; src/actions.mjs:148,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A14 | 商店：领取每日免费赠礼 | C513 | EXISTING_FUNCTION | ACTIONS.freeDailyPackDraw → runAction; src/actions.mjs:156,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A15 | 月卡：领取每日权益 | C513 | EXISTING_FUNCTION | ACTIONS.monthCardDaily → runAction; src/actions.mjs:164,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A16 | 主线任务：领奖 | C503 | EXISTING_FUNCTION | ACTIONS.taskDrawMain → runAction; src/actions.mjs:171,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A17 | 支线任务：领奖 | C503 | EXISTING_FUNCTION | ACTIONS.taskDrawBranch → runAction; src/actions.mjs:179,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A18 | 居民订单：每日单数档奖励 | C128 非C:订单档奖励 | EXISTING_FUNCTION | ACTIONS.orderDayReward → runAction; src/actions.mjs:187,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A19 | 居民订单：交单 | C126 | EXISTING_FUNCTION | ACTIONS.finishOrder → runAction; src/actions.mjs:194,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A20 | 居民订单：拒单刷新 | C126 | EXISTING_FUNCTION | ACTIONS.rerollOrder → runAction; src/actions.mjs:202,335 | B | REFRESH适配存在但缺可靠免费配额；默认禁止 |
-| BIZ-A21 | 生产：开始制造 | C115 | EXISTING_FUNCTION | ACTIONS.startProduce → runAction; src/actions.mjs:210,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A22 | 城市：升级建筑 | C103 | EXISTING_FUNCTION | ACTIONS.upgradeBuilding → runAction; src/actions.mjs:218,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A23 | 城市：建造空建筑位 | C104 | EXISTING_FUNCTION | ACTIONS.buildBuilding → runAction; src/actions.mjs:226,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A24 | 城市：道具加速升级 | C102 非C:建筑道具加速 | EXISTING_FUNCTION | ACTIONS.speedUpUpgrade → runAction; src/actions.mjs:234,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A25 | 生产：道具加速制造位 | C114 非C:生产道具加速 | EXISTING_FUNCTION | ACTIONS.speedUpProduce → runAction; src/actions.mjs:242,335 | B | 原子Action存在；经city/orders适配才具授权+复读+持久历史；CLI仍须区分 |
-| BIZ-A26 | 世界资源田：派舰占领 | C403 非C:资源田占领 | EXISTING_FUNCTION | ACTIONS.challengeField → runAction; src/actions.mjs:254,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-A27 | 世界资源田：放弃占领 | C403 非C:资源田放弃 | EXISTING_FUNCTION | ACTIONS.giveUpField → runAction; src/actions.mjs:265,335 | C | 旧CLI原子Action存在；sendWatch静默不算最终成功；Web未开放此旧路由 |
-| BIZ-W01 | 城市建筑、工厂队列、产物、建造时间读取 | C101 C111 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W02 | 库存归并与人口/上限计算 | C113 C123 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W03 | 获取居民需求与物品缺口 | C121 C122 C123 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W04 | 普通/特殊订单经验 | C124 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W05 | 订单金币奖励 | C124 | NOT_IMPLEMENTED | surveyWorld只rewardExp; src/world.mjs:86; evaluateOrder src/order-rules.mjs:113 | N | BLOCKED_EVIDENCE：没有金币奖励可靠来源，MIN_GOLD不得猜测 |
-| BIZ-W06 | 收工厂成品与建筑产物计划 | C116 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W07 | 到期竣工与空位建造 | C104 C116 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W08 | 订单优先交付/低经验缺料刷新 | C125 C126 | PARTIAL | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 旧低经验订单策略与新规则仍两条计划链；新submit已接但refresh默认阻塞 |
-| BIZ-W09 | 跨订单与其他计划材料预留 | C123 C113 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W10 | 按订单缺口排产 | C114 C115 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W11 | 余料升级建筑 | C102 C103 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W12 | 可选加速建筑/生产 | C102 非C:加速 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W13 | 串行计划执行与失败同类隔离 | C603 | EXISTING_FUNCTION | surveyWorld/planWorld/runWorld; src/world.mjs:86,209,469 | B | 共享Ledger与城市订单受控适配已接入；原CLI路径不继承Web历史 |
-| BIZ-W14 | 世界地图资源田资产读取/展示 | C403 | EXISTING_FUNCTION | loadMapAsset/planFieldOccupy/planFieldGiveUp; src/world.mjs:545,595,619 | C | 世界资源田CLI局部链；未接OperationService和最终效果复读 |
-| BIZ-W15 | 指定资源田占领计划 | 非C:资源田占领 | EXISTING_FUNCTION | loadMapAsset/planFieldOccupy/planFieldGiveUp; src/world.mjs:545,595,619 | C | 世界资源田CLI局部链；未接OperationService和最终效果复读 |
-| BIZ-W16 | 放弃自有资源田 | 非C:资源田放弃 | EXISTING_FUNCTION | loadMapAsset/planFieldOccupy/planFieldGiveUp; src/world.mjs:545,595,619 | C | 世界资源田CLI局部链；未接OperationService和最终效果复读 |
-| BIZ-H01 | 英雄及阵容数据读取、养成计划展示；planHeroes、maxHeroLevelFor | C221 C211 | EXISTING_FUNCTION | planHeroes/runHeroPlan/sendHero; src/heroes.mjs:66,221,275 | R | 等级/星级/技能计划和CLI存在；Web写403、缺Operation适配和权威复读；升级/技能静默UNKNOWN |
-| BIZ-H02 | 英雄升级；planHeroes→runHeroPlan→sendHero | C222 | EXISTING_FUNCTION | planHeroes/runHeroPlan/sendHero; src/heroes.mjs:66,221,275 | C | 等级/星级/技能计划和CLI存在；Web写403、缺Operation适配和权威复读；升级/技能静默UNKNOWN |
-| BIZ-H03 | 英雄升星；planHeroes→runHeroPlan | C223 | EXISTING_FUNCTION | planHeroes/runHeroPlan/sendHero; src/heroes.mjs:66,221,275 | C | 等级/星级/技能计划和CLI存在；Web写403、缺Operation适配和权威复读；升级/技能静默UNKNOWN |
-| BIZ-H04 | 英雄技能升级；planHeroes→runHeroPlan | C224 | EXISTING_FUNCTION | planHeroes/runHeroPlan/sendHero; src/heroes.mjs:66,221,275 | C | 等级/星级/技能计划和CLI存在；Web写403、缺Operation适配和权威复读；升级/技能静默UNKNOWN |
-| BIZ-H05 | 装备/徽章穿戴、升级、替换、精炼、升星、专武养成 | C225 C226 C227 C228 C229 C230 | PROTOCOL_ONLY | AllHero/Equips/Badges data; src/game.mjs:10,13,14; no heroGrow in target src | P | 参考heroGrow尚未移植；读取装备/徽章不能算培养执行 |
-| BIZ-D01 | 日常任务进度、目标与可执行动作评估；describeDailyTask/surveyDailies/DAILY_DRIVERS | C502 C503 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D02 | 免费与招募券单抽；Function：DAILY_DRIVERS[1002] → runDailies→sendAction | 非C:免费招募 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D03 | 日常单次主线战斗；Function：DAILY_DRIVERS[1003] → runDailies | C202 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 日常ChallengeStage不能替代主线Runner授权/结果合同 |
-| BIZ-D04 | 挂机满段领取驱动；Function：DAILY_DRIVERS[1004] | 非C:挂机收益 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D05 | 竞技场低战力对手挑战；Function：DAILY_DRIVERS[1005] | 非C:竞技场 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D06 | 免费点金/可选钻石点金；Function：DAILY_DRIVERS[1006] | 非C:点金 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D07 | 折扣店挑最低价购买；Function：DAILY_DRIVERS[1007] | C513 非C:折扣店 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | PHASE1已修D6；DiscountShopBuyResponse存在但旧driver仍走静默窗口 |
-| BIZ-D08 | 贸易日常能力；Function：DAILY_DRIVERS[1008] probes | C131 C521 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D09 | 英雄经验试炼推进；Function：DAILY_DRIVERS[1009] | 非C:经验试炼 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D10 | 海盗免战扫荡；Function：DAILY_DRIVERS[1010] | C151 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 扫荡仅按日常进度截取海盗；没有可靠剩余扫荡配额与最终效果确认 |
-| BIZ-D11 | 联盟情报日常探测；Function：DAILY_DRIVERS[1011] | 非C:联盟雷达 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D12 | 联盟订单日常探测；Function：DAILY_DRIVERS[1012] | 非C:联盟订单 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D13 | 联盟互助探测；Function：DAILY_DRIVERS[1013] | C301 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D14 | 请求帮助/城战功勋日常驱动；Function：DAILY_DRIVERS[1014/1015] lockedReason | C305 C406 | NOT_IMPLEMENTED | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | N | lockedReason占位不是自动求助/城战执行 |
-| BIZ-D15 | 博物馆探险探测；Function：DAILY_DRIVERS[1016] | C141 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D16 | 跨服积分赛探测；Function：DAILY_DRIVERS[1017] | 非C:跨服积分赛 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
-| BIZ-D17 | 执行日常动作并收尾领奖；Function：runDailies→sendAction→claimDailies | C503 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D18 | 领取已完成日常任务奖励；Function：claimDailies | C503 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D19 | 日/周活跃宝箱计划与领取；Function：chestTiers/planChests→claimDailies | C516 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D20 | 每日免费赠礼计划与验证；Function：planDailyGift→claimDailies | C513 | EXISTING_FUNCTION | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs:421,181,539,583 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-D21 | 主线/支线任务状态与领奖计划；Function：surveyTasks、taskTarget | C502 C503 | EXISTING_FUNCTION | surveyTasks/nextOrderTier/runTasks; src/tasks.mjs:63,53,190 | R | PHASE1已跨轮rejected传递；仍缺Operation适配/通用持久记忆及逐动作权威复读 |
-| BIZ-D22 | 成就状态与领奖计划；Function：surveyTasks | 非C:成就 | EXISTING_FUNCTION | surveyTasks/nextOrderTier/runTasks; src/tasks.mjs:63,53,190 | R | PHASE1已跨轮rejected传递；仍缺Operation适配/通用持久记忆及逐动作权威复读 |
-| BIZ-D23 | 每日订单档位判断；Function：nextOrderTier→surveyTasks | 非C:订单档奖励 | EXISTING_FUNCTION | surveyTasks/nextOrderTier/runTasks; src/tasks.mjs:63,53,190 | R | PHASE1已跨轮rejected传递；仍缺Operation适配/通用持久记忆及逐动作权威复读 |
-| BIZ-D24 | 主/支/成就/订单档奖励串行领取；Function：runTasks | C503 C604 | PARTIAL | surveyTasks/nextOrderTier/runTasks; src/tasks.mjs:63,53,190 | C | PHASE1已跨轮rejected传递；仍缺Operation适配/通用持久记忆及逐动作权威复读 |
-| BIZ-D25 | 一键可领取清单与前后对比；Function：app内部planLoot→loot→runAction | C511 C513 | EXISTING_FUNCTION | planLoot; src/app.mjs:234; runAction src/actions.mjs:335 | C | 局部日常/领奖Function存在；旧Web执行仍403；静默无业务确认保留UNKNOWN |
-| BIZ-L01 | 角色摘要/区服列表与分组；Function：describeRole/listWorlds/listGroup | C003 | EXISTING_FUNCTION | describeRole/listWorlds/listGroup; src/worlds.mjs:23,51,60 | R | 读取与进入区服分开 |
-| BIZ-L02 | 指定区服登录；Function：enterWorld→新GameClient.connect({...login,worldId}) | C003 | EXISTING_FUNCTION | enterWorld; src/worlds.mjs:68 | C | Web仍403；新区登录可能建角 |
-| BIZ-L03 | 固定三段自动循环；Function：runLoop → surveyTasks/runTasks → surveyDailies/runDailies → surveyWorld/planWorld/runWorld | C605 C604 | PARTIAL | runLoop; src/loop.mjs:8 | C | PHASE1已逐步取消/拒绝记忆；仍固定CLI循环，无统一持久调度 |
-| BIZ-L04 | 循环轮次记录/步骤回调；Function：runLoop history/onRound/onStep→formatLoopRound | C606 | EXISTING_FUNCTION | runLoop/formatLoopRound; src/loop.mjs:8,105 | C | 仅loop内存历史；不是统一持久账本 |
-| BIZ-L05 | 订单库存→评估→刷新/交单组合；Function：新order-rules只读决策 + 旧finishOrder/rerollOrder | C125 C126 | PARTIAL | planOrderExecution/executeOrderOperation; src/order-execution.mjs:104,146 | B | 提交闭环存在，免费刷新证据默认缺失 |
-| BIZ-L06 | 建筑→队列→收取/排产组合；Function：surveyWorld→planWorld→runWorld | C101 C111 C115 C116 | EXISTING_FUNCTION | surveyCityOperations/planCityOperations/executeCityAction; src/city-operations.mjs:38,167,221 | B | 原世界链复用，显式新批次授权 |
-| BIZ-L07 | 玩家→指定阵容→主线组合；Function：玩家/formation读取与Stage Runner已存在，应用阵容动作未接 | C214 C204 | EXISTING_FUNCTION | assertFormationReady; src/operation-service.mjs:238; createStageFunction src/stage-function.mjs:15 | G | 授权保存/权威复读后才挑战；非自动换阵策略 |
-| BIZ-L08 | 舰队→维修→派遣组合；Function：目标仅fleet读取+资源田手动计划；无Repair Function | C401 C407 C406 | PARTIAL | surveyFleet/planFleet/verifyFleet; src/fleet.mjs:18,141,165 | G | 维修和移动已做；移动不等于攻击闭环 |
-| BIZ-L09 | 通用 Workflow Engine / DAG / Rules编排 | C601 C602 C603 C604 C605 C606 C607 | PARTIAL | createWorkflowRunner/validateWorkflow; src/workflow.mjs:110,36 | G | 有限DAG和条件存在；缺完整目录、跨轮调度、画布 |
-| BIZ-R01 | 联盟订单交付（当前DATA_ONLY） | 非C:联盟订单 | PARTIAL | surveyAlliance/allianceView/planAlliance; src/alliance.mjs:84,99,137 | G | BLOCKED_EVIDENCE：season=null使权威订单上限未知 |
-| BIZ-R02 | 联盟情报奖励/派舰/修理（当前无执行） | C403 C407 非C:雷达奖励派舰 | PARTIAL | surveyFleet/planFleet; src/fleet.mjs:18,141; surveyNaval src/naval-rules.mjs:52 | G | 只共用维修；雷达领奖与派舰仍无目标Function |
-| BIZ-R03 | 海盗派舰实战与免战扫荡（当前扫荡PARTIAL） | C151 非C:海盗实战 | PARTIAL | DAILY_DRIVERS[1010]; src/dailies.mjs:376 | C | 扫荡有限实现无配额；海盗实战未移植 |
-| BIZ-R04 | 贸易货船补货/返航领奖（当前DATA_ONLY） | C131 C132 C133 C134 | PARTIAL | surveyFleet/buildCandidates/verifyFleet; src/fleet.mjs:18,72,165 | G | cargoFill/Claim存在；专门缺货清单与独立港口交互仍缺 |
-| BIZ-R05 | 联盟商船补货与应聘船长（当前未接） | 非C:联盟商船 | PROTOCOL_ONLY | DAT read/protocol; src/game.mjs:26; target src/function-registry.mjs:9未注册guildShip | P | 补货/应聘船长参考未移植 |
-| BIZ-R06 | 联盟福利礼包领取（当前未接） | 非C:联盟福利 | EXISTING_FUNCTION | allianceView/verifyAlliance; src/alliance.mjs:99,154 | G | 领取现有福利需权威时间/库存/回包复读 |
-| BIZ-R07 | 装备厂制造/收取（当前只有装备DATA） | 非C:装备厂 | PROTOCOL_ONLY | Equips data; src/game.mjs:13; target src/function-registry.mjs:9未注册equip | P | 制造收取参考未移植 |
-| BIZ-R08 | 海兽培育/成熟收取/材料投喂（当前DATA_ONLY） | 非C:海兽培育 | PROTOCOL_ONLY | AllPet data; src/game.mjs:40; target src/function-registry.mjs:9未注册pet | P | 培育投喂收成熟参考未移植 |
-| BIZ-R09 | 徽章/装备/专武完整养成（当前DATA_ONLY） | C225 C226 C227 C228 C229 C230 | PROTOCOL_ONLY | data only; src/game.mjs:10,13,14; target src/heroes.mjs:221仅level/star/skill | P | heroGrow未移植，参考代码不计当前实现 |
-| BIZ-R10 | 挂机、邮件及升级依赖计划（当前底层Action已在） | C511 非C:挂机依赖计划 | PARTIAL | planLoot/runAction; src/app.mjs:234; src/actions.mjs:335 | C | 原子底层存在，完整idle依赖/分页/确认未移植 |
-| BIZ-R11 | 世界宝藏货轮抢占（当前未接） | 非C:世界宝藏 | PARTIAL | surveyTreasure/planTreasure/verifyTreasure; src/treasure.mjs:20,86,87 | G | 只证无争夺派舰分配；非抢占胜利/奖励闭环 |
-| BIZ-R12 | 城战读状态、修理、调遣、在线奖（当前只有占位） | C403 C406 C407 非C:城战在线奖 | PARTIAL | surveyFleet/planFleet/verifyFleet; src/fleet.mjs:18,141,165 | G | 维修和移动存在；攻击/在线奖仍缺 |
-| BIZ-R13 | 海商王买卖/移动/奖励/免费战令（当前未接） | C521 C522 C523 C524 | PROTOCOL_ONLY | TradeInfo probe; src/dailies.mjs:340; target registry src/function-registry.mjs:9无tradeKing | P | tradeKing买卖/收益/巡航未移植 |
-| BIZ-R14 | 工厂独立页面与自选材料包覆盖（当前仅简单排产） | C111 C112 C114 C115 C116 非C:自选包 | PARTIAL | cityView/productionShortages; src/city-operations.mjs:131; src/production-policy.mjs:61 | B | 生产页已做；材料包兑换未移植，日报只覆盖工具事件 |
-| BIZ-R15 | 漂浮物拾荒、礼包码（当前只有计数/协议） | 非C:漂浮物礼包码 | PROTOCOL_ONLY | target ACTIONS src/actions.mjs:51无pickUpFloater/giftCode | P | 参考新增Action尚未移植 |
-| BIZ-R16 | 农田种植/喂种、委任减时、订单供给水位（当前简单planWorld未有） | C113 C114 非C:农田委任水位 | PARTIAL | surveyWorld/planWorld; src/world.mjs:86,209 | C | 基础生产在；农田、减时、水位与种子链缺失 |
-| BIZ-R17 | 活动幽都驱邪/罗盘/敕令/签到（当前未接） | C501 C502 C503 | PROTOCOL_ONLY | target DAILY_DRIVERS src/dailies.mjs:181无youdu | P | 幽都驱邪/罗盘/敕令/签到参考未移植 |
-| BIZ-R12a | claimWarOnlineReward；参考cityWar:638–670 | 非C:城战在线奖 | PROTOCOL_ONLY | target registry src/function-registry.mjs:9无claimWarOnlineReward | P | GotWorldOnlineRwdRequest存在不等于Function；纳W14补资格/回包关联/权威复读 |
-| BIZ-R16a | farmOf；参考world:190；surveyWorld:368 | C113 C114 非C:农田委任水位 | PARTIAL | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | P | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16b | 增强planWorld farmHarvest分支；参考world:1555–1577→runWorld | C113 C114 非C:农田委任水位 | PROTOCOL_ONLY | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | P | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16c | 增强planWorld farmPlant分支；参考world:1579–1687→runWorld | C113 C114 非C:农田委任水位 | PROTOCOL_ONLY | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | P | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16d | appointEffectValue→appointProduceReduce→produceFinalTime；参考world:205,217,234；surveyWorld:383–389 | C113 C114 非C:农田委任水位 | NOT_IMPLEMENTED | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | N | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16e | 增强planWorld内部waterlineOf；参考world:1065–1089 | C113 C114 非C:农田委任水位 | NOT_IMPLEMENTED | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | N | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16f | 增强planWorld种子缺口需求；参考world:1091–1130 | C113 C114 非C:农田委任水位 | NOT_IMPLEMENTED | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | N | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16g | 增强planWorld过剩作物→成品需求；参考world:1131–1167 | C113 C114 非C:农田委任水位 | NOT_IMPLEMENTED | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | N | 原参考分项未移植；基础OnWater或普通排产不等于此算法 |
-| BIZ-R16h | decideOrderReroll；参考world:274；增强planWorld:872–1029 | C113 C114 非C:农田委任水位 | PARTIAL | surveyWorld/planWorld; src/world.mjs:86,209; current target lacks farmOf/appointProduceReduce/waterlineOf/decideOrderReroll | N | 保留已有order-rules产品语义；不整体替换成参考decideOrderReroll |
-| BIZ-R17a | planYoudu kill分支；参考youdu:230–249→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17b | planYoudu驱邪累计奖励；参考youdu:252–277→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17c | planYoudu罗盘；参考youdu:279–298→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17d | planYoudu罗盘累计奖；参考youdu:300–315→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17e | planYoudu敕令开局；参考youdu:337–347→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17f | planYoudu敕令作答/settleYouduEdict；参考youdu:317–336,429–445 | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17g | runYouduActive；参考youdu:378–418 | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| BIZ-R17h | runYouduSigns；参考youdu:481–550 | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs:9; src/dailies.mjs:181未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
-| ORD-001 | 读取居民订单 | C121 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs:86; src/order-execution.mjs:92 | R | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-002 | 解析需求物品与数量 | C122 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs:86; src/order-execution.mjs:92 | R | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-003 | 库存与缺口计算 | C123 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs:86; src/order-execution.mjs:92 | R | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-004 | 普通订单经验 | C124 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs:86; src/order-execution.mjs:92 | R | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-005 | 特殊订单经验 | C124 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs:86; src/order-execution.mjs:92 | R | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-006 | 金币奖励解析 | C124 | NOT_IMPLEMENTED | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | N | BLOCKED_EVIDENCE：EXP有来源，金币未知，MIN_GOLD仍不实现 |
-| ORD-007 | 规则契约校验 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-008 | 规则增删编辑/排序/启停 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-009 | 原始物品ID匹配与名称展示 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-010 | 禁止物品 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-011 | 必须包含全部指定物品 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-012 | 经验GT/GTE阈值 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-013 | 单物品需求数量上限 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-014 | 库存规则及最终独立库存检查 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-015 | 优先级短路评估 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-016 | 每条规则独立KEEP/REFRESH/REVIEW | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-017 | 全通过后建议提交 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-018 | 账号隔离持久化/安全回退 | C127 | EXISTING_FUNCTION | loadOrderRules/saveOrderRules; src/order-rules-store.mjs:46,59 | L | 精确账号持久化，损坏保留不覆盖 |
-| ORD-019 | Snapshot模拟与解释 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs:113,152; previewOrderRules src/server.mjs:418 | L | 五类规则和解释轨迹存在；预览不等于执行 |
-| ORD-020 | 跨订单库存预留 | C123 | EXISTING_FUNCTION | ResourceLedger/evaluateOrders/planOrderExecution; src/order-rules.mjs:152; src/order-execution.mjs:104 | B | PHASE1/2已共享跨订单预算；独立快照预览与执行计划需区分 |
-| ORD-021 | 规则建议→真实提交/刷新 | C126 | PARTIAL | planOrderExecution/executeOrderOperation; src/order-execution.mjs:104,146 | B | SUBMIT闭环存在；REFRESH仍因免费配额证据缺失被阻塞 |
-| ORD-022 | 订单执行历史持久化 | C128 | EXISTING_FUNCTION | createExecutionHistory/createOperationService; src/execution-history.mjs:16; src/operation-service.mjs:32 | B | 账号级持久历史已实现；真实写入/重启恢复仍待最终验收 |
-| STG-001 | 从当前主线启动 | C201 C202 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-002 | 主线专用LEFT授权 | C203 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-003 | 关卡号/Boolean胜负检查 | C203 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-004 | 胜利推进下一关 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-005 | 明确战败后重试 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-006 | 首次战败立即停止 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | API有stopOnDefeat；UI只透传，独立勾选仍缺 |
-| STG-007 | 最大总开战次数 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-008 | 最高目标关卡 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-009 | 胜利后随机10–11秒 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-010 | 下一关倒计时/随机时长历史 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-011 | RATE_LIMITED独立停止 | C205 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-012 | 同账号排他/未决锁 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-013 | 停止/失效/删除取消 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-014 | runId/generation/迟到保护 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-015 | 内存历史/状态重读 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs:114,85 | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
-| STG-016 | 持久化Runner历史/自动恢复 | C204 C606 | PARTIAL | createStageRunner/parseStageResult; src/stages.mjs:114,85; src/stage-function.mjs:15; src/execution-history.mjs:16 | S | 直启Runner仍内存200条；有限Stage Function可进入operation持久历史；不自动恢复写入 |
-| STG-017 | 其他战斗模式支持 | 非C:其他战斗模式；W08/W14（不并入C204/C606完成数） | PROTOCOL_ONLY | createStageRunner/parseStageResult; src/stages.mjs:114,85 | P | SIDE_UNVERIFIED：其他战斗模式不能继承主线LEFT |
-| FRM-001 | 当前主线阵容读取 | C211 C207 | EXISTING_FUNCTION | surveyFormation/parseFormation; src/formation.mjs:98,37 | R | 实时阵容与本次战斗阵容保持不同证据 |
-| FRM-002 | 已解锁阵型模板ID读取 | C212 | EXISTING_FUNCTION | surveyFormation/catalogFrom; src/formation.mjs:98,69 | R | 模板ID不是完整队伍存档 |
-| FRM-003 | 保存/修改当前阵容 | C213 C214 | EXISTING_FUNCTION | planFormation/verifyFormation; src/formation.mjs:161,170 | G | 完整SaveFormation与复读已做 |
-| FRM-004 | 应用已解锁阵型模板 | C213 C214 | EXISTING_FUNCTION | candidate/planFormation/verifyFormation; src/formation.mjs:120,161,170 | G | 按职业重排站位/保留petUid；只用已解锁模板 |
-| FRM-005 | 解锁阵型模板 | 非C:解锁阵型 | PROTOCOL_ONLY | target src/formation.mjs:120只使用已解锁；protocol UnlockFormationPreset | P | 原范围纳W08：仅已证实普通图纸路径，单次精确授权；成本未知BLOCKED，钻石补图排除 |
-| FRM-006 | 更换上下阵英雄 | C213 C214 | PARTIAL | planFormation; src/formation.mjs:161 | G | 完整SaveFormation可换英雄；未实现专用SwitchFormationHero路径，不能冒称专用接口接通 |
-| FRM-007 | 具名多套完整英雄队伍预设 | 非C:具名完整队伍预设 | NOT_IMPLEMENTED | catalogFrom/validateFormationParameters; src/formation.mjs:69,52 | N | 缺具名整队本地合同；纳W08定义/实现；不等同C215极限站位复制 |
-| FRM-008 | 闯关前应用并确认阵容 | C214 C204 | EXISTING_FUNCTION | assertFormationReady; src/operation-service.mjs:238; createStageFunction src/stage-function.mjs:15 | G | 同Session保存/复读后允许主线；自动决策仍未完成 |
-| PRO-001 | 公会科技 | C306 C307 | PROTOCOL_ONLY | GuildTechInfo query; src/game.mjs:34; no UpgradeGuildTech in target business | P | 科技升级/重置未实现，query不计write |
-| PRO-002 | 公会订单与互助 | C301 C302 C303 C304 C305 非C:联盟订单 | PARTIAL | surveyAlliance/allianceView/planAlliance/verifyAlliance; src/alliance.mjs:84,99,137,154 | G | 帮助/取消/领取存在；ask冷却、help权威配额、订单赛季阻塞；Fort独立 |
-| PRO-003 | 舰队维修/编队/派遣 | C401 C402 C406 C407 C408 | PARTIAL | surveyFleet/planFleet/verifyFleet; src/fleet.mjs:18,141,165 | G | 编队/普通维修/移动做；攻击/免费加速/持续委任未闭环 |
-| PRO-004 | 货船操作 | C131 C132 C133 C134 | PARTIAL | surveyFleet/buildCandidates/verifyFleet; src/fleet.mjs:18,72,165 | G | 装货/领奖已实现；货船加速禁止，不能将全族计完成 |
-| PRO-005 | 世界与限时 Boss 战斗 | 非C:世界/限时Boss | PROTOCOL_ONLY | surveyNaval/navalView; src/naval-rules.mjs:52,69 | P | 写候选不生成；独立战斗语义和结果关联缺失 |
-| PRO-006 | 博物馆展陈与探险 | C141 C142 C143 C144 | PARTIAL | surveyMuseum/planMuseum/verifyMuseum; src/museum.mjs:40,175,186 | G | 展陈/收益/StartExplore存在；Complete/Reward权威语义阻塞 |
-| PRO-007 | 藏品养成 | 非C:藏品养成 | PROTOCOL_ONLY | AllAntique data; src/game.mjs:23; target registry src/function-registry.mjs:9无antique | P | 培养/兑换/精通未实现；纳W11独立子边界与证据闸门 |
-| PRO-008 | 贸易与货运玩法 | C521 C522 C523 C524 | PROTOCOL_ONLY | TradeInfo probe; src/dailies.mjs:340; target registry src/function-registry.mjs:9无tradeKing | P | 只有读与协议/参考；买卖/路线业务不在目标 |
-| PRO-009 | 寻宝与掠夺 | 非C:世界宝藏 | PARTIAL | surveyTreasure/planTreasure/verifyTreasure; src/treasure.mjs:20,86,87 | G | 列表/排名/防守+无争夺派舰；缺抢占/战斗/领奖 |
-| PRO-010 | 其他模式阵容 | 非C:其他模式阵容 | PROTOCOL_ONLY | mainline-only validation; src/formation.mjs:52; src/stages.mjs:26 | P | 其他模式不复用主线阵营结论；须逐模式合同/证据，纳W08 |
+| PLT-001 | 平台：本机 Web Console | C001 C002 | EXISTING_FUNCTION | createConsole → PAGE; src/server.mjs | L | 平台本机页面已存在；配置入口覆盖仍有限 |
+| PLT-002 | 账号列表与状态 | C002 | EXISTING_FUNCTION | loadStore/describeAccount; src/accounts.mjs; src/server.mjs | R | 账号列表建空Session不等于Runtime |
+| PLT-003 | 账号选择/切换活动账号 | C002 | EXISTING_FUNCTION | setActive/pickAccount; src/accounts.mjs | L | 切换选择不隐式登录 |
+| PLT-004 | 账号重命名 | C002 | EXISTING_FUNCTION | saveStore; src/accounts.mjs | L | 本地账号标签 |
+| PLT-005 | 删除账号及会话取消 | C002 C606 | EXISTING_FUNCTION | cancelSession/removeAccount; src/server.mjs; src/accounts.mjs | L | 取消运行且保留不确定写历史 |
+| PLT-006 | 凭证脱敏元信息展示 | C001 | EXISTING_FUNCTION | describeAccount/redact; src/accounts.mjs; src/security.mjs | L | 不公开真实秘密 |
+| PLT-007 | 凭证导入、同账号更新和旧单账号读取 | C001 | EXISTING_FUNCTION | accountFromCredential/upsertAccount/saveStore; src/accounts.mjs | T | 安全CLI可导入；无产品化Web扫码/导入 |
+| PLT-008 | 鉴权输入校验 | C001 | EXISTING_FUNCTION | validateCredentials; src/security.mjs | T | 正常账号鉴权；D6禁止开发凭证 |
+| PLT-009 | 显式登录和单账号连接 Single-flight | C001 | EXISTING_FUNCTION | connect; src/server.mjs; GameClient src/client.mjs | R | 显式connect；single-flight |
+| PLT-010 | 显式断开/关闭/失效清理 | C002 C606 | EXISTING_FUNCTION | cancelSession/GameClient.stop; src/server.mjs; src/client.mjs | R | 原心跳超时样本保留；清理不是业务成功 |
+| PLT-011 | 心跳、序号、ACK/NACK、失效通知 | C001 C005 | EXISTING_FUNCTION | sendPing/tryHandlePong/tick; src/client.mjs | T | 1000ms首Ping超时需离线诊断而非直接放宽 |
+| PLT-012 | 请求关联与迟到响应隔离 | C005 | EXISTING_FUNCTION | request/sendWatch; src/client.mjs | T | 迟到/未决保护存在；调用者须验证业务效果 |
+| PLT-013 | 多账号 Session、取消和防旧结果写入 | C002 C605 | EXISTING_FUNCTION | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | T | 账号/连接/代次隔离及唯一Console跨进程所有权已有；不扩大为任意NAS多writer |
+| PLT-014 | 账号页面请求代次 | C002 | EXISTING_FUNCTION | createAccountViewGuard; src/page.mjs | L | 页面scope/generation防旧结果 |
+| PLT-015 | 显式采集和缓存刷新边界 | C004 | EXISTING_FUNCTION | refresh/collectState; src/server.mjs; src/game.mjs | R | 48查询采集与缓存浏览分离 |
+| PLT-016 | 总览、缓存明细和 Snapshot 导出 | C004 | EXISTING_FUNCTION | src/game.mjs；src/data-catalog.mjs；tests/data-catalog.test.mjs | R | 48查询中28解析/20原始；浏览缓存零请求 |
+| PLT-017 | 实时区服列表 | C003 | EXISTING_FUNCTION | listWorlds; src/worlds.mjs | R | 实时只读区服列表 |
+| PLT-018 | 全区服分组和指定区服登录 | C003 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 只读world分组保留；enterWorld独立写在读凭证前拒绝，Web enter403，可能创建角色须独立合同 |
+| PLT-019 | 运行事件和递归脱敏 | C606 | EXISTING_FUNCTION | emit/trace/redact; src/server.mjs; src/security.mjs | L | SSE有限内存，不等于所有持久运行历史 |
+| PLT-020 | Web 游戏写权限边界 | C603 C409 | EXISTING_FUNCTION | route gates; src/server.mjs; assertPaymentAllowed src/actions.mjs | T | 新增受控operations/gameplay/workflow路由；旧写白名单仍拒绝 |
+| PLT-021 | Stage 状态/开始/停止产品入口 | C201 C202 C203 C204 C205 | EXISTING_FUNCTION | stageView/createStageRunner; src/server.mjs; src/stages.mjs | S | 真实挑战和10–11秒限频效果待最终验收 |
+| PLT-022 | 独立凭证捕获并导入 | C001 | EXISTING_FUNCTION | runCaptureCli/createCaptureController; tools/capture-credentials.mjs; src/capture.mjs | T | 安全CLI；Web旧捕获handler不可直接解禁 |
+| PLT-023 | 捕获事务和崩溃恢复 | C001 非C:捕获崩溃恢复 | EXISTING_FUNCTION | recoverCapture/startCapture/stopCapture; src/capture.mjs | T | 本轮未启动或读真实凭证 |
+| PLT-024 | MITM 主机与TLS安全 | 非C:MITM安全 | EXISTING_FUNCTION | createProxy; tools/mitm-proxy.mjs | T | 默认精确主机白名单；不在本轮运行 |
+| PLT-025 | CA生成、只读精确查询与归属清理 | 非C:CA归属 | EXISTING_FUNCTION | queryCurrentUserRoot/createCaManager; tools/mitm-ca.mjs | T | 只归属receipt清理；本轮未操作CA |
+| PLT-026 | Windows代理版本化备份和恢复 | 非C:代理恢复 | EXISTING_FUNCTION | createProxySettings; tools/proxy-settings.mjs | T | 版本化备份/恢复；本轮未操作代理 |
+| PLT-027 | B2定向首错诊断与心跳发送白名单 | C001 非C:首错诊断 | EXISTING_FUNCTION | createB2Diagnostics; tools/b2-harness.mjs | T | 真实Phase2首Ping超时留待最终诊断 |
+| PLT-028 | CLI账号管理与开发操作 | C001 C003 C603 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | T | 本地账号管理/只读/dry保留；--yes、--paid或环境变量不能开放独立游戏写 |
+| PLT-029 | CLI日志/导出安全差异（明确待办） | C001 C002 | EXISTING_FUNCTION | createCliOutput/loadCliCredential; src/cli-safety.mjs; accountsCli src/app.mjs | T | PHASE1已补普通输出脱敏；危险旧展示不作为可用产品入口 |
+| PLT-030 | Protobuf载入和注册器沙箱 | C005 | EXISTING_FUNCTION | loadProtocol; src/proto.mjs | T | ignored生成协议资源需可复现恢复 |
+| PLT-031 | 协议帧编解码、LZ4 | C005 | EXISTING_FUNCTION | createCodec; src/codec.mjs; compressBlock/decompressBlock src/lz4.mjs | T | 传输实现存在不等于业务完成 |
+| PLT-032 | 协议字段和消息反查 | C005 非C:协议反查 | EXISTING_FUNCTION | fields/findType; tools/describe.mjs | T | 部分嵌套显示unknown需生成源码核对 |
+| PLT-033 | 压缩客户端上下文定位 | 非C:压缩客户端定位 | EXISTING_FUNCTION | CLI source; tools/ctx.mjs | T | 纯本地定位工具 |
+| PLT-034 | 微信包解密/解包 | 非C:wxapkg解包 | EXISTING_FUNCTION | decrypt/unpack; tools/wxapkg.mjs | T | 运行资产不随Git提交 |
+| PLT-035 | 本地配置表发现、提取和查询 | C004 非C:配置恢复 | EXISTING_FUNCTION | findConfigPack/extractTables/loadConfig; src/config.mjs | T | 恢复来源/哈希要求保留 |
+| PLT-036 | 固化配置包 | 非C:配置固化 | EXISTING_FUNCTION | CLI source; tools/sync-config.mjs | T | 本轮未同步或访问网络 |
+| PLT-037 | 图集提取和本地展示 | C004 非C:图集显示 | EXISTING_FUNCTION | iconIndex/atlasFile; src/art.mjs | R | 缺资源可降级 |
+| PLT-038 | 图集资源同步 | 非C:图集同步 | EXISTING_FUNCTION | sync-art helpers; tools/sync-art.mjs | T | 本轮未同步或网络下载 |
+| PLT-039 | 客户端枚举名称提取 | 非C:枚举名称提取 | EXISTING_FUNCTION | CLI source; tools/build-names.mjs | T | 名称不代表业务Function |
+| PLT-040 | 扩展玩法实时只读探针 | C601 非C:扩展探针 | EXISTING_FUNCTION | runDailiesProbe/runWorldProbe; tools/probe-dailies.mjs; tools/probe-world.mjs | T | 原扩展只读探针保留，不属于48项Snapshot；账号/脱敏保护已有，本轮不执行在线工具 |
+| PLT-041 | 登录拒绝在线诊断 | 非C:在线登录诊断 | EXISTING_FUNCTION | CLI source; tools/check-login-failure.mjs | T | 原登录诊断工具保留，独立于业务执行；本轮不执行在线工具 |
+| PLT-042 | 离线回归入口 | 非C:离线回归 | EXISTING_FUNCTION | src/selftest.mjs; package.json; tools/selftest-registry.mjs | T | 历史结果需带提交；本轮未重跑 |
+| PLT-043 | 游戏协议全自动发现/通用工作流设计器 | C607 非C:自动协议发现 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | 26静态模块加Stage、27合同及原生图编辑已有；自动协议发现/全目录仍缺 |
+| DEX-001 | 48 项查询单次采集 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-002 | 12 域目录与 48 项浏览 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-003 | 27 个现有业务解析视图 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-004 | 21 个无专门解析的原始响应 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-005 | 状态、错误、采集时间 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-006 | 按域、业务名和协议名搜索 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-007 | 安全 JSON 复制/导出 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-008 | int64 精度保留 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DEX-009 | 跨账号缓存与迟到响应隔离 | C004 C005 C601 | EXISTING_FUNCTION | src/data-catalog.mjs；src/game.mjs；src/page.mjs；tests/data-catalog.test.mjs | R | 当前48查询/28解析/20原始；原DEX-003/004标题27/21仅历史口径；非当前真实验收 |
+| DAT-001 | 库存道具 / 资源与生产 | C113 C123 C221 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-002 | 玩家资源 / 资源与生产 | C113 C123 C102 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-003 | 英雄 / 英雄养成 | C221 C207 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-004 | 英雄阵型 / 英雄养成 | C211 C207 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-005 | 邮件 / 日常与成长任务 | C511 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-006 | 装备 / 英雄养成（收藏与辅助养成） | C229 C230 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-007 | 徽章 / 英雄养成（收藏与辅助养成） | C227 C228 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-008 | 招募信息 / 招募与商店 | 非C:招募 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-009 | 成就 / 日常与成长任务 | C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-010 | 每日任务与活跃度 / 日常与成长任务 | C502 C503 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-011 | 每日赠礼 / 日常与成长任务（招募与商店） | C513 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-012 | 主线与支线任务 / 日常与成长任务 | C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-013 | 新手引导 / 日常与成长任务 | 非C:新手引导 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-014 | 挂机收益与点金摘要 / 日常与成长任务（资源与生产） | 非C:挂机收益 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-015 | 月卡 / 招募与商店（活动与赛季） | C513 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-016 | 藏品 / 收藏与辅助养成 | 非C:藏品 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-017 | 建筑、生产与居民订单 / 城市建设（资源与生产、居民订单） | C101 C111 C121 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-018 | 鱼类图鉴 / 收藏与辅助养成 | C152 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-019 | 货船 / 舰队与航海 | C131 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-020 | 英雄任命 / 英雄养成 | C221 非C:委任 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-021 | 聊天记录 / 公会与联盟 | 非C:聊天 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-022 | 游戏效果 / 收藏与辅助养成 | 非C:游戏效果 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-023 | 公会摘要 / 公会与联盟 | C302 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-024 | 我的舰队 / 舰队与航海（世界地图） | C401 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-025 | 海盗击杀记录 / 城战与战斗（舰队与航海） | C151 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-026 | 我的资源田 / 世界地图 | C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-027 | 公会科技 / 公会与联盟 | C306 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-028 | 公会订单 / 公会与联盟（居民订单） | 非C:联盟订单 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-029 | 阵型预设 / 英雄养成 | C212 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-030 | 赛季任务阶段 / 活动与赛季（日常与成长任务） | C501 C502 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-031 | 世界 Boss / 城战与战斗（活动与赛季） | 非C:世界Boss | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-032 | 限时 Boss 开放信息 / 城战与战斗（活动与赛季） | 非C:限时Boss | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-033 | 宠物 / 收藏与辅助养成 | 非C:海兽 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-034 | 赛季排名信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-035 | 周活动 / 活动与赛季 | C501 C515 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-036 | 关卡状态 / 城战与战斗 | C201 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-037 | 周订单 / 活动与赛季（居民订单） | C515 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-038 | 日常计数 / 日常与成长任务 | C502 C503 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-039 | 雷达 / 世界地图 | C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-040 | 环境皮肤 / 收藏与辅助养成 | 非C:环境皮肤 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-041 | 渠道奖励信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-042 | 限时券 / 招募与商店（活动与赛季） | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-043 | 赛季卡 / 活动与赛季（招募与商店） | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-044 | 海盗 / 城战与战斗（世界地图） | C151 C403 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-045 | 玩家头像框 / 收藏与辅助养成 | 非C:头像框 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-046 | Churn 信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-047 | Ultra 开放信息 / 活动与赛季 | C501 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| DAT-048 | 黑名单 / 公会与联盟 | 非C:黑名单 | EXISTING_FUNCTION | collectState ENTRY_QUERIES; src/game.mjs; DATA_CATALOG src/data-catalog.mjs | R | 仅48项Collector对应只读查询/缓存；28解析/20原始见DATA_CATALOG，不代表目标写或完整领域交付 |
+| BIZ-A01 | 资源与生产：领取挂机本段收益 | 非C:挂机收益 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 挂机时段权威资格及结算缺，旧Action不等于共享受控写 |
+| BIZ-A02 | 日常成长：领取挂机等级奖励 | 非C:挂机奖励 | EXISTING_FUNCTION | src/afk-level-rewards.mjs；tests/afk-level-rewards.test.mjs | G | 明确单等级奖励受控领取；不证明时段收益或升级 |
+| BIZ-A03 | 日常成长：提升挂机等级 | 非C:挂机升级 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 挂机升级原实现保留；未接共享业务合同 |
+| BIZ-A04 | 生产：收取工厂成品 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 |
+| BIZ-A05 | 城市：收取建筑产物 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 |
+| BIZ-A06 | 城市：确认已到期建筑竣工 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 |
+| BIZ-A07 | 城市：切换自动工作 | 非C:自动工作 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 自动工作旧实现保留；未接共享受控写 |
+| BIZ-A08 | 生产：设置自动生产产品 | C114 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 旧自动生产开关及产品设定不等于Production单次排产 |
+| BIZ-A09 | 日常：领取单条任务奖励 | C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确日常taskId单次领取已接；不推定周期 |
+| BIZ-A10 | 成就：领取奖励 | 非C:成就领奖 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确成就ID、配置奖励映射与独立复读已接 |
+| BIZ-A11 | 邮箱：一键领取已读邮件附件 | C511 | PARTIAL | src/mail.mjs；tests/mail-claim.test.mjs | G | 有界枚举和已读、未读单封读领已有；批量及实例附件归属缺 |
+| BIZ-A12 | 日常：领取活跃宝箱 | C503 | EXISTING_FUNCTION | src/daily-task-rewards.mjs；tests/daily-task-rewards.test.mjs | G | 明确日活跃档及奖励复读已有；非通用日界策略 |
+| BIZ-A13 | 周常：领取活跃宝箱 | C516 | PARTIAL | src/daily-task-rewards.mjs；tests/daily-task-rewards.test.mjs | G | 三类周免费包和具名周芯片任务已有；周活跃箱完整周期和归属缺 |
+| BIZ-A14 | 商店：领取每日免费赠礼 | C513 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 固定赠礼packId零支出与独立复读已有 |
+| BIZ-A15 | 月卡：领取每日权益 | C513 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 月卡只读保留；完整每日权益未接共享写合同 |
+| BIZ-A16 | 主线任务：领奖 | C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确主线taskId计划授权与独立结算 |
+| BIZ-A17 | 支线任务：领奖 | C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确支线taskId计划授权与独立结算 |
+| BIZ-A18 | 居民订单：每日单数档奖励 | C128 非C:订单档奖励 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 每日订单档资格、身份和奖励合同缺证 |
+| BIZ-A19 | 居民订单：交单 | C126 | EXISTING_FUNCTION | src/order-execution.mjs；tests/order-execution.test.mjs | G | 明确单单提交已受控并独立确认订单替换及完成数；免费刷新另行缺证 |
+| BIZ-A20 | 居民订单：拒单刷新 | C126 | EXISTING_FUNCTION | src/order-execution.mjs；tests/order-execution.test.mjs | G | 明确单单提交已受控并独立确认订单替换及完成数；免费刷新另行缺证 |
+| BIZ-A21 | 生产：开始制造 | C115 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | registered production复用原city链、共享预算、写前调查和写后复读 |
+| BIZ-A22 | 城市：升级建筑 | C103 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 升级授权与权威复读已有，真实未验 |
+| BIZ-A23 | 城市：建造空建筑位 | C104 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 仅服务端已有level0槽；不是任意地图新坐标建造 |
+| BIZ-A24 | 城市：道具加速升级 | C102 非C:建筑道具加速 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 材料/等级/人口/队列前检已有；未知不计划 |
+| BIZ-A25 | 生产：道具加速制造位 | C114 非C:生产道具加速 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 原排产及种子/过剩作物水位接入生产策略，缺配置不推测数量 |
+| BIZ-A26 | 世界资源田：派舰占领 | C403 非C:资源田占领 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 资源田只读和旧计划保留；占领未接共享写及独立复读 |
+| BIZ-A27 | 世界资源田：放弃占领 | C403 非C:资源田放弃 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 资源田只读和旧计划保留；放弃未接共享写及独立复读 |
+| BIZ-W01 | 城市建筑、工厂队列、产物、建造时间读取 | C101 C111 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 建筑信息与业务页面已有 |
+| BIZ-W02 | 库存归并与人口/上限计算 | C113 C123 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 订单优先缺口、在产/成品抵扣及共享库存；收入不自动扩额 |
+| BIZ-W03 | 获取居民需求与物品缺口 | C121 C122 C123 | EXISTING_FUNCTION | src/order-execution.mjs；tests/order-execution.test.mjs | G | 需求源OnWater，缺数组不是权威空 |
+| BIZ-W04 | 普通/特殊订单经验 | C124 | EXISTING_FUNCTION | src/order-rewards.mjs；tests/order-rewards.test.mjs | L | 经验和已证基础金币预览已有；最终金币倍率/结算公式缺证 |
+| BIZ-W05 | 订单金币奖励 | C124 | PARTIAL | src/order-rewards.mjs；tests/order-rewards.test.mjs | B | 配置基础预览及事后奖励关联已有；最终金币、加成取整和MIN_GOLD资格缺 |
+| BIZ-W06 | 收工厂成品与建筑产物计划 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 |
+| BIZ-W07 | 到期竣工与空位建造 | C104 C116 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 仅服务端已有level0槽；不是任意地图新坐标建造 |
+| BIZ-W08 | 订单优先交付/低经验缺料刷新 | C125 C126 | PARTIAL | src/order-execution.mjs；tests/order-execution.test.mjs | G | 规则/三值评估/库存复查已有；免费刷新资格缺证继续冻结 |
+| BIZ-W09 | 跨订单与其他计划材料预留 | C123 C113 | EXISTING_FUNCTION | src/order-execution.mjs；tests/order-execution.test.mjs | G | 跨订单预算分配已有，不把独立模拟当批量预留 |
+| BIZ-W10 | 按订单缺口排产 | C114 C115 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 原排产及种子/过剩作物水位接入生产策略，缺配置不推测数量 |
+| BIZ-W11 | 余料升级建筑 | C102 C103 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 材料/等级/人口/队列前检已有；未知不计划 |
+| BIZ-W12 | 可选加速建筑/生产 | C102 非C:加速 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 材料/等级/人口/队列前检已有；未知不计划 |
+| BIZ-W13 | 串行计划执行与失败同类隔离 | C603 | EXISTING_FUNCTION | src/operation-service.mjs；tests/operation-service.test.mjs | G | Service/Executor统一已交付写；旧Web写403/CLI独立写拒绝，未映射业务仍未交付 |
+| BIZ-W14 | 世界地图资源田资产读取/展示 | C403 | PARTIAL | src/world.mjs；src/asset-readiness.mjs；tests/asset-readiness.test.mjs | R | 固定清单、只读诊断和保留归档已有；map-1及上游来源缺 |
+| BIZ-W15 | 指定资源田占领计划 | 非C:资源田占领 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 旧指定资源田计划保留，未接共享写及独立复读 |
+| BIZ-W16 | 放弃自有资源田 | 非C:资源田放弃 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 旧资源田放弃实现保留，未接共享写及独立复读 |
+| BIZ-H01 | 英雄及阵容数据读取、养成计划展示；planHeroes、maxHeroLevelFor | C221 C211 | EXISTING_FUNCTION | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 成长等级和材料前检已有，复用Ledger |
+| BIZ-H02 | 英雄升级；planHeroes→runHeroPlan→sendHero | C222 | EXISTING_FUNCTION | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 明确单英雄等级加一及完整英雄池、库存复读已接 |
+| BIZ-H03 | 英雄升星；planHeroes→runHeroPlan | C223 | PARTIAL | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 专属碎片星和明确1比1通用兑换已有；自动混用及全策略缺 |
+| BIZ-H04 | 英雄技能升级；planHeroes→runHeroPlan | C224 | EXISTING_FUNCTION | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 明确单英雄技能升级及完整池、库存复读已接 |
+| BIZ-H05 | 装备/徽章穿戴、升级、替换、精炼、升星、专武养成 | C225 C226 C227 C228 C229 C230 | PARTIAL | src/hero-operations.mjs；src/equipment-growth.mjs；src/badge-growth.mjs；tests/equipment-growth.test.mjs | G | 专武、装备、徽章成长和空槽穿戴子集已有；替换、激活及部分边界缺 |
+| BIZ-D01 | 日常任务进度、目标与可执行动作评估；describeDailyTask/surveyDailies/DAILY_DRIVERS | C502 C503 | EXISTING_FUNCTION | src/daily-checklist.mjs；tests/daily-checklist.test.mjs | R | 主/支/成就/每日/周芯片任务观察已有；全部活动任务未闭合 |
+| BIZ-D02 | 免费与招募券单抽；Function：DAILY_DRIVERS[1002] → runDailies→sendAction | 非C:免费招募 | PARTIAL | src/free-recruit.mjs；tests/free-recruit.test.mjs | G | 明确RECRUIT_FREE单抽已接；招募券和其他抽取未接 |
+| BIZ-D03 | 日常单次主线战斗；Function：DAILY_DRIVERS[1003] → runDailies | C202 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | 日常1003显式转原Stage；战斗结果不代替日常完成观察 |
+| BIZ-D04 | 挂机满段领取驱动；Function：DAILY_DRIVERS[1004] | 非C:挂机收益 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 挂机满段驱动缺权威时段与结算 |
+| BIZ-D05 | 竞技场低战力对手挑战；Function：DAILY_DRIVERS[1005] | 非C:竞技场 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 竞技场旧驱动保留；受控对手、成本、阵营及结算缺 |
+| BIZ-D06 | 免费点金/可选钻石点金；Function：DAILY_DRIVERS[1006] | 非C:点金 | PARTIAL | src/free-gold.mjs；tests/free-gold.test.mjs | G | 普通免费点金单次已接；原可选钻石分支D6硬拒绝 |
+| BIZ-D07 | 折扣店挑最低价购买；Function：DAILY_DRIVERS[1007] | C513 非C:折扣店 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 折扣店普通物资购买缺合同；钻石和付费D6硬拒绝 |
+| BIZ-D08 | 贸易日常能力；Function：DAILY_DRIVERS[1008] probes | C131 C521 | PARTIAL | src/trade.mjs；tests/trade.test.mjs | G | 贸易专业单步写已有；日常1008统一入口及任务完成归因尚未接 |
+| BIZ-D09 | 英雄经验试炼推进；Function：DAILY_DRIVERS[1009] | 非C:经验试炼 | EXISTING_FUNCTION | src/trial-challenge.mjs；tests/trial-challenge.test.mjs | G | 明确单次经验试炼已接；不外推所有试炼 |
+| BIZ-D10 | 海盗免战扫荡；Function：DAILY_DRIVERS[1010] | C151 | PARTIAL | src/pirate-sweep.mjs；tests/pirate-sweep.test.mjs | G | 日常1010精确城市、UID及配额单扫已接；奖励、目标变化、日界缺 |
+| BIZ-D11 | 联盟情报日常探测；Function：DAILY_DRIVERS[1011] | 非C:联盟雷达 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
+| BIZ-D12 | 联盟订单日常探测；Function：DAILY_DRIVERS[1012] | 非C:联盟订单 | PARTIAL | src/alliance.mjs；tests/alliance.test.mjs | G | 日常1012明确城市订单已接；非全部联盟日常 |
+| BIZ-D13 | 联盟互助探测；Function：DAILY_DRIVERS[1013] | C301 | PARTIAL | src/alliance.mjs；tests/alliance-tech.test.mjs | G | reqId精确绑定成员求助单，已有展示 |
+| BIZ-D14 | 请求帮助/城战功勋日常驱动；Function：DAILY_DRIVERS[1014/1015] lockedReason | C305 C406 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 帮助和城战驱动仍缺权威资格、额度、冷却及结算 |
+| BIZ-D15 | 博物馆探险探测；Function：DAILY_DRIVERS[1016] | C141 | PARTIAL | src/museum.mjs；tests/museum.test.mjs | G | 日常1016明确关卡、英雄和倍率出发已接；不等于完成领奖 |
+| BIZ-D16 | 跨服积分赛探测；Function：DAILY_DRIVERS[1017] | 非C:跨服积分赛 | PARTIAL | surveyDailies/DAILY_DRIVERS/runDailies/claimDailies; src/dailies.mjs | R | 只读/probe/状态或计划；不得作为对应写入已完成 |
+| BIZ-D17 | 执行日常动作并收尾领奖；Function：runDailies→sendAction→claimDailies | C503 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | 统一Dailies有限图覆盖7个明确驱动及部分领取；完整17驱动和周期未全 |
+| BIZ-D18 | 领取已完成日常任务奖励；Function：claimDailies | C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确日常taskId单次领取已有 |
+| BIZ-D19 | 日/周活跃宝箱计划与领取；Function：chestTiers/planChests→claimDailies | C516 | PARTIAL | src/daily-task-rewards.mjs；tests/daily-task-rewards.test.mjs | G | 日活跃箱、周免费包和芯片任务子集已有；周活跃完整周期缺 |
+| BIZ-D20 | 每日免费赠礼计划与验证；Function：planDailyGift→claimDailies | C513 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 固定每日赠礼受控领取；不含VIP或付费包 |
+| BIZ-D21 | 主线/支线任务状态与领奖计划；Function：surveyTasks、taskTarget | C502 C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 主线、支线状态与单次受控领奖已有 |
+| BIZ-D22 | 成就状态与领奖计划；Function：surveyTasks | 非C:成就 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 成就状态、奖励映射和单次受控领取已有 |
+| BIZ-D23 | 每日订单档位判断；Function：nextOrderTier→surveyTasks | 非C:订单档奖励 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 原订单档观察保留；完整资格、奖励和周期写合同缺 |
+| BIZ-D24 | 主/支/成就/订单档奖励串行领取；Function：runTasks | C503 C604 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | Tasks具名主线、支线、成就转原Workflow；订单档合同缺 |
+| BIZ-D25 | 一键可领取清单与前后对比；Function：app内部planLoot→loot→runAction | C511 C513 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 旧loot清单和dry保留，独立及批量旧写拒绝；迁移单项走原Service |
+| BIZ-L01 | 角色摘要/区服列表与分组；Function：describeRole/listWorlds/listGroup | C003 | EXISTING_FUNCTION | src/server.mjs；tests/server-runtime.test.mjs | T | 列表及显式CLI切服已有，网页enter仍403，创建角色未授权 |
+| BIZ-L02 | 指定区服登录；Function：enterWorld→新GameClient.connect({...login,worldId}) | C003 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 只读world列表保留，enterWorld写拒绝，Web enter403 |
+| BIZ-L03 | 固定三段自动循环；Function：runLoop → surveyTasks/runTasks → surveyDailies/runDailies → surveyWorld/planWorld/runWorld | C605 C604 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | Loop编译为原Registry有限图，明确轮次、间隔、期限与父预算；未迁移驱动不派发 |
+| BIZ-L04 | 循环轮次记录/步骤回调；Function：runLoop history/onRound/onStep→formatLoopRound | C606 | PARTIAL | src/execution-history.mjs；src/workflow.mjs；tests/workflow-execution-history.test.mjs | G | run、节点、批次及动作持久查询已有；重启只读，不恢复计时授权 |
+| BIZ-L05 | 订单库存→评估→刷新/交单组合；Function：新order-rules只读决策 + 旧finishOrder/rerollOrder | C125 C126 | PARTIAL | src/order-execution.mjs；tests/order-execution.test.mjs | G | 规则/三值评估/库存复查已有；免费刷新资格缺证继续冻结 |
+| BIZ-L06 | 建筑→队列→收取/排产组合；Function：surveyWorld→planWorld→runWorld | C101 C111 C115 C116 | EXISTING_FUNCTION | src/city-operations.mjs；tests/city-operations.test.mjs | G | 建筑信息与业务页面已有 |
+| BIZ-L07 | 玩家→指定阵容→主线组合；Function：玩家/formation读取与Stage Runner已存在，应用阵容动作未接 | C214 C204 | EXISTING_FUNCTION | src/formation.mjs；tests/formation.test.mjs | G | 指定阵容SAVE独立复读后走原Stage；不外推其他战斗模式 |
+| BIZ-L08 | 舰队→维修→派遣组合；Function：目标仅fleet读取+资源田手动计划；无Repair Function | C401 C407 C406 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | 维修、编队及明确移动可组合；移动不代替攻击 |
+| BIZ-L09 | 通用 Workflow Engine / DAG / Rules编排 | C601 C602 C603 C604 C605 C606 C607 | PARTIAL | src/loop.mjs；src/workflow.mjs；src/operation-service.mjs；tests/workflow.test.mjs | G | 原DAG、父预算、日周、可信事件及具名WAIT已有；全业务策略未全 |
+| BIZ-R01 | 联盟订单交付（当前DATA_ONLY） | 非C:联盟订单 | EXISTING_FUNCTION | src/alliance.mjs；tests/alliance.test.mjs | G | 明确联盟订单预算授权与独立复读已有 |
+| BIZ-R02 | 联盟情报奖励/派舰/修理（当前无执行） | C403 C407 非C:雷达奖励派舰 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | 有界观察、维修移动已有；情报奖励及派舰完整归属缺 |
+| BIZ-R03 | 海盗派舰实战与免战扫荡（当前扫荡PARTIAL） | C151 非C:海盗实战 | PARTIAL | src/pirate-sweep.mjs；tests/pirate-sweep.test.mjs | G | 精确扫荡已有；海盗实战、完整奖励和日界缺 |
+| BIZ-R04 | 贸易货船补货/返航领奖（当前DATA_ONLY） | C131 C132 C133 C134 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | 专业缺货、装货、到港领取已有；全范围受D6和证据限制 |
+| BIZ-R05 | 联盟商船补货与应聘船长（当前未接） | 非C:联盟商船 | PARTIAL | src/alliance.mjs；tests/alliance.test.mjs | G | 单船补货、应聘船长及私有状态修订已接；收益、补购、隐藏占用缺 |
+| BIZ-R06 | 联盟福利礼包领取（当前未接） | 非C:联盟福利 | EXISTING_FUNCTION | allianceView/verifyAlliance; src/alliance.mjs | G | 领取现有福利需权威时间/库存/回包复读 |
+| BIZ-R07 | 装备厂制造/收取（当前只有装备DATA） | 非C:装备厂 | PARTIAL | src/equipment-forge.mjs；tests/equipment-forge.test.mjs | G | 自有配方MAKE和到期单批PICK已有；通用材料、自动回退缺，缺队列不当空闲 |
+| BIZ-R08 | 海兽培育/成熟收取/材料投喂（当前DATA_ONLY） | 非C:海兽培育 | PARTIAL | src/pet-operations.mjs；tests/pet-operations.test.mjs | G | 明确Pet FEED已有；培育、成熟领取缺可恢复目标身份 |
+| BIZ-R09 | 徽章/装备/专武完整养成（当前DATA_ONLY） | C225 C226 C227 C228 C229 C230 | PARTIAL | src/hero-operations.mjs；src/equipment-growth.mjs；src/badge-growth.mjs；tests/equipment-growth.test.mjs | G | 已激活专武升等星、空槽穿戴、装备升级红精炼星及徽章升级红星已有；完整成长未全 |
+| BIZ-R10 | 挂机、邮件及升级依赖计划（当前底层Action已在） | C511 非C:挂机依赖计划 | PARTIAL | src/mail.mjs；tests/mail-claim.test.mjs | G | 单封读领及挂机等级奖励已有；时段收益、升级和批量依赖链缺 |
+| BIZ-R11 | 世界宝藏货轮抢占（当前未接） | 非C:世界宝藏 | PARTIAL | surveyTreasure/planTreasure/verifyTreasure; src/treasure.mjs | G | 只证无争夺派舰分配；非抢占胜利/奖励闭环 |
+| BIZ-R12 | 城战读状态、修理、调遣、在线奖（当前只有占位） | C403 C406 C407 非C:城战在线奖 | PARTIAL | src/naval-rules.mjs；tests/naval-rules.test.mjs | G | WorldInfo当前视野、精确ID及资源田读取，不宣称全图完整 |
+| BIZ-R13 | 海商王买卖/移动/奖励/免费战令（当前未接） | C521 C522 C523 C524 | PARTIAL | src/trade.mjs；tests/trade.test.mjs | G | 当前港价容量及单BUY、SELL、MOVE、自有SPEED已有；目的地策略、到达收益、奖励战令缺 |
+| BIZ-R14 | 工厂独立页面与自选材料包覆盖（当前仅简单排产） | C111 C112 C114 C115 C116 非C:自选包 | PARTIAL | src/production-planning.mjs；src/material-packs.mjs；tests/material-packs.test.mjs | B | 专业生产页、明确自选包和覆盖投影已有；投影不进库存，全天量缺 |
+| BIZ-R15 | 漂浮物拾荒、礼包码（当前只有计数/协议） | 非C:漂浮物礼包码 | PROTOCOL_ONLY | target ACTIONS src/actions.mjs无pickUpFloater/giftCode | P | 参考新增Action尚未移植 |
+| BIZ-R16 | 农田种植/喂种、委任减时、订单供给水位（当前简单planWorld未有） | C113 C114 非C:农田委任水位 | PARTIAL | src/farm-operations.mjs；tests/farm-operations.test.mjs | G | 委任减时、种子作物水位及单田种收已有；原批量结算未全 |
+| BIZ-R17 | 活动幽都驱邪/罗盘/敕令/签到（当前未接） | C501 C502 C503 | PARTIAL | src/daily-checklist.mjs；src/client.mjs；tests/daily-checklist.test.mjs | R | 签到仅可信私有流前置观察；幽都、罗盘、敕令写未接 |
+| BIZ-R12a | claimWarOnlineReward；参考cityWar:638–670 | 非C:城战在线奖 | PROTOCOL_ONLY | target registry src/function-registry.mjs无claimWarOnlineReward | P | GotWorldOnlineRwdRequest存在不等于Function；纳W14补资格/回包关联/权威复读 |
+| BIZ-R16a | farmOf；参考world:190；surveyWorld:368 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/farm-operations.mjs；tests/farm-operations.test.mjs | R | 农田结构、种子、时段观察已有；缺字段UNKNOWN |
+| BIZ-R16b | 增强planWorld farmHarvest分支；参考world:1555–1577→runWorld | C113 C114 非C:农田委任水位 | PARTIAL | src/farm-operations.mjs；tests/farm-operations.test.mjs | G | 单田HARVEST目标、时间和库存复读已有；批量结算未全 |
+| BIZ-R16c | 增强planWorld farmPlant分支；参考world:1579–1687→runWorld | C113 C114 非C:农田委任水位 | PARTIAL | src/farm-operations.mjs；tests/farm-operations.test.mjs | G | 明确空田、自有种子、autoFarming=false单PLANT已有；不自动喂种批量 |
+| BIZ-R16d | appointEffectValue→appointProduceReduce→produceFinalTime；参考world:205,217,234；surveyWorld:383–389 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 委任效果及减时纯投影已有；不更改任命或冒充实际耗时 |
+| BIZ-R16e | 增强planWorld内部waterlineOf；参考world:1065–1089 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 原Production水位策略已有；预测收成不进库存 |
+| BIZ-R16f | 增强planWorld种子缺口需求；参考world:1091–1130 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 种子需求缺口纯规划接原策略 |
+| BIZ-R16g | 增强planWorld过剩作物→成品需求；参考world:1131–1167 | C113 C114 非C:农田委任水位 | EXISTING_FUNCTION | src/production-planning.mjs；tests/production-planning.test.mjs | B | 过剩作物到成品需求纯规划已有；实际消耗走原账本 |
+| BIZ-R16h | decideOrderReroll；参考world:274；增强planWorld:872–1029 | C113 C114 非C:农田委任水位 | PARTIAL | src/order-rules.mjs；src/order-execution.mjs；tests/order-execution.test.mjs | B | 规则可建议刷新；缺免费配额冷却不产执行动作 |
+| BIZ-R17a | planYoudu kill分支；参考youdu:230–249→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17b | planYoudu驱邪累计奖励；参考youdu:252–277→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17c | planYoudu罗盘；参考youdu:279–298→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17d | planYoudu罗盘累计奖；参考youdu:300–315→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17e | planYoudu敕令开局；参考youdu:337–347→runWorld | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17f | planYoudu敕令作答/settleYouduEdict；参考youdu:317–336,429–445 | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17g | runYouduActive；参考youdu:378–418 | C501 C502 C503 非C:幽都活动 | PROTOCOL_ONLY | target src/function-registry.mjs; src/dailies.mjs未实现youdu分支 | P | 原参考分项未移植；需活动状态/成本/奖励/账号记忆合同后适配 |
+| BIZ-R17h | runYouduSigns；参考youdu:481–550 | C501 C502 C503 非C:幽都活动 | PARTIAL | src/daily-checklist.mjs；src/client.mjs；tests/daily-checklist.test.mjs | R | 可信窗口签到观察已有；完整目录、日界、资格、成本及领取结算缺 |
+| ORD-001 | 读取居民订单 | C121 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs; src/order-execution.mjs | R | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-002 | 解析需求物品与数量 | C122 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs; src/order-execution.mjs | R | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-003 | 库存与缺口计算 | C123 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs; src/order-execution.mjs | R | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-004 | 普通订单经验 | C124 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs; src/order-execution.mjs | R | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-005 | 特殊订单经验 | C124 | EXISTING_FUNCTION | surveyWorld/surveyOrderExecution; src/world.mjs; src/order-execution.mjs | R | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-006 | 金币奖励解析 | C124 | PARTIAL | src/order-rewards.mjs；tests/order-rewards.test.mjs | B | 普通SUM基础奖励、特殊直接reward及事后关联已有；最终金币未知，MIN_GOLD不开放 |
+| ORD-007 | 规则契约校验 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-008 | 规则增删编辑/排序/启停 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-009 | 原始物品ID匹配与名称展示 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-010 | 禁止物品 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-011 | 必须包含全部指定物品 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-012 | 经验GT/GTE阈值 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-013 | 单物品需求数量上限 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-014 | 库存规则及最终独立库存检查 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-015 | 优先级短路评估 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-016 | 每条规则独立KEEP/REFRESH/REVIEW | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-017 | 全通过后建议提交 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-018 | 账号隔离持久化/安全回退 | C127 | EXISTING_FUNCTION | loadOrderRules/saveOrderRules; src/order-rules-store.mjs | L | 精确账号持久化，损坏保留不覆盖 |
+| ORD-019 | Snapshot模拟与解释 | C125 | EXISTING_FUNCTION | evaluateOrder/evaluateOrders; src/order-rules.mjs; previewOrderRules src/server.mjs | L | 五类规则和解释轨迹存在；预览不等于执行 |
+| ORD-020 | 跨订单库存预留 | C123 | EXISTING_FUNCTION | ResourceLedger/evaluateOrders/planOrderExecution; src/order-rules.mjs; src/order-execution.mjs | B | PHASE1/2已共享跨订单预算；独立快照预览与执行计划需区分 |
+| ORD-021 | 规则建议→真实提交/刷新 | C126 | PARTIAL | planOrderExecution/executeOrderOperation; src/order-execution.mjs | B | SUBMIT闭环存在；REFRESH仍因免费配额证据缺失被阻塞 |
+| ORD-022 | 订单执行历史持久化 | C128 | EXISTING_FUNCTION | createExecutionHistory/createOperationService; src/execution-history.mjs; src/operation-service.mjs | B | 账号级持久历史已实现；真实写入/重启恢复仍待最终验收 |
+| STG-001 | 从当前主线启动 | C201 C202 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-002 | 主线专用LEFT授权 | C203 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-003 | 关卡号/Boolean胜负检查 | C203 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-004 | 胜利推进下一关 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-005 | 明确战败后重试 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-006 | 首次战败立即停止 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | API有stopOnDefeat；UI只透传，独立勾选仍缺 |
+| STG-007 | 最大总开战次数 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-008 | 最高目标关卡 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-009 | 胜利后随机10–11秒 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-010 | 下一关倒计时/随机时长历史 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-011 | RATE_LIMITED独立停止 | C205 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-012 | 同账号排他/未决锁 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-013 | 停止/失效/删除取消 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-014 | runId/generation/迟到保护 | C204 C606 | EXISTING_FUNCTION | createStageRunner/parseStageResult; src/stages.mjs | S | 现有主线Runner逻辑保留；历史离线通过，真实战斗/限频效果仍待验证 |
+| STG-015 | 内存历史/状态重读 | C204 C606 | EXISTING_FUNCTION | src/stages.mjs；src/stage-history.mjs；tests/stage-history.test.mjs | S | 内存当前状态保留，逐场持久历史另已接；重启只读 |
+| STG-016 | 持久化Runner历史/自动恢复 | C204 C606 | PARTIAL | src/stages.mjs；src/stage-history.mjs；tests/stage-history.test.mjs | S | 持久历史与只读重启已有；自动恢复标题不授予写重放，UNKNOWN保守锁 |
+| STG-017 | 其他战斗模式支持 | 非C:其他战斗模式；W08/W14（不并入C204/C606完成数） | PARTIAL | src/expedition-formations.mjs；src/trial-challenge.mjs；tests/expedition-formations.test.mjs | G | 其他模式阵容和经验试炼子集已有；全模式战斗阵营奖励未全 |
+| FRM-001 | 当前主线阵容读取 | C211 C207 | EXISTING_FUNCTION | surveyFormation/parseFormation; src/formation.mjs | R | 实时阵容与本次战斗阵容保持不同证据 |
+| FRM-002 | 已解锁阵型模板ID读取 | C212 | EXISTING_FUNCTION | surveyFormation/catalogFrom; src/formation.mjs | R | 模板ID不是完整队伍存档 |
+| FRM-003 | 保存/修改当前阵容 | C213 C214 | EXISTING_FUNCTION | planFormation/verifyFormation; src/formation.mjs | G | 完整SaveFormation与复读已做 |
+| FRM-004 | 应用已解锁阵型模板 | C213 C214 | EXISTING_FUNCTION | candidate/planFormation/verifyFormation; src/formation.mjs | G | 按职业重排站位/保留petUid；只用已解锁模板 |
+| FRM-005 | 解锁阵型模板 | 非C:解锁阵型 | EXISTING_FUNCTION | src/formation-unlock.mjs；tests/formation-unlock.test.mjs | G | 自有普通图纸明确单目标解锁；D6购买补图拒绝 |
+| FRM-006 | 更换上下阵英雄 | C213 C214 | EXISTING_FUNCTION | src/formation.mjs；tests/formation.test.mjs | G | 明确完整英雄站位上下阵SAVE与独立复读已有；非自动换阵 |
+| FRM-007 | 具名多套完整英雄队伍预设 | 非C:具名完整队伍预设 | EXISTING_FUNCTION | src/named-formations.mjs；tests/named-formations-service.test.mjs | G | 整队具名存改删、只读重启和准备应用已有；应用需原新计划授权 |
+| FRM-008 | 闯关前应用并确认阵容 | C214 C204 | EXISTING_FUNCTION | assertFormationReady; src/operation-service.mjs; createStageFunction src/stage-function.mjs | G | 同Session保存/复读后允许主线；自动决策仍未完成 |
+| PRO-001 | 公会科技 | C306 C307 | PARTIAL | src/alliance.mjs；tests/alliance-tech.test.mjs | G | 科技状态、精确单升及扣点复读已有；科技重置缺合同 |
+| PRO-002 | 公会订单与互助 | C301 C302 C303 C304 C305 非C:联盟订单 | PARTIAL | src/alliance.mjs；tests/alliance-tech.test.mjs | G | reqId精确绑定成员求助单，已有展示 |
+| PRO-003 | 舰队维修/编队/派遣 | C401 C402 C406 C407 C408 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | MyFleets+OnWater队伍读取已有，不用MyFleets代替阵容复读 |
+| PRO-004 | 货船操作 | C131 C132 C133 C134 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | CargoShips读取和通用Fleet展示已有 |
+| PRO-005 | 世界与限时 Boss 战斗 | 非C:世界/限时Boss | PROTOCOL_ONLY | surveyNaval/navalView; src/naval-rules.mjs | P | 写候选不生成；独立战斗语义和结果关联缺失 |
+| PRO-006 | 博物馆展陈与探险 | C141 C142 C143 C144 | PARTIAL | src/museum.mjs；tests/museum.test.mjs | G | 探索次数/进度/状态可读，COMPLETE_UNSETTLED独立 |
+| PRO-007 | 藏品养成 | 非C:藏品养成 | PARTIAL | src/antique-growth.mjs；tests/antique-advanced.test.mjs | G | 古董激活、专属碎片星、套装、精通及万能兑换已有；完整范围未全 |
+| PRO-008 | 贸易与货运玩法 | C521 C522 C523 C524 | PARTIAL | src/trade.mjs；tests/trade.test.mjs | G | 原贸易单步写、观察和WAIT已有；全策略、目的地价格与到达收益缺 |
+| PRO-009 | 寻宝与掠夺 | 非C:世界宝藏 | PARTIAL | surveyTreasure/planTreasure/verifyTreasure; src/treasure.mjs | G | 列表/排名/防守+无争夺派舰；缺抢占/战斗/领奖 |
+| PRO-010 | 其他模式阵容 | 非C:其他模式阵容 | PARTIAL | src/expedition-formations.mjs；src/trial-challenge.mjs；tests/expedition-formations.test.mjs | G | 主线与远征阵容子集已有；其他模式未全，不外推主线LEFT |
 
 本附录按具体子Function补充证据；第5节95项完整需求分类为统计权威，子Function存在不能覆盖整项PARTIAL。所有测试均为指定版本历史证据，本轮没有重跑。
 
-## 附录B — PHASE3实际Function、API/UI及测试证据补充
+## 附录B — PHASE3历史Function、API/UI及测试证据（a505019快照）
 
 本节逐项对照原三维度需求、Inventory、`docs/baseline.md`、两份 PHASE 3 文档与当前实现；没有运行测试、启动 Runtime 或连接真实游戏。`docs/PHASE_3_ACCEPTANCE.md:127` 的 845/845 Node 与 29 组 selftest 是历史离线证据。提交 `a505019` 只改 README 和两份阶段文档，代码测试的末版本为其父提交 `f300a35`；不能声称本轮重跑或真实通过。以下所有新增写能力均 `REAL_UNVERIFIED`。协议证据来自已缓存客户端 v76 `work/extracted/_src_chunks_/src/chunks/game.js`，由 `src/proto.mjs:46` 加载；本轮仅读静态文本，未执行客户端。
 
@@ -1971,7 +1950,7 @@ Function 状态与 API/UI、离线测试、外部证据阻塞分别记录。EXIS
 
 
 
-## 附录C — 本轮文档静态校验与保护复核
+## 附录C — 历史文档静态校验与保护复核（原规划批次）
 
 校验对象为本报告及原始规划文本，不是运行功能测试。以脚本实际读取表格进行复算：
 
@@ -1992,7 +1971,7 @@ Function 状态与 API/UI、离线测试、外部证据阻塞分别记录。EXIS
 | 原输入保护 | 第2节5个输入SHA256结束复核全部相同；原验收/增量及E2E证据无写操作 |
 
 本报告共95项原需求账本、273条原能力附录、42页面、22工作包、8阶段、24最终真实验收组，编号可反查源码/测试/外证与DoD。完成文档交付后停止，等待Owner审阅，不开始PHASE4或其他开发，不提交Git。
-## 附录D — 持续执行登记（2026-11-11，当前有效）
+## 附录D — 持续执行历史登记（D.1–D.28，各节为提交时快照）
 
 ### D.1 授权、实际基线与保护
 
