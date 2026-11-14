@@ -180,3 +180,27 @@ test('late planning facts from an adapter ignoring cancellation cannot replace a
   }finally{release();f.cleanup();}
  }
 });
+
+const sourceFields=['accountId','playerId','worldId','generation','connectionId'];
+function sourceSession(f){
+ const session=f.session('offline-source'),factContext={accountId:session.id,playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'source-connection'};
+ session.player={playerId:factContext.playerId,worldId:factContext.worldId};session.connectionId=factContext.connectionId;session.client.factContext={...factContext};return session;
+}
+const changeSource=(session,key)=>{session.client.factContext[key]=key==='generation'?2:key==='accountId'?'other-account':key==='playerId'?'9007199254740995':key==='worldId'?'18':'other-connection';};
+for(const key of sourceFields)test('planning rejects late client source '+key+' drift without replacing prior plan or cache',async()=>{
+ let release,entered,blocking=false;const gate=new Promise(r=>release=r),waiting=new Promise(r=>entered=r);
+ const f=fixture({survey:async()=>{if(blocking){entered();await gate;}return {stockReliable:true,stock:new Map([['wood',100]])};}}),session=sourceSession(f);
+ try{
+  const old=await createPlan(f,session),before=f.service.view(session.id);blocking=true;
+  const pending=createPlan(f,session,['order-b']);await waiting;changeSource(session,key);release();await assert.rejects(pending,{code:'CANCELLED'});
+  assert.deepEqual(f.service.view(session.id),before);assert.equal(f.service.view(session.id).lastPlan.batchId,old.batchId);assert.equal(f.calls.length,0);assert.deepEqual(f.history.list(session.id),[]);assert.equal(session.busy,null);
+ }finally{release();f.cleanup();}
+});
+for(const phase of ['authorization','execution'])for(const key of sourceFields)test(phase+' rejects client source '+key+' drift from displayed plan',async()=>{
+ const f=fixture(),session=sourceSession(f);
+ try{
+  const plan=await createPlan(f,session),permit=phase==='execution'?approve(f,session,plan):null;changeSource(session,key);
+  assert.throws(()=>phase==='authorization'?approve(f,session,plan):f.service.execute(session,permit),{code:'STALE_PLAN'});
+  assert.equal(f.calls.length,0);assert.deepEqual(f.history.list(session.id),[]);assert.equal(session.busy,null);
+ }finally{f.cleanup();}
+});

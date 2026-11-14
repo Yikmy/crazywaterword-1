@@ -144,3 +144,51 @@ for(const fromLegacy of [true,false])test('W19 production refusal shared across 
  const f=fixture(4,'REJECTED');try{f.session.player.playerId='1';f.session.player.worldId=17;f.session.connectionId='core-production';f.service.saveModuleConfig(f.session.id,{module:'production',config:{enabled:true}});const row=(await f.service.survey(f.session)).view.city.candidates.find(r=>r.actionType==='startProduce');const legacy={module:'city',mode:'Manual',selections:[row.actionId]},registered={...legacy,module:'production',parameters:{}};const p=await f.service.plan(f.session,fromLegacy?legacy:registered);const permit=f.service.authorize(f.session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.history.list(f.session.id)[0].finalStatus,'REJECTED');const opposite=fromLegacy?registered:legacy;await assert.rejects(f.service.plan(f.session,opposite),{code:'REJECTION_MEMORY_ACTIVE'});f.session.player.worldId=18;assert.equal((await f.service.plan(f.session,opposite)).actions.length,1);f.session.player.worldId=17;await assert.rejects(f.service.plan(f.session,opposite),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,1);
  }finally{await f.service.settle(f.session.id);f.cleanup();}
 });
+
+for(const route of ['legacy','registered'])for(const key of ['accountId','playerId','worldId','generation','connectionId'])test(route+' order executor blocks client source '+key+' drift during independent write preflight',async()=>{
+ const f=fixture();
+ try{
+  f.session.player={...f.session.player,playerId:'9007199254740993',worldId:'17'};f.session.connectionId='source-connection';
+  f.client.factContext={accountId:f.session.id,playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'source-connection'};
+  const view=(await f.service.survey(f.session)).view,actionId=view.orders[0].actionId;
+  if(route==='registered')f.service.saveModuleConfig(f.session.id,{module:'orders',config:{enabled:true}});
+  const plan=await f.service.plan(f.session,{module:'orders',mode:'Manual',selections:[actionId],...(route==='registered'?{parameters:{}}:{})});
+  const permit=f.service.authorize(f.session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:[actionId],resourceBudget:plan.resourceBudget,confirm:true});
+  const request=f.client.request.bind(f.client);let changed=false;
+  f.client.request=async(...args)=>{const result=await request(...args);if(args[0]==='AllItemRequest'&&!changed){changed=true;f.client.factContext[key]=key==='generation'?2:key==='accountId'?'other-account':key==='playerId'?'9007199254740995':key==='worldId'?'18':'other-connection';}return result;};
+  f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(changed,true);assert.deepEqual(f.writes,[]);
+  const run=f.history.list(f.session.id)[0];assert.equal(run.finalStatus,'NOT_EXECUTED');assert.equal(run.actions[0].dispatched,false);assert.equal(run.actions[0].unresolvedWrite,false);assert.equal(f.client.uncertainWrites.size,0);assert.equal(f.raw.orderOfTheDay.orderNum,3);assert.equal(f.session.busy,null);
+ }finally{await f.service.settle(f.session.id);f.cleanup();}
+});
+
+for(const route of ['legacy','registered'])test(route+' dispatched order with changed client source stays UNKNOWN across service restart with zero replay',async()=>{
+ const f=fixture();
+ try{
+  f.session.player={...f.session.player,playerId:'9007199254740993',worldId:'17'};f.session.connectionId='source-connection';
+  f.client.factContext={accountId:f.session.id,playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'source-connection'};
+  const view=(await f.service.survey(f.session)).view,actionId=view.orders[0].actionId;
+  if(route==='registered')f.service.saveModuleConfig(f.session.id,{module:'orders',config:{enabled:true}});
+  const plan=await f.service.plan(f.session,{module:'orders',mode:'Manual',selections:[actionId],...(route==='registered'?{parameters:{}}:{})});
+  const permit=f.service.authorize(f.session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:[actionId],resourceBudget:plan.resourceBudget,confirm:true});
+  const request=f.client.request.bind(f.client);f.client.request=async(...args)=>{const result=await request(...args);if(args[0]==='FinishWorkerOrderRequest')f.client.factContext.connectionId='changed-after-dispatch';return result;};
+  f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.writes.length,1);
+  const run=f.history.list(f.session.id)[0];assert.equal(run.finalStatus,'UNKNOWN');assert.equal(run.actions[0].dispatched,true);assert.equal(run.actions[0].unresolvedWrite,true);assert.equal(f.history.unresolved(f.session.id),true);
+  assert.equal(f.service.status(f.session.id).blocked,true);const history=createExecutionHistory({file:f.history.storagePath}),restarted=createOperationService({protocol:wire,history,getConfig:()=>config,loadRules:()=>({config:policy}),loadProduction:()=>({config:{}})});
+  const reads=f.reads.length,session={...f.session,generation:2,connectionId:'restart-connection',abort:new AbortController(),busy:null,client:{...f.client,pending:[],watchers:[],uncertainWrites:new Set(),lateResponses:new Map(),factContext:{...f.client.factContext,generation:2,connectionId:'restart-connection'}}};
+  await assert.rejects(restarted.plan(session,{module:'orders',mode:'Manual',selections:[actionId]}),{code:'RECOVERY_UNCERTAIN'});
+  assert.equal(history.list(session.id)[0].finalStatus,'UNKNOWN');assert.equal(history.unresolved(session.id),true);assert.equal(f.writes.length,1);assert.equal(f.reads.length,reads);assert.equal(session.busy,null);
+ }finally{await f.service.settle(f.session.id);f.cleanup();}
+});
+
+for(const key of ['accountId','playerId','worldId','generation','connectionId','sessionPlayer','sessionWorld'])test('legacy shared survey discards '+key+' source drift without replacing cached facts',async()=>{
+ const f=fixture();
+ try{
+  f.session.player={...f.session.player,playerId:'9007199254740993',worldId:'17'};f.session.connectionId='source-connection';
+  f.client.factContext={accountId:f.session.id,playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'source-connection'};
+  await f.service.survey(f.session);const before=f.service.view(f.session.id),request=f.client.request.bind(f.client);
+  f.client.request=async(...args)=>{const result=await request(...args);if(args[0]==='OnWaterRequest'){
+   if(key==='sessionPlayer')f.session.player.playerId='9007199254740995';else if(key==='sessionWorld')f.session.player.worldId='18';else f.client.factContext[key]=key==='generation'?2:key==='accountId'?'other-account':key==='playerId'?'9007199254740995':key==='worldId'?'18':'other-connection';
+  }return result;};
+  await assert.rejects(f.service.survey(f.session),{code:'CANCELLED'});assert.deepEqual(f.service.view(f.session.id),before);assert.equal(f.session.busy,null);assert.deepEqual(f.writes,[]);assert.deepEqual(f.history.list(f.session.id),[]);
+ }finally{f.cleanup();}
+});

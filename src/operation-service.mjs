@@ -59,6 +59,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   const parentScope = (session, runId) => ({ accountId: session.id, runId, generation: session.generation, connectionId: connectionIdOf(session) });
   const stockLimits = stock => normalizeBudgetClaims({ resources: [...stock].filter(([,num]) => Number.isSafeInteger(num) && num > 0).filter(([id]) => !['RUBY','钻石'].includes(id)).map(([id,num]) => ({id,num})), quotas: [], uids: [] });
   const executionContext = session => toSnapshotJson({ accountId: session.id, playerId: session.player?.playerId ?? null, worldId: session.player?.worldId ?? null, generation: session.generation, connectionId: connectionIdOf(session) });
+  const observationIdentity = (session,client=session.client) => operationDigest({context:executionContext(session),client:toSnapshotJson(['accountId','playerId','worldId','generation','connectionId'].map(key=>client.factContext?.[key]??null))});
   const lockOwners = new WeakMap(), workflowOwners = new WeakMap();
   const now = () => new Date(clock()).toISOString();
   function current(session, generation, client) {
@@ -190,9 +191,11 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const release = acquire(session, 'operations:SURVEY');
     const generation = session.generation, client = session.client;
     try {
+      const identity=observationIdentity(session,client);
       const config = getConfig(), rules = loadRules(session.id).config;
       const facts = await survey(client, protocol, { config, player: session.player, signal: session.abort.signal });
       current(session, generation, client);
+      if(observationIdentity(session,client)!==identity)throw error('账号角色、世界或连接来源身份已变化','CANCELLED');
       cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
       plans.delete(session.id);
       return view(session.id);
@@ -210,11 +213,11 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const adapter = adapterFor(id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
     const release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
     try {
-      const surveyIdentity=()=>operationDigest({context:executionContext(session),client:toSnapshotJson(['accountId','playerId','worldId','generation','connectionId'].map(key=>client.factContext?.[key]??null))}),identity=surveyIdentity();
+      const identity=observationIdentity(session,client);
       const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
       assertExecutionActive(client,{signal:surveySignal});
       const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
-      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||surveyIdentity()!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
+      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||observationIdentity(session,client)!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
   async function surveyAntiqueAttributes(session,payload={}) {
@@ -341,8 +344,9 @@ function authorizeWorkflowPlan(session,payload){
     const parentWorkflow=workflowId?workflowBudgets.get(session.id):null;let strategy=null;
     if(parentWorkflow?.contract){assertWorkflowApprovalScope(session,parentWorkflow,Boolean(parentWorkflow.approval));strategy=parentWorkflow.contract.graph.nodes.find(node=>node.id===workflowContext?.nodeId&&node.type==='ACTION');if(!strategy||strategy.module!==module||mode!=='Manual'||operationDigest(strategy.parameters??{})!==operationDigest(normalizedParameters)||strategy.selection?.unique!==true&&selections[0]!==(typeof strategy.selection==='string'?strategy.selection:strategy.selection?.actionId))throw error('计划超出当前整图明确策略','AUTHORIZATION_REQUIRED',403);if(parentWorkflow.actionPlans>=parentWorkflow.contract.graph.runPolicy.maxActions)throw error('运行累计动作计划已到上限','WORKFLOW_LIMIT');parentWorkflow.actionPlans++;}
     const release = acquire(session, 'operations:PLAN', workflowId);
-    const generation = session.generation, client = session.client, contextHash=operationDigest(executionContext(session));
+    const generation = session.generation, client = session.client;
     try {
+      const contextHash=operationDigest(executionContext(session)),sourceIdentity=observationIdentity(session,client);
       const config = getConfig(), rules = loadRules(session.id).config;
       const moduleConfig = adapter ? moduleSettings.get(session.id,module).config : null;
       const production = loadProduction(session.id).config;
@@ -351,7 +355,7 @@ function authorizeWorkflowPlan(session,payload){
       const facts = await (adapter ? adapter.survey(client,protocol,options) : survey(client,protocol,options));
       assertExecutionActive(client,options);
       current(session, generation, client);
-      if((session.workflowOwner??null)!==workflowId || operationDigest(executionContext(session))!==contextHash)throw error('工作流或账号角色/世界身份已变化', 'CANCELLED');
+      if((session.workflowOwner??null)!==workflowId || observationIdentity(session,client)!==sourceIdentity)throw error('工作流或账号角色、世界、连接来源身份已变化', 'CANCELLED');
       if (facts.stockReliable !== true || !(facts.stock instanceof Map)) throw error('库存来源不可靠，禁止计划');
       if(strategy?.selection?.unique===true){const view=adapter.view(facts,options),executable=(view.candidates??[]).filter(row=>row.executable===true);if(executable.length!==1||executable[0].actionId!==selections[0])throw error('新鲜计划调查已不满足唯一可执行候选策略','STALE_PLAN');}
       // Both modules share this exact planning ledger. Execution starts a separate conservative ledger.
@@ -393,7 +397,7 @@ function authorizeWorkflowPlan(session,payload){
       const preparation=module==='formation'?extremePreparations.get(session.id):null;
       if(preparation&&preparation.contextHash===contextHash&&preparation.stage===session.player?.mainlineStage&&preparation.dependencyHash===operationDigest(adapter.dependencyVersions(options))&&preparation.parametersHash===operationDigest(normalizedParameters)&&clock()>=preparation.preparedAt&&clock()-preparation.preparedAt<=30000)summary.preparationEvidence={capabilityId:'C215',source:clone(preparation.source),preparedAt:preparation.preparedAt,scope:'SOURCE_TEMPLATE_ONLY_CURRENT_TARGET_REVALIDATED'};
       summary.planHash = operationDigest(summary);
-      const internal = { memoryFacts, contextHash, adapter: Boolean(adapter), dependencyHash: adapter?.dependencyVersions ? operationDigest(adapter.dependencyVersions(options)) : null, public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
+      const internal = { memoryFacts, contextHash, sourceIdentity, adapter: Boolean(adapter), dependencyHash: adapter?.dependencyVersions ? operationDigest(adapter.dependencyVersions(options)) : null, public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
       plans.set(session.id, internal);
       if(adapter) cacheModule(session.id,module,facts,options); else cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
       return clone(summary);
@@ -403,7 +407,7 @@ function authorizeWorkflowPlan(session,payload){
     const entry = plans.get(session.id);
     if (!entry || entry.public.batchId !== payload.batchId || clock() >= Date.parse(entry.public.expiresAt)) throw error('批次不存在或已过期', 'STALE_PLAN');
     current(session, entry.generation, entry.client);
-    if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化，请重新规划','STALE_PLAN');
+    if(observationIdentity(session)!==entry.sourceIdentity)throw error('账号角色、世界或连接来源身份已变化，请重新规划','STALE_PLAN');
     if ((session.workflowOwner ?? null) !== entry.workflowId) throw error('工作流归属已变化，重新规划', 'STALE_PLAN');
     if (entry.workflowId) { assertWorkflowTime(session,entry.workflowId);const parent=workflowBudgets.get(session.id); if (!parent?.context || parent.runId!==entry.workflowId) throw error('工作流父预算已结束','RUN_BUDGET_CLOSED'); assertWorkflowDeadline(session,entry.workflowId); parent.context.assertScope(parentScope(session,entry.workflowId)); if(operationDigest({scope:parent.scope,limits:parent.limits})!==operationDigest(entry.public.runBudgetIdentity))throw error('父预算授权已变化','STALE_PLAN'); }
     if (entry.dependencyHash) { const adapter=modules[entry.public.module]; const versions=adapter.dependencyVersions({config:getConfig(),rules:loadRules(session.id).config,productionPolicy:loadProduction(session.id).config,moduleConfig:moduleSettings.get(session.id,entry.public.module).config,mode:entry.public.mode,parameters:entry.public.parameters??{},player:session.player}); if(operationDigest(versions)!==entry.dependencyHash)throw error('业务相关配置已变化，请重新规划','STALE_PLAN'); return entry; }
@@ -443,7 +447,7 @@ function authorizeWorkflowPlan(session,payload){
     let activeMemoryOperation=null;
     const authorizedCurrent = () => {
       current(session, generation, client);
-      if(operationDigest(executionContext(session))!==entry.contextHash)throw error('账号角色、世界或连接身份已变化','NOT_EXECUTED');
+      if(observationIdentity(session,client)!==entry.sourceIdentity)throw error('账号角色、世界或连接来源身份已变化','NOT_EXECUTED');
       if(entry.workflowId)assertWorkflowDeadline(session,entry.workflowId);
       if(runAuthorization)assertWorkflowApprovalScope(session,workflowBudgets.get(session.id));
       budget.runBudget.assertScope(parentScope(session,entry.workflowId??record.runId));
