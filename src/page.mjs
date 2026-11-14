@@ -1,5 +1,5 @@
 import { compareStageBattles } from './stage-history.mjs';
-import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT, CORE_GAMEPLAY_HTML } from './gameplay-page.mjs';
+import { GAMEPLAY_HTML, GAMEPLAY_SCRIPT, CORE_GAMEPLAY_HTML, validateWorkflowReasonAuditView } from './gameplay-page.mjs';
 // This same guard is embedded in the browser and exercised by the offline tests.
 export function createAccountViewGuard() {
   let account = null;
@@ -1414,6 +1414,7 @@ function resetOperationMemory() {
   $('ops-memory-coverage').textContent = '尚未读取覆盖范围。';
   clear($('ops-memory-pending')); $('ops-memory-hint').textContent = '';
 }
+const operationWorkflowReasonView = ${validateWorkflowReasonAuditView.toString()};
 function executionSummaryView(data) {
   if(data.summary===undefined)return null;
   const value=data.summary,validText=item=>typeof item==='string'&&item.length>0&&item.length<=512&&item===item.trim();
@@ -1464,6 +1465,20 @@ function executionSummaryView(data) {
       }
     }
   }
+  if(value.workflowReasons!==undefined){
+    const wf=value.workflowReasons;
+    if(!wf||wf.source!=='Workflow.original-reasons.v1'||wf.accountId!==data.accountId||wf.readOnly!==true||wf.coverage!=='recorded-fields-only'||typeof wf.available!=='boolean'||!Array.isArray(wf.runs)
+      ||!wf.filters||Object.keys(wf.filters).length!==Object.keys(selectors).length||Object.entries(wf.filters).some(([key,item])=>selectors[key]!==item)
+      ||(wf.available?wf.unavailableReason!==null:wf.unavailableReason!=='WORKFLOW_HISTORY_UNAVAILABLE'||wf.runs.length>0))throw new Error('工作流原因摘要来源或筛选不匹配');
+    const seen=new Set();
+    for(const row of wf.runs){
+      if(!row||row.accountId!==data.accountId||!validText(row.workflowRunId)||!validText(row.workflowDefinitionId)||seen.has(row.workflowRunId)
+        ||Object.hasOwn(selectors,'runId')||Object.hasOwn(selectors,'module')||Object.hasOwn(selectors,'batchId')||Object.hasOwn(selectors,'actionId')
+        ||selectors.workflowId!==undefined&&row.workflowRunId!==selectors.workflowId||selectors.status!==undefined&&row.originalStatus!==selectors.status
+        ||selectors.nodeId!==undefined&&(!row.events?.length||row.events.some(event=>event.nodeId!==selectors.nodeId)||row.reason?.text!==null))throw new Error('工作流原因摘要归属或筛选不匹配');
+      operationWorkflowReasonView({accountId:data.accountId,workflowRunId:row.workflowRunId,workflowDefinitionId:row.workflowDefinitionId,reasonAudit:row});seen.add(row.workflowRunId);
+    }
+  }
   return value;
 }
 function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-memory')) {
@@ -1494,6 +1509,16 @@ function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-m
         coverage.appendChild(card);
       }
       const omitted=audit.excluded;coverage.appendChild(el('div','dim','原始批次原因未计入：身份缺失 '+omitted.unidentifiedRuns+'，角色/世界等来源缺失 '+omitted.missingIdentityRuns+'，冲突 '+omitted.conflictingRuns+'；重复去重 '+omitted.duplicateRunRecords+'。'));
+    }
+    const wf=summary.workflowReasons;
+    coverage.appendChild(el('div','dim',!wf?'工作流原始原因摘要不可用。':!wf.available?'工作流原始历史不可读；该部分保持未知，其他原动作摘要独立显示。':'工作流原始原因单独显示，不计入Operation动作次数或资源变化；操作运行/批次/动作/模块筛选不带入无动作工作流。'));
+    for(const row of wf?.runs??[]){
+      const card=el('details','order-preview-card'),ctx=row.executionContext,known=value=>value??'未知';
+      card.appendChild(el('summary',null,'原工作流 '+row.workflowRunId+' · 流程 '+row.workflowDefinitionId+' · 原状态 '+known(row.originalStatus)));
+      card.appendChild(el('div','dim','角色 '+known(ctx?.playerId)+' / 世界 '+known(ctx?.worldId)+' · 代次 '+known(ctx?.generation)+'；只读原始归属，不能恢复授权、重试或解除UNKNOWN。'));
+      card.appendChild(el('div',null,summary.filters.nodeId?'当前节点筛选不带入整个运行原因。':'Workflow.run.reason：'+(row.reason.coverage==='RECORDED'?row.reason.text:row.reason.coverage==='RECOVERY_ONLY'?'未知（仅有恢复提示）':'未知')));
+      for(const event of row.events)card.appendChild(el('div',null,'原节点 '+event.nodeId+' · '+event.type+' · '+event.result+(event.blockedReasons?.length?' · '+event.blockedReasons.join('、'):'')+'；不证明动作已派发或结算。'));
+      coverage.appendChild(card);
     }
     const excluded=summary.excluded;
     coverage.appendChild(el('div','dim','未计入摘要：动作身份缺失 '+excluded.unidentifiedActions+'，角色/世界等来源缺失 '+excluded.missingIdentityActions+'，冲突动作 '+excluded.conflictingActions+'；重复记录去重 '+excluded.duplicateRecords+'。原始 UNKNOWN 即使追加 APPLIED 复核也不计已确认成功。'));

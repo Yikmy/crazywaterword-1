@@ -394,3 +394,38 @@ test('original reason audit survives Service restart without substituting Histor
   assert.equal(audit.runs[0].stopReason.text,raw.stopReason);assert.equal(audit.runs[0].stopReason.coverage,'RECORDED');assert.equal(audit.runs[0].status,raw.finalStatus);assert.equal(audit.actions[0].status,'UNKNOWN');assert.deepEqual(audit.actions[0].evidence,[{source:'ExecutionHistory.action.error',text:raw.actions[0].error}]);assert.equal(f.writes.length,1);assert.deepEqual(service.executionMemory('B').summary.reasonAudit.runs,[]);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memory);
  }finally{await f.cleanup();}
 });
+
+test('shared memory reads original Workflow causes with exact selectors and no Operation inference',async()=>{
+ const f=fixture();try{
+  const file=path.join(f.dir,'workflows.json'),store=createWorkflowStore({file,modules:{fixture:f.adapter}}),ctx={accountId:'A',playerId:'9007199254740993',worldId:0,generation:1,connectionId:'original'};
+  store.record('A',{accountId:'A',runId:'workflow-memory',workflowId:'definition',status:'AWAITING_AUTHORIZATION',reason:'original run pause',executionContext:ctx,trace:[{nodeId:'condition',type:'CONDITION',result:'FAIL'},{nodeId:'action',type:'ACTION',result:'AWAITING_AUTHORIZATION'}]});
+  store.record('B',{accountId:'B',runId:'workflow-memory',workflowId:'definition',status:'STOPPED',reason:'foreign cause'});
+  const bytes=fs.readFileSync(file,'utf8'),before=f.service.executionMemory('A').summary,service=createOperationService({history:f.history,memory:f.memory,readWorkflowHistory:id=>store.history(id)});
+  const snapshot=service.executionMemory('A'),wf=snapshot.summary.workflowReasons;
+  assert.equal(wf.available,true);assert.equal(wf.runs.length,1);assert.equal(wf.runs[0].originalStatus,'AWAITING_AUTHORIZATION');assert.equal(wf.runs[0].reason.text,'original run pause');assert.deepEqual(wf.runs[0].executionContext,ctx);
+  const {workflowReasons,...opSummary}=snapshot.summary;assert.deepEqual(opSummary,before);assert.deepEqual(opSummary.groups,[]);
+  for(const [filters,count]of [[{workflowId:'workflow-memory'},1],[{workflowId:'definition'},0],[{status:'AWAITING_AUTHORIZATION'},1],[{status:'RECOVERED_STOPPED'},0],[{nodeId:'action'},1],[{nodeId:'missing'},0],[{runId:'workflow-memory'},0],[{batchId:'workflow-memory'},0],[{actionId:'action'},0],[{module:'fixture'},0]])assert.equal(service.executionMemory('A',filters).summary.workflowReasons.runs.length,count,JSON.stringify(filters));
+  const selected=service.executionMemory('A',{workflowId:'workflow-memory',nodeId:'action'}).summary.workflowReasons.runs[0];assert.deepEqual(selected.events.map(row=>[row.index,row.nodeId]),[[1,'action']]);assert.equal(selected.reason.text,null);
+  assert.equal(service.executionMemory('B').summary.workflowReasons.runs[0].reason.text,'foreign cause');assert.equal(service.executionMemory('B').summary.workflowReasons.runs[0].executionContext,null);
+  const restarted=createOperationService({history:f.history,memory:f.memory,readWorkflowHistory:id=>createWorkflowStore({file,modules:{fixture:f.adapter}}).history(id)});assert.deepEqual(restarted.executionMemory('A').summary.workflowReasons,wf);
+  assert.deepEqual(f.writes,[]);assert.deepEqual(f.reads,[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }finally{await f.cleanup();}
+});
+
+test('unreadable Workflow history stays explicitly unavailable while original Operation memory stays independent',async()=>{
+ const f=fixture({outcome:'UNKNOWN'});try{
+  await f.execute(await f.plan());const original=f.service.executionMemory('A'),writes=f.writes.length,bytes=fs.readFileSync(f.historyFile,'utf8');let reads=0;
+  const service=createOperationService({history:f.history,memory:f.memory,readWorkflowHistory(){reads++;throw Error('synthetic source failure with secret');}});
+  const result=service.executionMemory('A');assert.equal(result.summary.workflowReasons.available,false);assert.equal(result.summary.workflowReasons.unavailableReason,'WORKFLOW_HISTORY_UNAVAILABLE');assert.deepEqual(result.summary.workflowReasons.runs,[]);
+  const {workflowReasons,...other}=result.summary;assert.deepEqual(other,original.summary);assert.equal(result.retryAllowed,false);assert.equal(result.policyCoverage.cooldown,false);assert.equal(result.policyCoverage.gameDay,false);assert.equal(f.writes.length,writes);assert.equal(reads,1);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(JSON.stringify(result).includes('secret'),false);
+  await assert.rejects(f.plan());assert.equal(f.writes.length,writes);
+ }finally{await f.cleanup();}
+});
+
+test('conflicting Workflow source rows cannot be hidden by original-status selectors',()=>{
+ const base={accountId:'A',runId:'duplicate-workflow',workflowId:'definition',status:'STOPPED',reason:'first',trace:[]};
+ for(const records of [[base,{...base,status:'UNKNOWN',reason:'second'}],[{...base,status:'UNSUPPORTED'}]]){
+  const service=createOperationService({history:{list:()=>[]},readWorkflowHistory:()=>records});
+  const summary=service.executionMemory('A',{status:'STOPPED'}).summary;assert.equal(summary.workflowReasons.available,false);assert.deepEqual(summary.workflowReasons.runs,[]);assert.deepEqual(summary.groups,[]);
+ }
+});

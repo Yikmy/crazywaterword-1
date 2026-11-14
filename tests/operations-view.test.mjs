@@ -840,3 +840,30 @@ test('full PAGE original reasons remain scoped through late filter and account r
  const h=await boot(),oldPromise=h.node('ops-memory-load').onclick(),old=h.pending('/api/operations/memory','A');h.node('ops-memory-run-id').value='new-reason-run';h.node('ops-memory-run-id').oninput();const freshPromise=h.node('ops-memory-load').onclick(),fresh=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);settleMemoryRequest(fresh,memoryFixture('A',{summary:reasonSummary(originalReasonAudit('A',{}, {runId:'new-reason-run'}),{runId:'new-reason-run'})}));await freshPromise;const text=memoryText(h);settleMemoryRequest(old,memoryFixture('A',{summary:reasonSummary()}));await oldPromise;assert.equal(memoryText(h),text);
  const latePromise=h.node('ops-memory-load').onclick(),late=h.pending('/api/operations/memory','A');h.run("selectAccount('B')");await loadMemory(h,memoryFixture('B',{summary:reasonSummary(originalReasonAudit('B',{runs:[],actions:[]}))}));const b=memoryText(h);settleMemoryRequest(late,memoryFixture('A',{summary:reasonSummary(originalReasonAudit('A',{}, {runId:'new-reason-run'}),{runId:'new-reason-run'})}));await latePromise;assert.equal(memoryText(h),b);assert.doesNotMatch(b,/original run pause|reason-role/);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
 });
+
+const workflowMemoryReasons=(overrides={})=>({source:'Workflow.original-reasons.v1',accountId:'A',filters:{},coverage:'recorded-fields-only',readOnly:true,available:true,unavailableReason:null,runs:[{source:'Workflow.original-reasons.v1',accountId:'A',workflowRunId:'workflow-memory',workflowDefinitionId:'definition',readOnly:true,coverage:'recorded-fields-only',originalStatus:'UNKNOWN',executionContext:{accountId:'A',playerId:'9007199254740993',worldId:0,generation:3,connectionId:'original'},reason:{source:'Workflow.run.reason',coverage:'RECORDED',text:'original workflow <script>pause</script>'},events:[{index:3,nodeId:'condition',type:'CONDITION',result:'FAIL',timestamp:null,round:null,source:'Workflow.run.trace'}]}],...overrides});
+const workflowMemorySummary=(wf=workflowMemoryReasons(),filters={})=>memorySummary('A',{workflowReasons:wf,filters,groups:[]});
+
+test('full PAGE memory shows original Workflow causes separately without counting or authorizing actions',async()=>{
+ const h=await boot();await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary()}));let text=memoryText(h);
+ for(const part of ['原工作流 workflow-memory','角色 9007199254740993 / 世界 0','原状态 UNKNOWN','original workflow <script>pause</script>','condition · CONDITION · FAIL','不计入Operation动作次数或资源变化','不能恢复授权、重试或解除UNKNOWN'])assert.ok(text.includes(part),part);
+ assert.doesNotMatch(text,/已确认成功 1/);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+ await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(workflowMemoryReasons({available:false,unavailableReason:'WORKFLOW_HISTORY_UNAVAILABLE',runs:[]}))}));assert.match(memoryText(h),/工作流原始历史不可读/);assert.doesNotMatch(memoryText(h),/original workflow/);
+ await loadMemory(h,memoryFixture('A',{summary:memorySummary()}));assert.match(memoryText(h),/工作流原始原因摘要不可用/);
+});
+
+test('full PAGE memory rejects Workflow provenance conflicts and exact filter mismatches',async()=>{
+ const h=await boot();for(const mutate of [w=>w.accountId='B',w=>w.readOnly=false,w=>w.available=false,w=>w.filters={workflowId:'other'},w=>w.runs.push(w.runs[0]),w=>w.runs[0].accountId='B',w=>w.runs[0].source='synthetic',w=>w.runs[0].executionContext.worldId=0.5,w=>w.runs[0].events[0].index=-1,w=>w.runs[0].reason.source='recovery-view']){
+  const wf=workflowMemoryReasons();mutate(wf);await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(wf)}));assert.match(h.node('ops-memory-hint').textContent,/工作流/);assert.equal(h.node('ops-memory-coverage').textContent,'');assert.doesNotMatch(memoryText(h),/original workflow/);
+ }
+ h.node('ops-memory-workflow-id').value='selected-workflow';h.node('ops-memory-workflow-id').oninput();const filters={workflowId:'selected-workflow'};
+ await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(workflowMemoryReasons({filters}),filters)}));assert.match(h.node('ops-memory-hint').textContent,/筛选不匹配/);assert.equal(h.node('ops-memory-coverage').textContent,'');
+ const wf=workflowMemoryReasons({filters});wf.runs[0].workflowRunId='selected-workflow';await loadMemory(h,memoryFixture('A',{summary:workflowMemorySummary(wf,filters)}));assert.match(memoryText(h),/原工作流 selected-workflow/);
+ assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('full PAGE Workflow memory causes cannot return after filter or A-B-A changes',async()=>{
+ const h=await boot(),oldTask=h.node('ops-memory-load').onclick(),old=h.pending('/api/operations/memory','A');h.node('ops-memory-run-id').value='operation-filter';h.node('ops-memory-run-id').oninput();const filters={runId:'operation-filter'},freshTask=h.node('ops-memory-load').onclick(),fresh=h.requests.filter(row=>!row.settled&&new URL(row.url,'http://local').pathname==='/api/operations/memory').at(-1);
+ settleMemoryRequest(fresh,memoryFixture('A',{summary:workflowMemorySummary(workflowMemoryReasons({filters,runs:[]}),filters)}));await freshTask;const shown=memoryText(h);settleMemoryRequest(old,memoryFixture('A',{summary:workflowMemorySummary()}));await oldTask;assert.equal(memoryText(h),shown);assert.doesNotMatch(memoryText(h),/original workflow/);
+ const lateTask=h.node('ops-memory-load').onclick(),late=h.pending('/api/operations/memory','A');h.run("selectAccount('B')");h.run("selectAccount('A')");settleMemoryRequest(late,memoryFixture('A',{summary:workflowMemorySummary()}));await lateTask;assert.doesNotMatch(memoryText(h),/original workflow/);assert.equal(h.requests.filter(row=>row.options.method==='POST').length,0);
+});

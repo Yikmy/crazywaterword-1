@@ -81,6 +81,19 @@ test('original reason HTTP audit keeps raw stops across recovery reconciliation 
  }finally{await reopened?.close();await app.close();}
 });
 
+test('memory HTTP reuses Workflow original reasons and keeps independent readonly evidence across reopen',async()=>{
+ const app=harness();let reopened;try{
+  const {createWorkflowStore}=await import('../src/workflow.mjs'),file=path.join(dir,'workflows.json'),store=createWorkflowStore({file,modules:app.operations.modules,secrets:()=>[token,sign]});
+  store.record('A',{runId:'memory-workflow-http',workflowId:'memory-definition',status:'WAITING',reason:'original workflow pause '+token,executionContext:{accountId:'A',playerId:'9007199254740993',worldId:0,generation:3,connectionId:'original'},trace:[{nodeId:'condition',type:'CONDITION',result:'FAIL'},{nodeId:'wait',type:'WAIT',result:'WAIT_STARTED'}]});
+  const bytes=fs.readFileSync(file,'utf8'),first=await app.request('/api/operations/memory?account=A&workflowId=memory-workflow-http'),wf=first.data.summary.workflowReasons;
+  assert.equal(first.status,200);assert.equal(wf.available,true);assert.equal(wf.runs.length,1);assert.equal(wf.runs[0].originalStatus,'WAITING');assert.equal(wf.runs[0].executionContext.worldId,0);assert.match(wf.runs[0].reason.text,/original workflow pause/);assert.equal(first.text.includes(token),false);
+  const node=await app.request('/api/operations/memory?account=A&workflowId=memory-workflow-http&nodeId=wait');assert.equal(node.status,200);assert.equal(node.data.summary.workflowReasons.runs[0].reason.text,null);assert.deepEqual(node.data.summary.workflowReasons.runs[0].events.map(row=>row.index),[1]);
+  for(const query of ['account=B','account=A&workflowId=memory-definition','account=A&runId=memory-workflow-http','account=A&actionId=wait','account=A&status=RECOVERED_STOPPED'])assert.deepEqual((await app.request('/api/operations/memory?'+query)).data.summary.workflowReasons.runs,[]);
+  reopened=harness();assert.deepEqual((await reopened.request('/api/operations/memory?account=A&workflowId=memory-workflow-http')).data.summary.workflowReasons,wf);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.deepEqual(reopened.counts(),{clients:0,collections:0});assert.equal(app.sessions.size,0);
+  fs.writeFileSync(file,'{corrupt workflow original');const unknown=await app.request('/api/operations/memory?account=A');assert.equal(unknown.status,200);assert.equal(unknown.data.summary.workflowReasons.available,false);assert.equal(unknown.data.retryAllowed,false);assert.equal(fs.readFileSync(file,'utf8'),'{corrupt workflow original');fs.writeFileSync(file,bytes);
+ }finally{await reopened?.close();await app.close();}
+});
+
 test('memory HTTP interface admits only local readonly GET and never accepts memory writes, proofs or expiry policies',async()=>{
  const app=harness();try{for(const headers of [{origin:'https://attacker.invalid'},{host:'attacker.invalid'},{'sec-fetch-site':'cross-site'}])assert.equal((await app.request(undefined,{headers})).status,403);for(const url of ['/api/operations/memory','/api/operations/memory/record','/api/operations/memory/clear','/api/operations/memory/proof'])assert.equal((await app.request(url+'?account=A',{method:'POST'})).status,403);for(const filter of ['proof=forged','policy=COOLDOWN','__proto__=x','runId=a&runId=b','runId='])assert.equal((await app.request('/api/operations/memory?account=A&'+filter)).status,400);assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});}finally{await app.close();assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}
 });

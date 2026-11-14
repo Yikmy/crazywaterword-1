@@ -1,5 +1,5 @@
 import {projectStageBattleHistory,prepareStageRecommendation} from './stage-history.mjs';
-import { validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent } from './workflow.mjs';
+import { validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent, projectWorkflowReasonHistory } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
 import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -45,7 +45,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   orderPlanner = planOrderExecution, cityPlanner = planCityOperations, cityViewer = cityView,
   orderExecute = executeOrderOperation, cityExecute = executeCityAction,
   assertWriter = () => {}, recoveryCollect = collectOperationRecovery,
-  modules = GAMEPLAY_MODULES, moduleSettings = createModuleSettings({ modules }), businessExecute = executeBusinessOperation, memory = null, namedFormationsStore = null,
+  modules = GAMEPLAY_MODULES, moduleSettings = createModuleSettings({ modules }), businessExecute = executeBusinessOperation, memory = null, namedFormationsStore = null, readWorkflowHistory = null,
 } = {}) {
   // Console supplies its owned/redacted store; file-backed embeddings inherit
   // an isolated sibling. Custom non-file test histories retain compatibility.
@@ -159,7 +159,12 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     exact(filters,['module','runId','workflowId','nodeId','batchId','actionId','status']);
     if(Object.values(filters).some(value=>typeof value!=='string'||!value||value!==value.trim()||value.length>512))throw error('记忆筛选无效','INVALID_INPUT',400);
     const snapshot=memorySnapshot(accountId),matches=row=>Object.entries(filters).every(([key,value])=>row[key]===value);
-    return {accountId,summary:summarizeExecutionHistory(typeof history.originalRecords==='function'?history.originalRecords(accountId):snapshot.entries,{accountId,filters}),available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(matches),pendingHistoryProjection:[...snapshot.pending,...snapshot.gaps].filter(matches),resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
+    const summary=summarizeExecutionHistory(typeof history.originalRecords==='function'?history.originalRecords(accountId):snapshot.entries,{accountId,filters});
+    if(readWorkflowHistory!==null){
+      try { summary.workflowReasons=projectWorkflowReasonHistory(accountId,readWorkflowHistory(accountId),filters); }
+      catch { summary.workflowReasons={source:'Workflow.original-reasons.v1',accountId,filters:clone(filters),coverage:'recorded-fields-only',readOnly:true,available:false,unavailableReason:'WORKFLOW_HISTORY_UNAVAILABLE',runs:[]}; }
+    }
+    return {accountId,summary,available:snapshot.available,coverage:snapshot.coverage,events:snapshot.events.filter(matches),pendingHistoryProjection:[...snapshot.pending,...snapshot.gaps].filter(matches),resumable:false,retryAllowed:false,policyCoverage:{identityChange:Boolean(decisionMemory),cooldown:false,gameDay:false},note:'只读审计；UNKNOWN仅由原ExecutionHistory追加复核解除，重启不恢复执行或授权'};
   }
   function acquire(session, label, workflowId = null, { recoveryRead = false } = {}) {
     assertWriter();

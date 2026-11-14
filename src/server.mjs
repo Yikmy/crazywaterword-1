@@ -141,7 +141,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
   const history = operationOptions.history ?? createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() });
   const operations = createOperationService({ protocol, modules:{...GAMEPLAY_MODULES,stage:registerBusinessFunction(stageFunction)}, getConfig: loadConfigSafe, loadRules: loadOrderRules,
-    ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, history, assertWriter: () => writerOwnership.assertOwned() });
+    ...(Object.hasOwn(operationOptions,'history')?{}:{memory:createExecutionMemory({secrets,assertWriter:()=>writerOwnership.assertOwned()}),namedFormationsStore:createNamedFormationStore({secrets,assertWriter:()=>writerOwnership.assertOwned()})}), ...operationOptions, history, readWorkflowHistory: id => workflowStore.history(id), assertWriter: () => writerOwnership.assertOwned() });
 
   const workflowRunners=new Map();
   const workflowStore=createWorkflowStore({file:path.join(DATA_DIR,'workflows.json'),modules:operations.modules,secrets,assertWriter:()=>writerOwnership.assertOwned()});

@@ -584,6 +584,7 @@ function workflowRunAuthorizationLink(workflowRun,run){
 // Operation results. Missing legacy identity is never filled from a live Session.
 function workflowReasonAudit(run) {
   const original = plain(run.originalState) ? run.originalState : run.recovered === true || run.status === 'RECOVERED_STOPPED' ? null : { status: run.status, reason: run.reason };
+  if (original && !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(original.status)) throw fail('工作流原始状态无效');
   const recoveryOnly = !original || original.status === 'RECOVERED_STOPPED';
   const reason = !recoveryOnly && Object.hasOwn(original, 'reason') && typeof original.reason === 'string' && original.reason.trim().length > 0 && original.reason.length <= 4000 ? original.reason : null;
   const trace = Array.isArray(run.trace) && run.trace.length <= WORKFLOW_LIMITS.steps ? run.trace : [];
@@ -594,6 +595,31 @@ function workflowReasonAudit(run) {
     events: trace.map((row, index) => ({ index, nodeId: row.nodeId, type: row.type, result: row.result,
       timestamp: row.timestamp ?? null, round: row.round ?? null, source: 'Workflow.run.trace',
       ...(row.blockedReasons ? { blockedReasons: copy(traceEvidence(row).blockedReasons) } : {}) })) };
+}
+
+export function projectWorkflowReasonHistory(accountId, records, filters = {}) {
+  exact(filters, ['module','runId','workflowId','nodeId','batchId','actionId','status'], '工作流记忆筛选');
+  if (!text(accountId) || !Array.isArray(records) || Object.values(filters).some(value => !text(value) || value !== value.trim() || value.length > 512)) throw fail('工作流记忆来源无效');
+  const result = { source: 'Workflow.original-reasons.v1', accountId, filters: copy(filters), coverage: 'recorded-fields-only', readOnly: true, available: true, unavailableReason: null, runs: [] };
+  // These IDs name Operations, not Workflow runs or trace events. Never infer
+  // a no-action cause from a nearby batch, module or action identifier.
+  if (['module','runId','batchId','actionId'].some(key => Object.hasOwn(filters, key))) return result;
+  const seen = new Set();
+  for (const run of records) {
+    if (run?.accountId !== accountId) continue;
+    if (!historyId(run.runId) || !text(run.workflowId) || seen.has(run.runId)) throw fail('工作流记忆运行身份缺失或重复');
+    seen.add(run.runId);
+    const audit = workflowReasonAudit(run);
+    if (filters.workflowId !== undefined && audit.workflowRunId !== filters.workflowId || filters.status !== undefined && audit.originalStatus !== filters.status) continue;
+    if (filters.nodeId !== undefined) {
+      audit.events = audit.events.filter(row => row.nodeId === filters.nodeId);
+      if (!audit.events.length) continue;
+      // A run-wide explanation is not evidence for a selected node.
+      audit.reason = { source: 'Workflow.run.reason', coverage: 'UNKNOWN', text: null };
+    }
+    result.runs.push(audit);
+  }
+  return result;
 }
 
 // Link only persisted ACTION traces; the current graph may have changed.
