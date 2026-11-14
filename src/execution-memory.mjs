@@ -28,18 +28,38 @@ export function summarizeExecutionHistory(runs, { accountId, filters = {} } = {}
     || Object.values(filters).some(value => !text(value))) throw fail('历史摘要筛选无效');
   const summary = { version:1, accountId, source:'ExecutionHistory.original-actions.v1', coverage:'tool-recorded-only',
     filters:{...filters}, gameDayKnown:false, totalGameResources:null, executable:false, resumable:false, retryAllowed:false,
-    groups:[], excluded:{unidentifiedActions:0, missingIdentityActions:0, conflictingActions:0, duplicateRecords:0} };
-  const records = new Map(), groups = new Map();
+    groups:[], excluded:{unidentifiedActions:0, missingIdentityActions:0, conflictingActions:0, duplicateRecords:0},
+    reasonAudit:{accountId,source:'ExecutionHistory.original-reasons.v1',coverage:'recorded-fields-only',readOnly:true,runs:[],actions:[],
+      excluded:{unidentifiedRuns:0,missingIdentityRuns:0,conflictingRuns:0,duplicateRunRecords:0}} };
+  const records = new Map(), groups = new Map(), runRecords = new Map();
   const own = (object,key) => plain(object) && Object.hasOwn(object,key);
   const id = value => text(value) || Number.isSafeInteger(value) && value > 0;
   const originalFields = ['module','actionType','target','identity','timestamp','result','requestStatus','dispatched','unresolvedWrite',
-    'dispatchEvidence','verification','beforeState','afterState','beforeInventory','afterInventory','beforeInventoryReliable','afterInventoryReliable'];
+    'dispatchEvidence','verification','beforeState','afterState','beforeInventory','afterInventory','beforeInventoryReliable','afterInventoryReliable','reason','error','nextDecision'];
   const canonical = value => JSON.stringify(value, (_key,item) => typeof item === 'bigint' ? {bigint:item.toString()}
     : plain(item) ? Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])) : item);
   const fields = (run,row) => ({ module:row.module??run.module, runId:run.runId, workflowId:run.workflowId??null,
     nodeId:run.workflowNodeId??null, batchId:run.planSummary?.batchId??run.authorizationSummary?.batchId??null,
     actionId:row.actionId, status:actionWasUncertain(row)?'UNKNOWN':row.result });
   const matches = value => Object.entries(filters).every(([key,expected])=>value[key]===expected);
+  const reasonText = value => typeof value==='string' && value.length<=4000 && value.trim().length>0 ? value : null;
+  const validContext = run => plain(run.executionContext) && own(run.executionContext,'playerId') && own(run.executionContext,'worldId')
+    && id(run.executionContext.playerId) && id(run.executionContext.worldId) && run.executionContext.accountId===accountId
+    && !(run.planSummary?.batchId && run.authorizationSummary?.batchId && run.planSummary.batchId!==run.authorizationSummary.batchId);
+  const scope = (run,selected) => ({...selected,playerId:run.executionContext.playerId,worldId:run.executionContext.worldId,
+    workflowRound:integer(run.workflowRound)?run.workflowRound:null});
+  const actionEvidence = row => Object.fromEntries(['actionId',...originalFields].map(key=>[key,row[key]]));
+  function reasons(row) {
+    const evidence=['reason','error'].filter(key=>own(row,key)&&reasonText(row[key])!==null)
+      .map(key=>({source:'ExecutionHistory.action.'+key,text:row[key]}));
+    let nextDecision=null;
+    if(own(row,'nextDecision') && row.nextDecision!==null){
+      const next=row.nextDecision, decision=own(next,'decision')&&['RECOMMEND_KEEP','RECOMMEND_REFRESH','RECOMMEND_SUBMIT','NEEDS_REVIEW'].includes(next.decision)?next.decision:null;
+      const explanation=own(next,'explanation')&&Array.isArray(next.explanation)&&next.explanation.length>0&&next.explanation.length<=100&&Array.from(next.explanation,(item,index)=>Object.hasOwn(next.explanation,index)&&reasonText(item)!==null).every(Boolean)?[...next.explanation]:null;
+      nextDecision={source:'ExecutionHistory.action.nextDecision',decision,explanation,coverage:decision!==null&&explanation!==null?'RECORDED':'UNKNOWN',executionConfirmed:false};
+    }
+    return {evidence,nextDecision,coverage:evidence.length?'RECORDED':'UNKNOWN'};
+  }
   function inventory(row,key) {
     if (!own(row,key) || !Array.isArray(row[key])) return null;
     const stock = new Map();
@@ -53,6 +73,10 @@ export function summarizeExecutionHistory(runs, { accountId, filters = {} } = {}
   }
   for (const run of runs) {
     if (!plain(run) || run.accountId !== accountId || !Array.isArray(run.actions)) continue;
+    if(text(run.runId)){
+      if(!runRecords.has(run.runId))runRecords.set(run.runId,[]);
+      runRecords.get(run.runId).push(run);
+    }else if(!filters.actionId&&matches(fields(run,{result:run.finalStatus})))summary.reasonAudit.excluded.unidentifiedRuns++;
     for (const row of run.actions) {
       if (!plain(row)) continue;
       const selected = fields(run,row);
@@ -81,6 +105,7 @@ export function summarizeExecutionHistory(runs, { accountId, filters = {} } = {}
       || run.planSummary?.batchId && run.authorizationSummary?.batchId && run.planSummary.batchId !== run.authorizationSummary.batchId) {
       summary.excluded.missingIdentityActions++; continue;
     }
+    summary.reasonAudit.actions.push({...scope(run,selected),actionType:row.actionType,requestStatus:run.recovered===true?null:row.requestStatus,...reasons(row)});
     const identity = {playerId:context.playerId, worldId:context.worldId, module:selected.module, actionType:row.actionType};
     const key = canonical(identity);
     if (!groups.has(key)) groups.set(key,{...identity, counts:{confirmedSuccess:0, originalUnknown:0, rejected:0, notExecuted:0, other:0},
@@ -105,6 +130,25 @@ export function summarizeExecutionHistory(runs, { accountId, filters = {} } = {}
     const {deltas,...result} = group;
     return {...result,resourceChanges:[...deltas].sort(([a],[b])=>a.localeCompare(b)).map(([id,delta])=>({id,delta:delta.toString()}))};
   });
+  // Run stops are separate provenance: never copy one run reason to a filtered
+  // action or treat a post-write recommendation as an actual next-round skip.
+  if(!filters.actionId)for(const versions of runRecords.values()){
+    const selected=run=>({...fields(run,{result:run.recovered===true?null:run.finalStatus}),actionId:null});
+    if(!versions.some(run=>matches(selected(run))))continue;
+    const fingerprint=run=>canonical({selected:selected(run),executionContext:run.executionContext??null,
+      workflowDefinitionId:run.workflowDefinitionId??null,workflowRound:run.workflowRound??null,
+      stopReason:run.stopReason,source:run.source??null,recovered:run.recovered===true,
+      authorizationBatch:run.authorizationSummary?.batchId??null,actions:run.actions.map(row=>plain(row)?actionEvidence(row):null)});
+    if(new Set(versions.map(fingerprint)).size!==1){summary.reasonAudit.excluded.conflictingRuns++;continue;}
+    const run=versions[0],selection=selected(run);
+    summary.reasonAudit.excluded.duplicateRunRecords+=versions.length-1;
+    if(!validContext(run)||!text(run.module)||!(run.recovered===true&&selection.status===null)&&!text(selection.status)){summary.reasonAudit.excluded.missingIdentityRuns++;continue;}
+    const reason=own(run,'stopReason')?reasonText(run.stopReason):null;
+    summary.reasonAudit.runs.push({...scope(run,selection),
+      stopReason:{source:'ExecutionHistory.run.stopReason',coverage:run.recovered===true?'RECOVERY_ONLY':reason===null?'UNKNOWN':'RECORDED',text:run.recovered===true?null:reason}});
+  }
+  summary.reasonAudit.actions.sort((a,b)=>canonical([a.runId,a.actionId]).localeCompare(canonical([b.runId,b.actionId])));
+  summary.reasonAudit.runs.sort((a,b)=>a.runId.localeCompare(b.runId));
   return summary;
 }
 

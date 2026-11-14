@@ -1434,6 +1434,36 @@ function executionSummaryView(data) {
     keys.add(key);const resources=new Set();
     for(const row of group.resourceChanges){if(!validText(row?.id)||resources.has(row.id)||typeof row.delta!=='string'||!/^(0|-?[1-9][0-9]*)$/.test(row.delta))throw new Error('执行摘要资源合同不可靠');resources.add(row.id);}
   }
+  if(value.reasonAudit!==undefined){
+    const audit=value.reasonAudit,reasonText=item=>typeof item==='string'&&item.length<=4000&&item.trim().length>0;
+    if(!audit||audit.accountId!==data.accountId||audit.source!=='ExecutionHistory.original-reasons.v1'||audit.coverage!=='recorded-fields-only'||audit.readOnly!==true
+      ||!Array.isArray(audit.runs)||!Array.isArray(audit.actions)||!audit.excluded||!['unidentifiedRuns','missingIdentityRuns','conflictingRuns','duplicateRunRecords'].every(key=>count(audit.excluded[key])))throw new Error('原始原因摘要只读合同不可靠');
+    const origin=row=>row&&validText(row.runId)&&validText(row.module)&&(row.status===null||validText(row.status))&&identity(row.playerId)&&identity(row.worldId)
+      &&['workflowId','nodeId','batchId'].every(key=>row[key]===null||validText(row[key]))&&(row.workflowRound===null||count(row.workflowRound))
+      &&Object.entries(selectors).every(([key,item])=>row[key]===item);
+    const runKeys=new Set(),actionKeys=new Set();
+    for(const row of audit.runs){
+      const stop=row?.stopReason;
+      if(!origin(row)||row.actionId!==null||runKeys.has(row.runId)||stop?.source!=='ExecutionHistory.run.stopReason'||!['RECORDED','UNKNOWN','RECOVERY_ONLY'].includes(stop.coverage)
+        ||(stop.coverage==='RECOVERY_ONLY'?row.status!==null:!validText(row.status))
+        ||(stop.coverage==='RECORDED'?!reasonText(stop.text):stop.text!==null))throw new Error('原始停止原因来源或筛选不匹配');
+      runKeys.add(row.runId);
+    }
+    for(const row of audit.actions){
+      const key=JSON.stringify([row?.runId,row?.actionId]);
+      if(!origin(row)||!validText(row.actionId)||!validText(row.actionType)||!(row.requestStatus===null||validText(row.requestStatus))||actionKeys.has(key)||!Array.isArray(row.evidence)
+        ||!['RECORDED','UNKNOWN'].includes(row.coverage)||row.coverage!==(row.evidence.length?'RECORDED':'UNKNOWN'))throw new Error('原始动作原因来源或筛选不匹配');
+      actionKeys.add(key);const sources=new Set();
+      for(const item of row.evidence){if(!['ExecutionHistory.action.reason','ExecutionHistory.action.error'].includes(item?.source)||sources.has(item.source)||!reasonText(item.text))throw new Error('原始动作原因字段不可靠');sources.add(item.source);}
+      const next=row.nextDecision;
+      if(next!==null){
+        const decision=next?.decision===null||['RECOMMEND_KEEP','RECOMMEND_REFRESH','RECOMMEND_SUBMIT','NEEDS_REVIEW'].includes(next?.decision);
+        const explanation=next?.explanation===null||Array.isArray(next?.explanation)&&next.explanation.length>0&&next.explanation.length<=100&&next.explanation.every(reasonText);
+        if(!next||next.source!=='ExecutionHistory.action.nextDecision'||next.executionConfirmed!==false||!decision||!explanation||!['RECORDED','UNKNOWN'].includes(next.coverage)
+          ||next.coverage!==((next.decision!==null&&next.explanation!==null)?'RECORDED':'UNKNOWN'))throw new Error('后续建议记录不可靠');
+      }
+    }
+  }
   return value;
 }
 function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-memory')) {
@@ -1450,6 +1480,20 @@ function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-m
       const counts=group.counts;
       coverage.appendChild(el('div',null,'角色 '+group.playerId+' / 世界 '+group.worldId+' · '+group.module+' / '+group.actionType+'：已确认成功 '+counts.confirmedSuccess+'；原始 UNKNOWN '+counts.originalUnknown+'；拒绝 '+counts.rejected+'；未执行 '+counts.notExecuted+'；其他 '+counts.other+'。'));
       coverage.appendChild(el('div','dim','有库存证据 '+group.quantifiedActions+'；资源变化未知 '+group.unquantifiedActions+'。'+(group.quantifiedActions?'已观察库存净变化：'+(group.resourceChanges.length?group.resourceChanges.map(row=>row.id+' '+row.delta).join('；'):'明确空库存')+'。':'未推断成本或到账。')));
+    }
+    const audit=summary.reasonAudit;
+    coverage.appendChild(el('div','dim',audit?'原始停止/未执行原因只覆盖已记录字段；恢复提示、后续建议与实际下轮跳过分别看待。':'原始原因摘要不可用；缺失原因保持未知。'));
+    if(audit){
+      for(const row of audit.runs)coverage.appendChild(el('div',null,'运行 '+row.runId+' · 角色 '+row.playerId+' / 世界 '+row.worldId+' · 原始批次状态 '+(row.status??'未知')+' · stopReason：'+(row.stopReason.coverage==='RECORDED'?row.stopReason.text:row.stopReason.coverage==='RECOVERY_ONLY'?'未知（只有恢复视图，不当作原始原因）':'未知')+'。'));
+      for(const row of audit.actions){
+        const card=el('details','order-preview-card');card.appendChild(el('summary',null,'原始动作原因 · '+row.runId+' / '+row.actionId+' · '+row.status));
+        card.appendChild(el('div','dim','角色 '+row.playerId+' / 世界 '+row.worldId+' · '+row.module+' / '+row.actionType+' · 原请求状态 '+(row.requestStatus??'未知')+'。批次原因不复制为该动作原因。'));
+        if(!row.evidence.length)card.appendChild(el('div','dim','该动作未记录可用原始原因，保持未知。'));
+        for(const item of row.evidence)card.appendChild(el('div',null,item.source+'：'+item.text));
+        if(row.nextDecision){card.appendChild(el('div','dim','记录的后续建议（不证明下一轮已跳过）：'+(row.nextDecision.decision??'未知')));for(const reason of row.nextDecision.explanation??[])card.appendChild(el('div',null,reason));if(row.nextDecision.coverage==='UNKNOWN')card.appendChild(el('div','dim','后续建议说明不完整，保持未知。'));}
+        coverage.appendChild(card);
+      }
+      const omitted=audit.excluded;coverage.appendChild(el('div','dim','原始批次原因未计入：身份缺失 '+omitted.unidentifiedRuns+'，角色/世界等来源缺失 '+omitted.missingIdentityRuns+'，冲突 '+omitted.conflictingRuns+'；重复去重 '+omitted.duplicateRunRecords+'。'));
     }
     const excluded=summary.excluded;
     coverage.appendChild(el('div','dim','未计入摘要：动作身份缺失 '+excluded.unidentifiedActions+'，角色/世界等来源缺失 '+excluded.missingIdentityActions+'，冲突动作 '+excluded.conflictingActions+'；重复记录去重 '+excluded.duplicateRecords+'。原始 UNKNOWN 即使追加 APPLIED 复核也不计已确认成功。'));

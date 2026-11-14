@@ -385,3 +385,12 @@ test('shared executor cross-round summary survives readonly restart with exact s
 test('cross-round memory summary reads fail closed on corrupt original History without changing bytes',async()=>{
  const f=fixture();try{await f.execute(await f.plan());fs.writeFileSync(f.historyFile,'{corrupt original history');const bytes=fs.readFileSync(f.historyFile,'utf8');assert.throws(()=>f.service.executionMemory('A'),{code:'HISTORY_UNAVAILABLE'});assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(f.writes.length,1);}finally{await f.cleanup();}
 });
+
+test('original reason audit survives Service restart without substituting History recovery stop text',async()=>{
+ const f=fixture({outcome:'UNKNOWN'});try{
+  const result=await f.execute(await f.plan()),raw=f.history.originalRecords('A')[0];assert.equal(result.record.actions[0].result,'UNKNOWN');assert.equal(typeof raw.stopReason,'string');
+  const bytes=fs.readFileSync(f.historyFile,'utf8'),memory=fs.readFileSync(f.memoryFile,'utf8'),reopened=createExecutionHistory({file:f.historyFile});assert.notEqual(reopened.list('A')[0].stopReason,raw.stopReason);
+  const service=createOperationService({history:reopened,memory:createExecutionMemory({file:f.memoryFile})}),audit=service.executionMemory('A').summary.reasonAudit;
+  assert.equal(audit.runs[0].stopReason.text,raw.stopReason);assert.equal(audit.runs[0].stopReason.coverage,'RECORDED');assert.equal(audit.runs[0].status,raw.finalStatus);assert.equal(audit.actions[0].status,'UNKNOWN');assert.deepEqual(audit.actions[0].evidence,[{source:'ExecutionHistory.action.error',text:raw.actions[0].error}]);assert.equal(f.writes.length,1);assert.deepEqual(service.executionMemory('B').summary.reasonAudit.runs,[]);assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memory);
+ }finally{await f.cleanup();}
+});

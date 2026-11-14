@@ -274,3 +274,12 @@ for(const finalStatus of ['SUCCESS','FAILED','CANCELLED'])test('terminal '+final
   assert.equal(restored.finalStatus,finalStatus);assert.equal(restored.recovered,undefined);assert.deepEqual(restored.actions,record.actions);assert.equal(store.unresolved('A'),false);assert.equal(fs.readFileSync(file,'utf8'),bytes);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('original History audit reads preserve raw stops and in-flight states without recovery persistence or authority',()=>{
+ const {dir,file}=fixture();try{
+  const history=createExecutionHistory({file});assert.deepEqual(history.originalRecords('A'),[]);assert.deepEqual(fs.readdirSync(dir),[]);
+  const record=run('A','VERIFY');record.stopReason='original stop before restart';record.actions[0].reason='original action cause';record.actions[0].requestStatus='DISPATCHING';history.put(record);history.put({...run('B'),stopReason:'B original stop'});const bytes=fs.readFileSync(file,'utf8'),reopened=createExecutionHistory({file});
+  assert.equal(reopened.list('A')[0].finalStatus,'UNKNOWN');assert.notEqual(reopened.list('A')[0].stopReason,record.stopReason);
+  const original=reopened.originalRecords('A');assert.equal(original[0].finalStatus,'VERIFY');assert.equal(original[0].stopReason,record.stopReason);assert.equal(original[0].actions[0].requestStatus,'DISPATCHING');assert.equal(original[0].actions[0].reason,'original action cause');original[0].actions[0].reason='mutated clone';assert.equal(reopened.originalRecords('A')[0].actions[0].reason,'original action cause');assert.equal(reopened.originalRecords('B')[0].stopReason,'B original stop');assert.deepEqual(reopened.originalRecords('missing'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(reopened.unresolved('A'),true);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

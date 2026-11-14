@@ -78,6 +78,12 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     const raw = read();
     return (Object.hasOwn(raw.accounts, accountId) ? raw.accounts[accountId] : []).map(run => live.has(liveKey(run)) ? structuredClone(run) : recover(run));
   }
+  // Original audit evidence only. Reading does not recover runnable state, grant
+  // authority, synchronize memory or persist any change to the existing file.
+  function originalRecords(accountId) {
+    const raw=read();
+    return structuredClone(Object.hasOwn(raw.accounts,accountId)?raw.accounts[accountId]:[]);
+  }
   function write(raw) {
     assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
@@ -115,5 +121,5 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     (actions[0].reconciliations ??= []).push(safe);
     write(raw); return structuredClone(safe);
   }
-  return Object.defineProperty({ list, put, appendReconciliation, unresolved: accountId => list(accountId).some(runHasUnresolvedWrites) },'storagePath',{value:path.resolve(file),enumerable:true});
+  return Object.defineProperty({ list, originalRecords, put, appendReconciliation, unresolved: accountId => list(accountId).some(runHasUnresolvedWrites) },'storagePath',{value:path.resolve(file),enumerable:true});
 }

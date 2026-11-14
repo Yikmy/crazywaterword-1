@@ -276,3 +276,42 @@ test('cross-round success counts require explicit confirmed dispatched original 
   const group=summarize([summaryRun({actions:[summaryAction(extra)]})]).groups[0];assert.equal(group.counts.confirmedSuccess,0);assert.equal(group.counts.other,1);assert.deepEqual(group.resourceChanges,[]);
  }
 });
+
+test('original reason audit separates run stops from missing action causes and preserves exact source strings',()=>{
+ const row=summaryAction({result:'NOT_EXECUTED',requestStatus:'NOT_DISPATCHED',dispatched:false}),run=summaryRun({finalStatus:'CANCELLED',stopReason:' explicit original stop\nsecond line ',actions:[row]});const audit=summarize([run]).reasonAudit;
+ assert.equal(audit.source,'ExecutionHistory.original-reasons.v1');assert.equal(audit.readOnly,true);assert.equal(audit.runs[0].stopReason.text,run.stopReason);assert.equal(audit.runs[0].stopReason.source,'ExecutionHistory.run.stopReason');assert.equal(audit.runs[0].actionId,null);assert.equal(audit.actions[0].coverage,'UNKNOWN');assert.deepEqual(audit.actions[0].evidence,[]);assert.equal(audit.actions[0].workflowRound,1);assert.equal(audit.actions[0].playerId,'role-1');assert.equal(audit.actions[0].status,'NOT_EXECUTED');assert.equal(audit.actions[0].nextDecision,null);
+ row.reason='original reason';row.error='independent original error';const evidence=summarize([run]).reasonAudit.actions[0].evidence;assert.deepEqual(evidence,[{source:'ExecutionHistory.action.reason',text:'original reason'},{source:'ExecutionHistory.action.error',text:'independent original error'}]);
+});
+test('original reason audit keeps UNKNOWN plus APPLIED and recorded next advice separate from actual skips',()=>{
+ const row=summaryAction({result:'UNKNOWN',unresolvedWrite:true,reason:'original unknown',nextDecision:{decision:'RECOMMEND_KEEP',explanation:['recorded recommendation']},reconciliations:[{status:'APPLIED',evidence:{reason:'later reconciliation cause'}}]}),run=summaryRun({finalStatus:'UNKNOWN',stopReason:'original run unknown',actions:[row]}),result=summarize([run]),audit=result.reasonAudit;
+ assert.equal(result.groups[0].counts.confirmedSuccess,0);assert.equal(audit.actions[0].status,'UNKNOWN');assert.equal(audit.actions[0].evidence[0].text,'original unknown');assert.equal(audit.actions[0].nextDecision.executionConfirmed,false);assert.deepEqual(audit.actions[0].nextDecision.explanation,['recorded recommendation']);assert.equal(audit.actions[0].nextDecision.coverage,'RECORDED');assert.equal(JSON.stringify(audit).includes('later reconciliation cause'),false);
+});
+test('original reason audit does not infer missing text from verification current facts or batch causes',()=>{
+ for(const reason of [undefined,null,'','   ',{},'x'.repeat(4001)]){
+  const row=summaryAction({result:'NOT_EXECUTED',requestStatus:'NOT_EXECUTED',dispatched:false,reason,error:reason,verification:{status:'NOT_STARTED',reason:'not an original cause'},afterState:{reason:'not an original cause'}}),audit=summarize([summaryRun({finalStatus:'CANCELLED',stopReason:reason,actions:[row]})]).reasonAudit;
+  assert.equal(audit.actions[0].coverage,'UNKNOWN');assert.deepEqual(audit.actions[0].evidence,[]);assert.equal(audit.runs[0].stopReason.coverage,'UNKNOWN');assert.equal(audit.runs[0].stopReason.text,null);
+ }
+ for(const nextDecision of [{decision:'SKIP',explanation:['guess']},{decision:'RECOMMEND_KEEP',explanation:[]},{decision:'RECOMMEND_KEEP',explanation:['ok',{}]},Object.create({decision:'RECOMMEND_KEEP',explanation:['inherited']})]){const audit=summarize([summaryRun({finalStatus:'SUCCESS',actions:[summaryAction({nextDecision})]})]).reasonAudit;assert.equal(audit.actions[0].nextDecision.coverage,'UNKNOWN');assert.equal(audit.actions[0].nextDecision.executionConfirmed,false);}
+});
+test('original reason audit resolves duplicate/conflicting runs and actions before exact selectors',()=>{
+ const run=summaryRun({finalStatus:'CANCELLED',stopReason:'original stop',actions:[summaryAction({reason:'original action cause'})]}),duplicate=structuredClone(run);duplicate.actions[0].reconciliations=[{status:'APPLIED'}];let result=summarize([run,duplicate]);assert.equal(result.reasonAudit.excluded.duplicateRunRecords,1);assert.equal(result.reasonAudit.runs.length,1);assert.equal(result.reasonAudit.actions.length,1);
+ const runConflict=structuredClone(run);runConflict.stopReason='conflicting stop';result=summarize([run,runConflict]);assert.equal(result.reasonAudit.excluded.conflictingRuns,1);assert.deepEqual(result.reasonAudit.runs,[]);assert.equal(result.reasonAudit.actions.length,1);
+ const actionConflict=structuredClone(run);actionConflict.actions[0].reason='conflicting action cause';result=summarize([run,actionConflict]);assert.equal(result.excluded.conflictingActions,1);assert.equal(result.reasonAudit.excluded.conflictingRuns,1);assert.deepEqual(result.reasonAudit.actions,[]);
+ const scopeConflict=structuredClone(run);scopeConflict.workflowId='foreign';result=summarize([run,scopeConflict],{workflowId:'workflow-1'});assert.equal(result.reasonAudit.excluded.conflictingRuns,1);assert.deepEqual(result.reasonAudit.runs,[]);assert.deepEqual(result.reasonAudit.actions,[]);
+});
+test('original reason audit selectors never transfer batch stops to one selected action',()=>{
+ const run=summaryRun({finalStatus:'CANCELLED',stopReason:'batch only',actions:[summaryAction({reason:'selected action'})]});
+ for(const filters of [{runId:'run-1'},{workflowId:'workflow-1'},{nodeId:'node-1'},{batchId:'batch-1'},{module:'fixture'}]){const audit=summarize([run],filters).reasonAudit;assert.equal(audit.actions.length,1);assert.equal(audit.runs.length,1);const empty=summarize([run],Object.fromEntries(Object.keys(filters).map(key=>[key,'missing']))).reasonAudit;assert.deepEqual(empty.runs,[]);assert.deepEqual(empty.actions,[]);}
+ assert.deepEqual(summarize([run],{actionId:'action'}).reasonAudit.runs,[]);assert.equal(summarize([run],{actionId:'action'}).reasonAudit.actions.length,1);assert.deepEqual(summarize([run],{status:'SUCCESS'}).reasonAudit.runs,[]);assert.equal(summarize([run],{status:'CANCELLED'}).reasonAudit.runs.length,1);assert.deepEqual(summarize([run],{status:'CANCELLED'}).reasonAudit.actions,[]);
+});
+test('original reason audit covers empty stopped runs with exact role/world scope and no recovered substitution',()=>{
+ const run=summaryRun({finalStatus:'CANCELLED',stopReason:'empty original stop',actions:[]}),other=summaryRun({accountId:'B',executionContext:{accountId:'B',playerId:'role-1',worldId:1},finalStatus:'CANCELLED',stopReason:'foreign stop'});const audit=summarize([run,other]).reasonAudit;assert.equal(audit.runs.length,1);assert.equal(audit.runs[0].stopReason.text,'empty original stop');assert.deepEqual(audit.actions,[]);
+ const missing=summarize([summaryRun({finalStatus:'CANCELLED',executionContext:null,stopReason:'unowned'})]).reasonAudit;assert.equal(missing.excluded.missingIdentityRuns,1);assert.deepEqual(missing.runs,[]);
+ const recovered=summarize([{...run,recovered:true,stopReason:'synthetic recovery hint'}]).reasonAudit;assert.equal(recovered.runs[0].stopReason.coverage,'RECOVERY_ONLY');assert.equal(recovered.runs[0].stopReason.text,null);assert.equal(JSON.stringify(recovered).includes('synthetic recovery hint'),false);
+});
+
+test('original reason audit treats sparse/inherited advice and recovered original request statuses as unknown',()=>{
+ for(const explanation of [new Array(1),Object.assign(new Array(2),{1:'recorded'})]){const audit=summarize([summaryRun({finalStatus:'SUCCESS',actions:[summaryAction({nextDecision:{decision:'RECOMMEND_KEEP',explanation}})]})]).reasonAudit;assert.equal(audit.actions[0].nextDecision.coverage,'UNKNOWN');assert.equal(audit.actions[0].nextDecision.explanation,null);}
+ const run=summaryRun({recovered:true,finalStatus:'UNKNOWN',stopReason:'recovery-only',actions:[summaryAction({result:'UNKNOWN',requestStatus:'UNKNOWN',unresolvedWrite:true,reason:'unchanged original action cause'})]}),audit=summarize([run]).reasonAudit;
+ assert.equal(audit.runs[0].status,null);assert.equal(audit.runs[0].stopReason.coverage,'RECOVERY_ONLY');assert.equal(audit.actions[0].requestStatus,null);assert.equal(audit.actions[0].evidence[0].text,'unchanged original action cause');assert.deepEqual(summarize([run],{status:'UNKNOWN'}).reasonAudit.runs,[]);
+});
