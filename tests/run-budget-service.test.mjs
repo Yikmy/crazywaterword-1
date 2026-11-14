@@ -462,7 +462,7 @@ test('a consumed calendar occurrence stays consumed after clock rollback and a n
 
 const vipEventProtocol=loadProtocol(),vipEventCodec=createCodec(vipEventProtocol);
 async function eventServiceWorkflow({kind='VIP_LEVEL_CHANGED',level=3,taskId=1001,progress=2,initialLevel=1,initialPlayerLevel=1,beforeEventStart=()=>{},...options}={}){
- let live;const f=await boundedServiceWorkflow({...options,eventTrigger:kind==='DAILY_TASK_PROGRESS'?{kind,taskId,progress}:kind==='DAILY_TASK_RESET'?{kind}:{kind,level},beforeStart:async fixture=>{
+ let live;const f=await boundedServiceWorkflow({...options,eventTrigger:['DAILY_TASK_PROGRESS','MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'].includes(kind)?{kind,taskId,progress}:kind==='DAILY_TASK_RESET'?{kind}:{kind,level},beforeStart:async fixture=>{
  const old=fixture.session.client,state=fixture.state();let socket;class Socket{constructor(){this.readyState=0;socket=this;this.sent=[];}send(bytes){this.sent.push(vipEventCodec.decode(bytes));}close(){this.readyState=3;}receive(name,body,seq=0){this.onmessage?.({data:vipEventCodec.encode(name,seq,body)});}}
  const client=new GameClient({url:'wss://example.invalid',protocol:vipEventProtocol,accountId:'A',generation:fixture.session.generation,WebSocketImpl:Socket});client.factContext={accountId:'A',generation:fixture.session.generation,connectionId:fixture.session.connectionId};client.on('error',()=>{});const pending=client.connect({});socket.readyState=1;socket.onopen();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'17',worldId:'1',level:initialPlayerLevel,vip:{vipLevel:initialLevel,vipExp:'0'}}});await pending;clearInterval(client.tickTimer);client.tickTimer=null;client.request=old.request.bind(old);client.uncertainWrites=old.uncertainWrites;client.markUnverifiedWrite=old.markUnverifiedWrite.bind(old);client.confirmWatchedWrite=old.confirmWatchedWrite.bind(old);fixture.clients.set(client,state);fixture.session.client=client;fixture.session.player={playerId:'17',worldId:1,level:5};live={client,socket};await beforeEventStart(fixture,live);
  }});return {...f,...live,async cleanup(){await f.cleanup();live.client.stop();}};
@@ -590,4 +590,40 @@ test('daily progress history reopens read-only without authority and rejects alt
   for(const change of [r=>delete r.eventTrigger.event.taskId,r=>r.eventTrigger.event.taskId=1002,r=>r.eventTrigger.event.progress=1,r=>r.eventTrigger.event.progress='2',r=>r.eventTrigger.event.targetProgress=-1,r=>delete r.eventTrigger.event.targetProgress,r=>r.eventTrigger.event.rewardClaimed=0,r=>delete r.eventTrigger.event.rewardClaimed,r=>r.eventTrigger.event.eligible=true,r=>r.eventTrigger.event.seq=0,r=>r.eventTrigger.event.streamId='22222222-2222-4222-8222-222222222222',r=>r.runPolicy.eventTrigger.progress=3]){const bad=structuredClone(saved);change(bad);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
   const repeated=structuredClone(saved);repeated.runId='duplicate-progress-event';assert.throws(()=>store.record('A',repeated));assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(f.writes.length,writes);assert.equal(f.reads.length,reads);assert.equal(f.client.listenerCount('message'),0);
  }finally{await f.cleanup();}
+});
+
+
+const storyProgress=(kind,taskId=71,progress='9007199254740993')=>({task:{taskId,progress,...(kind==='MAIN_TASK_PROGRESS'?{rewardClaimed:false}:{})}});
+const storyMessage=kind=>kind==='MAIN_TASK_PROGRESS'?'SCMainTaskUpdate':'SCBranchTaskUpdate';
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])for(const apply of [true,false])test(kind+' reuses real Service run authorization, parent budget, durable history and UNKNOWN '+apply,async()=>{
+ const f=await eventServiceWorkflow({kind,taskId:71,progress:'9007199254740993',apply});try{
+  const count=f.reads.length;assert.equal(f.status.status,'WAITING');assert.equal(f.writes.length,0);
+  const bad=structuredClone(f.payload);bad.offer.graph.runPolicy.eventTrigger.progress='9007199254740994';assert.throws(()=>f.runner.authorizeRun(bad),{code:'AUTHORIZATION_REQUIRED'});
+  await f.runner.authorizeRun(f.payload);assert.equal(f.reads.length,count);f.client.emit('message',{name:storyMessage(kind),seq:1,body:storyProgress(kind)});
+  f.socket.receive(storyMessage(kind),storyProgress(kind,72,'9223372036854775807'),1);f.socket.receive(storyMessage(kind),storyProgress(kind,71,'9007199254740992'),2);
+  await new Promise(r=>setImmediate(r));assert.equal(f.runner.getStatus().status,'WAITING');assert.equal(f.writes.length,0);assert.equal(f.reads.length,count);
+  f.socket.receive(storyMessage(kind),storyProgress(kind),3);const done=await f.runner.settle();assert.equal(done.status,apply?'COMPLETED':'UNKNOWN',JSON.stringify(done));
+  assert.equal(done.eventTrigger.event.taskId,71);assert.equal(done.eventTrigger.event.progress,'9007199254740993');assert.equal(Object.hasOwn(done.eventTrigger.event,'targetProgress'),false);
+  assert.equal(f.writes.length,apply?2:1);assert.equal(amount(f.service.workflowBudget('A').reserved.resources),apply?80:40);assert.equal(f.service.workflowBudget('A').state,'CLOSED');
+  const saved=f.workflowStore.history('A')[0],detail=projectWorkflowExecutionHistory('A',saved,f.history.list('A'));assert.equal(detail.eventTrigger.event.progress,'9007199254740993');assert.ok(detail.nodes.flatMap(n=>n.batches).every(b=>b.runAuthorizationLink.status==='MATCHED'));assert.equal(detail.resumable,false);
+  const file=path.join(path.dirname(f.history.storagePath),'workflows.json'),bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules:CORE_OPERATION_MODULES});assert.equal(reopened.history('A')[0].eventTrigger.event.progress,'9007199254740993');assert.deepEqual(reopened.history('B'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);
+  for(const change of [r=>r.eventTrigger.event.progress=9007199254740992,r=>r.eventTrigger.event.progress='9007199254740992',r=>r.eventTrigger.event.taskId=72,r=>r.eventTrigger.event.eligible=true,r=>r.eventTrigger.event.targetProgress='1',r=>r.eventTrigger.event.seq=0]){const invalid=structuredClone(saved);change(invalid);assert.throws(()=>reopened.record('A',invalid));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
+  if(kind==='MAIN_TASK_PROGRESS'){const invalid=structuredClone(saved);delete invalid.eventTrigger.event.rewardClaimed;assert.throws(()=>reopened.record('A',invalid));}
+  const writes=f.writes.length;await assert.rejects(f.runner.resume());assert.equal(f.writes.length,writes);assert.equal(f.client.listenerCount('message'),0);
+ }finally{await f.cleanup();}
+});
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' event without prior run approval only prepares a new exact batch',async()=>{
+ const f=await eventServiceWorkflow({kind,taskId:71,progress:'0'});try{f.socket.receive(storyMessage(kind),storyProgress(kind,71,'0'),1);const pending=await f.runner.settle();assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.ok(pending.plan.batchId);assert.equal(f.writes.length,0);assert.equal(f.client.listenerCount('message'),0);}finally{await f.cleanup();}
+});
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])for(const fault of ['gap','world','missing','persistence','cancel','eviction'])test(kind+' queued event cannot escape original pending-approval boundary: '+fault,async()=>{
+ let enter,release;const entered=new Promise(r=>enter=r),blocked=new Promise(r=>release=r),f=await eventServiceWorkflow({kind,taskId:71,progress:'1',onUpdate:async state=>{if(state.runAuthorization&&!state.finishedAt&&state.eventTrigger.state==='WAITING'){enter();await blocked;if(fault==='persistence')throw Error('synthetic task event persistence failure');}}});let approval;
+ try{
+  const count=f.reads.length;approval=f.runner.authorizeRun(f.payload);await entered;f.socket.receive(storyMessage(kind),storyProgress(kind,71,'1'),1);
+  if(fault==='gap')f.socket.receive(storyMessage(kind),storyProgress(kind,71,'2'),3);
+  if(fault==='world')f.session.player.worldId=2;
+  if(fault==='missing')f.socket.receive(storyMessage(kind),{task:{taskId:71}},2);
+  if(fault==='cancel')f.runner.stop();
+  if(fault==='eviction')for(let seq=2;seq<=202;seq++)f.socket.receive(storyMessage(kind),storyProgress(kind,71,String(seq)),seq);
+  await new Promise(r=>setImmediate(r));assert.equal(f.writes.length,0);assert.equal(f.reads.length,count);release();await approval;const done=await f.runner.settle();assert.ok(['UNKNOWN','FAILED','CANCELLED','STOPPED'].includes(done.status),done.status);assert.equal(f.writes.length,0);assert.equal(f.service.workflowBudget('A').state,'CLOSED');assert.equal(f.client.listenerCount('message'),0);
+ }finally{release();await approval;await f.cleanup();}
 });

@@ -139,6 +139,56 @@ function updatePlayerLevel(client,body,seq,receivedAt){const state=livePlayerLev
 export function readPlayerLevelEvent(client,{cursor}={}){const state=livePlayerLevels.get(client);if(state&&!vipCurrentContext(client,state))invalidatePlayerLevel(client,'PLAYER_CONTEXT_UNKNOWN_OR_CHANGED');else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidatePlayerLevel(client,'PLAYER_CONNECTION_NOT_CURRENT');if(!state||state.invalid||!state.seeded)return {status:'UNKNOWN',reliable:false,reason:state?.reason??'PLAYER_LOGIN_BASELINE_UNKNOWN'};const event=cursor===undefined?state.events.at(-1)??null:state.events.find(row=>row.cursor===cursor);if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'PLAYER_EVENT_CURSOR_UNAVAILABLE'};return {status:'CURRENT',reliable:true,playerLevel:state.level,source:state.source,reason:null,...state.context,...state.identity,streamId:state.streamId,cursor:state.cursor,event:event?structuredClone(event):null};}
 export const LIVE_PLAYER_LEVEL_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'ModelManager._onSCPlayerExpUpdate',policy:'Explicit login level then continuous SCPlayerExpUpdate.level; SCPlayerLevelGrade has no evidenced consumer and is excluded',realGame:'REAL_UNVERIFIED'});
 
+// Main and branch progress are accepted-stream observations, not task eligibility.
+// This private bounded cursor uses the existing login/socket/sequence authority.
+const liveTaskProgress = new WeakMap();
+function resetTaskProgress(client,reason) {
+ const previous=liveTaskProgress.get(client);
+ liveTaskProgress.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,streams:null});
+}
+function invalidateTaskProgress(client,reason) {const state=liveTaskProgress.get(client);if(state){state.invalid=true;state.reason=reason;}}
+function taskProgressCurrent(client,state) {return vipCurrentContext(client,state)&&['playerId','worldId'].every(key=>!vipOwn(client.factContext,key)||vipIdentity(vipValue(client.factContext,key))===state.identity?.[key]);}
+function seedTaskProgress(client,body,socket) {
+ const state=liveTaskProgress.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
+ if(state?.invalid)return;
+ if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateTaskProgress(client,'TASK_PROGRESS_LOGIN_OR_CONTEXT_UNKNOWN');return;}
+ Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,events:[],tasks:new Map(),invalid:null}]))});
+}
+function taskProgressCount(value) {
+ let n;
+ if(typeof value==='number'){if(!Number.isSafeInteger(value)||value<0)return null;n=BigInt(value);}
+ else if(typeof value==='string'&&/^(0|[1-9][0-9]{0,18})$/.test(value))n=BigInt(value);
+ else if(value&&typeof value==='object'&&!Array.isArray(value)){
+  const low=vipValue(value,'low'),high=vipValue(value,'high'),unsigned=vipValue(value,'unsigned'),int32=n=>Number.isInteger(n)&&n>=-2147483648&&n<=2147483647;
+  if(!int32(low)||!int32(high)||unsigned!==undefined&&unsigned!==false||Reflect.ownKeys(value).some(key=>!['low','high','unsigned'].includes(key)))return null;
+  n=BigInt.asIntN(64,BigInt(high>>>0)<<32n|BigInt(low>>>0));
+ }else return null;
+ return n>=0n&&n<(1n<<63n)?String(n):null;
+}
+function observeTaskProgress(client,kind,body,seq,receivedAt) {
+ const state=liveTaskProgress.get(client),stream=state?.streams?.[kind];if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return;
+ if(!client.connected||state.socket!==client.socket||!taskProgressCurrent(client,state)){invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');return;}
+ const task=vipValue(body,'task'),taskId=vipValue(task,'taskId'),progress=taskProgressCount(vipValue(task,'progress')),rewardClaimed=vipValue(task,'rewardClaimed');
+ if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Number.isInteger(taskId)||taskId<1||taskId>2147483647||progress===null||kind==='main'&&typeof rewardClaimed!=='boolean'){stream.invalid='TASK_PROGRESS_SOURCE_UNKNOWN';return;}
+ const previous=stream.tasks.get(taskId);
+ if(previous!==undefined&&BigInt(progress)<BigInt(previous)){stream.invalid='TASK_PROGRESS_ROLLBACK';return;}
+ if(previous===progress)return;
+ if(!Number.isSafeInteger(stream.cursor)||stream.cursor>=Number.MAX_SAFE_INTEGER||previous===undefined&&stream.tasks.size>=200){stream.invalid='TASK_PROGRESS_LIMIT';return;}
+ stream.tasks.set(taskId,progress);const cursor=++stream.cursor;
+ stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,taskId,progress,...(kind==='main'?{rewardClaimed}:{}),receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();
+}
+export function readTaskProgressEvent(client,{kind,cursor}={}) {
+ const state=liveTaskProgress.get(client);
+ if(state&&!taskProgressCurrent(client,state))invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');
+ else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidateTaskProgress(client,'TASK_PROGRESS_CONNECTION_NOT_CURRENT');
+ const stream=['main','branch'].includes(kind)?state?.streams?.[kind]:null;
+ if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return {status:'UNKNOWN',reliable:false,reason:stream?.invalid??state?.reason??'TASK_PROGRESS_BASELINE_UNKNOWN'};
+ const event=cursor===undefined?stream.events.at(-1)??null:stream.events.find(row=>row.cursor===cursor);
+ if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'TASK_PROGRESS_CURSOR_UNAVAILABLE'};
+ return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,event:event?structuredClone(event):null};
+}
+export const TASK_PROGRESS_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 MainTaskModel._onSCMainTaskUpdate/_onSCBranchTaskUpdate replace task by taskId; signed int64 progress',scope:'New accepted progress only; not target completion, claim eligibility, game day or reward receipt',realGame:'REAL_UNVERIFIED'});
+
 // The client DailyTaskModel replaces daily state on this push. The marker is the
 // server's next reset value, not an inferred timezone, clock or claim period.
 const liveDailyResets = new WeakMap();
@@ -405,9 +455,11 @@ export class GameClient extends EventEmitter {
     liveVipLevels.set(this, { owner: { accountId, generation } });
     livePlayerLevels.set(this, { owner: { accountId, generation } });
     liveDailyResets.set(this,{owner:{accountId,generation}});
+    liveTaskProgress.set(this,{owner:{accountId,generation}});
     resetVipLevel(this, 'VIP_NOT_LOGGED_IN');
     resetPlayerLevel(this, 'PLAYER_NOT_LOGGED_IN');
     resetDailyResets(this,'DAILY_RESET_NOT_LOGGED_IN');
+    resetTaskProgress(this,'TASK_PROGRESS_NOT_LOGGED_IN');
     liveFestivalActivities.set(this,{owner:{accountId,generation}});
     resetFestivalActivities(this,'FESTIVAL_NOT_LOGGED_IN');
     liveMonthCards.set(this, { owner: { accountId, generation } });
@@ -488,6 +540,7 @@ export class GameClient extends EventEmitter {
     resetVipLevel(this, 'VIP_LOGIN_PENDING');
     resetPlayerLevel(this, 'PLAYER_LOGIN_PENDING');
     resetDailyResets(this,'DAILY_RESET_LOGIN_PENDING');
+    resetTaskProgress(this,'TASK_PROGRESS_LOGIN_PENDING');
     resetFestivalActivities(this,'FESTIVAL_LOGIN_PENDING');
     resetMonthCards(this, 'MONTH_CARD_LOGIN_PENDING');
     const attempt = { resolve: null, reject: null, timer: null };
@@ -504,6 +557,7 @@ export class GameClient extends EventEmitter {
       liveVipLevels.get(this).socket = socket;
       livePlayerLevels.get(this).socket = socket;
       liveDailyResets.get(this).socket=socket;
+      liveTaskProgress.get(this).socket=socket;
       liveFestivalActivities.get(this).socket = socket;
       liveMonthCards.get(this).socket = socket;
       const frame = this.codec.encode('LoginRequest', this.bumpSeqNo(), loginBody || {});
@@ -548,6 +602,7 @@ export class GameClient extends EventEmitter {
           seedVipLevel(this, body, socket);
           seedPlayerLevel(this, body, socket);
           seedDailyResets(this,body,socket);
+          seedTaskProgress(this,body,socket);
           seedFestivalActivities(this,body,socket);
           seedMonthCards(this, body, socket);
           socket.onmessage = (message) => { if (this.socket === socket) this.onMessage(message.data); };
@@ -584,6 +639,7 @@ export class GameClient extends EventEmitter {
     resetVipLevel(this, 'VIP_CONNECTION_ENDED');
     resetPlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
     resetDailyResets(this,'DAILY_RESET_CONNECTION_ENDED');
+    resetTaskProgress(this,'TASK_PROGRESS_CONNECTION_ENDED');
     resetFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
     resetMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED');
     this.recordHeartbeat('TERMINAL', { state });
@@ -864,6 +920,7 @@ export class GameClient extends EventEmitter {
       invalidateVipLevel(this, 'VIP_STREAM_DECODE_FAILED');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_DECODE_FAILED');
       invalidateDailyResets(this,'DAILY_RESET_STREAM_DECODE_FAILED');
+      invalidateTaskProgress(this,'TASK_PROGRESS_STREAM_DECODE_FAILED');
       invalidateFestivalActivities(this,'FESTIVAL_STREAM_DECODE_FAILED');
       invalidateMonthCards(this, 'MONTH_CARD_STREAM_DECODE_FAILED', true);
       this.emit('error', new Error(`decode failed: ${error.message}`));
@@ -879,6 +936,7 @@ export class GameClient extends EventEmitter {
       invalidateVipLevel(this, 'VIP_CONNECTION_ENDED');
       invalidatePlayerLevel(this, 'PLAYER_CONNECTION_ENDED');
       invalidateDailyResets(this,'DAILY_RESET_CONNECTION_ENDED');
+      invalidateTaskProgress(this,'TASK_PROGRESS_CONNECTION_ENDED');
       invalidateFestivalActivities(this,'FESTIVAL_CONNECTION_ENDED');
       invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_ENDED', true);
     }
@@ -888,6 +946,8 @@ export class GameClient extends EventEmitter {
     if(name==='SCDailyTaskReset')observeDailyReset(this,body,seq,receivedAt);
     if(name==='SCDailyTaskUpdate'||name==='SCDailyWeeklyReset')observeDailyCacheChange(this,seq);
     if(name==='SCDailyTaskUpdate')observeDailyTaskProgress(this,body,seq,receivedAt);
+    if(name==='SCMainTaskUpdate')observeTaskProgress(this,'main',body,seq,receivedAt);
+    if(name==='SCBranchTaskUpdate')observeTaskProgress(this,'branch',body,seq,receivedAt);
     if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);}
     if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
@@ -950,6 +1010,7 @@ export class GameClient extends EventEmitter {
           invalidateVipLevel(this, 'VIP_STREAM_SEQUENCE_GAP');
       invalidatePlayerLevel(this, 'PLAYER_STREAM_SEQUENCE_GAP');
           invalidateDailyResets(this,'DAILY_RESET_STREAM_SEQUENCE_GAP');
+          invalidateTaskProgress(this,'TASK_PROGRESS_STREAM_SEQUENCE_GAP');
           invalidateFestivalActivities(this,'FESTIVAL_STREAM_SEQUENCE_GAP');
           invalidateMonthCards(this, 'MONTH_CARD_STREAM_SEQUENCE_GAP', true);
           this.sendNack(this.recvSeqNo);

@@ -180,3 +180,21 @@ test('crop supply settings use original exact-account CSRF API and never allocat
     assert.equal(app.sessions.size,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
   }finally{await app.close();}
 });
+
+
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' original prepare/save HTTP preserves exact string progress without creating a runtime',async()=>{
+ const app=await harness();try{
+  await app.call();
+  for(const entry of ['tasks','dailies','loop']){
+   const module=entry==='tasks'?'task-rewards':'free-gold',eventTrigger={kind,taskId:71,progress:'9007199254740993'};
+   const intent={id:'event-'+kind+'-'+entry,entry,budget:{resources:[],quotas:[],uids:[]},runPolicy:{maxDurationMs:10000,maxActions:1,modules:[module],eventTrigger},...(entry==='tasks'?{tasks:[{kind:'main',taskId:71}]}:{dailies:[{taskId:1006}]})};
+   const response=await app.call('/api/workflows/prepare',{body:intent});assert.equal(response.status,200,JSON.stringify(response.data));assert.equal(response.data.accountId,'A');assert.deepEqual(response.data.graph.runPolicy.eventTrigger,eventTrigger);
+   const saved=await app.call('/api/workflows/save',{body:{graph:response.data.graph}});assert.equal(saved.status,200,JSON.stringify(saved.data));assert.deepEqual(saved.data.graphs.find(g=>g.id===intent.id).runPolicy.eventTrigger,eventTrigger);
+   assert.equal((await app.call('/api/workflows/start',{body:{graph:response.data.graph}})).data.code,'NOT_CONNECTED');
+   for(const change of [r=>r.progress=9007199254740992,r=>r.progress='01',r=>r.progress='9223372036854775808',r=>r.taskId=0,r=>r.eligible=true]){const bad=structuredClone(intent);change(bad.runPolicy.eventTrigger);assert.equal((await app.call('/api/workflows/prepare',{body:bad})).status,400);}
+   const other=await app.call('/api/workflows',{id:'B'});assert.equal(other.data.graphs.some(g=>g.id===intent.id),false);
+   assert.equal((await app.call('/api/workflows/prepare',{id:'label-A',body:intent})).status,404);assert.equal((await app.call('/api/workflows/prepare',{authorized:false,body:intent})).status,403);
+  }
+  assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});assert.equal(app.writes.length,0);assert.equal(app.sessions.size,0);
+ }finally{await app.close();}
+});

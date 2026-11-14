@@ -920,3 +920,11 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' cargo intent selec
  const unrelated=compileUnifiedExecution({...intent,dailies:[intent.dailies[0],{taskId:1013}]},{modules:GAMEPLAY_MODULES});assert.equal(unrelated.graph.nodes.filter(n=>n.type==='ACTION').length,1);assert.equal(unrelated.blocked[0].taskId,1013);
  for(const parameters of [{},{shipIndex:1},{cargoIndex:1},{shipIndex:'1',cargoIndex:1},{shipIndex:1,cargoIndex:0},{shipIndex:1,cargoIndex:2147483648},{shipIndex:1,cargoIndex:1,cityId:1},{shipIndex:1,cargoIndex:1,buildingId:'f1'},{shipIndex:1,cargoIndex:1,request:'DrawShipRewardRequest'},{action:'buy',cityId:1,goodsId:1,num:1}])assert.throws(()=>compileUnifiedExecution({...intent,dailies:[{taskId:1008,parameters}]},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
 });
+
+
+for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS'])test(kind+' requires exact task and int64 string threshold and compiles through all original entry points',()=>{
+ const rule={kind,taskId:71,progress:'9007199254740993'};
+ for(const progress of ['0','9007199254740993','9223372036854775807'])assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:{...rule,progress}}),{modules}).valid,true);
+ for(const change of [r=>delete r.taskId,r=>r.taskId=0,r=>r.taskId='71',r=>r.taskId=2147483648,r=>delete r.progress,r=>r.progress=1,r=>r.progress='01',r=>r.progress='-1',r=>r.progress='9223372036854775808',r=>r.eligible=true,r=>r.rewardClaimed=false]){const bad=structuredClone(rule);change(bad);assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:bad}),{modules}),{code:'WORKFLOW_INVALID'});}
+ for(const entry of ['tasks','dailies','loop']){const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger=rule;const result=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(result.graph.nodes,before.graph.nodes);assert.deepEqual(result.graph.budget,before.graph.budget);assert.deepEqual(result.graph.runPolicy.eventTrigger,rule);}
+});

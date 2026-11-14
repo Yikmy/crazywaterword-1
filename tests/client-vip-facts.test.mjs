@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -453,4 +453,59 @@ test('trade missing/default period invalidates only its observation and old sock
   socket.receive('SCAllActivity',{festivalActivities:[],...(trade===undefined?{}:{trade})},seq++);assert.equal(read(f.client).status,'UNKNOWN');assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');
  }
  f.client.stop();await f.ready();old({data:codec.encode('SCAllActivity',1,{trade:{period:7,startTime:100,endTime:400}})});assert.equal(read(f.client).status,'UNKNOWN');
+});
+
+
+for(const kind of ['main','branch'])test(kind+' task progress attests exact int64 accepted pushes, not public events or claimed-only changes',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());assert.equal(readTaskProgressEvent(f.client,{kind}).reliable,false);const socket=await f.ready();
+ const name=kind==='main'?'SCMainTaskUpdate':'SCBranchTaskUpdate',task=(progress,extra={})=>({taskId:71,progress,...(kind==='main'?{rewardClaimed:false}:{}),...extra});
+ const baseline=readTaskProgressEvent(f.client,{kind});assert.equal(baseline.cursor,0);assert.equal(baseline.event,null);
+ f.client.emit('message',{name,seq:1,body:{task:task('99')}});assert.equal(readTaskProgressEvent(f.client,{kind}).cursor,0);
+ let during;f.client.on('message',({name:n})=>{if(n===name)during=readTaskProgressEvent(f.client,{kind});});
+ socket.receive(name,{task:task('0')},1);assert.equal(during.event.progress,'0');assert.equal(during.cursor,1);assert.equal(during.playerId,'9007199254740993');
+ socket.receive(name,{task:task('9007199254740993')},2);assert.equal(readTaskProgressEvent(f.client,{kind}).event.progress,'9007199254740993');
+ socket.receive(name,{task:task('9007199254740993',{rewardClaimed:true})},3);assert.equal(readTaskProgressEvent(f.client,{kind}).cursor,2);
+ socket.receive(name,{task:task('9223372036854775807')},4);const current=readTaskProgressEvent(f.client,{kind});assert.equal(current.event.progress,'9223372036854775807');
+ current.event.progress='0';assert.equal(readTaskProgressEvent(f.client,{kind}).event.progress,'9223372036854775807');
+ assert.equal(readTaskProgressEvent(f.client,{kind,cursor:1}).event.progress,'0');
+ socket.receive('SCDailyTaskReset',{dailyResetTime:100},5);assert.equal(readTaskProgressEvent(f.client,{kind}).reliable,true);assert.equal(readTaskProgressEvent(f.client,{kind}).streamId,baseline.streamId);
+ assert.equal(readTaskProgressEvent(f.client,{kind:kind==='main'?'branch':'main'}).cursor,0);
+});
+for(const kind of ['main','branch'])test(kind+' malformed or regressing task progress stays unknown without invalidating the other task stream',async t=>{
+ const name=kind==='main'?'SCMainTaskUpdate':'SCBranchTaskUpdate';const base={taskId:71,progress:'2',...(kind==='main'?{rewardClaimed:false}:{})};
+ const invalid=[{}, {task:{...base,taskId:0}}, {task:{...base,progress:'-1'}}, {task:{taskId:71,...(kind==='main'?{rewardClaimed:false}:{})}}, ...(kind==='main'?[{task:{taskId:71,progress:'2'}}]:[])];
+ for(const body of invalid){const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive(name,body,1);assert.equal(readTaskProgressEvent(f.client,{kind}).reliable,false);socket.receive(name,{task:base},2);assert.equal(readTaskProgressEvent(f.client,{kind}).reliable,false);assert.equal(readTaskProgressEvent(f.client,{kind:kind==='main'?'branch':'main'}).reliable,true);}
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive(name,{task:base},1);socket.receive(name,{task:{...base,progress:'1'}},2);assert.equal(readTaskProgressEvent(f.client,{kind}).reason,'TASK_PROGRESS_ROLLBACK');
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId'])test('task progress identity change is sticky across return: '+field,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),before={...f.client.factContext};
+ socket.receive('SCMainTaskUpdate',{task:{taskId:71,progress:'1',rewardClaimed:false}},1);
+ f.client.factContext={...before,[field]:field==='generation'?99:'other'};assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).reliable,false);
+ f.client.factContext=before;assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).reliable,false);
+});
+test('task progress stops on transport loss and a new login has a fresh cursor with no late-old-socket authority',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const old=await f.ready();old.receive('SCBranchTaskUpdate',{task:{taskId:71,progress:'1'}},1);const before=readTaskProgressEvent(f.client,{kind:'branch'});
+ f.client.stop();assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);const socket=await f.ready();const fresh=readTaskProgressEvent(f.client,{kind:'branch'});assert.notEqual(fresh.streamId,before.streamId);assert.equal(fresh.cursor,0);
+ old.receive('SCBranchTaskUpdate',{task:{taskId:71,progress:'99'}},2);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).cursor,0);
+ socket.receive('SCBranchTaskUpdate',{task:{taskId:71,progress:'2'}},1);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).event.progress,'2');
+});
+test('task progress cursors are bounded; expired observations and malformed streams cannot be revived by public copies',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();for(let seq=1;seq<=201;seq++)socket.receive('SCBranchTaskUpdate',{task:{taskId:71,progress:String(seq)}},seq);
+ assert.equal(readTaskProgressEvent(f.client,{kind:'branch',cursor:1}).reliable,false);assert.equal(readTaskProgressEvent(f.client,{kind:'branch',cursor:2}).event.progress,'2');
+ f.client.loginResponse.playerInfo.playerId='other';assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,true);
+ socket.onmessage({data:new Uint8Array([255])});assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);
+});
+
+
+for(const fault of ['duplicate','gap','close','prelogin','bad-login','too-many-tasks'])test('main/branch progress preserves accepted transport boundary on '+fault,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const name='SCBranchTaskUpdate',body=progress=>({task:{taskId:71,progress}});
+ if(fault==='prelogin'){await assert.rejects(f.ready(login(),socket=>socket.receive(name,body('1'),1)),/unexpected auth reply/);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);return;}
+ const socket=await f.ready(fault==='bad-login'?{result:0,initSeqNo:12,playerInfo:{worldId:'9'}}:login());
+ if(fault==='bad-login'){socket.receive(name,body('1'),1);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);return;}
+ socket.receive(name,body('1'),1);
+ if(fault==='duplicate'){socket.receive(name,body('99'),1);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).event.progress,'1');assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).cursor,1);return;}
+ if(fault==='gap')socket.receive(name,body('3'),3);
+ if(fault==='close')socket.end();
+ if(fault==='too-many-tasks')for(let seq=2;seq<=201;seq++)socket.receive(name,{task:{taskId:seq+100,progress:'1'}},seq);
+ assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).reliable,false);
 });
