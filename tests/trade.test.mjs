@@ -25,7 +25,7 @@ test('fixed v76 Codec/current port Info-City-Info retains zero stock and compute
  assert.deepEqual(view.prices,[{goodsId:1001,stock:0,price:51,name:'生鱼片'}]);
  assert.deepEqual(view.quotes,[{pid:1,goodsId:1001,num:3,buyPrice:50,originCityId:2,price:51,profit:4,total:154,status:'PREVIEW',reason:null}]);
  assert.deepEqual(planTrade(facts,{parameters:{},selections:['pretend-sale']}),{module:'trade',actions:[],notes:['海商王当前只读；行情和利润预览不产生执行动作。']});assert.equal(tradeModule.verify().confirmed,false);
- assert.deepEqual(view.candidates,[]);assert.ok(view.blocked.every(row=>row.code==='BLOCKED_EVIDENCE'));
+ assert.deepEqual(view.candidates,[]);assert.ok(view.blocked.every(row=>row.code==='NOT_IMPLEMENTED'));
 });
 test('explicit empty holding and price lists are known empty, without defaulting omitted scalar balances or cargo',async()=>{
  const f=fixture();f.state.info.player.goods=[];f.state.city.goods=[];let view=viewTrade(await f.survey());assert.equal(view.status,'OBSERVED');assert.deepEqual(view.holdings,[]);assert.deepEqual(view.quotes,[]);assert.equal(view.capacity.used,0);
@@ -80,4 +80,16 @@ test('static Registry rejects forged write controls and confirms observation-onl
 test('zero spread and signed cumulative profit stay explicit; wrong clock owner or source never uses local time',async()=>{
  const f=fixture();f.state.city.goods[0].price=50;f.state.info.player.profit=-7;const view=viewTrade(await f.survey());assert.equal(view.balances.profit,-7);assert.equal(view.quotes[0].profit,0);assert.equal(view.quotes[0].total,150);
  for(const change of [c=>c.accountId='B',c=>c.generation=2,c=>c.source='local clock',c=>c.latestMs=c.nowMs-1]){const g=fixture(),read=g.client.gameClock.read;g.client.gameClock.read=()=>{const c=read();change(c);return c;};const v=viewTrade(await g.survey());assert.equal(v.reason,'TRADE_CLOCK_UNKNOWN');assert.equal(g.state.reads.length,1);assert.equal(v.quotes[0].total,null);}
+});
+
+
+test('bounded trade observation summary validates source, explicit zero counts and no invented context when unknown',async()=>{
+ const {summarizeTradeObservation,validateTradeObservationSummary}=await import('../src/trade.mjs'),f=fixture(),view=viewTrade(await f.survey());
+ const summary=summarizeTradeObservation(view);assert.deepEqual(summary,{scope:'CURRENT_PORT_RESPONSE_ONLY',source:'TradeInfoResponse/TradeCityResponse/TradeInfoResponse',status:'OBSERVED',period:1,cityId:1,cargoLv:1,priceCount:1,holdingCount:1,nonLossPreviewCount:1,unknownQuoteCount:0});
+ assert.deepEqual(validateTradeObservationSummary(summary),summary);assert.notEqual(validateTradeObservationSummary(summary),summary);
+ f.state.info.player.goods=[];f.state.city.goods=[];const empty=summarizeTradeObservation(viewTrade(await f.survey()));assert.equal(empty.holdingCount,0);assert.equal(empty.priceCount,0);
+ for(const patch of [{status:'UNKNOWN'},{readOnly:false},{scope:'GLOBAL'},{reason:'changed'},{period:0},{quotes:[]},{quotes:[...view.quotes,...view.quotes]},{prices:[...view.prices,...view.prices]},{holdings:[...view.holdings,...view.holdings]}]){const unknown=summarizeTradeObservation({...view,...patch});assert.equal(unknown.status,'UNKNOWN');for(const k of ['period','cityId','cargoLv','priceCount','holdingCount','nonLossPreviewCount','unknownQuoteCount'])assert.equal(unknown[k],null);}
+ for(const patch of [{scope:'GLOBAL'},{source:'invented'},{status:'SUCCESS'},{period:0},{holdingCount:2},{priceCount:-1},{priceCount:10001},{unknownQuoteCount:null},{extra:'raw price payload'},{status:'UNKNOWN'}])assert.throws(()=>validateTradeObservationSummary({...summary,...patch}));
+ const malformed=copy(view);malformed.quotes[0].total=null;assert.equal(summarizeTradeObservation(malformed).status,'UNKNOWN');
+ const unknown=summarizeTradeObservation(null);assert.deepEqual(validateTradeObservationSummary(unknown),unknown);assert.throws(()=>validateTradeObservationSummary({...unknown,period:1}));
 });

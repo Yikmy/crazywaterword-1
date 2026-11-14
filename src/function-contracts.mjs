@@ -46,7 +46,7 @@ const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capabili
 export const FUNCTION_CONTRACTS = freeze({
   trade: contract('trade',['C521','C522'],['P6-3'],['src/trade.mjs#tradeModule','src/trade.mjs#surveyTrade'],{}, {
     permissions:{...common.permissions,write:'FORBIDDEN_OBSERVATION_ONLY'},
-    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('C522:DESTINATION_STRATEGY','Current port non-loss sale preview only; no destination-price or purchase strategy'),blocked('C523','Exact buy/sell eligibility, settlement and recovery are not implemented'),blocked('C524','Routes, movement and speed require separate contracts')]},
+    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('C522:DESTINATION_STRATEGY','Current port non-loss sale preview only; no destination-price or purchase strategy','NOT_IMPLEMENTED'),blocked('C523','Exact buy/sell eligibility, settlement and recovery are not implemented','NOT_IMPLEMENTED'),blocked('C524','Routes, movement and speed require separate contracts','NOT_IMPLEMENTED')]},
     verification:verification('verify','src/trade.mjs#tradeModule.verify','Current-port response only; same bracketing Info is not an atomic snapshot and no write can be confirmed',{authoritativeRead:false,canConfirmWrite:false}),
     dependencyVersions:dependencies(['moduleConfig','config.TradeGoodsCfg','config.TradeShipCfg']),
   }),

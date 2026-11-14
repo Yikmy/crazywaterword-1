@@ -404,3 +404,13 @@ test('trade professional view shows port, stock, holdings and preview with zero 
  const survey=h.node('gp-trade-survey').onclick();assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/gameplay/survey').body)),{module:'trade',parameters:{}});h.select('B');h.select('A');h.respond('/api/gameplay/survey',value);await survey;
  assert.equal(h.node('gp-trade-facts').textContent,'');assert.equal(h.run('gameplayCsrfToken()'),null);assert.equal(h.pending('/api/operations/authorize'),undefined);
 });
+
+
+test('Workflow trade history renders explicit counts and unknown summaries without authorization or recovery controls',async()=>{
+ const h=await historyBoot(),task=h.node('wf-history-read').onclick(),detail=workflowHistoryDetail();detail.nodes=[];
+ const summary={scope:'CURRENT_PORT_RESPONSE_ONLY',source:'TradeInfoResponse/TradeCityResponse/TradeInfoResponse',status:'OBSERVED',period:1,cityId:17,cargoLv:2,priceCount:3,holdingCount:2,nonLossPreviewCount:1,unknownQuoteCount:1};
+ detail.surveys=[{nodeId:'q',module:'trade',tradeObservation:summary},{nodeId:'missing',module:'trade',tradeObservation:{...summary,status:'UNKNOWN',period:null,cityId:null,cargoLv:null,priceCount:null,holdingCount:null,nonLossPreviewCount:null,unknownQuoteCount:null}}];
+ h.respond(workflowHistoryPath('run/one'),detail);await task;const text=h.node('wf-history-detail').textContent;
+ for(const part of ['海商王观察 已观察','周期 1','港口 17','船级 2','行情货物 3','持货批次 2','非亏损预览 1','未知报价 1','海商王观察 未知','港口 未知','不证明实时行情、成交或到账','不能恢复执行'])assert.ok(text.includes(part),part);
+ assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.ok(h.requests.every(row=>row.body===null));
+});

@@ -1,3 +1,4 @@
+import { summarizeTradeObservation, validateTradeObservationSummary } from './trade.mjs';
 import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
 import { validateTaskRewardsParameters } from './task-rewards.mjs';
@@ -313,9 +314,10 @@ function repeatAfterStop(ctx,node){
           const mailbox=node.module==='mail'&&node.parameters?.action==='enumerate'?ctx.survey?.view?.mailbox:null;
           const observation=mailbox?mailboxHistory({...Object.fromEntries(['maxPages','readPages','totalReported','status','allPagesComplete','atomicSnapshot','reason'].map(key=>[key,mailbox[key]])),observedMails:mailbox.emails.length}):null;
           const navalObservation=node.module==='naval'?summarizeNavalObservation(ctx.survey?.view,{parameters:node.parameters??{},moduleConfig:ctx.survey?.config??{},previous:ctx.trace.filter(row=>row.navalObservation).at(-1)?.navalObservation}):null;
+          const tradeObservation=node.module==='trade'?summarizeTradeObservation(ctx.survey?.view):null;
           const recruitCooldown=node.module==='free-recruit'&&ctx.survey?.view?.cooldownObservation?validateFreeRecruitCooldownObservation(ctx.survey.view.cooldownObservation):null;
           const taskObservation=node.module==='task-rewards'&&['main','branch','achievement','daily'].includes(node.parameters?.kind)?validateTaskRewardsParameters(node.parameters):null;
-          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(taskObservation?{taskObservation}:{})});
+          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(taskObservation?{taskObservation}:{})});
           ctx.nodeId = next(ctx); continue;
         }
         if (node.type === 'ACTION') {
@@ -503,6 +505,7 @@ function traceEvidence(row) {
   }
   if(row.mailbox!==undefined){if(row.type!=='SURVEY'||row.module!=='mail'||row.result!=='SURVEYED')throw fail('邮箱观察摘要仅属于原mail SURVEY');evidence.mailbox=mailboxHistory(row.mailbox);}
   if(row.navalObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='naval'||row.result!=='SURVEYED')throw fail('海战观察摘要仅属于原naval SURVEY');evidence.navalObservation=validateNavalObservationSummary(row.navalObservation);}
+  if(row.tradeObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='trade'||row.result!=='SURVEYED')throw fail('海商王观察摘要仅属于原trade SURVEY');evidence.tradeObservation=validateTradeObservationSummary(row.tradeObservation);}
   if(row.recruitCooldown!==undefined){if(row.type!=='SURVEY'||row.module!=='free-recruit'||row.result!=='SURVEYED')throw fail('招募冷却摘要仅属于原free-recruit SURVEY');evidence.recruitCooldown=validateFreeRecruitCooldownObservation(row.recruitCooldown);}
   if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED'||!['main','branch','achievement','daily'].includes(row.taskObservation?.kind))throw fail('任务观察目标仅属于原task-rewards SURVEY');evidence.taskObservation=validateTaskRewardsParameters(row.taskObservation);}
   if(row.cooldownWait!==undefined){cooldownWaitHistoryRow(row);evidence.cooldownWait=copy(row.cooldownWait);}

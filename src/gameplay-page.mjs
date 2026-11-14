@@ -1003,10 +1003,12 @@ function wfHistoryRender(data) {
   box.appendChild(gpEl('p', '未关联的操作记录：' + data.unlinkedOperationCount + '。仅显示已持久化且归属一致的动作。'));
   for (const row of data.waits || []) {if(row.cooldownWait){box.appendChild(gpEl('p','节点 '+row.nodeId+' · '+row.result+' · 具名免费招募冷却等待 '+row.durationMs+' 毫秒；原观察及同目标独立复读，不证明当前可招募，不解除拒绝或UNKNOWN，重启不恢复等待。'));gpDetails(box,'原冷却来源与观察区间',row.cooldownWait);continue;}box.appendChild(gpEl('p', '节点 ' + row.nodeId + (row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · ' + (row.result === 'WAIT_STARTED' ? '等待已开始' : row.result === 'WAITED' ? '等待已结束' : row.result==='ROUND_WAIT_STARTED'?'轮间等待已开始':row.result==='ROUND_WAITED'?'轮间等待已结束':row.result) + ' · 时长 ' + (row.durationMs === undefined ? '未知' : row.durationMs + ' 毫秒') + ' · ' + (row.timestamp || '时间未知') + '；本次运行的间隔记录，不代表游戏冷却或可重放资格。'));}
   for(const row of data.surveys||[]){
-    const audit=row.mailbox,naval=row.navalObservation,cooldown=row.recruitCooldown;
+    const audit=row.mailbox,naval=row.navalObservation,cooldown=row.recruitCooldown,trade=row.tradeObservation;
     box.appendChild(gpEl('p','只读调查节点 '+row.nodeId+(row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · '+(row.module||'未知模块')+' · '+(row.timestamp||'时间未知')));
     if(row.taskObservation){box.appendChild(gpEl('p','只读任务调查目标；不证明任务完成、可领或到账。'));gpDetails(box,'原任务Function与明确目标',row.taskObservation);}
-    else if(cooldown){
+    else if(trade){
+      box.appendChild(gpEl('p','海商王观察 '+(trade.status==='OBSERVED'?'已观察':'未知')+' · 周期 '+(trade.period??'未知')+' · 港口 '+(trade.cityId??'未知')+' · 船级 '+(trade.cargoLv??'未知')+' · 行情货物 '+(trade.priceCount??'未知')+' · 持货批次 '+(trade.holdingCount??'未知')+' · 非亏损预览 '+(trade.nonLossPreviewCount??'未知')+' · 未知报价 '+(trade.unknownQuoteCount??'未知')+'；仅历史当前港口响应摘要，不证明实时行情、成交或到账，不能恢复执行。'));
+    }else if(cooldown){
       const readiness={READY_BY_CLOCK:'观察时冷却已满足',COOLDOWN:'观察时仍在冷却',UNKNOWN:'观察时冷却状态未知'};
       box.appendChild(gpEl('p','免费招募冷却 '+cooldown.status+' · 服务端截止秒 '+(cooldown.freeEndTimeSeconds??'未知')+' · '+(Object.hasOwn(readiness,cooldown.readiness)?readiness[cooldown.readiness]:readiness.UNKNOWN)+' · 来源 '+cooldown.source+' · 原可信时钟区间 '+gpJson(cooldown.serverBounds)+'；仅原调查记录，不代表当前可招募，不自动等待、续跑或解除 UNKNOWN。'));
     }else if(naval){

@@ -413,3 +413,24 @@ test('original Workflow HTTP exposes naval evidence after restart without game r
  const bytes=fs.readFileSync(workflowFile,'utf8'),response=await f.request(historyUrl('A','naval-http'));assert.equal(response.status,200);assert.deepEqual(response.data.surveys[0].navalObservation,summary);assert.equal(response.data.resumable,false);
  assert.equal((await f.request(historyUrl('B','naval-http'))).status,404);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);assert.deepEqual(f.sent,[]);
 });
+
+
+test('trade observations persist in original history and remain read-only after restart, with strict scope and placement',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),{summarizeTradeObservation}=await import('../src/trade.mjs');
+ const file=path.join(dir,'trade-history.json'),store=createWorkflowStore({file,modules:GAMEPLAY_MODULES});
+ const summary={scope:'CURRENT_PORT_RESPONSE_ONLY',source:'TradeInfoResponse/TradeCityResponse/TradeInfoResponse',status:'OBSERVED',period:1,cityId:1,cargoLv:1,priceCount:2,holdingCount:2,nonLossPreviewCount:1,unknownQuoteCount:1};
+ const base={runId:'trade-audit',workflowId:'trade-graph',status:'COMPLETED',trace:[{nodeId:'q',type:'SURVEY',result:'SURVEYED',module:'trade',tradeObservation:summary}]};store.record('A',base);const bytes=fs.readFileSync(file,'utf8');
+ for(const patch of [{holdingCount:3},{priceCount:null},{priceCount:10001},{period:0},{cityId:'1'},{scope:'GLOBAL'},{source:'invented'},{status:'UNKNOWN'},{authorization:'fake'}]){const bad=structuredClone(base);Object.assign(bad.trace[0].tradeObservation,patch);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
+ for(const patch of [{module:'naval'},{type:'ACTION'},{result:'FAILED'}]){const bad=structuredClone(base);Object.assign(bad.trace[0],patch);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);}
+ const unknown=structuredClone(base);unknown.runId='trade-unknown';unknown.trace[0].tradeObservation=summarizeTradeObservation(null);store.record('A',unknown);
+ const legacy=structuredClone(base);legacy.runId='trade-legacy';delete legacy.trace[0].tradeObservation;store.record('A',legacy);
+ const reopened=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),detail=projectWorkflowExecutionHistory('A',reopened.history('A').find(r=>r.runId===base.runId),[]);assert.deepEqual(detail.surveys[0].tradeObservation,summary);assert.equal(detail.readOnly,true);assert.equal(detail.resumable,false);assert.deepEqual(detail.nodes,[]);assert.deepEqual(reopened.history('B'),[]);assert.equal(projectWorkflowExecutionHistory('A',reopened.history('A').find(r=>r.runId==='trade-legacy'),[]).surveys[0].tradeObservation,undefined);
+ const raw=JSON.parse(fs.readFileSync(file,'utf8'));raw.accounts.A.history.find(r=>r.runId==='trade-audit').trace[0].tradeObservation.holdingCount=3;fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');assert.throws(()=>createWorkflowStore({file,modules:GAMEPLAY_MODULES}).history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
+});
+
+test('original Workflow HTTP reads trade observation summary after restart without queries or cross-account access',async t=>{
+ const f=fixture('trade-observation-http');t.after(()=>f.close());
+ const summary={scope:'CURRENT_PORT_RESPONSE_ONLY',source:'TradeInfoResponse/TradeCityResponse/TradeInfoResponse',status:'OBSERVED',period:1,cityId:1,cargoLv:1,priceCount:0,holdingCount:0,nonLossPreviewCount:0,unknownQuoteCount:0};
+ f.workflowStore.record('A',{runId:'trade-http',workflowId:'trade-graph',status:'COMPLETED',trace:[{nodeId:'q',type:'SURVEY',module:'trade',result:'SURVEYED',tradeObservation:summary}]});
+ const bytes=fs.readFileSync(workflowFile,'utf8'),response=await f.request(historyUrl('A','trade-http'));assert.equal(response.status,200);assert.deepEqual(response.data.surveys[0].tradeObservation,summary);assert.equal(response.data.readOnly,true);assert.equal(response.data.resumable,false);assert.deepEqual(f.sent,[]);assert.equal((await f.request(historyUrl('B','trade-http'))).status,404);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);
+});

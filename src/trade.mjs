@@ -84,7 +84,35 @@ export function viewTrade(f,{config=f?.configEvidence}={}){
  const prices=(rows??[]).map(row=>({...row,name:typeof get(configRow(cfg,'TradeGoodsCfg','goodsId',row.goodsId),'itemName')==='string'?configRow(cfg,'TradeGoodsCfg','goodsId',row.goodsId).itemName:null}));
  const quotes=holdings.map(row=>preview(row,rows?.find(p=>p.goodsId===row.goodsId)?.price??null,ship,info.cargo?.cityId));
  const reason=!valid?'TRADE_CONTEXT_UNKNOWN':!complete?'TRADE_INFO_INCOMPLETE':!start||!end?'TRADE_CLOCK_UNKNOWN':start.earliestMs<info.cargo.moveEndTime*1000?'TRADE_TRAVELLING':!stable?'TRADE_STATE_CHANGED':!rows?'TRADE_PRICES_UNKNOWN':null;
- return {module:'trade',readOnly:true,scope:'CURRENT_PORT_RESPONSE_ONLY',status:reason?'UNKNOWN':'OBSERVED',reason,period:info.period,balances:info.balances,cargo:info.cargo,holdings,prices,quotes,capacity:{used:usedCapacity,total:capacity,remaining:remainingCapacity},candidates:[],blocked:[{actionType:'BUY',code:'BLOCKED_EVIDENCE',reason:'购买资格、精确成本及独立结算合同尚未接入'},{actionType:'SELL',code:'BLOCKED_EVIDENCE',reason:'预览不证明当前售价、可售资格或到账；精确单次写入与恢复合同尚未接入'},{actionType:'MOVE',code:'BLOCKED_EVIDENCE',reason:'路线、移动及加速需独立合同'}],notes:[...(f?.notes??[]),'仅当前港口响应；前后货舱相同不证明原子快照。stock 仅显示服务端原值，不解释为可买数量。maxCoins/profit 保留原字段含义，不推导余额上限。预计售得不计入库存、预算或历史到账。']};
+ return {module:'trade',readOnly:true,scope:'CURRENT_PORT_RESPONSE_ONLY',status:reason?'UNKNOWN':'OBSERVED',reason,period:info.period,balances:info.balances,cargo:info.cargo,holdings,prices,quotes,capacity:{used:usedCapacity,total:capacity,remaining:remainingCapacity},candidates:[],blocked:[{actionType:'BUY',code:'NOT_IMPLEMENTED',reason:'购买资格、精确成本及独立结算合同尚未接入'},{actionType:'SELL',code:'NOT_IMPLEMENTED',reason:'预览不证明当前售价、可售资格或到账；精确单次写入与恢复合同尚未接入'},{actionType:'MOVE',code:'NOT_IMPLEMENTED',reason:'路线、移动及加速需独立合同'}],notes:[...(f?.notes??[]),'仅当前港口响应；前后货舱相同不证明原子快照。stock 仅显示服务端原值，不解释为可买数量。maxCoins/profit 保留原字段含义，不推导余额上限。预计售得不计入库存、预算或历史到账。']};
 }
 export function planTrade(f,options={}){validateTradeParameters(options.parameters??{});return {module:'trade',actions:[],notes:['海商王当前只读；行情和利润预览不产生执行动作。']};}
 export const tradeModule=Object.freeze({id:'trade',label:'海商王',capabilities:Object.freeze(['C521','C522']),evidence:TRADE_EVIDENCE,defaultConfig:Object.freeze({enabled:false}),validateConfig:validateTradeConfig,validateParameters:validateTradeParameters,survey:surveyTrade,view:viewTrade,plan:planTrade,verify:()=>({confirmed:false,reason:'海商王当前只读，不能确认任何买卖或移动结果'})});
+
+
+// Existing Workflow trace owns persistence. Retain bounded observation counts,
+// never price payloads, player identity, a simulated receipt or a write permit.
+const observationFields=['scope','source','status','period','cityId','cargoLv','priceCount','holdingCount','nonLossPreviewCount','unknownQuoteCount'];
+const observationValues=observationFields.slice(3),countFields=observationFields.slice(6);
+const observationSource='TradeInfoResponse/TradeCityResponse/TradeInfoResponse';
+export function validateTradeObservationSummary(value){
+ if(!plain(value,observationFields)||observationFields.some(k=>!own(value,k))||value.scope!=='CURRENT_PORT_RESPONSE_ONLY'||value.source!==observationSource||!['OBSERVED','UNKNOWN'].includes(value.status))throw invalid('海商王观察摘要缺少明确来源或范围');
+ if(value.status==='UNKNOWN'){
+  if(observationValues.some(k=>value[k]!==null))throw invalid('未知海商王观察不能推断港口、周期或计数');
+ }else if(['period','cityId','cargoLv'].some(k=>!positive(value[k]))||countFields.some(k=>!uint(value[k])||value[k]>10000)||value.nonLossPreviewCount+value.unknownQuoteCount!==value.holdingCount)throw invalid('海商王观察摘要周期或计数无效');
+ return copy(value);
+}
+export function summarizeTradeObservation(view){
+ const summary={scope:'CURRENT_PORT_RESPONSE_ONLY',source:observationSource,status:'UNKNOWN',...Object.fromEntries(observationValues.map(k=>[k,null]))};
+ if(get(view,'readOnly')!==true||get(view,'scope')!==summary.scope||get(view,'status')!=='OBSERVED'||get(view,'reason')!==null||!positive(get(view,'period'))||!positive(get(get(view,'cargo'),'cityId'))||!positive(get(get(view,'cargo'),'cargoLv')))return summary;
+ const prices=rowsOf(view,'prices',['goodsId','stock','price'],['goodsId','price'],'goodsId'),holdings=rowsOf(view,'holdings',['pid','goodsId','num','buyPrice','cityId'],['pid','goodsId','num','buyPrice','cityId'],'pid'),quotes=get(view,'quotes');
+ if(!prices||!holdings||!dense(quotes)||quotes.length!==holdings.length)return summary;
+ const seen=new Set();let previews=0;
+ for(const q of quotes){const pid=get(q,'pid'),row=holdings.find(r=>r.pid===pid);if(!row||seen.has(pid)||get(q,'num')!==row.num||get(q,'goodsId')!==row.goodsId)return summary;seen.add(pid);
+  if(get(q,'status')==='PREVIEW'){
+   if(get(q,'reason')!==null||!Number.isSafeInteger(get(q,'profit'))||q.profit<0||!Number.isSafeInteger(get(q,'total'))||q.total<=0||!positive(get(q,'price'))||q.price<row.buyPrice||row.cityId===view.cargo.cityId||prices.find(p=>p.goodsId===row.goodsId)?.price!==q.price)return summary;
+   previews++;
+  }else if(get(q,'status')!=='UNKNOWN'||get(q,'profit')!==null||get(q,'total')!==null)return summary;
+ }
+ return validateTradeObservationSummary({...summary,status:'OBSERVED',period:view.period,cityId:view.cargo.cityId,cargoLv:view.cargo.cargoLv,priceCount:prices.length,holdingCount:holdings.length,nonLossPreviewCount:previews,unknownQuoteCount:holdings.length-previews});
+}
