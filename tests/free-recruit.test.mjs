@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
-import { freeRecruitModule,validateFreeRecruitConfig,validateFreeRecruitParameters,surveyFreeRecruit,viewFreeRecruit,planFreeRecruit,verifyFreeRecruit,freeRecruitDependencyVersions } from '../src/free-recruit.mjs';
+import { freeRecruitModule,validateFreeRecruitCooldownObservation,validateFreeRecruitConfig,validateFreeRecruitParameters,surveyFreeRecruit,viewFreeRecruit,planFreeRecruit,verifyFreeRecruit,freeRecruitDependencyVersions } from '../src/free-recruit.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { createRunBudgetContext } from '../src/resource-ledger.mjs';
@@ -13,7 +13,8 @@ import { assertPaymentAllowed } from '../src/actions.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { createOperationService } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
-import { createWorkflowRunner,validateWorkflow } from '../src/workflow.mjs';
+import { createWorkflowRunner,validateWorkflow,createWorkflowStore,projectWorkflowExecutionHistory } from '../src/workflow.mjs';
+import {compileUnifiedExecution} from '../src/loop.mjs';
 
 // Fixed codecs/config and synthetic transport; no live account or game connection.
 const protocol=loadProtocol(),actual=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
@@ -193,4 +194,34 @@ for(const change of ['connection','generation'])test('definite refusal remains a
  }
  await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
  assert.equal(fs.readFileSync(next.file+'.memory.json','utf8'),memoryBefore);assert.equal(fs.readFileSync(next.file,'utf8'),historyBefore);
+});
+for(const [marker,readiness]of [[0,'READY_BY_CLOCK'],[1001,'COOLDOWN'],[1000,'UNKNOWN']])test('cooldown observation retains exact marker and original trusted bounds '+marker,async()=>{
+ const f=fixture();f.state.recruit.hero.freeEndTimeSeconds=marker;const facts=await surveyFreeRecruit(f.client,protocol,f.options),v=viewFreeRecruit(facts,f.options),c=v.cooldownObservation;
+ assert.equal(c.status,'OBSERVED');assert.equal(c.freeEndTimeSeconds,marker);assert.equal(c.readiness,readiness);assert.equal(c.source,'RecruitInfoResponse.hero.freeEndTimeSeconds');assert.equal(c.sourceAt,facts.sourceFacts.recruit.provenance.sourceAt);assert.equal(c.eligibility,null);assert.equal(c.executable,false);assert.equal(c.autoResume,false);assert.equal(f.state.writes.length,0);
+ c.serverBounds.earliestMs=999;assert.notEqual(viewFreeRecruit(facts,f.options).cooldownObservation.serverBounds.earliestMs,999);
+});
+for(const mode of ['missing','clock','context','cloned','stale'])test('cooldown observation never fills unknown fields or renews evidence '+mode,async t=>{
+ const f=fixture();if(mode==='missing')delete f.state.recruit.hero.freeEndTimeSeconds;let facts=await surveyFreeRecruit(f.client,protocol,f.options);
+ if(mode==='clock')f.client.gameClock.reset();if(mode==='context')f.client.factContext.connectionId='new';if(mode==='cloned')facts=clone(facts);
+ if(mode==='stale'){const now=Date.now();t.mock.method(Date,'now',()=>now+31000);}
+ const c=viewFreeRecruit(facts,f.options).cooldownObservation;
+ assert.equal(c.readiness,'UNKNOWN');if(mode==='clock'){assert.equal(c.status,'OBSERVED');assert.equal(c.freeEndTimeSeconds,0);assert.equal(c.serverBounds,null);}else{assert.equal(c.status,'UNKNOWN');assert.equal(c.freeEndTimeSeconds,null);assert.equal(c.sourceAt,null);assert.equal(c.serverBounds,null);}
+ assert.equal(c.autoResume,false);assert.equal(f.state.writes.length,0);
+});
+test('cooldown history validator rejects eligibility, automatic replay and fabricated clock claims',async()=>{
+ const f=fixture();f.state.recruit.hero.freeEndTimeSeconds=1001;const facts=await surveyFreeRecruit(f.client,protocol,f.options),c=viewFreeRecruit(facts,f.options).cooldownObservation;
+ for(const mutate of[v=>v.source='fake',v=>v.freeEndTimeSeconds=-1,v=>v.sourceAt=null,v=>v.readiness='READY_BY_CLOCK',v=>v.serverBounds.earliestMs=v.serverBounds.latestMs+1,v=>v.serverBounds.token='injected',v=>v.eligibility=true,v=>v.executable=true,v=>v.autoResume=true,v=>delete v.freeEndTimeSeconds,v=>v.status='UNKNOWN',v=>v.request='RecruitStartRequest']){
+ const value=clone(c);mutate(value);assert.throws(()=>validateFreeRecruitCooldownObservation(value),{code:'INVALID_PARAMETERS'});}
+});
+test('original finite Loop persists cooldown observation, reloads read only and never recruits when time passes',async t=>{
+ const f=serviceFixture(t);f.state.recruit.hero.freeEndTimeSeconds=1001;
+ const file=f.file+'.workflow.json',store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),compiled=compileUnifiedExecution({entry:'loop',world:[{type:'SURVEY',module:'free-recruit',parameters:{}}],rounds:1,budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null,onUpdate:s=>store.record(f.session.id,s)});t.after(()=>runner.stop());
+ const result=await runner.start(f.session.id,compiled.graph);assert.equal(result.status,'COMPLETED');const trace=result.trace.find(row=>row.type==='SURVEY'),c=trace.recruitCooldown;assert.equal(c.readiness,'COOLDOWN');assert.equal(c.freeEndTimeSeconds,1001);assert.equal(f.state.writes.length,0);
+ const original=fs.readFileSync(file,'utf8');assert.equal(original.includes('9007199254740993'),false);assert.equal(original.includes('skillLevels'),false);
+ f.state.wall+=100000;f.state.mono+=100000;f.client.connected=false;
+ const restored=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),[row]=restored.history(f.session.id,{runId:result.runId}),projection=projectWorkflowExecutionHistory(f.session.id,row,[]);
+ assert.deepEqual(projection.surveys[0].recruitCooldown,c);assert.equal(projection.readOnly,true);assert.equal(projection.resumable,false);assert.equal(f.state.writes.length,0);assert.equal(fs.readFileSync(file,'utf8'),original);assert.deepEqual(restored.history('other'),[]);
+ for(const module of ['mail','free-gold']){const changed=clone(row);changed.trace.find(v=>v.type==='SURVEY').module=module;assert.throws(()=>restored.record(f.session.id,changed));}
+ const legacy=clone(row);legacy.runId='legacy-cooldown';delete legacy.trace.find(v=>v.type==='SURVEY').recruitCooldown;restored.record(f.session.id,legacy);assert.equal(projectWorkflowExecutionHistory(f.session.id,restored.history(f.session.id,{runId:legacy.runId})[0],[]).surveys[0].recruitCooldown,undefined);
 });

@@ -115,14 +115,14 @@ async function shipFixture(t,{apply=true,seek=false,accountId='synthetic-ship',c
  state.ship={shipId:41,type:1,state:1,leader:{playerId:'19'},preparedEndTime:state.now+100,cabin:[cabin(1),cabin(2)]};state.ownRun=[];state.heroes=[{heroId:'captain-A',level:20,star:5,power:'9007199254740993',skillLevels:[1],exclusive:{level:1,star:2}},{heroId:'captain-B',level:20,star:8,power:'19',skillLevels:[1]}];if(seek){delete state.ship.leader;state.ship.preparedEndTime=0;state.ship.leaderCond=[{heroId:'captain-A',star:6,exStar:1},{heroId:'captain-B',star:8,exStar:0}];}
  const sockets=[];class Socket{
   constructor(){this.readyState=0;sockets.push(this);}
-  send(bytes){assert.equal(this.readyState,1);shipCodec.decode(bytes);}
+  send(bytes){assert.equal(this.readyState,1);const frame=shipCodec.decode(bytes);if(frame.name==='PingRequest')this.receive('PingResponse',{clientTimestamp:frame.body.clientTimestamp,serverTimestamp:frame.body.clientTimestamp});}
   close(){this.readyState=3;}
   open(){this.readyState=1;this.onopen?.();}
   receive(name,body,seq=0){this.onmessage?.({data:shipCodec.encode(name,seq,body)});}
  }
  const client=new GameClient({protocol:wireProtocol,accountId,generation,WebSocketImpl:Socket});client.on('error',()=>{});
  client.factContext={accountId,generation,connectionId};const pending=client.connect({}),socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:'9007199254740993',worldId:'1000001',level:20,guildId:'10'}});await pending;
- client.gameClock={reset(){},read:()=>({status:'TRUSTED',reliable:true,nowMs:state.now*1000,earliestMs:state.now*1000,latestMs:state.now*1000})};
+ client.gameClock={...client.gameClock,read:()=>({status:'TRUSTED',reliable:true,nowMs:state.now*1000,earliestMs:state.now*1000,latestMs:state.now*1000})};
  state.seq=0;state.publish=(period={period:state.period,startTime:state.now-100,endTime:state.now+1000})=>socket.receive('SCGuildShipActivity',{period},++state.seq);state.publish();
  const options={config:{tables:Object.fromEntries(['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'].map(k=>[k,structuredClone(shipActual.tables[k])]))},player:{playerId:'9007199254740993',worldId:'1000001',guildId:'10',level:20},parameters:seek?{action:'ship-seek',shipId:41}:{...shipParams},moduleConfig:{enabled:true,ship:true}};
  client.request=async(n,b,r)=>{wire(n,b);state.reads.push(n);await state.onRead?.(n);
@@ -408,4 +408,9 @@ test('merchant captain shared refusal survives reconnect and transport revision 
  const next=await shipService(t,{seek:true,file:f.file,connectionId:'next'});next.socket.receive('SCGuildShipReset',{shipId:[42]},++next.state.seq);
  await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});next.state.heroes[0].star++;
  assert.equal((await next.plan()).actions.length,1);assert.equal(next.state.writes.length,0);
+});
+
+test('merchant synthetic socket preserves original heartbeat lifecycle without changing business state',async t=>{
+ const f=await shipReady(t,{seek:true});for(let i=0;i<3;i++){f.client.tick();assert.equal(f.client.connected,true);assert.equal(f.client.lastPingTimestamp,0);}
+ assert.equal(allianceView(f.facts,f.options).candidates.length,1);assert.equal(f.state.writes.length,0);assert.equal(f.state.seq,1);
 });

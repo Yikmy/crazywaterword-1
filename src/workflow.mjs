@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent } from './client.mjs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -287,7 +288,8 @@ function repeatAfterStop(ctx,node){
           const mailbox=node.module==='mail'&&node.parameters?.action==='enumerate'?ctx.survey?.view?.mailbox:null;
           const observation=mailbox?mailboxHistory({...Object.fromEntries(['maxPages','readPages','totalReported','status','allPagesComplete','atomicSnapshot','reason'].map(key=>[key,mailbox[key]])),observedMails:mailbox.emails.length}):null;
           const navalObservation=node.module==='naval'?summarizeNavalObservation(ctx.survey?.view,{parameters:node.parameters??{},moduleConfig:ctx.survey?.config??{},previous:ctx.trace.filter(row=>row.navalObservation).at(-1)?.navalObservation}):null;
-          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{})});
+          const recruitCooldown=node.module==='free-recruit'&&ctx.survey?.view?.cooldownObservation?validateFreeRecruitCooldownObservation(ctx.survey.view.cooldownObservation):null;
+          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(recruitCooldown?{recruitCooldown}:{})});
           ctx.nodeId = next(ctx); continue;
         }
         if (node.type === 'ACTION') {
@@ -465,6 +467,7 @@ function traceEvidence(row) {
   }
   if(row.mailbox!==undefined){if(row.type!=='SURVEY'||row.module!=='mail'||row.result!=='SURVEYED')throw fail('邮箱观察摘要仅属于原mail SURVEY');evidence.mailbox=mailboxHistory(row.mailbox);}
   if(row.navalObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='naval'||row.result!=='SURVEYED')throw fail('海战观察摘要仅属于原naval SURVEY');evidence.navalObservation=validateNavalObservationSummary(row.navalObservation);}
+  if(row.recruitCooldown!==undefined){if(row.type!=='SURVEY'||row.module!=='free-recruit'||row.result!=='SURVEYED')throw fail('招募冷却摘要仅属于原free-recruit SURVEY');evidence.recruitCooldown=validateFreeRecruitCooldownObservation(row.recruitCooldown);}
   if(row.round!==undefined){if(!Number.isSafeInteger(row.round)||row.round<1||row.round>WORKFLOW_LIMITS.rounds)throw fail('历史轮次无效');evidence.round=row.round;}
   if(row.durationMs!==undefined){
     if(!(row.type==='WAIT'&&['WAIT_STARTED','WAITED'].includes(row.result)||row.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result))||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('等待历史时长无效');

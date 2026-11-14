@@ -119,9 +119,34 @@ function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG}={}) {
  return {module:moduleId,actionId:moduleId+':'+marker+':'+identity,actionType:'CLAIM',target:{freeEndTimeSeconds:marker,way:1},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'免费英雄招募 ×1',requiredLevel:defs?.requiredLevel??null,
  ...(blockedReason===null?{action:{request,response,body:{way:1}}}:{})};
 }
+const cooldownSource='RecruitInfoResponse.hero.freeEndTimeSeconds';
+function cooldownReadiness(marker,bounds) {
+ return !bounds?'UNKNOWN':marker===0||bounds.earliestMs>=marker*1000?'READY_BY_CLOCK':bounds.latestMs<marker*1000?'COOLDOWN':'UNKNOWN';
+}
+// Historical observation only: never recompute readiness against local time on
+// restart, clear refusal/UNKNOWN memory, or recover a runnable permit.
+export function validateFreeRecruitCooldownObservation(v) {
+ const keys=['status','source','freeEndTimeSeconds','sourceAt','serverBounds','readiness','eligibility','executable','autoResume'];
+ const finite=n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER;
+ const bounds=v?.serverBounds;
+ if(!fields(v,keys)||Reflect.ownKeys(v).length!==keys.length||!['OBSERVED','UNKNOWN'].includes(v.status)||v.source!==cooldownSource||
+    v.eligibility!==null||v.executable!==false||v.autoResume!==false||
+    (v.status==='UNKNOWN'?(v.freeEndTimeSeconds!==null||v.sourceAt!==null||bounds!==null||v.readiness!=='UNKNOWN'):
+     !uint(v.freeEndTimeSeconds)||!Number.isSafeInteger(v.sourceAt)||v.sourceAt<0||
+     bounds!==null&&(!fields(bounds,['earliestMs','latestMs'])||Reflect.ownKeys(bounds).length!==2||!finite(bounds.earliestMs)||!finite(bounds.latestMs)||bounds.earliestMs>bounds.latestMs)||
+     v.readiness!==cooldownReadiness(v.freeEndTimeSeconds,bounds)))throw invalid('免费招募冷却历史必须为精确的只读来源与原观察时钟区间');
+ return copy(v);
+}
+function recruitCooldownObservation(f) {
+ const valid=authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit.hero.freeEndTimeSeconds:null;
+ const bounds=clock?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
+ return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:cooldownSource,freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
+  serverBounds:bounds,readiness:valid?cooldownReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
+}
+
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??{});
- return {module:moduleId,recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅免费英雄单次 way=1；不使用票券或高级招募。回执必须同时获得独立冷却与完整英雄/库存复读确认，未知结果不重放。']};
+ return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅免费英雄单次 way=1；不使用票券或高级招募。回执必须同时获得独立冷却与完整英雄/库存复读确认，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);
