@@ -214,3 +214,7 @@ test('task rewards retain C capability identity with explicit daily inventory re
  const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C513','C516']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
  assert.ok(c.dependencyVersions.conditional.some(r=>r.when==='parameters.kind=daily-activity'&&JSON.stringify(r.keys)===JSON.stringify(['config.DailyActivityRewardCfg','config.ItemCfg'])));
 });
+
+test('equipment initial-level is explicit within C229 with the same level config dependencies',()=>{
+ const c=FUNCTION_CONTRACTS['equipment-growth'];assert.ok(c.inputSchema.properties.action.enum.includes('initial-level'));assert.ok(c.implementation.actions.includes('INITIAL_LEVEL'));assert.equal(c.implementation.blockedCapabilities.some(row=>row.capability==='LEVEL_ZERO'),false);assert.deepEqual(c.dependencyVersions.conditional.find(row=>row.when==='parameters.action=initial-level').keys,['config.EquipAttrCfg','config.EquipUpDecomposeCfg']);assert.match(c.verification.scope,/INITIAL_LEVEL 0 to 1 with unchanged inventory/);
+});

@@ -399,3 +399,44 @@ test('STAR post-read failure and non-target rewards cannot confirm by preview or
  const {client,operation}=await starPrepared(),request=client.request.bind(client);client.request=async(name,...args)=>client.writes.length&&name==='EquipsRequest'?Promise.reject(Error('post authority unavailable')):request(name,...args);assert.equal((await starRun(client,operation)).status,'UNKNOWN');assert.equal(client.writes.length,1);
  const other=await starPrepared({afterWrite:c=>c.stock.set('new-reward',1)});assert.equal((await starRun(other.client,other.operation)).status,'UNKNOWN');
 });
+
+const initialParameters=()=>({...parameters(),action:'initial-level'});
+async function initialPrepared({wireMode=true,apply=true,afterWrite,watchStatus='UNKNOWN'}={},config=cfg()){
+ const client=fake({wireMode,apply,afterWrite,watchStatus});client.factContext.connectionId='initial-equipment-connection';client.pool[0].level=0;client.heroes[0].equips[0].level=0;
+ const original=client.mutate.bind(client);client.mutate=(name,body)=>{if(client.pool[0].level!==0)return original(name,body);assert.equal(name,'EnhanceEquipRequest');assert.deepEqual(body,{uid});client.writes.push({name,body:structuredClone(body)});if(apply){client.pool[0].level=1;client.heroes[0].equips[0].level=1;client.heroes[0].power='9007199254741005';}afterWrite?.(client);};
+ const facts=await survey(client,initialParameters(),config),operation=plan(facts,initialParameters(),config).actions[0];
+ return {client,facts,operation,config};
+}
+const initialRun=({client,operation,config},extra={})=>executeBusinessOperation(client,protocol,operation,{adapter:equipmentGrowthModule,...options(initialParameters(),config),allowMutate:true,budget:budgetFor(operation,{iron:0}),...extra});
+test('explicit initial level binds observed zero, configured first cost zero, connection and equipment UID without spending inventory',async()=>{
+ const f=await initialPrepared();assert.ok(f.operation,'explicit initial-level candidate');assert.equal(f.operation.actionType,'INITIAL_LEVEL');assert.deepEqual(f.operation.costs,[]);assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'equipment',id:uid}]});assert.equal(f.operation.beforeState.equipment.level,0);assert.equal(f.operation.expectedState.level,1);assert.equal(f.operation.action.body.uid,uid);assert.equal(plan(f.facts).actions.length,0,'default positive-cost LEVEL still excludes zero');
+ const before=[...f.client.stock];const result=await initialRun(f);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.deepEqual([...f.client.stock],before);assert.equal(f.client.writes.length,1);assert.equal(plan(await survey(f.client,initialParameters(),f.config),initialParameters(),f.config).actions.length,0,'first upgrade cannot repeat at level one');
+});
+
+for(const wireMode of [false,true])test('initial level rejects missing/default/invalid mirrors and accepts only an own exact zero with codec '+wireMode,async()=>{
+ for(const mutate of [c=>delete c.pool[0].level,c=>delete c.heroes[0].equips[0].level,c=>c.pool[0].level=1,c=>{c.pool[0].level=1;c.heroes[0].equips[0].level=1;},c=>c.pool[0].level=-1,c=>delete c.factContext.connectionId]){
+  const f=await initialPrepared({wireMode,afterWrite:undefined});mutate(f.client);const facts=await survey(f.client,initialParameters(),f.config);assert.equal(plan(facts,initialParameters(),f.config).actions.length,0);assert.equal(f.client.writes.length,0);
+ }
+});
+test('initial level requires the exact explicit free first config row without guessing missing or later zero costs',async()=>{
+ for(const change of [c=>c.tables.EquipUpDecomposeCfg.data.shift(),c=>delete c.tables.EquipUpDecomposeCfg.data[0].upgradeCost,c=>c.tables.EquipUpDecomposeCfg.data[0].upgradeCost=1,c=>c.tables.EquipUpDecomposeCfg.data[0].upgradeCost='0',c=>c.tables.EquipUpDecomposeCfg.data[0].upgradeCost=-1,c=>c.tables.EquipUpDecomposeCfg.data.push({...c.tables.EquipUpDecomposeCfg.data[0]})]){
+  const config=cfg();change(config);const f=await initialPrepared({},config);assert.equal(f.operation,undefined);assert.equal(f.client.writes.length,0);
+ }
+ const config=cfg();config.tables.EquipUpDecomposeCfg.data[1].upgradeCost=0;const f=await initialPrepared({},config);assert.ok(f.operation);assert.equal((await initialRun(f)).status,'SUCCESS');assert.equal(plan(await survey(f.client),parameters(),config).actions.length,0,'later zero never enters default positive-cost LEVEL');
+});
+test('initial level supports the fixed real first row with zero owned iron and never grants a second level',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))},f=await initialPrepared({},config);f.client.stock.set('精铁',0);const facts=await survey(f.client,initialParameters(),config);f.operation=plan(facts,initialParameters(),config).actions[0];assert.ok(f.operation);assert.equal((await initialRun(f)).status,'SUCCESS');assert.equal(f.client.stock.get('精铁'),0);assert.equal(f.client.pool[0].level,1);assert.equal(plan(await survey(f.client,parameters(),config),parameters(),config).actions.length,0);
+});
+for(const afterWrite of [c=>c.stock.set('精铁',29),c=>c.stock.set('GOLD',99),c=>c.stock.set('reward',1),c=>c.heroes[0].equips[0].level=0,c=>{c.pool[0].level=2;c.heroes[0].equips[0].level=2;},c=>c.pool[1].level++,c=>c.heroes[1].power='1'])test('initial level cannot confirm unrelated or incorrect post-write state '+afterWrite.toString(),async()=>{
+ const f=await initialPrepared({afterWrite}),result=await initialRun(f);assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(f.client.writes.length,1);assert.equal(f.client.uncertainWrites.size,1);
+});
+test('initial level verifier checks original free metadata, parameters, costs, UID claims, config and context',async()=>{
+ const f=await initialPrepared();f.client.mutate('EnhanceEquipRequest',{uid});const after=await survey(f.client,initialParameters(),f.config);assert.equal(verifyEquipmentGrowth(f.operation,f.facts,after).confirmed,true);
+ for(const change of [o=>delete o.parameters.action,o=>o.actionType='LEVEL',o=>delete o.action.initialLevel,o=>o.action.initialLevel.upgradeCost=1,o=>o.action.initialLevel.uid=otherUid,o=>o.costs=[{id:'精铁',num:1}],o=>o.budgetClaims.uids=[],o=>o.configEvidence.EquipUpDecomposeCfg.data[0].upgradeCost=1,o=>o.beforeState.equipment.level=1]){const op=structuredClone(f.operation);change(op);assert.equal(verifyEquipmentGrowth(op,f.facts,after).confirmed,false);}
+ for(const field of ['accountId','playerId','worldId','connectionId','generation']){const changed=structuredClone(after);changed.identityContext[field]=field==='generation'?2:'changed';assert.equal(verifyEquipmentGrowth(f.operation,f.facts,changed).confirmed,false);}
+ const old=structuredClone(after);old.sourceFacts.equips.provenance.sourceAt=f.facts.sourceFacts.equips.provenance.sourceAt-1;old.sourceFacts.ownership.provenance.sourceAt=Math.min(old.sourceFacts.equips.provenance.sourceAt,old.sourceFacts.heroes.provenance.sourceAt);assert.equal(verifyEquipmentGrowth(f.operation,f.facts,old).confirmed,false);
+});
+test('initial level no effect remains UNKNOWN and reservation still requires an explicit equipment UID',async()=>{
+ const f=await initialPrepared({apply:false});const result=await initialRun(f);assert.equal(result.status,'UNKNOWN');assert.equal(f.client.writes.length,1);assert.equal(f.client.pool[0].level,0);assert.equal(f.client.uncertainWrites.size,1);
+ const g=await initialPrepared();const denied=await initialRun(g,{budget:budgetFor(g.operation,{iron:0,uids:[]})});assert.equal(denied.status,'NOT_EXECUTED');assert.equal(g.client.writes.length,0);
+});

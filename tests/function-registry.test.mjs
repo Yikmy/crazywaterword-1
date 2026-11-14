@@ -252,7 +252,7 @@ test('equipment LEVEL and explicit REFINE bind their own exact configuration tab
 
 test('equipment declared fallback matches custom dependencies for omitted LEVEL and explicit REFINE',()=>{
  const f=fixture(),raw={...equipmentGrowthModule};delete raw.dependencyVersions;const declared=registerBusinessFunction(raw);
- for(const parameters of [{},{heroId:'h',uid:'1'},{action:'refine'},{heroId:'h',uid:'1',action:'refine'}]){const options={...f.options('equipment-growth'),parameters};options.config.tables.EquipRefineCfg={revision:1,data:[{level:1,costItem1:90500,costItem2:100}]};assert.deepEqual(declared.dependencyVersions(options),equipmentGrowthModule.dependencyVersions(options));}noExecution(f);
+ for(const parameters of [{},{heroId:'h',uid:'1'},{action:'refine'},{heroId:'h',uid:'1',action:'refine'},{action:'initial-level'},{heroId:'h',uid:'1',action:'initial-level'}]){const options={...f.options('equipment-growth'),parameters};options.config.tables.EquipRefineCfg={revision:1,data:[{level:1,costItem1:90500,costItem2:100}]};assert.deepEqual(declared.dependencyVersions(options),equipmentGrowthModule.dependencyVersions(options));}noExecution(f);
 });
 
 test('explicit exclusive LEVEL dependency contract matches adapter and declared fallback without changing basic growth tables',()=>{

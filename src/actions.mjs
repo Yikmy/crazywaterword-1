@@ -358,7 +358,14 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const enhanceBadge=request==='EnhanceBadgeRequest';
   if(enhanceBadge&&(!fields(body,['uid','decomposeUid','expItemNum'])||!exactUid(body.uid)||!emptyOwnArray(body.decomposeUid)||!positiveInt32(body.expItemNum)||!exactCosts(costs)||costs.length!==2||!costs.some(row=>row.id==='徽章经验'&&row.num===body.expItemNum)||!costs.some(row=>row.id==='GOLD')))fail('COST_UNKNOWN','纹章升级仅允许明确已佩戴UID、自有徽章经验和金币，不消耗其他徽章');
   if(starEquip&&(!fields(body,['uid'])||!exactUid(body.uid)||!exactCosts(costs)||costs.length!==2||!['装备升星石','精铁'].every(id=>costs.some(row=>row.id===id))))fail('COST_UNKNOWN','红装升星仅允许明确已佩戴UID及自有升星石、精铁精确正成本');
-  if(enhanceEquip&&(!fields(body,['uid'])||!exactUid(body.uid)||!exactCosts(costs)||costs.length!==1||costs[0].id!=='精铁'))fail('COST_UNKNOWN','装备升级仅允许明确已佩戴UID及精确正精铁成本');
+  if(enhanceEquip){
+    // This local plan evidence is not sent in EnhanceEquipRequest. The original
+    // adapter replans exact owned level 0 and the configured free first row at
+    // every dispatch boundary; a generic empty cost declaration still fails.
+    const first=Object.getOwnPropertyDescriptor(action,'initialLevel');
+    const free=fields(body,['uid'])&&first&&Object.hasOwn(first,'value')&&first.enumerable&&fields(first.value,['source','uid','fromLevel','toLevel','upgradeCost'])&&first.value.source==='EquipUpDecomposeCfg.level1.free.v76'&&first.value.uid===body.uid&&first.value.fromLevel===0&&first.value.toLevel===1&&first.value.upgradeCost===0&&emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value);
+    if(!fields(body,['uid'])||!exactUid(body.uid)||(first?!free:!exactCosts(costs)||costs.length!==1||costs[0].id!=='精铁'))fail('COST_UNKNOWN','装备升级仅允许精确正精铁成本，或具名首级零成本合同与明确已佩戴UID');
+  }
   if(refineEquip&&(!fields(body,['uid'])||!exactUid(body.uid)||!exactCosts(costs)||costs.length!==2||!['精铁','精炼石'].every(id=>costs.some(row=>row.id===id))))fail('COST_UNKNOWN','装备精炼仅允许明确已佩戴UID及精确双材料正成本');
   const saveExpedition=request==='ExpeditionSaveFormationRequest';
   const expeditionPositions=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length>0&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));

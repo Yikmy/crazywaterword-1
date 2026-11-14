@@ -24,6 +24,7 @@ const tableNames=['EquipCfg','EquipAttrCfg','EquipUpDecomposeCfg'];
 const refineTableNames=['EquipCfg','EquipAttrCfg','EquipRefineCfg'];
 const putOnTableNames=['EquipCfg','ModuleOpenCfg'];
 const starTableNames=['EquipCfg','EquipAttrCfg','EquipUpStarCfg'];
+const isInitial=parameters=>parameters?.action==='initial-level';
 const isStar=parameters=>parameters?.action==='star';
 const isRefine=parameters=>parameters?.action==='refine';
 const isPutOn=parameters=>parameters?.action==='put-on';
@@ -61,7 +62,7 @@ export const EQUIPMENT_PUT_ON_EVIDENCE=Object.freeze({
   scope:'EXPLICIT_OWNED_IDLE_SINGLE_EMPTY_SLOT_ONLY',replace:'BLOCKED_EVIDENCE',realGame:'REAL_UNVERIFIED',
 });
 export const EQUIPMENT_GROWTH_DEFAULT_CONFIG=Object.freeze({enabled:false});
-export const EQUIPMENT_GROWTH_EVIDENCE=Object.freeze({source,request:'EnhanceEquipRequest',response:'NO_DEDICATED_RESPONSE',heroDerived:'SERVER_ALL_HERO_POWER_ATTRIBUTES_ONLY',levelZero:'EXCLUDED',refine:EQUIPMENT_REFINE_EVIDENCE,star:'EXPLICIT_RED_SINGLE_STAR',replace:'EXCLUDED',universal:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
+export const EQUIPMENT_GROWTH_EVIDENCE=Object.freeze({source,request:'EnhanceEquipRequest',response:'NO_DEDICATED_RESPONSE',heroDerived:'SERVER_ALL_HERO_POWER_ATTRIBUTES_ONLY',levelZero:'EXPLICIT_WORN_ZERO_TO_ONE_CONFIGURED_FREE_ONLY',initialLevel:Object.freeze({parameter:'initial-level',fromLevel:0,toLevel:1,costTable:'EquipUpDecomposeCfg',costKey:1,upgradeCost:0,inventory:'UNCHANGED'}),refine:EQUIPMENT_REFINE_EVIDENCE,star:'EXPLICIT_RED_SINGLE_STAR',replace:'EXCLUDED',universal:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
 function exactPositive(v){
   if(typeof v==='number'&&!Number.isSafeInteger(v))return null;const n=toSnapshotJson(v);
   if(!(typeof n==='number'&&Number.isSafeInteger(n))&&!(typeof n==='string'&&/^[1-9]\d*$/.test(n)))return null;
@@ -69,10 +70,10 @@ function exactPositive(v){
 }
 export function validateEquipmentGrowthConfig(v={}){if(!fields(v,['enabled'])||own(v,'enabled')&&typeof v.enabled!=='boolean')throw invalid('装备升级配置仅允许 enabled 布尔值');return {enabled:v.enabled??false};}
 export function validateEquipmentGrowthParameters(v={}){
-  if(!fields(v,['heroId','uid','action']))throw invalid('装备操作参数仅允许 heroId、uid 及可选 action=refine、put-on 或 star');const out={};
+  if(!fields(v,['heroId','uid','action']))throw invalid('装备操作参数仅允许 heroId、uid 及可选 action=initial-level、refine、put-on 或 star');const out={};
   if(own(v,'heroId')){if(!id(v.heroId))throw invalid('heroId 必须为明确英雄 ID');out.heroId=v.heroId;}
   if(own(v,'uid')){if(typeof v.uid!=='string'||exactPositive(v.uid)!==v.uid)throw invalid('uid 必须为精确正 int64 十进制字符串');out.uid=v.uid;}
-  if(own(v,'action')){if(!['refine','put-on','star'].includes(v.action))throw invalid('action 仅允许 refine、put-on 或 star；省略保持单次等级升级');out.action=v.action;}
+  if(own(v,'action')){if(!['refine','put-on','star','initial-level'].includes(v.action))throw invalid('action 仅允许 initial-level、refine、put-on 或 star；省略保持单次等级升级');out.action=v.action;}
   return out;
 }
 const configStar=v=>typeof v==='number'&&uint(v)?v:typeof v==='string'&&/^(0|[1-9]\d*)$/.test(v)&&uint(Number(v))?Number(v):null;
@@ -111,6 +112,7 @@ function contextOf(client,player){
 }
 function equipmentContext(client,player,parameters){
   const context=contextOf(client,player);
+  if(isInitial(parameters))return {...context,connectionId:id(client.factContext?.connectionId)?client.factContext.connectionId:null};
   return (isPutOn(parameters)||isStar(parameters))?{...context,
     connectionId:id(client.factContext?.connectionId)?client.factContext.connectionId:null,
     playerLevel:own(player,'level')&&positive(player.level)?player.level:null,
@@ -133,17 +135,17 @@ export async function surveyEquipmentGrowth(client,protocol,{config,player,param
   return {module:'equipment-growth',parameters,identityContext:context,catalog:catalog(config,parameters),ownership,...inventory,inputs,sourceFacts,available:Object.keys(protocol??{}),notes,evidence:isPutOn(parameters)?EQUIPMENT_PUT_ON_EVIDENCE:EQUIPMENT_GROWTH_EVIDENCE,state:{context,ownership}};
 }
 function authority(f,config,parameters){
-  const c=f?.identityContext;if(!id(c?.accountId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||!f.catalog?.reliable||!same(f.catalog,catalog(config,parameters)))return false;
+  const c=f?.identityContext;if(isInitial(parameters)&&!id(c?.connectionId))return false;if(!id(c?.accountId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||!f.catalog?.reliable||!same(f.catalog,catalog(config,parameters)))return false;
   const fresh=(key,source)=>f.sourceFacts?.[key]?.provenance?.source===source&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:{kind:'ACCOUNT'}}).status==='FRESH';
   const inputs=f.inputs,ownership=parseEquipmentOwnership(inputs?.equips,inputs?.heroes),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
   return ['equips','heroes','items','resources'].every((key,index)=>fresh(key,queries[index][1])&&same(f.sourceFacts[key].value,inputs?.[key]))&&f.sourceFacts.ownership?.provenance?.sourceAt===Math.min(f.sourceFacts.equips?.provenance?.sourceAt,f.sourceFacts.heroes?.provenance?.sourceAt)&&f.sourceFacts.inventory?.provenance?.sourceAt===Math.min(f.sourceFacts.items?.provenance?.sourceAt,f.sourceFacts.resources?.provenance?.sourceAt)&&fresh('ownership','EquipsResponse+AllHeroResponse')&&fresh('inventory','AllItemResponse+AllResourceResponse')&&same(f.sourceFacts.ownership.value,{equips:inputs.equips,heroes:inputs.heroes})&&same(f.sourceFacts.inventory.value,{items:inputs.items,resources:inputs.resources})&&ownership!==null&&same(ownership,f.ownership)&&inventory.stockReliable===true&&f.stockReliable===true&&f.stock instanceof Map&&same([...inventory.stock],[...f.stock]);
 }
 function candidate(f,p,{config,moduleConfig=EQUIPMENT_GROWTH_DEFAULT_CONFIG}={}){
   p=validateEquipmentGrowthParameters(p);if(isStar(p))return starCandidate(f,p,{config,moduleConfig});if(isPutOn(p))return putOnCandidate(f,p,{config,moduleConfig});if(isRefine(p))return refineCandidate(f,p,{config,moduleConfig});moduleConfig=validateEquipmentGrowthConfig(moduleConfig);const hero=f?.ownership?.heroes?.find(row=>row.heroId===p.heroId),equipment=hero?.equips?.find(row=>row.uid===p.uid),attr=f?.catalog?.attributes?.find(row=>row.id===equipment?.equipId&&row.star===(equipment?.equipId?.startsWith('绿')?0:equipment?.star)),nextLevel=equipment?equipment.level+1:null,row=f?.catalog?.levels?.find(value=>value.level===nextLevel);
-  const costs=row&&safeResourceQuantity(row.upgradeCost)!==null&&row.upgradeCost>0?[{id:'精铁',num:row.upgradeCost}]:[],action={request:'EnhanceEquipRequest',response:null,body:{uid:p.uid}};let reason=null;
-  if(!p.heroId||!p.uid)reason='EXPLICIT_HERO_AND_EQUIPMENT_UID_REQUIRED';else if(!moduleConfig.enabled)reason='EQUIPMENT_GROWTH_MODULE_DISABLED';else if(!authority(f,config))reason='EQUIPMENT_AUTHORITY_OR_CONTEXT_UNKNOWN';else if(!hero||!equipment)reason='EXACT_WORN_EQUIPMENT_REQUIRED';else if(!derivedReliable(hero))reason='TARGET_HERO_DERIVED_STATE_UNKNOWN';else if(equipment.level<1)reason='LEVEL_ZERO_OUTSIDE_SINGLE_UPGRADE_SCOPE';else if(!attr||!row)reason='EQUIPMENT_LEVEL_OR_CAP_CONFIG_UNKNOWN';else if(nextLevel>attr.maxLv)reason='EQUIPMENT_MAX_LEVEL';else if(!positive(row.upgradeCost)||costs.length!==1)reason='POSITIVE_EXACT_IRON_COST_REQUIRED';else if(!f.available?.includes(action.request))reason='PROTOCOL_UNAVAILABLE';else if((f.stock.get('精铁')??0)<row.upgradeCost)reason='IRON_STOCK_INSUFFICIENT';else{try{assertPaymentAllowed({...action,costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}}
+  const initial=isInitial(p),costs=row&&safeResourceQuantity(row.upgradeCost)!==null&&row.upgradeCost>0?[{id:'精铁',num:row.upgradeCost}]:[],action={request:'EnhanceEquipRequest',response:null,body:{uid:p.uid},...(initial?{initialLevel:{source:'EquipUpDecomposeCfg.level1.free.v76',uid:p.uid,fromLevel:0,toLevel:1,upgradeCost:0}}:{})};let reason=null;
+  if(!p.heroId||!p.uid)reason='EXPLICIT_HERO_AND_EQUIPMENT_UID_REQUIRED';else if(!moduleConfig.enabled)reason='EQUIPMENT_GROWTH_MODULE_DISABLED';else if(!authority(f,config,p))reason='EQUIPMENT_AUTHORITY_OR_CONTEXT_UNKNOWN';else if(!hero||!equipment)reason='EXACT_WORN_EQUIPMENT_REQUIRED';else if(!derivedReliable(hero))reason='TARGET_HERO_DERIVED_STATE_UNKNOWN';else if(initial?equipment.level!==0:equipment.level<1)reason=initial?'EXACT_ZERO_LEVEL_REQUIRED':'LEVEL_ZERO_OUTSIDE_SINGLE_UPGRADE_SCOPE';else if(!attr||!row)reason='EQUIPMENT_LEVEL_OR_CAP_CONFIG_UNKNOWN';else if(nextLevel>attr.maxLv)reason='EQUIPMENT_MAX_LEVEL';else if(initial?(row.level!==1||row.upgradeCost!==0||costs.length!==0):(!positive(row.upgradeCost)||costs.length!==1))reason=initial?'EXACT_CONFIGURED_FREE_FIRST_LEVEL_REQUIRED':'POSITIVE_EXACT_IRON_COST_REQUIRED';else if(!f.available?.includes(action.request))reason='PROTOCOL_UNAVAILABLE';else if((f.stock.get('精铁')??0)<row.upgradeCost)reason='IRON_STOCK_INSUFFICIENT';else{try{assertPaymentAllowed({...action,costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}}
   const target={heroId:p.heroId??null,uid:p.uid??null},beforeState=hero&&equipment?{hero:copy(hero),equipment:copy(equipment)}:null,expectedState=equipment?{heroId:p.heroId,uid:equipment.uid,equipId:equipment.equipId,level:nextLevel,star:equipment.star,refineLv:equipment.refineLv}:null;
-  return {module:'equipment-growth',actionId:'equipment-growth:LEVEL:'+hash(target),actionType:'LEVEL',parameters:p,target,identity:hero&&equipment?hash({context:f.identityContext,ownership:f.ownership,dependencies:equipmentGrowthDependencyVersions({config,moduleConfig})}):null,configEvidence:Object.fromEntries(tableNames.map(name=>[name,copy(config?.tables?.[name]??null)])),beforeState,expectedState,costs,costSource:source,budgetClaims:{resources:copy(costs),quotas:[],uids:p.uid?[{type:'equipment',id:p.uid}]:[]},executable:reason===null,blockedReason:reason,label:'装备升级 '+(p.heroId??'')+' '+(p.uid??''),...(reason===null?{action}:{})};
+  return {module:'equipment-growth',actionId:'equipment-growth:'+(initial?'INITIAL_LEVEL':'LEVEL')+':'+hash(target),actionType:initial?'INITIAL_LEVEL':'LEVEL',parameters:p,target,identity:hero&&equipment?hash({context:f.identityContext,ownership:f.ownership,dependencies:equipmentGrowthDependencyVersions({config,moduleConfig})}):null,configEvidence:Object.fromEntries(tableNames.map(name=>[name,copy(config?.tables?.[name]??null)])),beforeState,expectedState,costs,costSource:source,budgetClaims:{resources:copy(costs),quotas:[],uids:p.uid?[{type:'equipment',id:p.uid}]:[]},executable:reason===null,blockedReason:reason,label:(initial?'装备首次升级 ':'装备升级 ')+(p.heroId??'')+' '+(p.uid??''),...(reason===null?{action}:{})};
 }
 function refineCandidate(f,p,{config,moduleConfig=EQUIPMENT_GROWTH_DEFAULT_CONFIG}={}){
   moduleConfig=validateEquipmentGrowthConfig(moduleConfig);
@@ -212,7 +214,7 @@ function viewPutOn(f,parameters,{config,moduleConfig}){
 }
 export function viewEquipmentGrowth(f,{config,moduleConfig=EQUIPMENT_GROWTH_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
   parameters=validateEquipmentGrowthParameters(parameters);moduleConfig=validateEquipmentGrowthConfig(moduleConfig);if(isPutOn(parameters))return viewPutOn(f,parameters,{config,moduleConfig});const choices=[];
-  for(const hero of f?.ownership?.heroes??[]){if(parameters.heroId&&hero.heroId!==parameters.heroId)continue;for(const equipment of hero.equips){if(parameters.uid&&equipment.uid!==parameters.uid)continue;choices.push({heroId:hero.heroId,uid:equipment.uid,...((isRefine(parameters)||isStar(parameters))?{action:parameters.action}:{})});}}
+  for(const hero of f?.ownership?.heroes??[]){if(parameters.heroId&&hero.heroId!==parameters.heroId)continue;for(const equipment of hero.equips){if(parameters.uid&&equipment.uid!==parameters.uid)continue;choices.push({heroId:hero.heroId,uid:equipment.uid,...((isInitial(parameters)||isRefine(parameters)||isStar(parameters))?{action:parameters.action}:{})});}}
   if(!choices.length)choices.push(parameters);const candidates=choices.map(p=>candidate(f,p,{config,moduleConfig}));
   return {module:'equipment-growth',heroes:copy(f?.ownership?.heroes??[]),bag:copy(f?.ownership?.bag??[]),candidates,blocked:candidates.filter(row=>!row.executable),notes:[...(f?.notes??[])],evidence:EQUIPMENT_GROWTH_EVIDENCE};
 }
@@ -242,6 +244,7 @@ function verifyPutOn(op,b,a,p,config){
 export function verifyEquipmentGrowth(op,b,a){
   const fail=reason=>({confirmed:false,reason});let p;try{p=validateEquipmentGrowthParameters(op?.parameters);resourceCosts(op?.costs);}catch{return fail('OPERATION_CONTRACT_INVALID');}
   const config={tables:Object.fromEntries(tablesFor(p).map(name=>[name,op?.configEvidence?.[name]??null]))};if(isStar(p))return verifyStar(op,b,a,p,config);if(isPutOn(p))return verifyPutOn(op,b,a,p,config);if(!authority(b,config,p)||!authority(a,config,p)||!same(b.identityContext,a.identityContext))return fail('EQUIPMENT_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  if(isInitial(p)&&putOnFactKeys.some(key=>a.sourceFacts[key].provenance.sourceAt<b.sourceFacts[key].provenance.sourceAt))return fail('EQUIPMENT_POST_READ_PREDATES_DISPATCH_BASELINE');
   const contract=candidate(b,p,{config,moduleConfig:{enabled:true}});if(!contract.executable||op?.module!=='equipment-growth'||['target','identity','actionType','action','beforeState','expectedState','costs','costSource','budgetClaims'].some(key=>!same(op[key],contract[key])))return fail('EQUIPMENT_PLAN_OR_IDENTITY_MISMATCH');
   const before=b.ownership.heroes.find(hero=>hero.heroId===p.heroId),after=a.ownership.heroes.find(hero=>hero.heroId===p.heroId);if(!before||!after||!derivedReliable(before)||!derivedReliable(after))return fail('TARGET_HERO_DERIVED_STATE_UNKNOWN');
   const equipment=b.ownership.pool.find(row=>row.uid===p.uid),refine=isRefine(p),expected={...copy(equipment),[refine?'refineLv':'level']:equipment[refine?'refineLv':'level']+1},afterEquipment=a.ownership.pool.find(row=>row.uid===p.uid);
@@ -249,7 +252,7 @@ export function verifyEquipmentGrowth(op,b,a){
   if(!same(without(before,['power','attributes','equips']),without(after,['power','attributes','equips']))||!same(before.equips.filter(row=>row.uid!==p.uid),after.equips.filter(row=>row.uid!==p.uid)))return fail('NON_TARGET_HERO_FIELDS_CHANGED');
   if(!same(b.ownership.heroes.filter(hero=>hero.heroId!==p.heroId),a.ownership.heroes.filter(hero=>hero.heroId!==p.heroId))||!same(b.ownership.pool.filter(row=>row.uid!==p.uid),a.ownership.pool.filter(row=>row.uid!==p.uid))||!same(b.ownership.bag,a.ownership.bag)||!same(b.ownership.uids,a.ownership.uids))return fail('NON_TARGET_EQUIPMENT_OR_OWNER_CHANGED');
   if(!inventoriesMatch(b,a,contract.costs))return fail(refine?'EXACT_REFINE_DEBITS_OR_OTHER_INVENTORY_CHANGED':'EXACT_IRON_DEBIT_OR_OTHER_INVENTORY_CHANGED');
-  return {confirmed:true,reason:refine?'新 Equips 与 AllHero 同UID同归属复读确认单次精炼+1、精铁及精炼石精确扣除；仅目标英雄权威power/attributes可变化':'新 Equips 与 AllHero 同UID同归属复读确认单次等级+1、精铁精确扣除；仅目标英雄权威power/attributes可变化',afterState:{hero:copy(after),equipment:copy(afterEquipment)},responseEvidence:null};
+  return {confirmed:true,reason:refine?'新 Equips 与 AllHero 同UID同归属复读确认单次精炼+1、精铁及精炼石精确扣除；仅目标英雄权威power/attributes可变化':isInitial(p)?'新 Equips 与 AllHero 同UID同归属复读确认首次0→1，完整库存不变；仅目标英雄权威power/attributes可变化':'新 Equips 与 AllHero 同UID同归属复读确认单次等级+1、精铁精确扣除；仅目标英雄权威power/attributes可变化',afterState:{hero:copy(after),equipment:copy(afterEquipment)},responseEvidence:null};
 }
 export function equipmentGrowthDependencyVersions({config,moduleConfig=EQUIPMENT_GROWTH_DEFAULT_CONFIG,parameters={}}={}){parameters=validateEquipmentGrowthParameters(parameters);return {moduleConfig:copy(moduleConfig),...Object.fromEntries(tablesFor(parameters).map(name=>['config.'+name,copy(config?.tables?.[name]??null)]))};}
 export const equipmentGrowthModule=Object.freeze({id:'equipment-growth',label:'装备单次升级',capabilities:Object.freeze(['C229']),defaultConfig:EQUIPMENT_GROWTH_DEFAULT_CONFIG,validateConfig:validateEquipmentGrowthConfig,validateParameters:validateEquipmentGrowthParameters,survey:surveyEquipmentGrowth,view:viewEquipmentGrowth,plan:planEquipmentGrowth,verify:verifyEquipmentGrowth,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:equipmentGrowthDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...tableNames.map(name=>'config.'+name),'config.EquipRefineCfg','config.ModuleOpenCfg','config.EquipUpStarCfg'])});

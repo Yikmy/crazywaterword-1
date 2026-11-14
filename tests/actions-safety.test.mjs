@@ -289,3 +289,12 @@ test('red equipment STAR D6 requires exact UID and two owned normal material cos
  const action={request:'EquipStarUpRequest',body:{uid:'9007199254740993'},costs:[{id:'装备升星石',num:1},{id:'精铁',num:100000}]};assert.deepEqual(assertPaymentAllowed(action),action);assert.equal(protocol.EquipStarUpRequest.decode(protocol.EquipStarUpRequest.encode(action.body).finish()).uid.toString(),action.body.uid);
  for(const change of [a=>a.body.uid=9007199254740992,a=>a.body.uid='01',a=>a.body.universal=false,a=>a.costs.pop(),a=>a.costs[0].num=0,a=>a.costs[0].id='RUBY',a=>a.costs.push({id:'GOLD',num:1})]){const bad=structuredClone(action);change(bad);assert.throws(()=>assertPaymentAllowed(bad));}
 });
+
+test('initial equipment D6 requires own exact free-first metadata and leaves generic empty-cost rejection intact',()=>{
+ const action=()=>({request:'EnhanceEquipRequest',body:{uid:'9007199254740993'},costs:[],initialLevel:{source:'EquipUpDecomposeCfg.level1.free.v76',uid:'9007199254740993',fromLevel:0,toLevel:1,upgradeCost:0}});assert.doesNotThrow(()=>assertPaymentAllowed(action()));
+ for(const mutate of [a=>delete a.initialLevel,a=>delete a.costs,a=>a.costs=[{id:'精铁',num:1}],a=>a.initialLevel.fromLevel=1,a=>a.initialLevel.toLevel=2,a=>a.initialLevel.upgradeCost=1,a=>a.initialLevel.source='claimed free',a=>a.initialLevel.uid='2',a=>a.initialLevel.free=true,a=>a.body.count=2,a=>a.body.universal=false,a=>a.body.uid='01',a=>a.body.initialLevel=a.initialLevel]){const a=action();mutate(a);assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'COST_UNKNOWN'});}
+ const inherited=action();inherited.initialLevel=Object.create(inherited.initialLevel);assert.throws(()=>assertPaymentAllowed(inherited),{code:'COST_UNKNOWN'});
+ let reads=0;const getter=action();Object.defineProperty(getter,'initialLevel',{enumerable:true,get(){reads++;throw Error('must not evaluate');}});assert.throws(()=>assertPaymentAllowed(getter),{code:'COST_UNKNOWN'});assert.equal(reads,0);
+ for(const id of ['RUBY','钻石','4']){const a=action();a.costs=[{id,num:1}];assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
+ const paid=action();paid.paid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
+});
