@@ -149,3 +149,21 @@ test('production coverage API reads durable account gaps offline without clients
     assert.equal(app.sessions.size,0); assert.equal(app.writes.length,0); assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
   } finally { await app.close(); }
 });
+
+
+test('production history API selects a valid calendar date without filtering away account gaps or opening a runtime', async () => {
+  const app=await harness({clock:()=>Date.parse('2026-11-14T04:00:00Z')});
+  try {
+    const action={actionId:'historical-start',actionType:'startProduce',result:'SUCCESS',requestStatus:'SUCCESS',verification:{status:'CONFIRMED'},timestamp:'2026-11-09T16:05:00Z'};
+    app.history.put({accountId:'A',runId:'dated',module:'city',finalStatus:'SUCCESS',actions:[action]});
+    const response=await app.call('/api/operations/history?date=2026-11-10&runId=missing');assert.equal(response.status,200);
+    assert.equal(response.data.dailyReport.date,'2026-11-10');assert.equal(response.data.dailyReport.startedOperations,1);assert.deepEqual(response.data.runs,[]);
+    assert.equal(response.data.dailyReport.coverageDetails.gameDayKnown,false);assert.equal(response.data.dailyReport.totalGameProduction,null);
+    assert.equal((await app.call('/api/operations/history')).data.dailyReport.date,'2026-11-14');
+    assert.equal((await app.call('/api/operations/history?date=2026-11-10',{id:'B'})).data.dailyReport.startedOperations,0);
+    for(const query of ['date=','date=2026-02-30','date=2026-11-10&date=2026-11-11','date=2026-11-10&timeZone=UTC','date=2026-11-10T00:00:00Z','date=%202026-11-10']) {
+      const denied=await app.call('/api/operations/history?'+query);assert.equal(denied.status,400,query);assert.equal(denied.data.code,'INVALID_INPUT');
+    }
+    assert.equal(app.sessions.size,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
+  }finally{await app.close();}
+});

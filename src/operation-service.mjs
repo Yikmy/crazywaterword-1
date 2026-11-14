@@ -10,7 +10,7 @@ import { createNamedFormationStore, NAMED_FORMATION_SCOPE } from './named-format
 import { ResourceLedger, resourceCosts, createRunBudgetContext, normalizeBudgetClaims, operationBudgetClaims } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, stopsExecution } from './execution.mjs';
 import { loadProductionPolicy, saveProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
-import { summarizeProductionHistory } from './production-report.mjs';
+import { summarizeProductionHistory, validateProductionReportDate } from './production-report.mjs';
 import { collectOperationRecovery, buildVerifiedReceipt, RECOVERY_DISPATCH_CONTRACT } from './operation-recovery.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { createExecutionHistory, runHasUnresolvedWrites, actionNeedsReconciliation, actionWasUncertain } from './execution-history.mjs';
@@ -609,7 +609,12 @@ function authorizeWorkflowPlan(session,payload){
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
   return { prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
-    history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
+    history: (accountId, runId, options = {}) => {
+      exact(options, ['date']);
+      const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);
+      const all = history.list(accountId);
+      return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date, timeZone: 'Asia/Shanghai' }) };
+    },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },
     blocked: accountId => status(accountId).blocked, running: accountId => Boolean(runs.get(accountId)?.running),

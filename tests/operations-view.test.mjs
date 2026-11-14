@@ -737,3 +737,27 @@ test('production coverage renders gaps and unsafe totals literally while stale a
   h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport});await old;
   assert.doesNotMatch(h.node('ops-production-report').textContent,/结果未决3|onerror/);
 });
+
+
+test('production history date and exact run filters compose locally and stale date results cannot overwrite a changed selection', async () => {
+  const h=await boot();h.node('ops-history-date').value='2026-11-10';h.node('ops-history-run-id').value='run-precise';
+  const first=h.node('ops-history-load').onclick(),query=new URL(h.pending('/api/operations/history','A').url,'http://localhost').searchParams;
+  assert.equal(query.get('date'),'2026-11-10');assert.equal(query.get('runId'),'run-precise');
+  h.node('ops-history-date').value='2026-11-11';h.node('ops-history-date').oninput();
+  h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport:{date:'2026-11-10',coverage:'tool-verified-only',collected:[{id:'stale-date',num:99}]}});await first;
+  assert.doesNotMatch(h.node('ops-production-report').textContent,/stale-date/);
+  const second=h.node('ops-history-load').onclick();h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport:{date:'2026-11-11',timeZone:'Asia/Shanghai',coverage:'tool-verified-only',collected:[{id:'current-date',num:2}]}});await second;
+  assert.match(h.node('ops-production-report').textContent,/current-date2/);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+  h.run("selectAccount('B')");assert.equal(h.node('ops-history-date').value,'');assert.doesNotMatch(h.node('ops-production-report').textContent,/current-date/);
+});
+
+test('production history date rejects invalid edits and mismatched server dates before displaying quantities', async () => {
+  const h=await boot();
+  for(const value of ['2026-02-30','2026-11-10T00:00:00Z',' 2026-11-10']) {
+    h.node('ops-history-date').value=value;const count=h.requests.length;await h.node('ops-history-load').onclick();
+    assert.equal(h.requests.length,count);assert.match(h.node('ops-history-hint').textContent,/日期/);
+  }
+  h.node('ops-history-date').value='2026-11-10';const pending=h.node('ops-history-load').onclick();
+  h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport:{date:'2026-11-11',coverage:'tool-verified-only',collected:[{id:'wrong-date',num:77}]}});await pending;
+  assert.match(h.node('ops-history-hint').textContent,/日期/);assert.doesNotMatch(h.node('ops-production-report').textContent,/wrong-date/);
+});

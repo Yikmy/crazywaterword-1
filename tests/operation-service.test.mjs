@@ -227,3 +227,18 @@ test('production coverage projects only account history and survives a stopped r
     assert.equal(fs.readFileSync(f.file,'utf8'),before); assert.equal(f.calls.length,0); assert.equal(f.surveys(),0);
   } finally { f.cleanup(); }
 });
+
+
+test('production history accepts an explicit local date independently of exact run filtering and rejects unsupported options', () => {
+  const f=fixture({clock:()=>Date.parse('2026-11-14T04:00:00Z')});
+  const action=(actionId,timestamp)=>({actionId,actionType:'startProduce',result:'SUCCESS',requestStatus:'SUCCESS',verification:{status:'CONFIRMED'},timestamp});
+  try {
+    f.history.put({accountId:'A',runId:'dated',module:'city',finalStatus:'SUCCESS',actions:[action('midnight','2026-11-09T16:05:00Z'),action('next-day','2026-11-10T16:05:00Z')]});
+    assert.equal(f.service.history('A').dailyReport.date,'2026-11-14'); assert.equal(f.service.history('A').dailyReport.startedOperations,0);
+    const selected=f.service.history('A','missing',{date:'2026-11-10'});assert.deepEqual(selected.runs,[]);
+    assert.equal(selected.dailyReport.startedOperations,1);assert.equal(selected.dailyReport.date,'2026-11-10');assert.equal(selected.dailyReport.timeZone,'Asia/Shanghai');
+    assert.equal(f.service.history('A',undefined,{date:'2026-11-11'}).dailyReport.startedOperations,1);
+    for(const options of [{date:'2026-02-30'},{date:''},{date:null},{timeZone:'UTC'},{date:'2026-11-10',extra:true},null]) assert.throws(()=>f.service.history('A',undefined,options),{code:'INVALID_INPUT'});
+    assert.equal(f.calls.length,0);assert.equal(f.surveys(),0);
+  }finally{f.cleanup();}
+});

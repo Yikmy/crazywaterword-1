@@ -43,11 +43,16 @@ function recordKey(action) {
   return JSON.stringify(Object.fromEntries(fields.map(key => [key, action[key]])), (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value);
 }
+export function validateProductionReportDate(date) {
+  const parsed = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(date + 'T00:00:00Z') : null;
+  if (!parsed || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) throw Object.assign(new Error('统计日期必须为有效的 YYYY-MM-DD'), { code: 'INVALID_INPUT', statusCode: 400 });
+  return date;
+}
 function analyzeProductionHistory(runs, { date, timeZone = 'Asia/Shanghai' } = {}) {
   if (!Array.isArray(runs)) throw new Error('生产统计需要执行历史数组');
   const formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
   date ??= dayOf(new Date(), formatter);
-  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || dayOf(date + 'T12:00:00Z', new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' })) !== date) throw new Error('统计日期必须为有效的 YYYY-MM-DD');
+  validateProductionReportDate(date);
   const details = { date, timeZone, source: 'EXECUTION_HISTORY', dateBasis: 'LOCAL_CALENDAR', gameDayKnown: false,
     fullDayCoverage: false, totalGameProduction: null, quantifiedCollections: 0, unquantifiedCollections: 0,
     unresolvedOperations: 0, otherOperations: 0, undatedOperations: 0, unidentifiedOperations: 0,

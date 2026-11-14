@@ -160,3 +160,9 @@ test('conflicting nonproduction action type cannot conceal a collision with a pr
   assert.equal(report.collectedOperations,0); assert.equal(report.coverageDetails.conflictingRecords,1);
   assert.equal(summarize([collect({actionType:'UPGRADE'})]).coverageDetails.conflictingRecords,0);
 });
+
+
+test('historical daily reports use valid Gregorian dates including leap years and reject rollover dates', () => {
+  for(const date of ['2024-02-29','2000-02-29','2026-12-31']) assert.equal(summarize([],{date}).date,date);
+  for(const date of ['1900-02-29','2026-02-29','2026-04-31','2026-00-01','2026-1-01']) assert.throws(()=>summarize([],{date}),{code:'INVALID_INPUT',statusCode:400});
+});

@@ -274,7 +274,7 @@ export const PAGE = `<!doctype html>
   <section id="tab-operations-history" class="hidden">
     <h2>执行历史</h2>
     <p class="dim">按当前账号保存的历史证据，不代表当前实时游戏状态。UNKNOWN 保留未决状态，不能作为失败重试。</p>
-    <p class="dim">操作记录可按运行筛选；当日汇总仍统计本账号全部验证记录。</p><div class="bar"><label>操作运行 ID（留空查看全部）<input id="ops-history-run-id" type="text" maxlength="512"></label><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
+    <p class="dim">操作记录可按运行筛选；当日汇总仍统计本账号全部验证记录。日报日期留空为今天，选择历史日期后汇总该日本账号全部验证记录；日期采用 Asia/Shanghai 本地日历。</p><div class="bar"><label>操作运行 ID（留空查看全部）<input id="ops-history-run-id" type="text" maxlength="512"></label><label>日报日期（留空为今天）<input id="ops-history-date" type="date"></label><button id="ops-history-load">读取持久历史</button><span id="ops-history-hint" class="warn" role="status"></span></div>
     <div id="ops-history">尚未读取历史。</div>
     <h2>只读执行记忆</h2>
     <p class="dim">记忆是原始执行历史的补充审计，不代表当前游戏状态。原始 UNKNOWN 永远保留；当前是否已复核仅以原始历史追加证据为准。此处不提供清除、重试或执行授权。</p>
@@ -937,7 +937,7 @@ function resetOperations() {
   $('production-policy-source').textContent = '尚未读取本账号策略。'; $('production-policy-hint').textContent = '';
   for (const id of ['ops-orders', 'ops-city', 'ops-production', 'ops-stock', 'ops-notes', 'ops-hint', 'ops-history-hint', 'ops-plan-actions']) clear($(id));
   $('ops-status').textContent = '选择账号后读取已有运行状态。';
-  $('ops-history-run-id').value = ''; $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
+  $('ops-history-run-id').value = ''; $('ops-history-date').value = ''; $('ops-history').textContent = '尚未读取历史。'; $('ops-production-report').textContent = '读取执行历史后显示。';
   resetOperationMemory();
   $('ops-budget').textContent = '尚未生成预览。'; $('ops-plan-meta').textContent = '先选择操作并生成预览，再授权执行。';
   renderOperationSelection(); operationControls();
@@ -1276,17 +1276,22 @@ function renderOperationHistory(data, historyScope = viewGuard.begin('operations
 }
 async function refreshOperationHistory() {
   if (!current) return;
-  const scope = viewGuard.begin('operations-history'), runId = $('ops-history-run-id').value; $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
+  const scope = viewGuard.begin('operations-history'), runId = $('ops-history-run-id').value, date = $('ops-history-date').value; $('ops-history-hint').textContent = '正在读取本地持久历史 ...';
   try {
     if (runId && (runId.trim() !== runId || runId.length > 512)) throw new Error('请输入无首尾空格且不超过512字符的精确运行 ID。');
-    const data = await call('/api/operations/history' + (runId ? '?runId=' + encodeURIComponent(runId) : ''), undefined, scope);
-    if ($('ops-history-run-id').value !== runId) return;
+    if (date && (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(date) || !Number.isFinite(Date.parse(date + 'T00:00:00Z')) || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date)) throw new Error('日报日期必须为有效的 YYYY-MM-DD。');
+    const filters = [];
+    if (runId) filters.push('runId=' + encodeURIComponent(runId));
+    if (date) filters.push('date=' + encodeURIComponent(date));
+    const data = await call('/api/operations/history' + (filters.length ? '?' + filters.join('&') : ''), undefined, scope);
+    if ($('ops-history-run-id').value !== runId || $('ops-history-date').value !== date) return;
+    if (date && data.dailyReport?.date !== date) throw new Error('日报日期不匹配，请重新读取。');
     if (data.accountId !== scope.account) throw new Error('历史账号不匹配');
     if (!Array.isArray(data.runs) || runId && data.runs.some(run => run.runId !== runId)) throw new Error('历史运行不匹配');
     renderOperationHistory(data, scope); $('ops-history-hint').textContent = '';
   } catch (error) { if (viewGuard.current(scope)) { clear($('ops-history')); $('ops-production-report').textContent = '历史读取失败，无法汇总本工具验证收取记录。'; $('ops-history-hint').textContent = '读取失败：' + error.message; } }
 }
-$('ops-history-run-id').oninput = () => {
+for (const id of ['ops-history-run-id', 'ops-history-date']) $(id).oninput = () => {
   viewGuard.begin('operations-history'); clear($('ops-history')); $('ops-production-report').textContent = '请重新读取本账号验证收取汇总。'; $('ops-history-hint').textContent = '筛选已更改，请读取持久历史。';
 };
 $('ops-history-load').onclick = refreshOperationHistory;

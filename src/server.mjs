@@ -763,10 +763,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (route === 'GET /api/operations/production-policy') { json(operations.productionPolicy(id)); return; }
         if (route === 'GET /api/operations/memory') { if(parsed.searchParams.getAll('account').length!==1)throw Object.assign(Error('记忆查询需唯一账号'),{code:'INVALID_INPUT',statusCode:400});const filters=Object.create(null);for(const [key,value] of parsed.searchParams){if(key==='account')continue;if(Object.hasOwn(filters,key))throw Object.assign(Error('重复记忆筛选字段'),{code:'INVALID_INPUT',statusCode:400});filters[key]=value;}json(operations.executionMemory(id,filters));return; }
         if (route === 'GET /api/operations/history') {
-          const query = parsed.searchParams, ids = query.getAll('runId'), [runId] = ids;
-          if (query.getAll('account').length !== 1 || ids.length > 1 || ids.length === 1 && (!runId || runId.trim() !== runId || runId.length > 512)
-            || [...query.keys()].some(key => key !== 'account' && key !== 'runId')) throw Object.assign(Error('历史查询需唯一账号及可选的精确操作运行 ID'), {code:'INVALID_INPUT',statusCode:400});
-          json(operations.history(id, runId)); return;
+          const query = parsed.searchParams, ids = query.getAll('runId'), [runId] = ids, dates = query.getAll('date'), [date] = dates;
+          if (query.getAll('account').length !== 1 || ids.length > 1 || dates.length > 1 || ids.length === 1 && (!runId || runId.trim() !== runId || runId.length > 512)
+            || [...query.keys()].some(key => key !== 'account' && key !== 'runId' && key !== 'date')) throw Object.assign(Error('历史查询需唯一账号、可选的精确操作运行 ID 和日报日期'), {code:'INVALID_INPUT',statusCode:400});
+          json(operations.history(id, runId, date === undefined ? {} : { date })); return;
         }
         const csrf = req.headers['x-cw-csrf'];
         if (req.headers.origin !== 'http://' + req.headers.host || typeof csrf !== 'string' || Buffer.byteLength(csrf) !== Buffer.byteLength(operationCsrf)
