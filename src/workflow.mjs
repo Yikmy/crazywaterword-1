@@ -110,6 +110,25 @@ function validateEventTriggerHistory(run){
   if(event.streamId!==trigger.baseline.streamId||!Number.isSafeInteger(event.cursor)||event.cursor<=trigger.baseline.cursor||event.eventId!==event.streamId+':'+event.cursor||!Number.isInteger(event.seq)||event.seq<1||event.seq>2147483647||invalidValue||!stamp(event.receivedAt)||!stamp(trigger.observedAt)||Date.parse(trigger.observedAt)<start||!stamp(trigger.firedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.observedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.armedAt)||Date.parse(trigger.firedAt)>=end)throw fail('业务事件身份、游标或时间证据不一致');
  }
 }
+function validateCooldownWaitPolicy(value){
+ exact(value,['kind','maxWaitMs'],'具名冷却等待');if(value.kind!=='FREE_RECRUIT'||!Number.isSafeInteger(value.maxWaitMs)||value.maxWaitMs<1||value.maxWaitMs>WORKFLOW_LIMITS.waitMs)throw fail('冷却等待仅支持明确免费招募来源及1–60000毫秒上限');return copy(value);
+}
+function cooldownWaitObservation(value){
+ const observation=validateFreeRecruitCooldownObservation(value);if(observation.status!=='OBSERVED'||!observation.serverBounds)throw fail('冷却等待缺少当前原Function权威来源或可信时钟','WORKFLOW_UNKNOWN');return observation;
+}
+function cooldownWaitHistoryRow(row){
+ const value=row.cooldownWait;exact(value,['kind','maxWaitMs','observation'],'冷却等待历史');const policy=validateCooldownWaitPolicy({kind:value.kind,maxWaitMs:value.maxWaitMs}),observation=cooldownWaitObservation(value.observation);
+ if(row.type!=='WAIT'||!['WAIT_STARTED','WAITED'].includes(row.result)||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>policy.maxWaitMs)throw fail('冷却等待历史节点或时长无效');
+ if(row.result==='WAIT_STARTED'&&Math.max(0,Math.ceil(observation.freeEndTimeSeconds*1000-observation.serverBounds.earliestMs))!==row.durationMs||row.result==='WAITED'&&observation.readiness!=='READY_BY_CLOCK')throw fail('冷却等待历史缺少原时钟计算或到期复读');
+ return {policy,observation};
+}
+function validateCooldownWaitHistory(run){
+ const started=new Map();for(const row of run.trace??[]){if(row.cooldownWait===undefined)continue;
+ const {policy,observation}=cooldownWaitHistoryRow(row),key=JSON.stringify([row.round??null,row.nodeId]);
+ if(row.result==='WAIT_STARTED'){if(started.has(key))throw fail('冷却等待起点重复');started.set(key,{row,observation});}
+ else{const before=started.get(key);if(!before||before.finished||before.row.durationMs!==row.durationMs||before.row.cooldownWait.maxWaitMs!==policy.maxWaitMs||before.observation.freeEndTimeSeconds!==observation.freeEndTimeSeconds||observation.sourceAt<before.observation.sourceAt)throw fail('冷却等待缺少同目标独立复读');before.finished=true;}
+ }
+}
 function validateRunPolicy(value) {
  exact(value,['maxDurationMs','maxActions','modules','maxRounds','roundIntervalMs','schedule','eventTrigger'],'运行边界');
  if(value.maxRounds!==undefined&&(!Number.isSafeInteger(value.maxRounds)||value.maxRounds<1||value.maxRounds>WORKFLOW_LIMITS.rounds)||value.roundIntervalMs!==undefined&&(value.maxRounds===undefined||!Number.isSafeInteger(value.roundIntervalMs)||value.roundIntervalMs<0||value.roundIntervalMs>WORKFLOW_LIMITS.waitMs))throw fail('重复轮次或轮间隔必须有明确有限范围');
@@ -153,7 +172,7 @@ export function validateWorkflow(input, options = {}) {
   if(graph.runPolicy!==undefined){graph.runPolicy=validateRunPolicy(graph.runPolicy);for(const id of graph.runPolicy.modules)registered(registry,id);if(graph.budget===undefined)throw fail('声明运行边界必须同时声明明确累计预算');}
   if (graph.preparation !== undefined) graph.preparation = validatePreparation(graph.preparation);
   const fields = {
-    START: [], STOP: [], BRANCH: [], WAIT: ['durationMs'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
+    START: [], STOP: [], BRANCH: [], WAIT: ['durationMs','cooldown'], SURVEY: ['module','parameters'], ACTION: ['module','parameters','selection'],
     CONDITION: ['condition'], RULE: ['condition'], VERIFY: ['module','condition'],
   };
   for (const node of graph.nodes) {
@@ -169,7 +188,10 @@ export function validateWorkflow(input, options = {}) {
       else { exact(node.selection, ['actionId'], '操作选择'); if (!text(node.selection.actionId) || node.selection.actionId.length > 1000) throw fail('缺少明确操作 ID'); }
     }
     if (['CONDITION','RULE'].includes(node.type) || node.condition !== undefined) condition(node.condition);
-    if (node.type === 'WAIT' && (!Number.isSafeInteger(node.durationMs) || node.durationMs < 0 || node.durationMs > WORKFLOW_LIMITS.waitMs)) throw fail('WAIT 必须为 0–60000 毫秒');
+    if(node.type==='WAIT'){
+      if(node.cooldown!==undefined){validateCooldownWaitPolicy(node.cooldown);if(Object.hasOwn(node,'durationMs'))throw fail('具名冷却等待不能混用本地时长');registered(registry,'free-recruit');if(graph.runPolicy&&!graph.runPolicy.modules.includes('free-recruit'))throw fail('冷却来源超出明确玩法范围');}
+      else if(!Number.isSafeInteger(node.durationMs)||node.durationMs<0||node.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('WAIT 必须为 0–60000 毫秒');
+    }
     if(graph.runPolicy&&node.module!==undefined&&!graph.runPolicy.modules.includes(node.module))throw fail('节点玩法超出声明运行范围');
     nodes.set(node.id, node);
   }
@@ -215,7 +237,7 @@ export function evaluateWorkflowCondition(rule, context = {}) {
 export function simulateWorkflow(graph, options = {}) {
   const validated = validateWorkflow(graph, options), byId = new Map(validated.workflow.nodes.map(node => [node.id, node]));
   return { status: 'SIMULATED', workflowId: graph.id, runtimeCreated: false, requestsSent: 0,...(validated.workflow.runPolicy?{runPolicy:copy(validated.workflow.runPolicy)}:{}),...(validated.workflow.runPolicy?.maxRounds!==undefined?{traceCoverage:'ONE_STATIC_DAG_PASS'}:{}),
-    trace: validated.order.map(id => { const node = byId.get(id); return { nodeId: id, type: node.type, module: node.module ?? null, requiresAuthorization: node.type === 'ACTION', result: node.condition ? evaluateWorkflowCondition(node.condition, options.facts ?? {}).status : node.type === 'ACTION' ? 'AWAITING_AUTHORIZATION' : 'STATIC', durationMs: node.durationMs ?? 0 }; }) };
+    trace: validated.order.map(id => { const node = byId.get(id); return { nodeId: id, type: node.type, module: node.module ?? null, requiresAuthorization: node.type === 'ACTION', result: node.condition ? evaluateWorkflowCondition(node.condition, options.facts ?? {}).status : node.type === 'ACTION' ? 'AWAITING_AUTHORIZATION' : 'STATIC', durationMs: node.cooldown?null:node.durationMs??0,...(node.cooldown?{cooldown:copy(node.cooldown)}:{}) }; }) };
 }
 function confirmedRun(run, plan, accountId) {
   if (!run || run.accountId !== accountId || run.finalStatus !== 'SUCCESS' || !text(run.finishedAt) || !Array.isArray(run.actions) || !Array.isArray(plan.actions) || !run.actions.length || run.actions.length !== plan.actions.length) return false;
@@ -328,7 +350,15 @@ function repeatAfterStop(ctx,node){
           if (plan.actions[0].actionId !== selectedId || plan.module && plan.module !== node.module) throw fail('计划与工作流精确操作选择不一致', 'WORKFLOW_UNKNOWN');
           ctx.waitingPlan = copy(plan); ctx.lastPlan = copy(plan); ctx.lastActionModule = node.module; ctx.status = 'AWAITING_AUTHORIZATION'; ctx.reason = '须由用户单次授权并执行当前具体计划'; await trace(ctx, node, 'AWAITING_AUTHORIZATION', {actionId:selectedId,batchId:plan.batchId,...(plan.planHash?{planHash:plan.planHash}:{})});if(ctx.runAuthorization){if(await executeAuthorizedBatch(ctx))continue;} break;
         }
-        if (node.type === 'WAIT') { ctx.status = 'WAITING'; await trace(ctx, node, 'WAIT_STARTED', {durationMs:node.durationMs}); current(ctx); let timer; try { await cancelled(ctx, new Promise(resolve => { timer = setTimeout(resolve, node.durationMs); })); } finally { clearTimeout(timer); } ctx.status = 'RUNNING'; current(ctx); await trace(ctx, node, 'WAITED', {durationMs:node.durationMs}); ctx.nodeId = next(ctx); continue; }
+        if (node.type === 'WAIT') {
+          let durationMs=node.durationMs,initial;
+          const readCooldown=async()=>{const surveyed=await cancelled(ctx,operations.surveyModule(ctx.session,'free-recruit',{}, {workflowId:ctx.runId,signal:ctx.cancel.signal}));current(ctx);if(surveyed?.accountId!==ctx.accountId||surveyed.module!=='free-recruit')throw fail('冷却调查账号或原Function不一致','WORKFLOW_UNKNOWN');return {surveyed,observation:cooldownWaitObservation(surveyed.view?.cooldownObservation)};};
+          if(node.cooldown){initial=await readCooldown();durationMs=Math.max(0,Math.ceil(initial.observation.freeEndTimeSeconds*1000-initial.observation.serverBounds.earliestMs));if(durationMs>node.cooldown.maxWaitMs)throw fail('权威冷却超出本节点明确等待上限','WORKFLOW_LIMIT');}
+          ctx.status='WAITING';await trace(ctx,node,'WAIT_STARTED',{durationMs,...(initial?{cooldownWait:{...copy(node.cooldown),observation:initial.observation}}:{})});current(ctx);
+          let timer;try{await cancelled(ctx,new Promise(resolve=>{timer=setTimeout(resolve,durationMs);}));}finally{clearTimeout(timer);}ctx.status='RUNNING';current(ctx);
+          let confirmed;if(initial){confirmed=await readCooldown();if(confirmed.observation.freeEndTimeSeconds!==initial.observation.freeEndTimeSeconds||confirmed.observation.sourceAt<initial.observation.sourceAt||confirmed.observation.readiness!=='READY_BY_CLOCK')throw fail('冷却目标变化或独立复读未确认到期','WORKFLOW_UNKNOWN');ctx.survey=confirmed.surveyed;ctx.surveyModule='free-recruit';}
+          await trace(ctx,node,'WAITED',{durationMs,...(confirmed?{cooldownWait:{...copy(node.cooldown),observation:confirmed.observation}}:{})});ctx.nodeId=next(ctx);continue;
+        }
         if (node.type === 'BRANCH') { if (!['PASS','FAIL'].includes(ctx.lastResult)) throw fail('分支缺少已验证的条件结果', 'WORKFLOW_UNKNOWN'); await trace(ctx, node, ctx.lastResult); ctx.nodeId = next(ctx, ctx.lastResult); continue; }
         if (node.type === 'VERIFY' && !node.condition) {
           if (!ctx.lastPlan || !confirmedRun(ctx.lastRun, ctx.lastPlan, ctx.accountId) || node.module && node.module !== ctx.lastActionModule) throw fail('VERIFY 缺少当前批次成功且确认的执行历史', 'WORKFLOW_UNKNOWN');
@@ -475,6 +505,7 @@ function traceEvidence(row) {
   if(row.navalObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='naval'||row.result!=='SURVEYED')throw fail('海战观察摘要仅属于原naval SURVEY');evidence.navalObservation=validateNavalObservationSummary(row.navalObservation);}
   if(row.recruitCooldown!==undefined){if(row.type!=='SURVEY'||row.module!=='free-recruit'||row.result!=='SURVEYED')throw fail('招募冷却摘要仅属于原free-recruit SURVEY');evidence.recruitCooldown=validateFreeRecruitCooldownObservation(row.recruitCooldown);}
   if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED'||!['main','branch','achievement','daily'].includes(row.taskObservation?.kind))throw fail('任务观察目标仅属于原task-rewards SURVEY');evidence.taskObservation=validateTaskRewardsParameters(row.taskObservation);}
+  if(row.cooldownWait!==undefined){cooldownWaitHistoryRow(row);evidence.cooldownWait=copy(row.cooldownWait);}
   if(row.round!==undefined){if(!Number.isSafeInteger(row.round)||row.round<1||row.round>WORKFLOW_LIMITS.rounds)throw fail('历史轮次无效');evidence.round=row.round;}
   if(row.durationMs!==undefined){
     if(!(row.type==='WAIT'&&['WAIT_STARTED','WAITED'].includes(row.result)||row.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result))||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>WORKFLOW_LIMITS.waitMs)throw fail('等待历史时长无效');
@@ -596,7 +627,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function validRun(run, accountId) {
     if (!plain(run) || run.accountId !== accountId || !text(run.runId) || !text(run.workflowId) || !statuses.has(run.status)
         || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) return false;
-    try { validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit(run,modules);if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
+    try { validateCooldownWaitHistory(run);validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit(run,modules);if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');} } catch { return false; }
     if (run.trace === undefined) return true;
     if (!Array.isArray(run.trace) || run.trace.length > WORKFLOW_LIMITS.steps) return false;
     try { return run.trace.every(row => plain(row) && text(row.nodeId) && TYPES.has(row.type) && text(row.result)
@@ -655,7 +686,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
   function record(accountId, run) {
     const allowed = ['runId','workflowId','status','currentNode','steps','startedAt','finishedAt','reason','trace','runBudget','preparation','runPolicy','expiresAt','actionPlans','runAuthorization','round','completedRounds','trigger','eventTrigger'];
     if (!plain(run) || !text(run.runId) || !text(run.workflowId) || !['IDLE','STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION','COMPLETED','STOPPED','UNKNOWN','FAILED','CANCELLED','RECOVERED_STOPPED'].includes(run.status) || run.accountId !== undefined && run.accountId !== accountId || run.steps !== undefined && (!Number.isSafeInteger(run.steps) || run.steps < 0 || run.steps > WORKFLOW_LIMITS.steps)) throw fail('工作流历史身份无效');
-    validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit({...run,accountId},modules);
+    validateCooldownWaitHistory(run);validateEventTriggerHistory(run);validateTriggerHistory(run);validateRoundHistory(run);validateAuthorizationAudit({...run,accountId},modules);
     if (run.preparation !== undefined) validatePreparation(run.preparation);if(run.runPolicy!==undefined){validateRunPolicy(run.runPolicy);if(!text(run.expiresAt)||!Number.isFinite(Date.parse(run.expiresAt))||!Number.isSafeInteger(run.actionPlans)||run.actionPlans<0||run.actionPlans>run.runPolicy.maxActions)throw fail('运行边界历史无效');}
     const safe = redact(Object.fromEntries(allowed.filter(key => run[key] !== undefined).map(key => [key, copy(run[key])])), secrets());
     safe.accountId = accountId;
