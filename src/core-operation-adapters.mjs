@@ -183,5 +183,5 @@ export const productionModule = Object.freeze({ ...shared, survey:surveyProducti
   execute: (client, protocol, operation, options) => executeCore('production', client, protocol, operation, options),
   dependencyVersions: options => dependencies('production', options),
   dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg', 'config.GameParamCfg', 'Automatic:productionPolicy']),
-  evidence: evidence(['src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction', 'src/production-policy.mjs:selectProductionCandidates', 'src/production-policy.mjs:productionShortages']) });
+  evidence: evidence(['src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction', 'src/production-policy.mjs:selectProductionCandidates', 'src/production-policy.mjs:productionDemand']) });
 export const CORE_OPERATION_MODULES = Object.freeze({ orders: ordersModule, city: cityModule, production: productionModule });
