@@ -371,3 +371,17 @@ for(const mode of ['workflow','node','generation','capability'])test('W19 UNKNOW
   assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.equal(fs.readFileSync(f.memoryFile,'utf8'),memoryBytes);await assert.rejects(restarted.plan(),{code:'MEMORY_ORIGIN_UNRESOLVED'});assert.equal(restarted.writes.length,0);assert.equal(restarted.reads.length,0);assert.deepEqual(restarted.service.executionMemory('B').events,[]);
  }finally{await restarted?.cleanup();await f.cleanup();}
 });
+
+test('shared executor cross-round summary survives readonly restart with exact stock proof and no new writes',async()=>{
+ const f=fixture();try{
+  for(let i=0;i<2;i++)assert.equal((await f.execute(await f.plan())).record.actions[0].result,'SUCCESS');
+  const writes=f.writes.length,original=fs.readFileSync(f.historyFile,'utf8'),memory=fs.existsSync(f.memoryFile)?fs.readFileSync(f.memoryFile,'utf8'):null,snapshot=f.service.executionMemory('A'),group=snapshot.summary.groups[0];
+  assert.equal(group.counts.confirmedSuccess,2);assert.equal(group.quantifiedActions,2);assert.deepEqual(group.resourceChanges,[{id:'wood',delta:'-2'}]);
+  const runs=f.history.list('A');for(const run of runs){assert.equal(f.service.executionMemory('A',{runId:run.runId}).summary.groups[0].counts.confirmedSuccess,1);}
+  const restarted=createOperationService({history:createExecutionHistory({file:f.historyFile}),memory:createExecutionMemory({file:f.memoryFile})});
+  assert.deepEqual(restarted.executionMemory('A').summary,snapshot.summary);assert.deepEqual(restarted.executionMemory('B').summary.groups,[]);assert.equal(f.writes.length,writes);assert.equal(fs.readFileSync(f.historyFile,'utf8'),original);assert.equal(fs.existsSync(f.memoryFile)?fs.readFileSync(f.memoryFile,'utf8'):null,memory);
+ }finally{await f.cleanup();}
+});
+test('cross-round memory summary reads fail closed on corrupt original History without changing bytes',async()=>{
+ const f=fixture();try{await f.execute(await f.plan());fs.writeFileSync(f.historyFile,'{corrupt original history');const bytes=fs.readFileSync(f.historyFile,'utf8');assert.throws(()=>f.service.executionMemory('A'),{code:'HISTORY_UNAVAILABLE'});assert.equal(fs.readFileSync(f.historyFile,'utf8'),bytes);assert.equal(f.writes.length,1);}finally{await f.cleanup();}
+});

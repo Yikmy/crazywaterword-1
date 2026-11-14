@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createExecutionMemory, executionMemoryKey } from '../src/execution-memory.mjs';
+import { createExecutionMemory, executionMemoryKey, summarizeExecutionHistory } from '../src/execution-memory.mjs';
 import { createStateFact, trustedGameClock } from '../src/state-facts.mjs';
 
 const accountId = 'synthetic-memory-account', generation = 7;
@@ -222,4 +222,57 @@ for(const fault of ['writeFileSync','fsyncSync','renameSync'])test('interrupted 
   assert.throws(()=>f.reopen().record(accountId,event({runId:'new-run',batchId:'new-batch'})),{code:'MEMORY_UNAVAILABLE'});
   assert.deepEqual(fs.readdirSync(f.dir),['memory.json.anchor']);
  }finally{f.cleanup();}
+});
+// Original execution evidence only. These projections create no storage or timer.
+const summaryAction=(extra={})=>({actionId:'action',module:'fixture',actionType:'SAVE',requestStatus:'SUCCESS',result:'SUCCESS',dispatched:true,unresolvedWrite:false,verification:{status:'CONFIRMED'},beforeInventoryReliable:true,afterInventoryReliable:true,beforeInventory:[{id:'wood',num:10},{id:'gold',num:0}],afterInventory:[{id:'wood',num:9},{id:'gold',num:0}],...extra});
+const summaryRun=(extra={})=>({accountId:'A',runId:'run-1',module:'fixture',workflowId:'workflow-1',workflowNodeId:'node-1',workflowRound:1,executionContext:{accountId:'A',playerId:'role-1',worldId:1,generation:1,connectionId:'connection-1'},planSummary:{batchId:'batch-1'},actions:[summaryAction()],...extra});
+const summarize=(runs,filters={})=>summarizeExecutionHistory(runs,{accountId:'A',filters});
+
+test('cross-round summary counts original confirmed actions and explicit net changes including zero',()=>{
+ const runs=[summaryRun(),summaryRun({runId:'run-2',workflowRound:2,actions:[summaryAction({beforeInventory:[{id:'wood',num:9},{id:'gold',num:0}],afterInventory:[{id:'gold',num:0},{id:'wood',num:7}]})]})],before=structuredClone(runs),result=summarize(runs),group=result.groups[0];
+ assert.equal(group.counts.confirmedSuccess,2);assert.equal(group.quantifiedActions,2);assert.equal(group.unquantifiedActions,0);assert.deepEqual(group.resourceChanges,[{id:'gold',delta:'0'},{id:'wood',delta:'-3'}]);assert.deepEqual(runs,before);
+ assert.equal(result.source,'ExecutionHistory.original-actions.v1');assert.equal(result.totalGameResources,null);for(const key of ['gameDayKnown','executable','resumable','retryAllowed'])assert.equal(result[key],false);assert.deepEqual(result.filters,{});
+});
+test('cross-round summary never promotes UNKNOWN APPLIED or arbitrary FAILED and separates refusal/not-executed',()=>{
+ const actions=[summaryAction({actionId:'unknown',result:'UNKNOWN',unresolvedWrite:true,reconciliations:[{status:'APPLIED'}]}),summaryAction({actionId:'rejected',result:'REJECTED',requestStatus:'REJECTED'}),summaryAction({actionId:'not-sent',result:'NOT_EXECUTED',requestStatus:'NOT_DISPATCHED',dispatched:false}),summaryAction({actionId:'failed',result:'FAILED',requestStatus:'FAILED'}),summaryAction({actionId:'unconfirmed',verification:{status:'UNCONFIRMED'}})];
+ const result=summarize([summaryRun({actions})]);assert.deepEqual(result.groups[0].counts,{confirmedSuccess:0,originalUnknown:1,rejected:1,notExecuted:1,other:2});assert.equal(result.groups[0].quantifiedActions,0);assert.deepEqual(result.groups[0].resourceChanges,[]);assert.equal(summarize([summaryRun({actions})],{status:'UNKNOWN'}).groups[0].counts.originalUnknown,1);
+});
+for(const [name,extra] of [
+ ['missing reliability',{beforeInventoryReliable:undefined}],['unreliable',{afterInventoryReliable:false}],['missing inventory',{beforeInventory:undefined}],['duplicate item',{beforeInventory:[{id:'wood',num:10},{id:'wood',num:10}]}],['mismatched set',{afterInventory:[{id:'wood',num:9}]}],['unsafe amount',{afterInventory:[{id:'wood',num:Number.MAX_SAFE_INTEGER+1},{id:'gold',num:0}]}],['inherited item',{beforeInventory:[Object.create({id:'wood',num:10})]}],['inherited amount',{beforeInventory:[{id:'wood',num:Object.create({low:10,high:0})}]}],['inherited reliability',Object.assign(Object.create({beforeInventoryReliable:true}),{afterInventoryReliable:true})]
+])test('cross-round resource evidence stays unknown: '+name,()=>{
+ const action=summaryAction(extra);if(name==='inherited reliability'){delete action.beforeInventoryReliable;Object.setPrototypeOf(action,{beforeInventoryReliable:true});}
+ const result=summarize([summaryRun({actions:[action]})]);
+ if(name==='inherited reliability'){assert.deepEqual(result.groups,[]);return;}
+ const group=result.groups[0];assert.equal(group.counts.confirmedSuccess,1);assert.equal(group.quantifiedActions,0);assert.equal(group.unquantifiedActions,1);assert.deepEqual(group.resourceChanges,[]);
+});
+test('cross-round summary never infers receipts from costs, reservations or resource claims',()=>{
+ const action=summaryAction({beforeInventory:undefined,afterInventory:undefined,costs:[{id:'wood',num:7}],reservation:{wood:7},resourceBefore:{wood:10},resourceAfter:{wood:3}}),result=summarize([summaryRun({actions:[action]})]);assert.equal(result.groups[0].unquantifiedActions,1);assert.deepEqual(result.groups[0].resourceChanges,[]);
+});
+test('cross-round resource totals use exact signed decimals beyond safe integer aggregates',()=>{
+ const max=Number.MAX_SAFE_INTEGER,run=summaryRun({actions:[summaryAction({actionId:'a',beforeInventory:[{id:'wood',num:0}],afterInventory:[{id:'wood',num:max}]}),summaryAction({actionId:'b',beforeInventory:[{id:'wood',num:'0'}],afterInventory:[{id:'wood',num:String(max)}]})]});
+ assert.deepEqual(summarize([run]).groups[0].resourceChanges,[{id:'wood',delta:'18014398509481982'}]);
+});
+test('cross-round duplicates are resolved before selectors and reconciliation does not rewrite original evidence',()=>{
+ const a=summaryRun(),b=structuredClone(a);b.actions[0].reconciliations=[{status:'APPLIED'}];const duplicate=summarize([a,b]);assert.equal(duplicate.excluded.duplicateRecords,1);assert.equal(duplicate.groups[0].counts.confirmedSuccess,1);
+ for(const mutate of [row=>row.workflowId='foreign',row=>row.actions[0].result='UNKNOWN',row=>row.executionContext.playerId='other',row=>row.actions[0].afterInventory[0].num=8]){
+  const bad=structuredClone(a);mutate(bad);const result=summarize([a,bad],{workflowId:'workflow-1',status:'SUCCESS'});assert.equal(result.excluded.conflictingActions,1);assert.deepEqual(result.groups,[]);
+ }
+});
+test('cross-round grouping preserves exact account role world module and action identity',()=>{
+ const base=summaryRun(),other=(runId,executionContext,extra={})=>summaryRun({runId,executionContext:{...base.executionContext,...executionContext},...extra});
+ const result=summarize([base,other('role',{playerId:'role-2'}),other('world',{worldId:2}),other('string-world',{worldId:'1'}),other('module',{}, {module:'another',actions:[summaryAction({module:'another'})]}),other('action',{}, {actions:[summaryAction({actionType:'OTHER'})]}),other('other-account',{accountId:'B'},{accountId:'B'})]);assert.equal(result.groups.length,6);assert.ok(result.groups.every(group=>group.counts.confirmedSuccess===1));
+ for(const context of [null,{playerId:'role-1',worldId:1},{...base.executionContext,accountId:'B'},{...base.executionContext,worldId:null}]){const missing=summarize([summaryRun({executionContext:context})]);assert.deepEqual(missing.groups,[]);assert.equal(missing.excluded.missingIdentityActions,1);}
+ assert.equal(summarize([summaryRun({runId:'',actions:[summaryAction()]})]).excluded.unidentifiedActions,1);
+});
+test('cross-round exact original selectors never borrow absent workflow/node/batch correlation',()=>{
+ const run=summaryRun();for(const filters of [{module:'fixture'},{runId:'run-1'},{workflowId:'workflow-1'},{nodeId:'node-1'},{batchId:'batch-1'},{actionId:'action'},{status:'SUCCESS'}]){const result=summarize([run],filters);assert.deepEqual(result.filters,filters);assert.equal(result.groups[0].counts.confirmedSuccess,1);assert.deepEqual(summarize([run],Object.fromEntries(Object.keys(filters).map(key=>[key,'missing']))).groups,[]);}
+ assert.deepEqual(summarize([summaryRun({workflowId:undefined,workflowNodeId:undefined,planSummary:{}})],{workflowId:'workflow-1'}).groups,[]);
+ assert.equal(summarize([summaryRun({authorizationSummary:{batchId:'different'}})]).excluded.missingIdentityActions,1);
+ for(const filters of [{unknown:'x'},{runId:''},{status:' SUCCESS'}])assert.throws(()=>summarize([run],filters),{code:'MEMORY_INVALID_INPUT'});
+});
+
+test('cross-round success counts require explicit confirmed dispatched original outcome fields',()=>{
+ for(const extra of [{dispatched:undefined},{unresolvedWrite:undefined},{verification:Object.create({status:'CONFIRMED'})},{requestStatus:'NOT_DISPATCHED'}]){
+  const group=summarize([summaryRun({actions:[summaryAction(extra)]})]).groups[0];assert.equal(group.counts.confirmedSuccess,0);assert.equal(group.counts.other,1);assert.deepEqual(group.resourceChanges,[]);
+ }
 });

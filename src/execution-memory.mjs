@@ -5,6 +5,8 @@ import { DATA_DIR } from './accounts.mjs';
 import { redact } from './security.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { factsFreshnessPolicy, trustedGameDay } from './state-facts.mjs';
+import { actionWasUncertain } from './execution-history.mjs';
+import { safeResourceQuantity } from './resource-ledger.mjs';
 
 export const EXECUTION_MEMORY_PATH = path.join(DATA_DIR, 'execution-memory.json');
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -16,6 +18,95 @@ const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value
 const fail = (message, code = 'MEMORY_INVALID_INPUT') => Object.assign(new Error(message), { code, statusCode: 409 });
 const exact = (value, keys) => plain(value) && Reflect.ownKeys(value).every(key => typeof key === 'string' && keys.includes(key));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// Read-only projection of original History, independent of supplemental memory.
+// Reconciliations never promote an original UNKNOWN. Costs/reservations are not
+// receipts; only complete reliable before/after inventories quantify net changes.
+export function summarizeExecutionHistory(runs, { accountId, filters = {} } = {}) {
+  const selectors = ['module','runId','workflowId','nodeId','batchId','actionId','status'];
+  if (!text(accountId) || !Array.isArray(runs) || !exact(filters, selectors)
+    || Object.values(filters).some(value => !text(value))) throw fail('历史摘要筛选无效');
+  const summary = { version:1, accountId, source:'ExecutionHistory.original-actions.v1', coverage:'tool-recorded-only',
+    filters:{...filters}, gameDayKnown:false, totalGameResources:null, executable:false, resumable:false, retryAllowed:false,
+    groups:[], excluded:{unidentifiedActions:0, missingIdentityActions:0, conflictingActions:0, duplicateRecords:0} };
+  const records = new Map(), groups = new Map();
+  const own = (object,key) => plain(object) && Object.hasOwn(object,key);
+  const id = value => text(value) || Number.isSafeInteger(value) && value > 0;
+  const originalFields = ['module','actionType','target','identity','timestamp','result','requestStatus','dispatched','unresolvedWrite',
+    'dispatchEvidence','verification','beforeState','afterState','beforeInventory','afterInventory','beforeInventoryReliable','afterInventoryReliable'];
+  const canonical = value => JSON.stringify(value, (_key,item) => typeof item === 'bigint' ? {bigint:item.toString()}
+    : plain(item) ? Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])) : item);
+  const fields = (run,row) => ({ module:row.module??run.module, runId:run.runId, workflowId:run.workflowId??null,
+    nodeId:run.workflowNodeId??null, batchId:run.planSummary?.batchId??run.authorizationSummary?.batchId??null,
+    actionId:row.actionId, status:actionWasUncertain(row)?'UNKNOWN':row.result });
+  const matches = value => Object.entries(filters).every(([key,expected])=>value[key]===expected);
+  function inventory(row,key) {
+    if (!own(row,key) || !Array.isArray(row[key])) return null;
+    const stock = new Map();
+    for (const entry of row[key]) {
+      if (!own(entry,'id') || !own(entry,'num') || !text(entry.id) || stock.has(entry.id)) return null;
+      const amount = ['number','string','bigint'].includes(typeof entry.num) ? safeResourceQuantity(entry.num) : null;
+      if (amount === null) return null;
+      stock.set(entry.id,BigInt(amount));
+    }
+    return stock;
+  }
+  for (const run of runs) {
+    if (!plain(run) || run.accountId !== accountId || !Array.isArray(run.actions)) continue;
+    for (const row of run.actions) {
+      if (!plain(row)) continue;
+      const selected = fields(run,row);
+      if (!text(run.runId) || !text(row.actionId)) {
+        if (matches(selected)) summary.excluded.unidentifiedActions++;
+        continue;
+      }
+      const key = JSON.stringify([accountId,run.runId,row.actionId]);
+      if (!records.has(key)) records.set(key,[]);
+      records.get(key).push({run,row,selected});
+    }
+  }
+  for (const versions of records.values()) {
+    // Resolve conflicts before selectors so a filter cannot hide a bad version.
+    if (!versions.some(({selected})=>matches(selected))) continue;
+    const fingerprint = ({run,row,selected}) => canonical({selected,executionContext:run.executionContext??null,
+      source:run.source??null, workflowDefinitionId:run.workflowDefinitionId??null,
+      workflowRound:run.workflowRound??null, planBatch:run.planSummary?.batchId??null,
+      authorizationBatch:run.authorizationSummary?.batchId??null,
+      action:Object.fromEntries(originalFields.map(key=>[key,row[key]]))});
+    if (new Set(versions.map(fingerprint)).size !== 1) { summary.excluded.conflictingActions++; continue; }
+    const {run,row,selected} = versions[0], context = run.executionContext;
+    summary.excluded.duplicateRecords += versions.length-1;
+    if (!plain(context) || !own(context,'playerId') || !own(context,'worldId') || !id(context.playerId) || !id(context.worldId)
+      || context.accountId !== accountId || !text(selected.module) || !text(row.actionType)
+      || run.planSummary?.batchId && run.authorizationSummary?.batchId && run.planSummary.batchId !== run.authorizationSummary.batchId) {
+      summary.excluded.missingIdentityActions++; continue;
+    }
+    const identity = {playerId:context.playerId, worldId:context.worldId, module:selected.module, actionType:row.actionType};
+    const key = canonical(identity);
+    if (!groups.has(key)) groups.set(key,{...identity, counts:{confirmedSuccess:0, originalUnknown:0, rejected:0, notExecuted:0, other:0},
+      quantifiedActions:0, unquantifiedActions:0, deltas:new Map()});
+    const group = groups.get(key);
+    if (actionWasUncertain(row)) { group.counts.originalUnknown++; continue; }
+    if (row.result !== 'SUCCESS' || row.requestStatus !== 'SUCCESS' || !own(row,'verification') || !own(row.verification,'status') || row.verification.status !== 'CONFIRMED' || row.dispatched !== true || row.unresolvedWrite !== false) {
+      const kind = row.result==='REJECTED' && row.requestStatus==='REJECTED' ? 'rejected'
+        : row.result==='NOT_EXECUTED' && row.dispatched===false ? 'notExecuted' : 'other';
+      group.counts[kind]++; continue;
+    }
+    group.counts.confirmedSuccess++;
+    const before = inventory(row,'beforeInventory'), after = inventory(row,'afterInventory');
+    if (!own(row,'beforeInventoryReliable') || !own(row,'afterInventoryReliable') || row.beforeInventoryReliable !== true || row.afterInventoryReliable !== true
+      || !before || !after || before.size !== after.size || [...before.keys()].some(id=>!after.has(id))) {
+      group.unquantifiedActions++; continue;
+    }
+    group.quantifiedActions++;
+    for (const [id,amount] of before) group.deltas.set(id,(group.deltas.get(id)??0n)+after.get(id)-amount);
+  }
+  summary.groups = [...groups.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([,group])=>{
+    const {deltas,...result} = group;
+    return {...result,resourceChanges:[...deltas].sort(([a],[b])=>a.localeCompare(b)).map(([id,delta])=>({id,delta:delta.toString()}))};
+  });
+  return summary;
+}
 
 // Identity/target values are hashes only; no request, response, credentials,
 // permit, budget or executable state is persisted in this supplemental store.

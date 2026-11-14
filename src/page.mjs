@@ -1414,13 +1414,46 @@ function resetOperationMemory() {
   $('ops-memory-coverage').textContent = '尚未读取覆盖范围。';
   clear($('ops-memory-pending')); $('ops-memory-hint').textContent = '';
 }
+function executionSummaryView(data) {
+  if(data.summary===undefined)return null;
+  const value=data.summary,validText=item=>typeof item==='string'&&item.length>0&&item.length<=512&&item===item.trim();
+  const count=item=>Number.isSafeInteger(item)&&item>=0,identity=item=>validText(item)||Number.isSafeInteger(item)&&item>0;
+  const expected={};if($('ops-memory-run-id').value)expected.runId=$('ops-memory-run-id').value;if($('ops-memory-workflow-id').value)expected.workflowId=$('ops-memory-workflow-id').value;
+  const selectors=value?.filters;
+  if(!value||value.version!==1||value.accountId!==data.accountId||value.source!=='ExecutionHistory.original-actions.v1'||value.coverage!=='tool-recorded-only'
+    ||value.gameDayKnown!==false||value.totalGameResources!==null||value.executable!==false||value.resumable!==false||value.retryAllowed!==false
+    ||!selectors||Array.isArray(selectors)||Object.keys(selectors).length!==Object.keys(expected).length||Object.entries(selectors).some(([key,item])=>!Object.hasOwn(expected,key)||expected[key]!==item)
+    ||!Array.isArray(value.groups)||!value.excluded||!['unidentifiedActions','missingIdentityActions','conflictingActions','duplicateRecords'].every(key=>count(value.excluded[key])))throw new Error('执行摘要只读合同或筛选不匹配');
+  const keys=new Set();
+  for(const group of value.groups){
+    const key=JSON.stringify([group?.playerId,group?.worldId,group?.module,group?.actionType]);
+    if(!group||!identity(group.playerId)||!identity(group.worldId)||!validText(group.module)||!validText(group.actionType)||keys.has(key)
+      ||!group.counts||!['confirmedSuccess','originalUnknown','rejected','notExecuted','other'].every(name=>count(group.counts[name]))
+      ||!count(group.quantifiedActions)||!count(group.unquantifiedActions)||group.quantifiedActions+group.unquantifiedActions!==group.counts.confirmedSuccess
+      ||!Array.isArray(group.resourceChanges)||group.quantifiedActions===0&&group.resourceChanges.length)throw new Error('执行摘要只读合同不可靠');
+    keys.add(key);const resources=new Set();
+    for(const row of group.resourceChanges){if(!validText(row?.id)||resources.has(row.id)||typeof row.delta!=='string'||!/^(0|-?[1-9][0-9]*)$/.test(row.delta))throw new Error('执行摘要资源合同不可靠');resources.add(row.id);}
+  }
+  return value;
+}
 function renderOperationMemory(data, memoryScope = viewGuard.begin('operations-memory')) {
   if(typeof data.available!=='boolean'||!Array.isArray(data.events)||!Array.isArray(data.pendingHistoryProjection)||data.resumable!==false||data.retryAllowed!==false)throw new Error('执行记忆只读合同不可靠');
+  const summary=executionSummaryView(data);
   const box=clear($('ops-memory')),coverage=clear($('ops-memory-coverage')),pending=clear($('ops-memory-pending'));
   const policy=data.policyCoverage||{};
   coverage.appendChild(el('div',null,(data.available===true?'补充记忆可用':'补充记忆不可用')+' · 覆盖范围 '+(data.coverage||'UNKNOWN')));
   coverage.appendChild(el('div',null,'拒绝身份变化策略：'+(policy.identityChange===true?'已接入':'未覆盖')+'；冷却策略：'+(policy.cooldown===true?'已接入':'未覆盖')+'；游戏日界策略：'+(policy.gameDay===true?'已接入':'未覆盖')+'。未覆盖的冷却或日界不能据此解除限制。'));
   coverage.appendChild(el('div','dim',data.note||'只读审计；不恢复执行、预算或授权。'));
+  coverage.appendChild(el('div','dim',summary?'跨轮摘要仅覆盖本工具原始记录，按角色/世界/模块/动作分组；游戏完整资源变化与游戏日界未知。':'跨轮摘要不可用；未提供的数据不能当作零。'));
+  if(summary){
+    for(const group of summary.groups){
+      const counts=group.counts;
+      coverage.appendChild(el('div',null,'角色 '+group.playerId+' / 世界 '+group.worldId+' · '+group.module+' / '+group.actionType+'：已确认成功 '+counts.confirmedSuccess+'；原始 UNKNOWN '+counts.originalUnknown+'；拒绝 '+counts.rejected+'；未执行 '+counts.notExecuted+'；其他 '+counts.other+'。'));
+      coverage.appendChild(el('div','dim','有库存证据 '+group.quantifiedActions+'；资源变化未知 '+group.unquantifiedActions+'。'+(group.quantifiedActions?'已观察库存净变化：'+(group.resourceChanges.length?group.resourceChanges.map(row=>row.id+' '+row.delta).join('；'):'明确空库存')+'。':'未推断成本或到账。')));
+    }
+    const excluded=summary.excluded;
+    coverage.appendChild(el('div','dim','未计入摘要：动作身份缺失 '+excluded.unidentifiedActions+'，角色/世界等来源缺失 '+excluded.missingIdentityActions+'，冲突动作 '+excluded.conflictingActions+'；重复记录去重 '+excluded.duplicateRecords+'。原始 UNKNOWN 即使追加 APPLIED 复核也不计已确认成功。'));
+  }
   const projections=Array.isArray(data.pendingHistoryProjection)?data.pendingHistoryProjection:[];
   pending.appendChild(el('div',projections.length?'warn':'dim','原始历史待投影结果：'+projections.length+'；本次 GET 只读取，不补写记忆。'));
   if(projections.some(row=>row.projectable===false))pending.appendChild(el('div','warn','部分原始拒绝记录缺少字段或存在冲突，无法补写为完整记忆；相关目标保持拒绝保护。可明确区分的其他目标可独立重新规划。'));
