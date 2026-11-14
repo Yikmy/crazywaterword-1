@@ -345,3 +345,40 @@ test('a real dispatch stays UNKNOWN without exact isolated same-day readback', a
     });
   }
 });
+
+for(const entry of ['dailies','loop'])test(entry+' registered pirate refusal remains target scoped across restart and independent targets require new authorization',async t=>{
+ const f=await integratedPirate(t),firstGraph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+ const initial=await f.runner.start(f.session.id,firstGraph);assert.equal(initial.status,'AWAITING_AUTHORIZATION');
+ // A definite transport refusal is injected at the same seam as the original
+ // Service refusal tests. No server success, reward or eligibility is invented.
+ f.client.sendWatch=async(_name,_body,options)=>{options.beforeDispatch?.();return {status:'REJECTED'};};
+ const rejected=await f.execute(initial.plan);assert.equal(rejected.finalStatus,'REJECTED');
+ await f.runner.resume();f.runner.stop();await f.runner.settle();
+ const historyBytes=fs.readFileSync(f.historyFile,'utf8'),memoryFile=f.historyFile+'.memory.json',memoryBytes=fs.readFileSync(memoryFile,'utf8');
+ const next=await fixture(t,{...context,generation:4,connectionId:'refusal-reopened'}),session={...f.session,generation:4,connectionId:'refusal-reopened',client:next.client,workflowOwner:null,busy:null,abort:new AbortController()};
+ const service=f.makeService(createExecutionHistory({file:f.historyFile})),independent={uid:8,cityId:10,allowLowerLevel:true};
+ const budget={resources:[],quotas:testClaims.quotas,uids:[{type:'pirate',id:'8'}]};
+ const graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters},{taskId:1010,parameters:independent}],budget},{modules:GAMEPLAY_MODULES}).graph;
+ const runner=createWorkflowRunner({operations:service,modules:GAMEPLAY_MODULES,getSession:()=>session,
+  claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),onUpdate:state=>f.store.record(session.id,state)});
+ t.after(async()=>{runner.stop();await runner.settle();await service.settle(session.id);});
+ const pending=await runner.start(session.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');
+ assert.ok(pending.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'&&row.blockedReasons.includes('REJECTION_MEMORY_ACTIVE')));
+ assert.deepEqual(pending.plan.parameters,independent);assert.equal(pending.plan.actions[0].target.uid,8);
+ assert.equal(next.writes.length,0);assert.equal((await runner.resume()).status,'AWAITING_AUTHORIZATION');assert.equal(next.writes.length,0);
+ assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.equal(fs.readFileSync(memoryFile,'utf8'),memoryBytes);
+ const persisted=createWorkflowStore({file:path.join(f.dir,'workflow.json'),modules:GAMEPLAY_MODULES});
+ const restored=persisted.history(session.id).find(row=>row.runId===pending.runId);
+ assert.equal(restored.status,'RECOVERED_STOPPED');assert.ok(restored.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'));
+ assert.deepEqual(persisted.history('other-account'),[]);
+ next.data.effect=()=>{next.data.used++;next.socket.receive('SCPirateSweepTimes',{sweepTimes:next.data.used});};
+ const permit=service.authorize(session,{batchId:pending.plan.batchId,planHash:pending.plan.planHash,
+  approvedActionIds:pending.plan.actions.map(row=>row.actionId),resourceBudget:pending.plan.resourceBudget,confirm:true});
+ service.execute(session,permit);await service.settle(session.id);
+ const done=await runner.resume();assert.equal(done.status,'COMPLETED');assert.match(done.reason,/阻塞/);
+ assert.deepEqual(next.writes,[{name:'PirateSweepRequest',body:{uid:8,cityId:10}}]);
+ const records=service.history(session.id).runs;assert.equal(records.length,2);
+ assert.equal(records.find(row=>row.runId===rejected.runId).finalStatus,'REJECTED');
+ assert.equal(records.find(row=>row.workflowId===pending.runId).finalStatus,'SUCCESS');
+ assert.equal(fs.readFileSync(memoryFile,'utf8'),memoryBytes);
+});
