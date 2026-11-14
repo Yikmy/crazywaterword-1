@@ -153,7 +153,7 @@ export const PAGE = `<!doctype html>
     <button data-tab="production">生产管理</button>
     <button data-tab="operations-history">执行历史</button>
     <button data-tab="stages">自动闯关</button>
-    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="pirate-sweep">海面扫荡</button><button data-tab="fishing">钓鱼</button><button data-tab="workflow">工作流</button>
+    <button data-tab="formation">阵容</button><button data-tab="alliance">联盟</button><button data-tab="museum">博物馆</button><button data-tab="treasure">世界宝藏</button><button data-tab="fleet">舰队</button><button data-tab="naval">海战规则</button><button data-tab="pirate-sweep">海面扫荡</button><button data-tab="fishing">钓鱼</button><button data-tab="trade">海商王</button><button data-tab="workflow">工作流</button>
     <button data-tab="idle">任务与海面</button>
     <button data-tab="heroes">英雄</button>
     <button data-tab="dailies">日常</button><button data-tab="mail">邮件</button>

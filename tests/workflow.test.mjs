@@ -871,3 +871,13 @@ test('daily pirate targets compile through the registered Function with exact UI
    assert.throws(()=>compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters:malformed},{taskId:1002}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES}));
  }
 });
+
+
+test('W18 Loop reuses the original Registry SURVEY and trade selections cannot produce executable actions',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const declaration={entry:'loop',world:[{type:'SURVEY',module:'trade',parameters:{}}],rounds:2,budget:unifiedBudget};
+ const result=compileUnifiedExecution(declaration,{modules:GAMEPLAY_MODULES});assert.deepEqual(result.blocked,[]);assert.deepEqual(result.graph.nodes.map(n=>n.type),['START','SURVEY','SURVEY','STOP']);
+ assert.ok(result.graph.nodes.filter(n=>n.type==='SURVEY').every(n=>n.module==='trade'&&Object.keys(n.parameters).length===0&&!Object.hasOwn(n,'selection')));
+ assert.equal(simulateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
+ assert.deepEqual(GAMEPLAY_MODULES.trade.plan(null,{parameters:{},selections:['fake-sell']}).actions,[]);assert.equal(GAMEPLAY_MODULES.trade.verify().confirmed,false);
+});

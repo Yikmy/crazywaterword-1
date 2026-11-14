@@ -44,6 +44,12 @@ function dependencies(required, conditional = []) { return { method: 'dependency
 function verification(method, source, scope, extra = {}) { return { method, source, scope, authoritativeRead: true, typedResponseAlone: false, historyOwner: 'ExecutionHistory', ...extra }; }
 const blocked = (capability, reason, status = 'BLOCKED_EVIDENCE') => ({ capability, status, executable: false, reason });
 export const FUNCTION_CONTRACTS = freeze({
+  trade: contract('trade',['C521','C522'],['P6-3'],['src/trade.mjs#tradeModule','src/trade.mjs#surveyTrade'],{}, {
+    permissions:{...common.permissions,write:'FORBIDDEN_OBSERVATION_ONLY'},
+    implementation:{mode:'OBSERVATION_ONLY',actions:[],blockedCapabilities:[blocked('C522:DESTINATION_STRATEGY','Current port non-loss sale preview only; no destination-price or purchase strategy'),blocked('C523','Exact buy/sell eligibility, settlement and recovery are not implemented'),blocked('C524','Routes, movement and speed require separate contracts')]},
+    verification:verification('verify','src/trade.mjs#tradeModule.verify','Current-port response only; same bracketing Info is not an atomic snapshot and no write can be confirmed',{authoritativeRead:false,canConfirmWrite:false}),
+    dependencyVersions:dependencies(['moduleConfig','config.TradeGoodsCfg','config.TradeShipCfg']),
+  }),
   'material-packs': contract('material-packs',[],['P2-2'],['src/material-packs.mjs#materialPackModule','src/material-packs.mjs#planMaterialPacks'],{packId:string,itemId:string,num:integer},{
     inventoryRequirementIds:['BIZ-R14'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['EXCHANGE'],blockedCapabilities:[blocked('OTHER_PACKS_OR_AUTO_PRODUCTION','Only owned raw/fort material packs, explicit target and pack count; no purchases or automatic production')]},

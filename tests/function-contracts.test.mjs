@@ -4,14 +4,14 @@ import { FUNCTION_CONTRACTS, describeFunctionContract, validateFunctionContract,
 import { formationModule, validateFormationParameters } from '../src/formation.mjs';
 import { CORE_OPERATION_MODULES } from '../src/core-operation-adapters.mjs';
 import { heroModule } from '../src/hero-operations.mjs';
-const ids = ['material-packs','pet','trial-challenge','free-recruit','free-gold','afk-level-rewards','mail','task-rewards','pirate-sweep','antique-growth','badge-growth','equipment-growth','formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
+const ids = ['trade','material-packs','pet','trial-challenge','free-recruit','free-gold','afk-level-rewards','mail','task-rewards','pirate-sweep','antique-growth','badge-growth','equipment-growth','formation-unlock','equipment-forge','farm', 'formation', 'alliance', 'museum', 'fleet', 'treasure', 'naval', 'stage', 'orders', 'city', 'production', 'heroes'];
 function adapter(id, validateParameters = value => value) {
   return { id, survey() {}, view() {}, plan() {}, verify() {}, execute() {}, validateParameters, dependencyVersions() { return { moduleConfig: {} }; } };
 }
 const invalid = fn => assert.throws(fn, error => ['INVALID_PARAMETERS', 'INVALID_FUNCTION_CONTRACT'].includes(error.code));
 const stage = () => ({ config: { enabled: true, retryDelaySeconds: 0, maxAttempts: 2, maxStage: null, interStageDelay: { minSeconds: 10, maxSeconds: 11 }, formation: { enabled: false, presetId: null } } });
 
-test('twenty-six trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
+test('trusted contracts have detached JSON descriptions and stable capability/C/P/S identities', () => {
   assert.deepEqual(Object.keys(FUNCTION_CONTRACTS), ids);
   for (const id of ids) {
     const value = describeFunctionContract(id);
@@ -63,7 +63,7 @@ test('production adapters require all real contract hooks and retain original cu
 test('observation and protocol-only branches cannot become executable capabilities', () => {
   invalid(() => validateFunctionContract('naval', adapter('naval'), { requireExecutable: true }));
   assert.equal(validateFunctionContract('naval', adapter('naval')).implementation.mode, 'OBSERVATION_ONLY');
-  for (const id of ids.filter(id => id!=='naval')) assert.equal(validateFunctionContract(id, adapter(id), { requireExecutable: true }).id, id);
+  for (const id of ids.filter(id => !['naval','trade'].includes(id))) assert.equal(validateFunctionContract(id, adapter(id), { requireExecutable: true }).id, id);
   for (const value of Object.values(FUNCTION_CONTRACTS)) for (const blocked of value.implementation.blockedCapabilities) {
     assert.equal(blocked.executable, false); assert.ok(blocked.reason.length); assert.ok(!value.implementation.actions.includes(blocked.capability));
   }

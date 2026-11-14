@@ -393,3 +393,14 @@ test('workflow history renders blocked and preview-only evidence without grantin
  for(const value of ['free-gold','FREE_GOLD_CLOCK_UNKNOWN','<unsafe reason>','该节点未生成可执行批次','batch-preview','hash-preview','预览本身不表示授权或派发'])assert.ok(text.includes(value),value);
  assert.equal(h.node('wf-authorize').disabled,true);assert.equal(h.confirmations.length,0);assert.ok(h.requests.every(row=>row.body===null));
 });
+
+
+test('trade professional view shows port, stock, holdings and preview with zero implicit authorization and clears on account changes',async()=>{
+ const h=harness(),read=h.run("refreshGameplay('trade')");
+ const value={accountId:'A',module:'trade',config:{enabled:false},csrfToken:'trade-csrf',status:{},view:{status:'OBSERVED',reason:null,period:1,cargo:{cityId:1,cargoLv:1},balances:{coins:100,maxCoins:100,profit:0},capacity:{used:3,total:1000,remaining:997},prices:[{goodsId:1001,name:'<script>hostile</script>',price:51,stock:0}],holdings:[{pid:1,goodsId:1001,num:3,buyPrice:50,cityId:2}],quotes:[{pid:1,price:51,profit:4,total:154,status:'PREVIEW',reason:null}],candidates:[]}};
+ h.respond('/api/gameplay?module=trade',value);await read;
+ assert.match(GAMEPLAY_HTML,/id="tab-trade"/);assert.match(PAGE,/data-tab="trade"/);assert.match(h.node('gp-trade-facts').textContent,/当前港口行情/);assert.match(h.node('gp-trade-facts').textContent,/<script>hostile<\/script>/);assert.match(h.node('gp-trade-facts').textContent,/154/);assert.match(h.node('gp-trade-facts').textContent,/不代表可售或到账/);
+ assert.equal(h.node('gp-trade-plan').disabled,true);assert.equal(h.node('gp-trade-authorize').disabled,true);assert.equal(h.pending('/api/operations/execute'),undefined);assert.doesNotMatch(GAMEPLAY_HTML,/id="gp-trade-execute"/);assert.equal(h.requests.length,1);
+ const survey=h.node('gp-trade-survey').onclick();assert.deepEqual(JSON.parse(JSON.stringify(h.pending('/api/gameplay/survey').body)),{module:'trade',parameters:{}});h.select('B');h.select('A');h.respond('/api/gameplay/survey',value);await survey;
+ assert.equal(h.node('gp-trade-facts').textContent,'');assert.equal(h.run('gameplayCsrfToken()'),null);assert.equal(h.pending('/api/operations/authorize'),undefined);
+});
