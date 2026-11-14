@@ -27,3 +27,13 @@ test('same-tick trusted config guard failure cannot dispatch another mainline re
 
 test('reconnect keeps an old Runner but survey trusts only current client login progress',async()=>{const h=harness();h.session.stageClient={connected:false};h.session.stageRunner={getStatus:()=>({runId:'old-run',nextStage:41,running:false,inFlight:false,uncertain:false})};h.player.mainlineStage=100;const {facts,operation}=await h.operation(parameters({maxAttempts:1}));assert.equal(facts.state.currentProgress,100);assert.equal(facts.state.previousRunId,null);assert.equal(operation.action.body.stage,100);const result=await h.module.execute(h.client,protocol,operation,h.options);assert.equal(result.status,'SUCCESS');assert.deepEqual(h.client.calls.map(c=>c.body.stage),[100]);});
 test('prepareRunner cannot change the authorized first stage before any dispatch',async()=>{const h=harness({prepareMutation:s=>{s.player.mainlineStage=100;}}),{operation}=await h.operation(parameters({maxAttempts:1}));assert.equal(operation.action.body.stage,41);const result=await h.module.execute(h.client,protocol,operation,h.options);assert.equal(result.status,'NOT_EXECUTED');assert.equal(result.dispatched,false);assert.equal(h.client.calls.length,0);assert.match(result.error,/准备Runner后/);});
+
+
+test('bounded Stage binds optional exact expectedStage and refuses to move the retry to later progress',async()=>{
+ const h=harness(),p={...parameters(),expectedStage:41};const {operation}=await h.operation(p);assert.equal(operation.parameters.expectedStage,41);h.player.mainlineStage=42;
+ const facts=await h.module.survey(h.client,protocol,{...h.options,parameters:p});assert.equal(h.module.view(facts,{...h.options,parameters:p}).candidates[0].blockedReason,'EXPECTED_STAGE_CHANGED');assert.deepEqual(h.module.plan(facts,{...h.options,parameters:p,selections:[operation.actionId]}).actions,[]);
+ const result=await h.module.execute(h.client,protocol,operation,h.options);assert.equal(result.status,'NOT_EXECUTED');assert.equal(h.client.calls.length,0);
+});
+for(const expectedStage of [null,0,-1,'41',1.5,2147483648])test('bounded Stage rejects malformed expectedStage '+expectedStage,async()=>{
+ const h=harness();await assert.rejects(h.operation({...parameters(),expectedStage}),{code:'INVALID_PARAMETERS'});assert.equal(h.client.calls.length,0);
+});

@@ -1,3 +1,4 @@
+import {projectStageBattleHistory,prepareStageRecommendation} from './stage-history.mjs';
 import { validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
 import { surveyExtremeFormationList, surveyExtremeFormations, prepareExtremeFormation, viewExtremeFormations, validateExtremeFormationParameters } from './extreme-formations.mjs';
@@ -280,6 +281,26 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   }
   async function extremeFormations(session,payload={}) {exact(payload,[]);return withExtremeFormationRead(session,'SURVEY',null);}
   async function prepareExtremeFormationSource(session,payload) {const parameters=validateExtremeFormationParameters(payload);return withExtremeFormationRead(session,'PREPARE',parameters);}
+
+  async function prepareStageRecommendationSource(session,payload){
+    exact(payload,['reportId','presetId','maxAttempts']);
+    if(typeof payload.reportId!=='string'||!payload.reportId||payload.reportId.trim()!==payload.reportId||payload.reportId.length>1000||!Number.isSafeInteger(payload.presetId)||payload.presetId<1||payload.presetId>2147483647||!Number.isSafeInteger(payload.maxAttempts)||payload.maxAttempts<1||payload.maxAttempts>200)throw error('须明确原战报ID、阵型模板及1至200次上限','INVALID_INPUT',400);
+    const release=acquire(session,'operations:STAGE_RECOMMENDATION'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
+    try{
+      plans.delete(session.id);
+      const source=()=>{const result=projectStageBattleHistory(session.id,history.list(session.id),{limit:200}).reports.filter(row=>row.reportId===payload.reportId);if(result.length!==1)throw error('所选持久主线战报不存在或不唯一','STAGE_RECOMMENDATION_UNAVAILABLE');return result[0];};
+      const report=source(),sourceHash=operationDigest(report),adapter=adapterFor('formation'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'formation').config;
+      adapterFor('stage');if(moduleSettings.get(session.id,'stage').config.enabled!==true)throw error('须启用原有限主线Function','STAGE_RECOMMENDATION_UNAVAILABLE');
+      const dependencies=()=>operationDigest(adapter.dependencyVersions?adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'formation').config,player:session.player}):{config:getConfig(),moduleConfig:moduleSettings.get(session.id,'formation').config});const dependency=dependencies();
+      const options={config,moduleConfig,player:session.player,signal:session.abort.signal,parameters:{presetId:payload.presetId}},facts=await adapter.survey(client,protocol,options);current(session,generation,client);
+      if(identity!==observationIdentity(session,client)||dependency!==dependencies()||sourceHash!==operationDigest(source()))throw error('建议准备期间身份、配置或来源战报已变化','CANCELLED');
+      const runner=session.stageClient===client?session.stageRunner?.getStatus():null,progress=runner?.nextStage??session.player?.mainlineStage;
+      if(runner?.running||runner?.inFlight||runner?.uncertain)throw error('旧主线运行尚未确定停止','STAGE_RECOMMENDATION_UNAVAILABLE');
+      const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,moduleConfig,now:clock()});
+      const graph=validateWorkflow(result.graph,{modules}).workflow;cacheModule(session.id,'formation',facts,options);
+      return {accountId:session.id,...result,graph};
+    }finally{release();}
+  }
   function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
   function assertWorkflowDeadline(session, runId) {
     const parent = workflowBudgets.get(session.id);
@@ -585,7 +606,7 @@ function authorizeWorkflowPlan(session,payload){
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId) => { const all = history.list(accountId); return { accountId, runs: all.filter(run => !runId || run.runId === runId), dailyReport: summarizeProductionHistory(all, { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())), timeZone: 'Asia/Shanghai' }) }; },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },

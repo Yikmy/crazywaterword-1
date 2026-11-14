@@ -1,3 +1,4 @@
+import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
 import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent } from './client.mjs';
@@ -44,6 +45,7 @@ function condition(value) {
 }
 // Declarative compilation provenance only. Never an eligibility, retry or time policy.
 function validatePreparation(value) {
+  if(value?.entry==='stage-recommendation'){exact(value,['entry','blocked','source'],'战败建议准备来源');if(!Array.isArray(value.blocked)||value.blocked.length)throw fail('战败建议准备不接受未纳入步骤');validateStageRecommendationSource(value.source);return copy(value);}
   exact(value, ['entry','blocked'], '统一入口来源');
   if (!['tasks','dailies','loop'].includes(value.entry) || !Array.isArray(value.blocked) || value.blocked.length > 96) throw fail('统一入口来源无效');
   const seen = new Set();

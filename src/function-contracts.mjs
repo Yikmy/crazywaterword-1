@@ -173,7 +173,7 @@ export const FUNCTION_CONTRACTS = freeze({
     verification: verification('verify', 'src/naval-rules.mjs#navalModule.verify', 'Observation completeness is CURRENT_RESPONSE_ONLY; write verification always false', { authoritativeRead: false, canConfirmWrite: false }),
     dependencyVersions: dependencies(['moduleConfig']),
   }),
-  stage: contract('stage', ['C201', 'C202', 'C203', 'C204', 'C205', 'C206', 'C207', 'C208'], ['P3-1', 'P3-2', 'P3-3'], ['src/stage-function.mjs#createStageFunction', 'src/stages.mjs#createStageRunner', 'src/stages.mjs#validateStageConfig'], { config: stageConfig }, {
+  stage: contract('stage', ['C201', 'C202', 'C203', 'C204', 'C205', 'C206', 'C207', 'C208'], ['P3-1', 'P3-2', 'P3-3'], ['src/stage-function.mjs#createStageFunction', 'src/stages.mjs#createStageRunner', 'src/stages.mjs#validateStageConfig'], { config: stageConfig, expectedStage:integer }, {
     implementation: { mode: 'EXISTING_BOUNDED_RUNNER', actions: ['RUN_MAINLINE'], blockedCapabilities: [blocked('OTHER_BATTLE_MODES', 'BT_MAINLINE LEFT proof is not reusable for other modes'), blocked('UNBOUNDED_RUN', 'Workflow Stage parameters must have existing finite limits', 'NOT_IMPLEMENTED')] },
     scheduler: { ...common.scheduler, supported: ['S1', 'S2', 'S4', 'S7'], unsupported: ['S3', 'S5', 'S6', 'S8'], policy: 'EXISTING_STAGE_RUNNER_WITH_FINITE_PARAMETERS' },
     verification: verification('verify', 'src/stage-function.mjs#createStageFunction.verify', 'Same existing Runner/runId/session, complete per-battle typed history and final progress; completion does not promise all victories'),

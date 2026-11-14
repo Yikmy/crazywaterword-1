@@ -974,3 +974,46 @@ test('cooldown history HTTP restores only original observation without a Session
  const other=await app.call('/api/workflows/history?workflowRunId='+run.runId,{id:'B'});assert.equal(other.status,404,JSON.stringify(other.data));assert.equal(fs.readFileSync(file,'utf8'),before);assert.equal(app.sessions.size,0);assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+
+async function recommendationHttpFixture(options={}){
+ const app=await harness({includeStage:true,...options}),session=app.ready('A');Object.assign(session.player,{playerId:'17',worldId:7});await app.enable();await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
+ const {createStandaloneStageJournal,projectStageBattleHistory}=await import('../src/stage-history.mjs'),{battleAnalysis}=await import('../src/formation.mjs');
+ const journal=createStandaloneStageJournal(app.history,{accountId:'A',playerId:'17',worldId:7,generation:session.generation,connectionId:'source-connection'}),runId='source-defeat',at=new Date().toISOString();
+ const analysis=battleAnalysis({initialData:{mainlineStage:41,battleType:1,leftTeam:{presetId:1,members:[{hero:{heroId:'tank'},pos:{x:1,y:3}}]},rightTeams:[{members:[{hero:{heroId:'enemy'},pos:{x:2,y:3}}]}]},stats:{isLeftWin:false,leftHeroDamages:[{heroId:'tank',pos:{x:1,y:3},leftHp:0,statBar:{damage:{physical:1,magic:0,true:0}}}]}});
+ journal.start({runId,stage:41,at,config:{}});journal.dispatch({runId,stage:41,attempt:1,at});journal.settle({runId,stage:41,attempt:1,at,result:{stage:41,outcome:'FAILED',isLeftWin:false,playerSide:'LEFT'},analysis});journal.finish({runId,at,kind:'DEFEAT_STOPPED',reason:'synthetic confirmed defeat'});
+ const report=projectStageBattleHistory('A',app.history.list('A')).reports[0],payload={reportId:report.reportId,presetId:2,maxAttempts:1};return {app,session,report,payload};
+}
+test('recommendation HTTP prepares read-only source then original Workflow authorizes save, verifies and separately authorizes bounded retry',async()=>{
+ const {app,payload}=await recommendationHttpFixture();try{
+  const bytes=fs.readFileSync(app.history.storagePath,'utf8'),prepared=await app.call('/api/formations/recommendation/prepare',{body:payload});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal(prepared.data.source.reportId,payload.reportId);assert.equal(prepared.data.resumable,false);assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);assert.equal(app.requests.filter(r=>['SaveFormationRequest','ChallengeStageRequest'].includes(r.name)).length,0);
+  await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});let waiting=await waitForWorkflow(app,'AWAITING_AUTHORIZATION');const first=waiting.status.plan;assert.equal(first.module,'formation');assert.equal(first.actions[0].actionId,prepared.data.graph.nodes[1].selection);
+  let permit=await app.approve(first);await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');await app.call('/api/workflows/resume',{body:{}});waiting=await waitForWorkflow(app,'AWAITING_AUTHORIZATION');assert.equal(waiting.status.currentNode,'retry-mainline');assert.equal(waiting.status.plan.parameters.expectedStage,41);assert.equal(app.requests.filter(r=>r.name==='SaveFormationRequest').length,1);assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,0);
+  permit=await app.approve(waiting.status.plan);await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');await app.call('/api/workflows/resume',{body:{}});const done=await waitForWorkflow(app,'COMPLETED');assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,1);assert.equal(done.status.preparation.source.reportId,payload.reportId);
+  const entries=app.history.list('A');assert.equal(entries.filter(r=>r.workflowId===done.status.runId).length,2);assert.ok(entries.filter(r=>r.workflowId===done.status.runId).every(r=>r.finalStatus==='SUCCESS'));assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+for(const mode of ['unknown-source','role','world','stage','busy','unknown','extra','query','csrf','no-session'])test('recommendation HTTP preserves exact source and common safety boundary '+mode,async()=>{
+ const f=await recommendationHttpFixture(),{app,session}=f;try{
+  let payload={...f.payload},route='/api/formations/recommendation/prepare',options={};if(mode==='unknown-source')payload.reportId='missing';if(mode==='role')session.player.playerId='18';if(mode==='world')session.player.worldId=8;if(mode==='stage')session.player.mainlineStage=42;if(mode==='busy')session.busy='unrelated';if(mode==='unknown')session.client.uncertainWrites.add('old');if(mode==='extra')payload.request='SaveFormationRequest';if(mode==='query')route+='?other=1';if(mode==='csrf')options.authorized=false;if(mode==='no-session')options.id='B';
+  const before=app.requests.length,bytes=fs.readFileSync(app.history.storagePath,'utf8'),response=await app.call(route,{body:payload,...options});assert.ok([400,403,409].includes(response.status),JSON.stringify(response.data));assert.equal(app.requests.filter(r=>['SaveFormationRequest','ChallengeStageRequest'].includes(r.name)).length,0);assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);if(['extra','query','csrf','no-session','unknown-source','busy','unknown'].includes(mode))assert.equal(app.requests.length,before);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+for(const mode of ['unconfirmed','refused','progress'])test('recommendation original Workflow prevents retry after '+mode,async()=>{
+ const {app,session,payload}=await recommendationHttpFixture({unconfirmed:mode==='unconfirmed'});try{
+  const prepared=await app.call('/api/formations/recommendation/prepare',{body:payload});assert.equal(prepared.status,200,JSON.stringify(prepared.data));await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});const pending=await waitForWorkflow(app,'AWAITING_AUTHORIZATION');
+  if(mode==='refused'){const request=session.client.request.bind(session.client);session.client.request=async(name,...args)=>{if(name==='SaveFormationRequest')throw Object.assign(Error('synthetic definite refusal'),{code:'SERVER_ERROR',serverError:1});return request(name,...args);};}
+  const permit=await app.approve(pending.status.plan);await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');if(mode==='progress')session.player.mainlineStage=42;
+  await app.call('/api/workflows/resume',{body:{}});const final=(await app.call('/api/workflows')).data.status;assert.ok(['UNKNOWN','FAILED','BLOCKED'].includes(final.status),JSON.stringify(final));assert.equal(app.requests.filter(r=>r.name==='ChallengeStageRequest').length,0);
+  if(mode==='unconfirmed'){assert.equal(final.status,'UNKNOWN');assert.equal(session.client.uncertainWrites.has('SaveFormationRequest'),true);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).data.code,'STALE_PLAN');assert.equal(app.requests.filter(r=>r.name==='SaveFormationRequest').length,1);}
+ }finally{await app.close();}
+});
+for(const mode of ['role','world','generation','connection','configuration','history'])test('recommendation cancels source race during existing Formation survey '+mode,async()=>{
+ const {app,session,payload}=await recommendationHttpFixture();try{
+  const request=session.client.request.bind(session.client);let release,enter;const pending=new Promise(r=>release=r),entered=new Promise(r=>enter=r);session.client.request=async(name,...args)=>{if(name==='GetFormationRequest'){enter();await pending;}return request(name,...args);};
+  const preparation=app.call('/api/formations/recommendation/prepare',{body:payload});await entered;
+  if(mode==='role')session.player.playerId='18';if(mode==='world')session.player.worldId=8;if(mode==='generation')session.generation++;if(mode==='connection')session.connectionId='changed';if(mode==='configuration'){const blocked=await app.call('/api/gameplay/config',{body:{module:'formation',config:{enabled:false,mainlineEnabled:false}}});assert.equal(blocked.data.code,'ACCOUNT_BUSY');}if(mode==='history'){const run=app.history.list('A').find(r=>r.runId==='source-defeat');run.actions[0].battleAnalysis.reason='changed historical content';app.history.put(run);}
+  release();const result=await preparation;assert.equal(result.status,mode==='configuration'?200:409,JSON.stringify(result.data));assert.equal(app.requests.filter(r=>['SaveFormationRequest','ChallengeStageRequest'].includes(r.name)).length,0);assert.equal((await app.call('/api/workflows')).data.status.status,'IDLE');
+ }finally{await app.close();}
+});

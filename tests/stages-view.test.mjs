@@ -189,3 +189,31 @@ test('late historical battle read cannot populate the next selected account',asy
  const h=await boot(),pending=h.node('stages-load').onclick();h.run("selectAccount('B')");h.respond('/api/stages','A',{...fixture(),battleHistory:historicalBattles()});await pending;
  assert.equal(h.node('stages-battle-before').childElementCount,0);assert.doesNotMatch(h.node('stages-battle-comparison').textContent,/9007199254740993/);
 });
+function stageRecommendationPageFixture(){
+ const data=fixture(),source={reportId:'report-<img src=x>',accountId:'A',stage:41,playerId:'17',worldId:'7'};
+ data.battleHistory={reports:[{reportId:source.reportId,stage:41,outcome:'FAILED',scope:{playerId:'17',worldId:'7'},runId:'<img src=x>'}]};
+ const graph={version:1,id:'recommendation-page',name:'<img src=x>',preparation:{entry:'stage-recommendation',blocked:[],source},nodes:[{id:'s',type:'START'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'z'}]};
+ return {data,source,graph,response:{accountId:'A',source,graph,limitation:'<img src=x> 仅职业布局建议'}};
+}
+async function readyRecommendationPage(){const h=await boot(),f=stageRecommendationPageFixture();await load(h,f.data);h.node('stages-recommendation-preset').value='2';h.node('stages-recommendation-attempts').value='1';return {h,...f};}
+
+test('recommendation page accepts one defeat, uses exact CSRF preparation and safely loads only original graph editor',async()=>{
+ const {h,source,response}=await readyRecommendationPage();
+ assert.equal(h.node('stages-recommendation-report').value,source.reportId);assert.equal(h.node('stages-recommendation-prepare').disabled,false);
+ const p=h.node('stages-recommendation-prepare').onclick(),r=h.pending('/api/formations/recommendation/prepare','A');
+ assert.deepEqual(JSON.parse(r.options.body),{reportId:source.reportId,presetId:2,maxAttempts:1});assert.equal(r.options.headers['x-cw-csrf'],'synthetic-page-csrf-A');assert.equal(h.node('stages-start').disabled,true);
+ h.respond('/api/formations/recommendation/prepare','A',response);await p;
+ assert.equal(JSON.parse(h.node('wf-json').value).id,'recommendation-page');assert.match(h.node('stages-recommendation-hint').textContent,/<img src=x>/);assert.equal(h.node('stages-recommendation-hint').children.length,0);assert.equal(h.confirmations.length,0);
+ assert.deepEqual(h.requests.filter(r=>r.options.method==='POST').map(r=>new URL(r.url,'http://localhost').pathname),['/api/formations/recommendation/prepare']);
+});
+for(const mode of ['zero','fraction','huge','missing','unknown','disconnected','busy','csrf'])test('recommendation page refuses unsafe input or state '+mode,async()=>{
+ const {h,data}=await readyRecommendationPage();
+ if(mode==='zero')h.node('stages-recommendation-attempts').value='0';if(mode==='fraction')h.node('stages-recommendation-preset').value='1.5';if(mode==='huge')h.node('stages-recommendation-attempts').value='201';if(mode==='missing')h.node('stages-recommendation-preset').value='';
+ if(mode==='unknown'){data.runner.uncertain=true;await load(h,data);}if(mode==='disconnected')h.run('snapshot.connected=false;stageControls()');if(mode==='busy')h.run("snapshot.busy='other';stageControls()");if(mode==='csrf'){delete data.csrfToken;await load(h,data);}
+ const before=h.requests.length;await h.node('stages-recommendation-prepare').onclick();assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+});
+for(const mode of ['account','graph','edit','input','source'])test('recommendation page discards late response '+mode,async()=>{
+ const {h,response}=await readyRecommendationPage(),p=h.node('stages-recommendation-prepare').onclick();
+ if(mode==='account')h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");if(mode==='graph'){h.node('wf-json').value=JSON.stringify({version:1,id:'new-draft',name:'draft',nodes:[],edges:[]});h.node('wf-json-apply').onclick();}if(mode==='edit'){h.node('wf-name').value='changed';h.node('wf-name').oninput();}if(mode==='input')h.node('stages-recommendation-attempts').value='2';if(mode==='source')response.graph.preparation.source.accountId='B';
+ const expected=h.node('wf-json').value;h.respond('/api/formations/recommendation/prepare','A',response);await p;assert.equal(h.node('wf-json').value,expected);assert.equal(h.run('stagesActionPending'),false);assert.equal(h.pending('/api/workflows/start','A'),undefined);
+});

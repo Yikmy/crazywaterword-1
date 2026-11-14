@@ -723,12 +723,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       ]);
       // Keep the existing read-only policy intact. Stage start has a separate,
       // explicit mutation gate below; no generic game Action route is opened.
+      const stageRecommendationRoute=route==='POST /api/formations/recommendation/prepare';
       const stageRoute = route === 'GET /api/stages' || route === 'POST /api/stages/start' || route === 'POST /api/stages/stop';
       const operationRoute = new Set(['POST /api/operations/recovery/preview', 'POST /api/operations/recovery/confirm', 'GET /api/operations', 'GET /api/operations/history', 'GET /api/operations/memory', 'GET /api/operations/production-policy', 'POST /api/operations/production-policy', 'POST /api/operations/survey', 'POST /api/operations/plan', 'POST /api/operations/authorize', 'POST /api/operations/execute', 'POST /api/operations/stop']).has(route);
       const namedFormationRoute=new Set(['GET /api/formations/named','POST /api/formations/named/save','POST /api/formations/named/rename','POST /api/formations/named/overwrite','POST /api/formations/named/delete','POST /api/formations/named/prepare']).has(route);
       const extremeFormationRoute=new Set(['POST /api/formations/extreme/survey','POST /api/formations/extreme/prepare']).has(route);
       const gameplayRoute=new Set(['POST /api/antiques/summary','GET /api/gameplay','POST /api/gameplay/survey','POST /api/gameplay/config','GET /api/workflows','GET /api/workflows/history','POST /api/workflows/save','POST /api/workflows/simulate','POST /api/workflows/prepare','POST /api/workflows/authorize-run','POST /api/workflows/start','POST /api/workflows/resume','POST /api/workflows/stop']).has(route);
-      if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
+      if (!allowed.has(route) && !stageRoute && !operationRoute && !gameplayRoute && !namedFormationRoute && !extremeFormationRoute && !stageRecommendationRoute && !(req.method === 'GET' && parsed.pathname.startsWith('/api/art/atlas/'))) {
         json({ error: 'STEP 1-A 只读控制台禁止此路由', code: 'READ_ONLY_ROUTE' }, 403);
         return;
       }
@@ -737,7 +738,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         json(runtimeAssetReadiness({ root: assetRoot })); return;
       }
       if (req.method === 'POST') writerOwnership.assertOwned();
-      if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute || extremeFormationRoute) {
+      if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute || extremeFormationRoute || stageRecommendationRoute) {
         // Separate, narrow PHASE 2 gate. The old Web write allowlist stays unchanged.
         const expectedPort = server.address()?.port;
         const acceptedHosts = new Set([host + ':' + expectedPort]);
@@ -752,6 +753,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if(namedFormationRoute&&(parsed.searchParams.getAll('account').length!==1||[...parsed.searchParams.keys()].some(key=>key!=='account')))throw Object.assign(Error('具名阵容需唯一精确账号且不接受其他查询字段'),{code:'INVALID_INPUT',statusCode:400});
         if(route==='POST /api/antiques/summary'&&[...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('古董属性查询只接受唯一精确账号'),{code:'INVALID_INPUT',statusCode:400});
         if(extremeFormationRoute&&[...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('极限来源需唯一精确账号且不接受其他查询字段'),{code:'INVALID_INPUT',statusCode:400});
+        if(stageRecommendationRoute&&[...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('战败建议只接受唯一精确账号'),{code:'INVALID_INPUT',statusCode:400});
         if(route==='GET /api/formations/named'){json({...operations.namedFormations(id),csrfToken:operationCsrf});return;}
         if (stageRoute && req.method === 'GET') { json(stageView(id, sessions.get(id))); return; }
         if (route === 'GET /api/gameplay') { json({...operations.moduleView(id,parsed.searchParams.get('module')),csrfToken:operationCsrf});return; }
@@ -776,6 +778,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (stageRoute) { /* Original Runner uses the common Origin/CSRF gate. */ } else {
         const payload = jsonBody();
         const fields = keys => {if(!payload || typeof payload!=='object' || Array.isArray(payload) || Object.keys(payload).some(key=>!keys.includes(key)))throw Object.assign(new Error('玩法请求包含未知字段'),{statusCode:400});};
+        if(stageRecommendationRoute)fields(['reportId','presetId','maxAttempts']);
         if(extremeFormationRoute){fields(route.endsWith('/survey')?[]:['stage','playerId','worldId','replayId']);}
         if(namedFormationRoute){fields(route.endsWith('/save')?['name']:route.endsWith('/rename')?['id','name','expectedRevision']:['id','expectedRevision']);}
         if(route==='POST /api/formations/named/rename'){json(operations.renameNamedFormation(id,payload));return;}
@@ -793,6 +796,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         const session = sessions.get(id); scoped = session ?? null;
         if (!session?.client?.connected || session.state !== 'READY') { json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return; }
+        if(stageRecommendationRoute){json({...await operations.prepareStageRecommendationSource(session,payload),csrfToken:operationCsrf});return;}
         if(route==='POST /api/formations/extreme/survey'){json({...await operations.extremeFormations(session,payload),csrfToken:operationCsrf});return;}
         if(route==='POST /api/formations/extreme/prepare'){json({...await operations.prepareExtremeFormationSource(session,payload),csrfToken:operationCsrf});return;}
         if(route==='POST /api/formations/named/save'){json(await operations.saveNamedFormation(session,payload));return;}

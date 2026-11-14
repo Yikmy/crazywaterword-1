@@ -793,3 +793,17 @@ test('identity loss while a remembered refusal returns stops before independent 
  let surveys=0;const f=fixture({plan(){f.session.generation++;throw Object.assign(Error('remembered'),{code:'REJECTION_MEMORY_ACTIVE'});},surveyModule(){surveys++;return {};}});
  const result=await f.runner.start(f.session.id,explicitRefusalGraph());assert.equal(result.status,'CANCELLED');assert.equal(surveys,0);assert.equal(result.trace.some(row=>row.result==='BLOCKED_REJECTION_MEMORY'),false);assert.equal(result.plan,null);
 });
+
+function recommendationAuditSource(){return {reportId:JSON.stringify(['original','original-action','original-runner',1]),runId:'original',actionId:'original-action',runnerId:'original-runner',attempt:1,stage:41,accountId:'account-1',playerId:'17',worldId:'7',analysisHash:'a'.repeat(64),rule:'CLIENT_CAREER_LAYOUT',presetId:2,maxAttempts:1,declarativeOnly:true};}
+test('recommendation provenance survives graph and recovered UNKNOWN history without restoring authority',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-recommendation-audit-')),file=path.join(dir,'workflows.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const preparation={entry:'stage-recommendation',blocked:[],source:recommendationAuditSource()},g={...graph(),preparation},store=createWorkflowStore({file,modules}),f=fixture();
+ t.after(async()=>{f.runner.stop();await f.runner.settle();});store.save('account-1',g);const pending=await f.runner.start('account-1',g);assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(f.calls.filter(r=>r[0]==='plan').length,1);assert.deepEqual(pending.preparation,preparation);
+ store.record('account-1',pending);f.runs.push(f.success({finalStatus:'UNKNOWN'}));const stopped=await f.runner.resume();assert.equal(stopped.status,'UNKNOWN');store.record('account-1',stopped);
+ const bytes=fs.readFileSync(file,'utf8'),restart=createWorkflowStore({file,modules}),saved=restart.history('account-1')[0];assert.equal(saved.status,'UNKNOWN');assert.equal(saved.resumable,false);assert.deepEqual(saved.preparation,preparation);assert.deepEqual(restart.list('account-1')[0].preparation,preparation);assert.deepEqual(restart.history('other'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.equal(saved.plan,undefined);
+ const {projectWorkflowExecutionHistory}=await import('../src/workflow.mjs');const projected=projectWorkflowExecutionHistory('account-1',saved,[]);assert.deepEqual(projected.preparation,preparation);assert.equal(projected.resumable,false);
+});
+for(const mode of ['permit','policy','blocked','hash','reference','bound'])test('recommendation audit refuses malformed source without weakening graph validation '+mode,()=>{
+ const preparation={entry:'stage-recommendation',blocked:[],source:recommendationAuditSource()};if(mode==='permit')preparation.source.permitId='no';if(mode==='policy')preparation.source.declarativeOnly=false;if(mode==='blocked')preparation.blocked.push({reason:'skip'});if(mode==='hash')preparation.source.analysisHash='invalid';if(mode==='reference')preparation.source.reportId='other';if(mode==='bound')preparation.source.maxAttempts=201;
+ assert.throws(()=>validateWorkflow({...graph(),preparation},{modules}));
+});

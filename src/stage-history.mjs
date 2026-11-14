@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {parseFormation,recommendFormations,planFormation} from './formation.mjs';
 // Translate the original StageRunner boundaries into the shared execution history.
 // The caller supplies the already-authorized Session. There is no transport here.
 const source = 'STANDALONE_STAGE_V1';
@@ -131,4 +133,39 @@ export function compareStageBattles(before, after) {
   return {status:'COMPARED',stage:before.stage,before:{reportId:before.reportId,outcome:before.outcome},after:{reportId:after.reportId,outcome:after.outcome},damage:{before:damageBefore,after:damageAfter,delta:delta(damageBefore,damageAfter)},heroes,
     gaps:[...(!a||!b?['参战队伍身份或站位不完整']:[]),...(damageBefore===null||damageAfter===null?['伤害统计缺失或不能精确对应参战英雄']:[])],automaticSwitch:false,resumeAllowed:false,
     limitation:'仅记录两次已观察到的差异；阵容、对手、随机及成长变化均可能影响结果，不能证明改阵因果或保证后续胜利。'};
+}
+
+// Preparation provenance is a reference to the originally observed battle. It
+// never supplies eligibility, a retry permit or proof that a future run is safe.
+export function validateStageRecommendationSource(v){
+ const keys=['reportId','runId','actionId','runnerId','attempt','stage','accountId','playerId','worldId','analysisHash','rule','presetId','maxAttempts','declarativeOnly'];
+ const plain=x=>x&&typeof x==='object'&&!Array.isArray(x)&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
+ const text=x=>typeof x==='string'&&x.length>0&&x.length<=1000&&x.trim()===x;
+ const positive=x=>Number.isSafeInteger(x)&&x>0&&x<=2147483647;
+ const role=x=>typeof x==='string'&&/^[1-9][0-9]{0,18}$/.test(x)&&BigInt(x)<(1n<<63n);
+ if(!plain(v)||Reflect.ownKeys(v).length!==keys.length||!keys.every(k=>Object.getOwnPropertyDescriptor(v,k)?.enumerable&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value'))||!['reportId','runId','actionId','runnerId','accountId'].every(k=>text(v[k]))||!role(v.playerId)||!role(v.worldId)||!positive(v.attempt)||!positive(v.stage)||!positive(v.presetId)||!positive(v.maxAttempts)||v.maxAttempts>200||!/^([a-f0-9]{64})$/.test(v.analysisHash)||v.rule!=='CLIENT_CAREER_LAYOUT'||v.declarativeOnly!==true||v.reportId!==JSON.stringify([v.runId,v.actionId,v.runnerId,v.attempt]))throw Object.assign(Error('战败建议来源引用无效'),{code:'INVALID_STAGE_RECOMMENDATION',statusCode:400});
+ return structuredClone(v);
+}
+export function prepareStageRecommendation(report,facts,{accountId,player,progress,presetId,maxAttempts,moduleConfig,now=Date.now()}={}){
+ const fail=message=>{throw Object.assign(Error(message),{code:'STAGE_RECOMMENDATION_UNAVAILABLE',statusCode:409});};
+ const role=x=>typeof x==='number'&&Number.isSafeInteger(x)&&x>0?String(x):typeof x==='string'?x:null;
+ if(!report||report.scope?.accountId!==accountId||report.scope?.playerId!==role(player?.playerId)||report.scope?.worldId!==role(player?.worldId)||report.scope?.battleMode!=='MAINLINE_CHALLENGE'||report.outcome!=='FAILED'||report.analysis?.outcome!=='FAILED'||report.analysis?.status!=='ANALYZED'||report.analysis?.playerSide!=='LEFT'||report.stage!==report.analysis.stage||progress!==report.stage)fail('须选择同账号角色世界、当前关卡的已确认主线战败');
+ if(moduleConfig?.enabled!==true||moduleConfig.mainlineEnabled!==true)fail('须启用原Formation及主线组合');
+ const sourceAt=facts?.formationSource?.sourceAt;if(facts?.formationSource?.source!=='GetFormationResponse'||!Number.isSafeInteger(sourceAt)||!Number.isSafeInteger(now)||now<sourceAt||now-sourceAt>30000)fail('当前阵容来源缺失或已过期');
+ const current=parseFormation(facts.formation),team=report.analysis.leftTeam;
+ const slots=rows=>Array.isArray(rows)?rows.map(r=>({heroId:r?.heroId,pos:r?.pos})).sort((a,b)=>String(a.heroId).localeCompare(String(b.heroId))):null;
+ if(!current||!team||current.presetId!==team.presetId||JSON.stringify(slots(current.heroPositions))!==JSON.stringify(slots(team.members)))fail('当前阵容已不再对应所选战败站位；须重新调查或选择来源');
+ if(!Number.isSafeInteger(maxAttempts)||maxAttempts<1||maxAttempts>200)fail('续跑必须明确1至200次上限');
+ const chosen=recommendFormations(report.analysis,facts,{moduleConfig}).find(row=>row.expectedState?.presetId===presetId);
+ if(!chosen)fail('指定已解锁模板没有当前可执行的职业排序建议');
+ const parameters={presetId,heroPositions:structuredClone(chosen.expectedState.heroPositions)},operation=planFormation(facts,{moduleConfig,parameters}).actions[0];
+ if(!operation)fail('建议无法通过原Formation完整合同');
+ const analysisHash=createHash('sha256').update(JSON.stringify(report.analysis)).digest('hex');
+ const source=validateStageRecommendationSource({reportId:report.reportId,runId:report.runId,actionId:report.actionId,runnerId:report.runnerId,attempt:report.attempt,stage:report.stage,accountId,playerId:role(player.playerId),worldId:role(player.worldId),analysisHash,rule:'CLIENT_CAREER_LAYOUT',presetId,maxAttempts,declarativeOnly:true});
+ const graph={version:1,id:'stage-recommendation-'+analysisHash.slice(0,16)+'-'+presetId,name:'关卡 '+report.stage+' 战败职业布局建议及有限续跑',budget:{resources:[],quotas:[],uids:[]},preparation:{entry:'stage-recommendation',blocked:[],source},nodes:[
+  {id:'start',type:'START'},{id:'save-formation',type:'ACTION',module:'formation',parameters,selection:operation.actionId},
+  {id:'verify-formation',type:'VERIFY',module:'formation'},
+  {id:'retry-mainline',type:'ACTION',module:'stage',parameters:{expectedStage:report.stage,config:{enabled:true,retryDelaySeconds:10,maxAttempts,maxStage:null,stopOnDefeat:true,formation:{enabled:true,presetId}}},selection:{unique:true}},
+  {id:'verify-mainline',type:'VERIFY',module:'stage'},{id:'stop',type:'STOP'}],edges:[{from:'start',to:'save-formation'},{from:'save-formation',to:'verify-formation'},{from:'verify-formation',to:'retry-mainline'},{from:'retry-mainline',to:'verify-mainline'},{from:'verify-mainline',to:'stop'}]};
+ return {source,graph,rule:'CLIENT_CAREER_LAYOUT',limitation:'仅按客户端职业顺序与已解锁模板生成候选，不证明改阵更优。保存和有限主线各自重新调查、授权及复读；首次战败或UNKNOWN停止，不循环改阵。',resumable:false,requiresFreshPlan:true,requiresAuthorization:true};
 }

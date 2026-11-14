@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {battleAnalysis} from '../src/formation.mjs';
+import {battleAnalysis,surveyFormation} from '../src/formation.mjs';
 import {createExecutionHistory} from '../src/execution-history.mjs';
-import {createStandaloneStageJournal,projectStageBattleHistory,compareStageBattles} from '../src/stage-history.mjs';
+import {createStandaloneStageJournal,projectStageBattleHistory,compareStageBattles,prepareStageRecommendation,validateStageRecommendationSource} from '../src/stage-history.mjs';
 
 const context={accountId:'A',playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'synthetic'};
 function analysis(damage='9007199254740993',win=false) {
@@ -66,4 +66,26 @@ for(const change of ['missing-damage','duplicate-damage','extra-damage','wrong-p
 test('comparison never mutates the selected reports or invents a delta for a different participant',()=>{
  const [before,after]=reports(),bytes=JSON.stringify([before,after]);compareStageBattles(before,after);assert.equal(JSON.stringify([before,after]),bytes);
  after.analysis.leftTeam.members[0].heroId='different';after.analysis.leftHeroDamages[0].heroId='different';const result=compareStageBattles(before,after);assert.equal(result.heroes.length,2);assert.ok(result.heroes.every(row=>row.damageDelta===null));
+});
+
+async function recommendationFixture(){
+ const run=record(),report=projectStageBattleHistory('A',[run]).reports[0];report.analysis.leftTeam.presetId=1;
+ const config={tables:{HeroCfg:{data:[{id:'hero',career:'坦克'}]},FormationHeroNumCfg:{data:[{heroNum:1,mainlineStage:0}]},FormationTypePositionCfg:{data:[{id:1,position:[1,2]},{id:2,position:[5,2]}]}}},player={playerId:context.playerId,worldId:context.worldId,mainlineStage:41};
+ const protocol=Object.fromEntries(['GetFormation','MyFormationPreset','AllHero','SaveFormation'].flatMap(n=>[[n+'Request',{}],[n+'Response',{}]])),client={connected:true,async request(name){return name==='GetFormationRequest'?{formation:{presetId:1,petUid:'9007199254740993',heroPositions:[{heroId:'hero',pos:{x:1,y:2}}]}}:name==='MyFormationPresetRequest'?{ids:[2]}:{heroes:[{heroId:'hero'}]};}};
+ const facts=await surveyFormation(client,protocol,{config,player}),options={accountId:'A',player,progress:41,presetId:2,maxAttempts:3,moduleConfig:{enabled:true,mainlineEnabled:true}};
+ return {report,facts,options,prepare(){return prepareStageRecommendation(this.report,this.facts,this.options);}};
+}
+test('battle recommendation preparation fixes source, exact team and bounded original Formation then Stage nodes',async()=>{
+ const f=await recommendationFixture(),prepared=f.prepare();assert.equal(prepared.source.rule,'CLIENT_CAREER_LAYOUT');assert.equal(prepared.source.declarativeOnly,true);assert.equal(prepared.resumable,false);assert.equal(prepared.requiresAuthorization,true);assert.equal(prepared.requiresFreshPlan,true);
+ assert.equal(prepared.graph.nodes[1].module,'formation');assert.deepEqual(prepared.graph.nodes[1].parameters,{presetId:2,heroPositions:[{heroId:'hero',pos:{x:5,y:2}}]});assert.equal(prepared.graph.nodes[2].type,'VERIFY');
+ assert.equal(prepared.graph.nodes[3].module,'stage');assert.equal(prepared.graph.nodes[3].parameters.expectedStage,41);assert.equal(prepared.graph.nodes[3].parameters.config.maxAttempts,3);assert.equal(prepared.graph.nodes[3].parameters.config.stopOnDefeat,true);assert.deepEqual(prepared.graph.nodes[3].parameters.config.formation,{enabled:true,presetId:2});
+ assert.deepEqual(prepared.graph.budget,{resources:[],quotas:[],uids:[]});assert.equal(prepared.source.playerId,'9007199254740993');assert.match(prepared.limitation,/不证明/);prepared.source.stage=42;assert.equal(f.prepare().source.stage,41);
+});
+for(const mode of ['account','role','world','mode','victory','unknown','side','progress','report-stage','team','preset','locked','stale','future','missing-source','disabled','mainline-disabled','unbounded'])test('battle recommendation preparation blocks '+mode,async()=>{
+ const f=await recommendationFixture();if(mode==='account')f.options.accountId='B';if(mode==='role')f.options.player.playerId='2';if(mode==='world')f.options.player.worldId='2';if(mode==='mode')f.report.scope.battleMode='ARENA';if(mode==='victory')f.report.outcome='SUCCESS';if(mode==='unknown')f.report.analysis.status='UNKNOWN';if(mode==='side')f.report.analysis.playerSide='RIGHT';if(mode==='progress')f.options.progress=42;if(mode==='report-stage')f.report.analysis.stage=42;if(mode==='team')f.report.analysis.leftTeam.members[0].pos.x=9;if(mode==='preset')f.report.analysis.leftTeam.presetId=2;if(mode==='locked')f.facts.unlockedPresetIds=[1];if(mode==='stale')f.options.now=f.facts.formationSource.sourceAt+30001;if(mode==='future')f.options.now=f.facts.formationSource.sourceAt-1;if(mode==='missing-source')delete f.facts.formationSource;if(mode==='disabled')f.options.moduleConfig.enabled=false;if(mode==='mainline-disabled')f.options.moduleConfig.mainlineEnabled=false;if(mode==='unbounded')f.options.maxAttempts=null;
+ assert.throws(()=>f.prepare(),{code:'STAGE_RECOMMENDATION_UNAVAILABLE'});
+});
+test('battle recommendation source schema rejects arbitrary authority, mismatching links and executable state',async()=>{
+ const f=await recommendationFixture(),source=f.prepare().source;
+ for(const patch of [{permit:'x'},{declarativeOnly:false},{rule:'BEST_FORMATION'},{reportId:'unbound'},{attempt:0},{maxAttempts:201},{playerId:'01'},{worldId:'9223372036854775808'},{analysisHash:'abc'},{accountId:' '}])assert.throws(()=>validateStageRecommendationSource({...source,...patch}),{code:'INVALID_STAGE_RECOMMENDATION'});
 });

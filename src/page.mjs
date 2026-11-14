@@ -328,6 +328,10 @@ export const PAGE = `<!doctype html>
     <p class="dim">读取运行状态时载入本账号已保存的主线分析。选择同角色、世界及关卡的两份战报查看差异。</p>
     <div class="bar"><label>基准战报 <select id="stages-battle-before" aria-label="基准战报"></select></label><label>对照战报 <select id="stages-battle-after" aria-label="对照战报"></select></label></div>
     <div id="stages-battle-comparison" class="dim" aria-live="polite">尚无可比较战报。</div>
+    <h2>战败建议与有限续跑</h2>
+    <p class="dim">选择同角色世界当前关卡的战败记录，按客户端职业顺序预览指定已解锁模板。准备只生成工作流图，不保证更优；保存阵容与有限主线仍须原授权和独立复读，首次战败或UNKNOWN停止。</p>
+    <div class="bar"><label>来源战败 <select id="stages-recommendation-report"></select></label><label>目标模板 <input id="stages-recommendation-preset" type="number" min="1" step="1"></label><label>最多尝试 <input id="stages-recommendation-attempts" type="number" min="1" max="200" step="1" value="1"></label><button id="stages-recommendation-prepare" disabled>调查并准备建议工作流</button></div>
+    <div id="stages-recommendation-hint" class="dim" role="status"></div>
   </section>
   <section id="tab-idle" class="hidden">
     <div class="bar">
@@ -1349,6 +1353,7 @@ function resetStages() {
   $('stages-status').textContent = '选择账号后读取已有运行状态。';
   $('stages-countdown').textContent = ''; $('stages-history').textContent = '尚无记录。';
   $('stages-delay-policy').textContent = '';
+  clear($('stages-recommendation-report'));$('stages-recommendation-preset').value='';$('stages-recommendation-attempts').value='1';$('stages-recommendation-hint').textContent='';$('stages-recommendation-prepare').disabled=true;
   clear($('stages-battle-before')); clear($('stages-battle-after')); $('stages-battle-comparison').textContent='尚无可比较战报。';
 }
 function stageConfig() {
@@ -1370,6 +1375,9 @@ function stageControls() {
   const busy = stagesActionPending || runner.running === true || runner.inFlight === true || operationsLocked();
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
+  const recommendationBlocked=!current||Boolean(snapshot.busy)||!stagesData?.available||!snapshot.connected||snapshot.state!=='READY'||busy||runner.uncertain===true||!stageRecommendationEditable();
+  for(const id of ['stages-recommendation-report','stages-recommendation-preset','stages-recommendation-attempts'])$(id).disabled=recommendationBlocked;
+  $('stages-recommendation-prepare').disabled=recommendationBlocked||!$('stages-recommendation-report').value;
   for (const id of ['stages-enabled', 'stages-stop-on-defeat', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = busy;
 }
 function updateStageCountdown() {
@@ -1396,6 +1404,9 @@ $('stages-battle-before').onchange=renderStageBattleComparison;
 $('stages-battle-after').onchange=renderStageBattleComparison;
 function renderStageBattleHistory(data) {
   const reports=data?.reports||[];
+  const recommendation=$('stages-recommendation-report'),previous=recommendation.value,defeats=reports.filter(row=>row.outcome==='FAILED');clear(recommendation);
+  for(const row of defeats)recommendation.appendChild(new Option('关卡 '+row.stage+' · 角色 '+row.scope.playerId+' / 世界 '+row.scope.worldId+' · '+(row.at||row.runId),row.reportId));
+  recommendation.value=defeats.some(row=>row.reportId===previous)?previous:defeats[0]?.reportId||'';
   for(const [id,index] of [['stages-battle-before',1],['stages-battle-after',0]]) {
     const select=$(id),previous=select.value;clear(select);
     for(const row of reports)select.appendChild(new Option('关卡 '+row.stage+' · '+row.outcome+' · 角色 '+row.scope.playerId+' / 世界 '+row.scope.worldId+' · '+(row.at||row.runId),row.reportId));
@@ -1447,6 +1458,23 @@ function renderStages(data) {
   renderStageBattleHistory(data.battleHistory);
   updateStageCountdown(); stageControls(); renderAccountSelect();
 }
+
+$('stages-recommendation-report').onchange=stageControls;
+$('stages-recommendation-prepare').onclick=async()=>{
+ if($('stages-recommendation-prepare').disabled||stagesActionPending||!stageRecommendationEditable())return;
+ const scope=viewGuard.begin('stage-recommendation'),editor=captureStageRecommendationEditor();
+ const reportId=$('stages-recommendation-report').value,presetText=$('stages-recommendation-preset').value,attemptText=$('stages-recommendation-attempts').value;
+ const active=()=>viewGuard.current(scope)&&snapshot.connected&&snapshot.state==='READY'&&!snapshot.busy&&editor.current()&&reportId===$('stages-recommendation-report').value&&presetText===$('stages-recommendation-preset').value&&attemptText===$('stages-recommendation-attempts').value;
+ try{
+  const integer=(value,max)=>{if(!/^[1-9][0-9]*$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)>max)throw Error('模板须为正int32，最多尝试须为1至200的明确整数');return Number(value);};
+  const payload={reportId,presetId:integer(presetText,2147483647),maxAttempts:integer(attemptText,200)};
+  stagesActionPending=true;stageControls();$('stages-recommendation-hint').textContent='正在调查原阵容并核对持久战败来源；准备不执行写操作。';
+  const data=await stageMutation('/api/formations/recommendation/prepare',payload,scope);
+  if(!active())return;if(data.graph?.preparation?.source?.reportId!==reportId||data.graph.preparation.source.accountId!==scope.account)throw Error('建议来源与所选账号战报不匹配');
+  editor.accept(data.graph);$('wf-result').textContent=JSON.stringify({source:data.source,limitation:data.limitation},null,2);$('wf-hint').textContent='已加载战败建议图。请检查来源、目标站位及尝试上限，保存图后由原流程逐批授权。';$('stages-recommendation-hint').textContent=data.limitation||'已准备原工作流图，尚未保存阵容或开战。';
+ }catch(error){if(viewGuard.current(scope))$('stages-recommendation-hint').textContent='准备失败：'+error.message;}
+ finally{if(viewGuard.current(scope)){stagesActionPending=false;stageControls();}}
+};
 async function refreshStages() {
   if (!current || stagesActionPending) return;
   const scope = viewGuard.begin('stages');
@@ -1465,7 +1493,7 @@ async function refreshStages() {
 async function stageMutation(path, payload, scope) {
   viewGuard.assert(scope);
   if (!scope.account) throw new Error('请先选择账号');
-  if (path !== '/api/stages/start' && path !== '/api/stages/stop') throw new Error('未开放此闯关操作');
+  if (path !== '/api/stages/start' && path !== '/api/stages/stop' && path !== '/api/formations/recommendation/prepare') throw new Error('未开放此闯关操作');
   if (path === '/api/stages/start' && payload.confirm !== true) throw new Error('开战需要明确授权');
   if (stagesData?.accountId !== scope.account || !stagesData?.csrfToken) throw new Error('请先重新读取当前账号闯关授权上下文');
   const url = new URL(path, location.href); url.searchParams.set('account', scope.account);
