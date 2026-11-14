@@ -3,7 +3,7 @@
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from './order-execution.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { defaultOrderRules } from './order-rules.mjs';
-import { defaultProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
+import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan } from './production-planning.mjs';
@@ -81,8 +81,8 @@ function viewCityDomain(id, facts, options = {}) {
   const args = context(options), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
   const candidates = view.candidates.filter(row => kinds(id).has(row.actionType)).map(row => gated({ ...row, module: id }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
-    : { module: id, ...planning, stock: view.stock, candidates, productionShortages: productionShortages(facts), productionPolicy: args.productionPolicy,
-      productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, candidates }), notes: view.notes };
+    : { module: id, ...planning, stock: view.stock, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
+      productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };
 }
 function planCityDomain(id, facts, options = {}) {
   const args = context(options), ids = selections(options.selections, args.mode);
@@ -90,7 +90,7 @@ function planCityDomain(id, facts, options = {}) {
   const candidates = domainCandidates(id, facts, args);
   if (ids.some(actionId => !candidates.some(row => row.actionId === actionId))) throw invalid('选择不属于该核心业务的当前候选');
   if (args.mode === 'Automatic') {
-    const allowed = selectProductionCandidates(facts, { policy: args.productionPolicy, candidates });
+    const allowed = selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates });
     if (candidates.some(row => ids.includes(row.actionId) && row.actionType === 'startProduce' && !allowed.includes(row.actionId))) {
       throw Object.assign(new Error('自动生产未启用或超出当前账号策略范围'), { code: 'PRODUCTION_POLICY_REQUIRED', statusCode: 409 });
     }

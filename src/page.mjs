@@ -260,10 +260,17 @@ export const PAGE = `<!doctype html>
     <div class="bar"><button id="production-policy-load">读取本地生产策略</button><button id="production-policy-save" disabled>保存本账号策略</button><button id="production-select-recommended" disabled>选择本次推荐生产</button></div>
     <div class="bar">
       <label><input id="production-policy-enabled" type="checkbox" disabled> 启用本批次自动生产策略</label>
-      <label><input id="production-policy-shortages" type="checkbox" disabled checked> 仅生产当前订单缺口</label>
+      <label><input id="production-policy-shortages" type="checkbox" disabled checked> 仅生产当前订单缺口（可加入显式作物策略）</label>
       <label>产品 ID <input id="production-policy-products" placeholder="逗号分隔；留空不限定" disabled></label>
       <label>每批最大操作数 <input id="production-policy-limit" type="number" min="1" max="100" step="1" value="10" disabled></label>
     </div>
+    <div class="bar">
+      <label><input id="production-policy-crops" type="checkbox" disabled> 加入种子储备与过剩作物需求</label>
+      <label>作物水位上限 <input id="production-policy-crop-cap" type="number" min="0" max="1000000" step="1" value="250" disabled></label>
+      <label>种子目标储备 <input id="production-policy-seed-reserve" type="number" min="0" max="100" step="1" value="8" disabled></label>
+      <label>每配方过剩份数上限 <input id="production-policy-surplus-limit" type="number" min="0" max="100" step="1" value="3" disabled></label>
+    </div>
+    <p class="dim">作物供给需同时启用仅生产需求。先保留订单物资，再补种子或将水位以上作物转为成品；队列和成品抵扣需求，不作可花库存。每批仍须探测、预览和授权。</p>
     <div id="production-policy-source" class="dim">尚未读取本账号策略。</div><div id="production-policy-hint" class="warn" role="status"></div>
     <div id="ops-production">尚未探测工厂。</div>
     <h2>库存与生产缺口</h2><div id="ops-stock"></div>
@@ -934,6 +941,7 @@ function resetOperations() {
   productionPolicyData = null; productionPolicyDraft = null; productionPolicyDirty = false; productionPolicyPending = false;
   $('production-policy-enabled').checked = false; $('production-policy-shortages').checked = true;
   $('production-policy-products').value = ''; $('production-policy-limit').value = '10';
+  $('production-policy-crops').checked = false; $('production-policy-crop-cap').value = '250'; $('production-policy-seed-reserve').value = '8'; $('production-policy-surplus-limit').value = '3';
   $('production-policy-source').textContent = '尚未读取本账号策略。'; $('production-policy-hint').textContent = '';
   for (const id of ['ops-orders', 'ops-city', 'ops-production', 'ops-stock', 'ops-notes', 'ops-hint', 'ops-history-hint', 'ops-plan-actions']) clear($(id));
   $('ops-status').textContent = '选择账号后读取已有运行状态。';
@@ -958,7 +966,7 @@ function operationControls() {
   const policyBusy = productionPolicyPending || operationsPending || locked;
   $('production-policy-load').disabled = !current || productionPolicyPending;
   $('production-policy-save').disabled = !current || !operationsData?.csrfToken || !productionPolicyDraft || policyBusy;
-  for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit']) $(id).disabled = !productionPolicyDraft || policyBusy;
+  for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit', 'production-policy-crops', 'production-policy-crop-cap', 'production-policy-seed-reserve', 'production-policy-surplus-limit']) $(id).disabled = !productionPolicyDraft || policyBusy;
   $('production-select-recommended').disabled = !ready || policyBusy || productionPolicyDirty || !operationsData?.view?.productionPolicy?.enabled || !(operationsData?.view?.productionRecommendations || []).length;
   const mode = $('ops-mode').value || 'Manual';
   $('ops-mode-note').textContent = mode === 'Manual' ? 'Manual：逐单或逐项查看决策并授权。KEEP / REVIEW 保持不执行。' : mode === 'Hybrid' ? 'Hybrid：用户选择的刷新可组成批次；订单提交逐单授权。' : 'Automatic：仅执行本次明确选择与授权的操作列表；新订单、新计划必须重新授权，不自动循环。';
@@ -1040,9 +1048,10 @@ function renderOperationCandidates() {
   const shortages = view.productionShortages;
   if (shortages?.reliable === true && Array.isArray(shortages.items)) {
     stock.appendChild(el('h3', null, '可靠生产缺口汇总'));
-    stock.appendChild(table(['材料', '订单需求', '现有库存', '在产数量', '待收成品', '剩余缺口'], shortages.items.map((item) => [item.id, item.required, item.inventory, item.inProgress, item.finished, item.missing])));
+    stock.appendChild(table(['材料', shortages.cropSupply ? '目标需求（含策略）' : '订单需求', '现有库存', '在产数量', '待收成品', '剩余缺口', '需求来源'], shortages.items.map((item) => [item.id, item.required, item.inventory, item.inProgress, item.finished, item.missing, (item.sources || ['ORDERS']).map(source => ({ORDERS:'订单',SEED_RESERVE:'种子储备',SURPLUS_CROP:'过剩作物'})[source] || source).join('、')])));
     if (!shortages.items.length) stock.appendChild(el('div', 'dim', '当前可靠汇总无缺口条目。'));
   } else stock.appendChild(el('div', 'warn', 'UNKNOWN · 生产缺口未知：库存、订单或生产队列数据不完整，不按 0 处理。'));
+  if (shortages?.cropSupply) stock.appendChild(el('div', 'dim', shortages.cropSupply.reliable === true ? '作物水位和储备为本账号策略目标；新增排产仍须独立授权与复读。' : '作物策略 UNKNOWN · ' + (shortages.cropSupply.reason || '来源不完整') + '；独立订单需求继续保留。'));
   for (const note of shortages?.notes || []) stock.appendChild(el('div', 'dim', typeof note === 'string' ? note : JSON.stringify(note)));
   const notes = clear($('ops-notes'));
   if (view.source) notes.appendChild(el('div', 'dim', view.source));
@@ -1153,6 +1162,8 @@ function renderProductionPolicy(data) {
   productionPolicyData = data; productionPolicyDraft = JSON.parse(JSON.stringify(data.config)); productionPolicyDirty = false;
   $('production-policy-enabled').checked = data.config.enabled === true; $('production-policy-shortages').checked = data.config.onlyShortages === true;
   $('production-policy-products').value = (data.config.productIds || []).join(', '); $('production-policy-limit').value = String(data.config.maxOperations ?? 10);
+  const crops = data.config.cropSupply;
+  $('production-policy-crops').checked = crops?.enabled === true; $('production-policy-crop-cap').value = String(crops?.cropCap ?? 250); $('production-policy-seed-reserve').value = String(crops?.seedReserve ?? 8); $('production-policy-surplus-limit').value = String(crops?.maxSurplusPerRecipe ?? 3);
   $('production-policy-source').textContent = '本地账号策略 · ' + (data.source || '本账号配置') + (data.warning ? ' · ' + data.warning : '');
   operationControls();
 }
@@ -1165,17 +1176,21 @@ async function refreshProductionPolicy() {
 }
 function editProductionPolicy() {
   if (!productionPolicyDraft || productionPolicyPending || operationsPending || operationsLocked()) return;
+  const keepCropSupply = $('production-policy-crops').checked || Object.prototype.hasOwnProperty.call(productionPolicyDraft, 'cropSupply');
   productionPolicyDraft = { version: 1, enabled: $('production-policy-enabled').checked, onlyShortages: $('production-policy-shortages').checked,
     productIds: $('production-policy-products').value.split(/[,，]/).map((id) => id.trim()).filter(Boolean), maxOperations: Number($('production-policy-limit').value) };
+  if (keepCropSupply) { const number = id => $(id).value.trim() === '' ? NaN : Number($(id).value); productionPolicyDraft.cropSupply = {enabled:$('production-policy-crops').checked,cropCap:number('production-policy-crop-cap'),seedReserve:number('production-policy-seed-reserve'),maxSurplusPerRecipe:number('production-policy-surplus-limit')}; }
   productionPolicyDirty = true; invalidateOperationPlan(); renderOperationSelection(); $('production-policy-hint').textContent = '有未保存修改；保存后请重新探测本批次推荐。';
 }
 $('production-policy-load').onclick = refreshProductionPolicy;
-for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit']) $(id).onchange = editProductionPolicy;
-for (const id of ['production-policy-products', 'production-policy-limit']) $(id).oninput = editProductionPolicy;
+for (const id of ['production-policy-enabled', 'production-policy-shortages', 'production-policy-products', 'production-policy-limit', 'production-policy-crops', 'production-policy-crop-cap', 'production-policy-seed-reserve', 'production-policy-surplus-limit']) $(id).onchange = editProductionPolicy;
+for (const id of ['production-policy-products', 'production-policy-limit', 'production-policy-crop-cap', 'production-policy-seed-reserve', 'production-policy-surplus-limit']) $(id).oninput = editProductionPolicy;
 $('production-policy-save').onclick = async () => {
   if ($('production-policy-save').disabled) return;
   const config = productionPolicyDraft;
   if (!Number.isSafeInteger(config.maxOperations) || config.maxOperations < 1 || config.maxOperations > 100 || new Set(config.productIds).size !== config.productIds.length) { $('production-policy-hint').textContent = '每批操作数须为 1–100 的整数，产品 ID 不可重复。'; return; }
+  const crop = config.cropSupply;
+  if (crop && ((!config.onlyShortages && crop.enabled) || ![['cropCap',1000000],['seedReserve',100],['maxSurplusPerRecipe',100]].every(([key,max]) => Number.isSafeInteger(crop[key]) && crop[key] >= 0 && crop[key] <= max))) { $('production-policy-hint').textContent = '作物策略需要仅生产需求；水位须为0–1000000、种子与过剩份数须为0–100的整数。'; return; }
   const scope = viewGuard.begin('production-policy'); productionPolicyPending = true; operationControls();
   try {
     const data = await operationMutation('/api/operations/production-policy', { config }, scope); renderProductionPolicy(data);

@@ -254,7 +254,7 @@ export async function executeCityAction(client, protocol, planned, {
       || stable(candidate.target) !== stable(planned.target) || candidate.actionType !== planned.actionType
       || stable(candidate.action) !== stable(planned.action)) return finish('NOT_EXECUTED', { error: '城市计划的目标、状态或成本已改变，请重新规划' });
     if (mode === 'Automatic' && candidate.actionType === 'startProduce'
-      && !selectProductionCandidates(beforeSurvey, { policy: productionPolicy, candidates: currentView.candidates }).includes(candidate.actionId)) {
+      && !selectProductionCandidates(beforeSurvey, { policy: productionPolicy, config, candidates: productionPolicy?.cropSupply?.enabled ? [candidate] : currentView.candidates }).includes(candidate.actionId)) {
       return finish('NOT_EXECUTED', { error: '当前生产需求或队列已变化，操作已超出自动生产策略范围' });
     }
     detail.beforeState = candidate.beforeState;

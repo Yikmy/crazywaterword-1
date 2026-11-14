@@ -167,3 +167,16 @@ test('production history API selects a valid calendar date without filtering awa
     assert.equal(app.sessions.size,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
   }finally{await app.close();}
 });
+
+
+test('crop supply settings use original exact-account CSRF API and never allocate a runtime or grant a production permit', async()=>{
+  const app=await harness();try{
+    await app.call();const config={version:1,enabled:true,onlyShortages:true,productIds:[],maxOperations:3,cropSupply:{enabled:true,cropCap:250,seedReserve:8,maxSurplusPerRecipe:3}};
+    assert.equal((await app.call('/api/operations/production-policy',{body:{config},authorized:false})).status,403);
+    const saved=await app.call('/api/operations/production-policy',{body:{config}});assert.equal(saved.status,200);assert.deepEqual(saved.data.config,config);
+    assert.deepEqual((await app.call('/api/operations/production-policy')).data.config,config);assert.equal((await app.call('/api/operations/production-policy',{id:'B'})).data.config.cropSupply,undefined);
+    for(const changed of [{...config,onlyShortages:false},{...config,cropSupply:{...config.cropSupply,seedReserve:101}},{...config,cropSupply:{...config.cropSupply,allowPaid:true}}])assert.equal((await app.call('/api/operations/production-policy',{body:{config:changed}})).status,400);
+    const denied=await app.call('/api/operations/execute',{body:{confirm:true}});assert.equal(denied.status,409);assert.equal(denied.data.code,'NOT_CONNECTED');
+    assert.equal(app.sessions.size,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
+  }finally{await app.close();}
+});

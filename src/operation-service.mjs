@@ -9,7 +9,7 @@ import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { createNamedFormationStore, NAMED_FORMATION_SCOPE } from './named-formations.mjs';
 import { ResourceLedger, resourceCosts, createRunBudgetContext, normalizeBudgetClaims, operationBudgetClaims } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, stopsExecution } from './execution.mjs';
-import { loadProductionPolicy, saveProductionPolicy, selectProductionCandidates, productionShortages } from './production-policy.mjs';
+import { loadProductionPolicy, saveProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { summarizeProductionHistory, validateProductionReportDate } from './production-report.mjs';
 import { collectOperationRecovery, buildVerifiedReceipt, RECOVERY_DISPATCH_CONTRACT } from './operation-recovery.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -188,7 +188,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const orders = orderPlanner(facts, { config, rules, mode: 'Manual', ledger: new ResourceLedger(facts.stock), selections: [] });
     const city = cityViewer(facts, { config });
     const production = loadProduction(accountId);
-    return { orders: (orders.rows ?? []).map(({ action, ...row }) => row), city: { ...city, candidates: city.candidates.map(({ action, ...row }) => row) }, productionShortages: productionShortages(facts), productionPolicy: production.config, productionPolicyWarning: production.warning, productionRecommendations: selectProductionCandidates(facts, { policy: production.config, candidates: city.candidates }), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
+    return { orders: (orders.rows ?? []).map(({ action, ...row }) => row), city: { ...city, candidates: city.candidates.map(({ action, ...row }) => row) }, productionShortages: productionDemand(facts,{policy:production.config,config}), productionPolicy: production.config, productionPolicyWarning: production.warning, productionRecommendations: selectProductionCandidates(facts, { policy: production.config, config, candidates: city.candidates }), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
   }
   async function surveyAccount(session) {
     const release = acquire(session, 'operations:SURVEY');
@@ -404,7 +404,7 @@ function authorizeWorkflowPlan(session,payload){
       if (operations.length !== selections.length || operations.some(action => !selections.includes(action.actionId))) throw error('操作已变化、无法执行或预算不足；请重新采集和选择', 'STALE_PLAN');
       if (mode === 'Hybrid' && operations.some(op => op.actionType === 'SUBMIT') && operations.length !== 1) throw error('Hybrid 提交需逐单授权', 'INVALID_INPUT', 400);
       if (!adapter && mode === 'Automatic') {
-        const allowed = selectProductionCandidates(facts, { policy: production, candidates: cityViewer(facts, { config }).candidates });
+        const allowed = selectProductionCandidates(facts, { policy: production, config, candidates: cityViewer(facts, { config }).candidates });
         if (operations.some(op => op.actionType === 'startProduce' && !allowed.includes(op.actionId))) throw error('自动生产未启用或超出当前账号策略范围', 'PRODUCTION_POLICY_REQUIRED');
       }
       // Keep the server's deterministic dependency order; no caller-supplied request/body is accepted.

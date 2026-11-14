@@ -64,9 +64,13 @@ export function packCoverPlan(config,{costs,stock}={}){
 }
 
 export const CROP_SUPPLY_POLICY=Object.freeze({cropCap:250,seedReserve:8,maxSurplusPerRecipe:3});
+export function validateCropSupplyPolicy(policy) {
+ if(!policy||Object.keys(policy).some(key=>!['cropCap','seedReserve','maxSurplusPerRecipe'].includes(key))||!['cropCap','seedReserve','maxSurplusPerRecipe'].every(key=>Number.isSafeInteger(policy[key])&&policy[key]>=0)||policy.cropCap>1000000||policy.seedReserve>100||policy.maxSurplusPerRecipe>100)throw new TypeError('Invalid finite crop strategy');
+ return {...policy};
+}
 export function cropSupplyPlan(config,{stock,buildings,farmsReliable=false,policy=CROP_SUPPLY_POLICY}={}){
  const crops=rows(config,'FarmlandPlantCfg'),recipes=rows(config,'BuildingProduceCfg');
- if(!policy||Object.keys(policy).some(key=>!['cropCap','seedReserve','maxSurplusPerRecipe'].includes(key))||!['cropCap','seedReserve','maxSurplusPerRecipe'].every(key=>Number.isSafeInteger(policy[key])&&policy[key]>=0)||policy.cropCap>1000000||policy.seedReserve>100||policy.maxSurplusPerRecipe>100)throw new TypeError('Invalid finite crop strategy');
+ validateCropSupplyPolicy(policy);
  if(!(stock instanceof Map)||!farmsReliable||!Array.isArray(buildings)||!unique(crops,'id')||!Array.isArray(recipes))return {...unknown('CROP_FACT_UNKNOWN'),waterlines:[],seedDemand:[],surplusDemand:[],projectionOnly:true};
  const types=new Set(crops.map(row=>row.id)),uses=new Map([...types].map(key=>[key,0])),normalized=[];
  for(const recipe of recipes){

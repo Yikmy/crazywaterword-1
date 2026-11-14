@@ -761,3 +761,25 @@ test('production history date rejects invalid edits and mismatched server dates 
   h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport:{date:'2026-11-11',coverage:'tool-verified-only',collected:[{id:'wrong-date',num:77}]}});await pending;
   assert.match(h.node('ops-history-hint').textContent,/日期/);assert.doesNotMatch(h.node('ops-production-report').textContent,/wrong-date/);
 });
+
+
+test('crop supply form preserves explicit finite settings through ordinary edits, saves only locally and resets on account switch',async()=>{
+  const h=await boot();await load(h);const reading=h.node('production-policy-load').onclick();h.respond('/api/operations/production-policy','A',{accountId:'A',config:fixture().view.productionPolicy,source:'ACCOUNT'});await reading;
+  assert.equal(h.node('production-policy-crops').checked,false);
+  h.node('production-policy-crops').checked=true;h.node('production-policy-crop-cap').value='200';h.node('production-policy-seed-reserve').value='4';h.node('production-policy-surplus-limit').value='2';h.node('production-policy-crops').onchange();
+  h.node('production-policy-products').value='小麦种子,面包';h.node('production-policy-products').oninput();
+  const saving=h.node('production-policy-save').onclick(),request=h.pending('/api/operations/production-policy','A'),config=body(request).config;
+  assert.deepEqual(config.cropSupply,{enabled:true,cropCap:200,seedReserve:4,maxSurplusPerRecipe:2});assert.deepEqual(config.productIds,['小麦种子','面包']);
+  h.respond('/api/operations/production-policy','A',{accountId:'A',config,source:'ACCOUNT'});await saving;
+  assert.equal(h.node('production-policy-crops').checked,true);assert.equal(h.node('production-policy-seed-reserve').value,'4');assert.equal(h.pending('/api/operations/execute','A'),undefined);
+  h.node('production-policy-limit').value='5';h.node('production-policy-limit').oninput();assert.equal(h.run('productionPolicyDraft.cropSupply.seedReserve'),4);
+  h.run("selectAccount('B')");assert.equal(h.node('production-policy-crops').checked,false);assert.equal(h.node('production-policy-crop-cap').value,'250');assert.equal(h.node('production-policy-crops').disabled,true);
+});
+
+test('invalid crop supply values stay local and strategy requirements expose their source without claiming server stock',async()=>{
+  const h=await boot();await load(h);const reading=h.node('production-policy-load').onclick();h.respond('/api/operations/production-policy','A',{accountId:'A',config:fixture().view.productionPolicy});await reading;
+  h.node('production-policy-crops').checked=true;h.node('production-policy-seed-reserve').value='101';h.node('production-policy-crops').onchange();let count=h.requests.length;await h.node('production-policy-save').onclick();assert.equal(h.requests.length,count);assert.match(h.node('production-policy-hint').textContent,/作物策略/);
+  h.node('production-policy-seed-reserve').value='';h.node('production-policy-seed-reserve').oninput();await h.node('production-policy-save').onclick();assert.equal(h.requests.length,count);
+  const state=fixture();state.view.productionShortages={reliable:true,items:[{id:'小麦种子',required:8,inventory:1,inProgress:2,finished:1,missing:4,sources:['SEED_RESERVE']},{id:'面包',required:3,inventory:0,inProgress:0,finished:0,missing:3,sources:['SURPLUS_CROP']}],cropSupply:{reliable:true}};
+  await load(h,state);assert.match(h.node('ops-stock').textContent,/种子储备/);assert.match(h.node('ops-stock').textContent,/过剩作物/);assert.match(h.node('ops-stock').textContent,/本账号策略目标/);
+});
