@@ -16,6 +16,17 @@ function parametersOf(parameters = {}) {
   return parameters;
 }
 
+// A daily/Loop intent selects exactly one existing cargo operation. Eligibility,
+// material costs and settlement remain owned by the original Fleet contract.
+export function fleetCargoFillSelection(input) {
+  strictParameters(input, ['shipIndex', 'cargoIndex']);
+  if (!input || Reflect.ownKeys(input).length !== 2 || !['shipIndex','cargoIndex'].every(key => {
+    const descriptor=Object.getOwnPropertyDescriptor(input,key);
+    return descriptor?.enumerable && Object.hasOwn(descriptor,'value') && Number.isSafeInteger(descriptor.value) && descriptor.value>=1 && descriptor.value<=2147483647;
+  })) throw invalid('装货需要明确的正int32 shipIndex和cargoIndex，不能包含其他舰队动作参数');
+  return {actionId:'fleet:cargoFill:'+input.shipIndex+':'+input.cargoIndex};
+}
+
 // Cargo uses protocol DisplayAssetType ITEM=0 / RESOURCE=1. The expected
 // rewards come from the original order/arrival, never from the write response.
 const cargoStatusText = Object.freeze({0:'采购中',1:'航行中',2:'已返回'});

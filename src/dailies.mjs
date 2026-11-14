@@ -339,15 +339,10 @@ export const DAILY_DRIVERS = {
   1008: {
     id: 1008,
     title: '累计贸易次数',
-    probes: [['CargoShipsRequest', {}], ['TradeInfoRequest', {}]],
-    evaluate({ task, probe }) {
+    probes: [['CargoShipsRequest', {}]],
+    evaluate({ task }) {
       if (task.progress >= task.targetProgress) return { status: 'done' };
-      const ships = probe('CargoShipsRequest')?.ship ?? [];
-      const cargo = probe('TradeInfoRequest')?.worldCargo ?? [];
-      if (!ships.length && !cargo.length) {
-        return { status: 'blocked', reason: '没有货轮也没有世界货物，贸易需要先在地图上接货' };
-      }
-      return { status: 'blocked', reason: '货轮贸易要在地图上选航线，未找到可自动化的入口' };
+      return { status: 'blocked', functionId: 'fleet', reason: '港口货轮可经统一执行明确单船单格装货；不补购缺料，日常完成及领奖须独立核实' };
     },
   },
 

@@ -4,6 +4,7 @@ import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
+import { fleetCargoFillSelection } from './fleet.mjs';
 import { validateMailParameters } from './mail.mjs';
 import { validatePirateSweepParameters } from './pirate-operations.mjs';
 import { validateAfkLevelRewardsParameters } from './afk-level-rewards.mjs';
@@ -204,9 +205,10 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确任务或档位ID，不接受驱动或协议参数');
           module='task-rewards';parameters=gift?{kind:row.kind,packId:row.packId}:activity?{kind:'daily-activity',tierId:row.tierId}:{kind:'daily',taskId:row.taskId};
         }else{
-          module=({1002:'free-recruit',1003:'stage',1006:'free-gold',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
+          module=({1002:'free-recruit',1003:'stage',1006:'free-gold',1008:'fleet',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
+          if(module==='fleet')try{selection=fleetCargoFillSelection(parameters);}catch{invalid('日常1008仅支持明确货轮和货格的单次装货；任务进度需独立观察');}
           if(module==='alliance')try{selection=allianceOrderSelection(parameters);}catch{invalid('日常1012仅支持明确城市的联盟订单');}
           if(module==='museum')try{selection=museumStartExploreSelection(parameters);}catch{invalid('日常1016仅支持明确关卡、英雄队伍及时间倍率的探险出发');}
           if(module==='pirate-sweep'){

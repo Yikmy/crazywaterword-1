@@ -1922,7 +1922,7 @@ const DAILY_LABEL = { ready: '可做', paid: '需付费', partial: '部分可做
 
 function renderDailyChecklist(data) {
   const view=data.checklist,box=clear($('dailies-table')),known=value=>value??'未知';
-  const unifiedDrivers={stage:'统一执行：主线战斗；明确最多尝试次数，战败停止',alliance:'统一执行：联盟城市募兵订单；明确城市ID',museum:'统一执行：博物馆出发；明确关卡、英雄队伍和时间倍率'};
+  const unifiedDrivers={fleet:'统一执行：港口货轮单格装货；明确货轮及货格，任务完成另行观察',stage:'统一执行：主线战斗；明确最多尝试次数，战败停止',alliance:'统一执行：联盟城市募兵订单；明确城市ID',museum:'统一执行：博物馆出发；明确关卡、英雄队伍和时间倍率'};
   const labels={CLAIMED:'已领',ELIGIBLE:'达到门槛',INCOMPLETE:'未达标',UNKNOWN:'未知'};
   box.appendChild(table(['每日任务','进度','奖励状态','完成途径','配置奖励 / 当前限制'],view.tasks.rows.map(row=>{
     const driver=(data.tasks||[]).find(entry=>entry.task.id===row.taskId);

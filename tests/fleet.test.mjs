@@ -82,3 +82,12 @@ test('fleet view exposes only the existing WorldInfo city list with explicit sou
  const f=facts(),result=view(f);assert.deepEqual(result.cities,f.cities);assert.equal(result.citiesReliable,true);
  f.citiesReliable=false;assert.equal(view(f).citiesReliable,false);delete f.citiesReliable;assert.equal(view(f).citiesReliable,false);delete f.cities;assert.deepEqual(view(f).cities,[]);
 });
+
+test('daily cargo selection only picks the exact original fill among other ships slots and claims',async()=>{
+ const {fleetCargoFillSelection}=await import('../src/fleet.mjs');const f=facts();f.ships[0].orderItem.push(structuredClone(f.ships[0].orderItem[0]));f.ships.push({...structuredClone(f.ships[0]),index:2});
+ const parameters={shipIndex:2,cargoIndex:2},selection=fleetCargoFillSelection(parameters),planned=planFleet(f,{moduleConfig:enabled,parameters,selections:[selection]});
+ assert.equal(planned.actions.length,1);assert.equal(planned.actions[0].actionType,'cargoFill');assert.deepEqual(planned.actions[0].action.body,{shipIndex:2,cargoIndex:[2]});
+ assert.deepEqual(planned.actions[0].costs,[{id:'木材',num:6}]);f.stock.set('木材',5);assert.deepEqual(planFleet(f,{moduleConfig:enabled,parameters,selections:[selection]}).actions,[]);
+ let calls=0;const getter={shipIndex:1,get cargoIndex(){calls++;return 1;}};assert.throws(()=>fleetCargoFillSelection(getter));assert.equal(calls,0);
+ for(const value of [null,[],Object.assign(Object.create({shipIndex:1}),{cargoIndex:1}),{shipIndex:1,cargoIndex:1,[Symbol('raw')]:1}])assert.throws(()=>fleetCargoFillSelection(value));
+});

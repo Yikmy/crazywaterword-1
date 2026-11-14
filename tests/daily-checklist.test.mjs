@@ -231,7 +231,7 @@ test('seasonal cached observations require the current API context when supplied
 });
 test('cached daily rows expose original unified drivers without inventing execution eligibility or driver targets',()=>{
  const taskIds=[1003,1012,1016,1008,1013,1014],state={raw:{DailyTaskInfoRequest:typed('DailyTaskInfoRequest',{dailyTask:taskIds.map(id=>({id,progress:0,targetProgress:1,rewardClaimed:false}))})},outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}};
- const rows=dailyChecklist(state,{config}).tasks.rows;assert.deepEqual(rows.map(row=>row.functionId),['stage','alliance','museum',undefined,undefined,undefined]);
+ const rows=dailyChecklist(state,{config}).tasks.rows;assert.deepEqual(rows.map(row=>row.functionId),['stage','alliance','museum','fleet',undefined,undefined]);
  for(const row of rows){assert.equal(row.status,'INCOMPLETE');assert.equal(row.eligible,false);assert.equal(row.executable,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily',taskId:row.taskId});assert.equal(Object.hasOwn(row,'action'),false);assert.equal(Object.hasOwn(row,'parameters'),false);}
  assert.equal(state.raw.DailyTaskInfoRequest.dailyTask[0].progress,0);
 });
