@@ -1,5 +1,6 @@
 // Ordered naval observations and rules; no unverified combat dispatch.
 import { ResourceLedger } from './resource-ledger.mjs';
+import { createHash } from 'node:crypto';
 import { toSnapshotJson } from './game.mjs';
 import { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
 export { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
@@ -99,3 +100,51 @@ export function planNaval(facts, options = {}) {
   return { ...selected, notes: [...selected.notes, ...view.blocked.map(row => row.reason)] };
 }
 export const navalModule = Object.freeze({ id: 'naval', validateParameters: navalParameters, defaultConfig: NAVAL_DEFAULT_CONFIG, validateConfig: validateNavalConfig, survey: surveyNaval, view: navalView, plan: planNaval, verify: () => ({ confirmed: false, reason: '海战写入结果尚无已验证的权威关联' }) });
+
+// Persist only bounded response evidence. Local association keys are hashed;
+// neither a missing row nor a changed sample proves global movement/removal.
+const navalObservationFields = ['scope','source','queryHash','status','targetCount','matchedCount','failedCount','unknownCount','sampleHash','comparison'];
+const observationHash = value => createHash('sha256').update(stable(value)).digest('hex');
+export function validateNavalObservationSummary(value) {
+  strictParameters(value, navalObservationFields);
+  const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const counts = ['targetCount','matchedCount','failedCount','unknownCount'];
+  if (navalObservationFields.some(key => !Object.hasOwn(value,key)) || value.scope !== 'CURRENT_RESPONSE_ONLY' ||
+      value.source !== 'WorldInfoResponse.fleets' || !digest(value.queryHash) ||
+      !['OBSERVED','UNKNOWN'].includes(value.status)) throw invalid('海战观察摘要缺少明确来源与范围');
+  if (value.status === 'UNKNOWN') {
+    if (value.comparison !== 'UNKNOWN' || value.sampleHash !== null || counts.some(key => value[key] !== null)) throw invalid('未知海战观察不能推断目标计数或变化');
+  } else if (!digest(value.sampleHash) || !['BASELINE','UNCHANGED','CHANGED'].includes(value.comparison) ||
+      counts.some(key => !Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 2147483647) ||
+      value.matchedCount + value.failedCount + value.unknownCount !== value.targetCount) throw invalid('海战观察摘要计数或比较无效');
+  return structuredClone(value);
+}
+export function summarizeNavalObservation(view, {parameters = {}, moduleConfig = {}, previous = null} = {}) {
+  navalParameters(parameters);
+  const screenCenter = parameters.screenCenter ?? {x:0,y:0};
+  const queryHash = observationHash({parameters:{...parameters,screenCenter},rules:moduleConfig.rules ?? []});
+  const summary = {scope:'CURRENT_RESPONSE_ONLY',source:'WorldInfoResponse.fleets',queryHash,status:'UNKNOWN',
+    targetCount:null,matchedCount:null,failedCount:null,unknownCount:null,sampleHash:null,comparison:'UNKNOWN'};
+  const targets = view?.targets;
+  if (view?.worldReliable !== true || view.scope?.completeness !== summary.scope || view.scope?.source !== summary.source ||
+      stable(view.scope.screenCenter) !== stable(screenCenter) || !Array.isArray(targets) || targets.length > 2147483647) return summary;
+  const keys = new Set(), rows = [];
+  for (const row of targets) {
+    if (exactInt64(row.playerId,{positive:true}) === null || !nonempty(row.buildingId) ||
+        row.targetKey !== row.playerId + ':' + row.buildingId || keys.has(row.targetKey) ||
+        row.scope !== 'OBSERVATION_ONLY' || row.source !== summary.source || !['PASS','FAIL','UNKNOWN'].includes(row.status) ||
+        !Array.isArray(row.ruleTrace)) return summary;
+    keys.add(row.targetKey);
+    rows.push([row.targetKey, ...['guildId','state','cityId','targetCityId','curGridIdx','durability','maxDura','power','status'].map(key=>row[key]??null),
+      row.ruleTrace.map(rule=>[rule.id,rule.type,rule.status])]);
+  }
+  rows.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+  Object.assign(summary,{status:'OBSERVED',targetCount:targets.length,matchedCount:targets.filter(row=>row.status==='PASS').length,
+    failedCount:targets.filter(row=>row.status==='FAIL').length,unknownCount:targets.filter(row=>row.status==='UNKNOWN').length,
+    sampleHash:observationHash(rows),comparison:'BASELINE'});
+  if (previous?.status === 'OBSERVED' && previous.queryHash === queryHash) {
+    validateNavalObservationSummary(previous);
+    summary.comparison = previous.sampleHash === summary.sampleHash ? 'UNCHANGED' : 'CHANGED';
+  }
+  return validateNavalObservationSummary(summary);
+}

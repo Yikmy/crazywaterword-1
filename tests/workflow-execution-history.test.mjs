@@ -390,3 +390,26 @@ test('legacy history projection exposes missing node and reason as unknown witho
  const base={accountId:'A',runId:'legacy-location',workflowId:'legacy-flow',status:'UNKNOWN',trace:[]};
  const view=projectWorkflowExecutionHistory('A',base,[]);assert.equal(view.currentNode,null);assert.equal(view.reason,null);assert.equal(view.resumable,false);assert.equal(base.currentNode,undefined);assert.equal(base.reason,undefined);
 });
+
+test('naval observation history rejects malformed counts, scope and trace placement while preserving legacy evidence',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),{summarizeNavalObservation,navalView}=await import('../src/naval-rules.mjs');
+ const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'cw-naval-audit-')),file=path.join(scratch,'workflow.json');
+ try {
+ const store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),summary=summarizeNavalObservation(navalView({worldReliable:true,worldFleets:[],scope:{screenCenter:{x:0,y:0},source:'WorldInfoResponse.fleets',completeness:'CURRENT_RESPONSE_ONLY'}}));
+ const base={runId:'naval-audit',workflowId:'naval-graph',status:'COMPLETED',trace:[{nodeId:'read',type:'SURVEY',result:'SURVEYED',module:'naval',navalObservation:summary}]};store.record('A',base);const bytes=fs.readFileSync(file,'utf8');
+ for(const patch of [{targetCount:1},{targetCount:-1},{targetCount:'0'},{targetCount:2147483648},{matchedCount:null},{failedCount:1},{unknownCount:1},{scope:'GLOBAL'},{source:'invented'},{queryHash:'x'},{sampleHash:null},{comparison:'SUCCESS'},{status:'UNKNOWN'},{owner:'private'},{status:'UNKNOWN',comparison:'UNKNOWN',sampleHash:null}]){
+  const bad=structuredClone(base);Object.assign(bad.trace[0].navalObservation,patch);assert.throws(()=>store.record('A',bad));assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ }
+ for(const patch of [{module:'mail'},{type:'ACTION'},{result:'FAILED'}]){const bad=structuredClone(base);Object.assign(bad.trace[0],patch);assert.throws(()=>store.record('A',bad));}
+ const legacy=structuredClone(base);legacy.runId='naval-legacy';delete legacy.trace[0].navalObservation;store.record('A',legacy);
+ const restart=createWorkflowStore({file,modules:GAMEPLAY_MODULES});assert.equal(projectWorkflowExecutionHistory('A',restart.history('A').find(r=>r.runId==='naval-legacy'),[]).surveys[0].navalObservation,undefined);assert.deepEqual(restart.history('B'),[]);
+ const raw=JSON.parse(fs.readFileSync(file,'utf8'));raw.accounts.A.history.find(r=>r.runId==='naval-audit').trace[0].navalObservation.scope='GLOBAL';fs.writeFileSync(file,JSON.stringify(raw));const damaged=fs.readFileSync(file,'utf8');assert.throws(()=>createWorkflowStore({file,modules:GAMEPLAY_MODULES}).history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
+ }finally{fs.rmSync(scratch,{recursive:true,force:true});}
+});
+test('original Workflow HTTP exposes naval evidence after restart without game reads or cross-account access',async t=>{
+ const {summarizeNavalObservation,navalView}=await import('../src/naval-rules.mjs'),f=fixture('naval-observation-http');t.after(()=>f.close());
+ const summary=summarizeNavalObservation(navalView({worldReliable:true,worldFleets:[],scope:{screenCenter:{x:0,y:0},source:'WorldInfoResponse.fleets',completeness:'CURRENT_RESPONSE_ONLY'}}));
+ f.workflowStore.record('A',{runId:'naval-http',workflowId:'naval-graph',status:'COMPLETED',trace:[{nodeId:'read',type:'SURVEY',module:'naval',result:'SURVEYED',navalObservation:summary}]});
+ const bytes=fs.readFileSync(workflowFile,'utf8'),response=await f.request(historyUrl('A','naval-http'));assert.equal(response.status,200);assert.deepEqual(response.data.surveys[0].navalObservation,summary);assert.equal(response.data.resumable,false);
+ assert.equal((await f.request(historyUrl('B','naval-http'))).status,404);assert.equal(fs.readFileSync(workflowFile,'utf8'),bytes);assert.deepEqual(f.sent,[]);
+});

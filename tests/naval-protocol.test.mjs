@@ -21,10 +21,10 @@ async function navalWorkflowFixture(t) {
  const session={id:'offline-naval',player:{playerId:'9007199254740993',worldId:'17'},generation:1,connectionId:'offline-connection',state:'READY',abort:new AbortController(),loop:{running:false},busy:null,client};
  const history=createExecutionHistory({file:path.join(dir,'operations.json')}),file=path.join(dir,'workflow.json'),store=createWorkflowStore({file,modules:GAMEPLAY_MODULES});
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,getConfig:()=>({}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:structuredClone(navalModule.defaultConfig)})}});
- const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:service,getSession:()=>session,claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),onUpdate:run=>store.record('offline-naval',run)});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:service,getSession:()=>session,claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),onUpdate:run=>{state.onUpdate?.(run);return store.record('offline-naval',run);}});
  t.after(async()=>{runner.stop();await runner.settle();});
  const graph=compileUnifiedExecution({entry:'loop',world:[{type:'SURVEY',module:'naval',parameters:{screenCenter:{x:7,y:-3},minimumPower:'0'}}],rounds:2,budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}).graph;
- return {session,state,reads,writes,service,runner,graph,history,file,store,dir,fs,createWorkflowStore,projectWorkflowExecutionHistory,GAMEPLAY_MODULES};
+ return {session,state,answers,reads,writes,service,runner,graph,history,file,store,dir,fs,createWorkflowStore,projectWorkflowExecutionHistory,GAMEPLAY_MODULES};
 }
 
 test('Loop world SURVEY runs actual read-only naval Registry Function with disabled writes and restart-only history',async t=>{
@@ -40,4 +40,38 @@ test('Loop world SURVEY runs actual read-only naval Registry Function with disab
 for(const [label,change]of [['account',f=>f.session.client.factContext.accountId='other'],['role',f=>f.session.player.playerId='44'],['world',f=>f.session.player.worldId='44'],['connection',f=>f.session.client.factContext.connectionId='new'],['generation',f=>f.session.client.factContext.generation++]])test('Loop naval survey discards '+label+' drift before publishing cached facts',async t=>{
  const f=await navalWorkflowFixture(t);f.state.onRead=name=>{if(name==='WorldInfoRequest')change(f);};
  const result=await f.runner.start(f.session.id,f.graph);assert.equal(result.status,'CANCELLED');assert.equal(f.reads.filter(r=>r.name==='WorldInfoRequest').length,1);assert.equal(f.service.moduleView('offline-naval','naval').view,null);assert.equal(result.trace.some(row=>row.result==='SURVEYED'),false);assert.equal(f.writes.length,0);assert.deepEqual(f.history.list('offline-naval'),[]);
+});
+
+test('Loop naval surveys retain deduplicated bounded evidence through original Workflow restart',async t=>{
+ const f=await navalWorkflowFixture(t),result=await f.runner.start(f.session.id,f.graph),rows=result.trace.filter(r=>r.module==='naval');
+ assert.deepEqual(rows.map(r=>r.navalObservation?.comparison),['BASELINE','UNCHANGED']);assert.equal(rows[1].navalObservation.targetCount,1);assert.equal(rows[1].navalObservation.matchedCount,1);
+ const restart=f.createWorkflowStore({file:f.file,modules:f.GAMEPLAY_MODULES}),detail=f.projectWorkflowExecutionHistory(f.session.id,restart.history(f.session.id)[0],[]);
+ assert.deepEqual(detail.surveys.map(r=>r.navalObservation),rows.map(r=>r.navalObservation));assert.equal(detail.resumable,false);assert.deepEqual(restart.history('other'),[]);assert.equal(f.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
+ assert.doesNotMatch(f.fs.readFileSync(f.file,'utf8'),/local-label|9007199254740993|9007199254740995/);
+});
+test('Loop naval response changes are bounded observations rather than global disappearance events',async t=>{
+ const f=await navalWorkflowFixture(t);let reads=0;f.state.onRead=name=>{if(name==='WorldInfoRequest'&&++reads===2)f.answers.WorldInfoRequest={fleets:[]};};
+ const result=await f.runner.start(f.session.id,f.graph),rows=result.trace.filter(r=>r.module==='naval');
+ assert.deepEqual(rows.map(r=>r.navalObservation?.comparison),['BASELINE','CHANGED']);assert.equal(rows[1].navalObservation.targetCount,0);assert.equal(rows[1].navalObservation.scope,'CURRENT_RESPONSE_ONLY');assert.equal(f.writes.length,0);
+});
+test('Loop naval failed response records unknown without converting it to an empty response',async t=>{
+ const f=await navalWorkflowFixture(t);let reads=0;f.state.onRead=name=>{if(name==='WorldInfoRequest'&&++reads===2)throw Error('synthetic observation failure');};
+ const result=await f.runner.start(f.session.id,f.graph),rows=result.trace.filter(r=>r.module==='naval');
+ assert.equal(result.status,'COMPLETED');assert.equal(rows[1].navalObservation?.status,'UNKNOWN');assert.equal(rows[1].navalObservation?.targetCount,null);assert.equal(rows[1].navalObservation?.comparison,'UNKNOWN');assert.equal(f.writes.length,0);
+});
+
+test('new Loop naval run establishes its own baseline instead of inheriting saved comparison state',async t=>{
+ const f=await navalWorkflowFixture(t);await f.runner.start(f.session.id,f.graph);const result=await f.runner.start(f.session.id,f.graph);
+ assert.deepEqual(result.trace.filter(r=>r.module==='naval').map(r=>r.navalObservation.comparison),['BASELINE','UNCHANGED']);assert.equal(f.reads.length,24);assert.equal(f.writes.length,0);
+});
+test('naval observation persistence failure stops the original Loop before its next query',async t=>{
+ const f=await navalWorkflowFixture(t);f.state.onUpdate=run=>{if(run.trace.some(r=>r.navalObservation))throw Error('synthetic disk failure');};
+ const result=await f.runner.start(f.session.id,f.graph);assert.equal(result.status,'FAILED');assert.equal(f.reads.filter(r=>r.name==='WorldInfoRequest').length,1);assert.equal(f.writes.length,0);
+ const saved=f.createWorkflowStore({file:f.file,modules:f.GAMEPLAY_MODULES}).history(f.session.id)[0];assert.equal(saved.trace.some(r=>r.navalObservation),false);
+});
+test('cancelled late second observation cannot append or replace the first persisted summary',async t=>{
+ const f=await navalWorkflowFixture(t);let reads=0,release,entered;const pending=new Promise(resolve=>{entered=resolve;});
+ f.state.onRead=async name=>{if(name==='WorldInfoRequest'&&++reads===2){entered();await new Promise(resolve=>{release=resolve;});}};
+ const running=f.runner.start(f.session.id,f.graph);await pending;f.runner.stop();const result=await running;const bytes=f.fs.readFileSync(f.file,'utf8');release();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(result.status,'CANCELLED');assert.equal(result.trace.filter(r=>r.navalObservation).length,1);assert.equal(f.fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.writes.length,0);
 });

@@ -970,7 +970,14 @@ function wfHistoryRender(data) {
   if(data.runPolicy?.maxRounds!==undefined)box.appendChild(gpEl('p','本次有限重复：已完成 '+data.completedRounds+' / '+data.runPolicy.maxRounds+' 轮 · 当前第 '+data.round+' 轮 · 轮间隔 '+(data.runPolicy.roundIntervalMs??0)+' 毫秒；全部轮次共享原累计限额。'));
   box.appendChild(gpEl('p', '未关联的操作记录：' + data.unlinkedOperationCount + '。仅显示已持久化且归属一致的动作。'));
   for (const row of data.waits || []) box.appendChild(gpEl('p', '节点 ' + row.nodeId + (row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · ' + (row.result === 'WAIT_STARTED' ? '等待已开始' : row.result === 'WAITED' ? '等待已结束' : row.result==='ROUND_WAIT_STARTED'?'轮间等待已开始':row.result==='ROUND_WAITED'?'轮间等待已结束':row.result) + ' · 时长 ' + (row.durationMs === undefined ? '未知' : row.durationMs + ' 毫秒') + ' · ' + (row.timestamp || '时间未知') + '；本次运行的间隔记录，不代表游戏冷却或可重放资格。'));
-  for(const row of data.surveys||[]){const audit=row.mailbox;box.appendChild(gpEl('p','只读调查节点 '+row.nodeId+(row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · '+(row.module||'未知模块')+' · '+(row.timestamp||'时间未知')));box.appendChild(gpEl('p',audit?'邮箱观察 '+audit.status+' · 页数上限 '+audit.maxPages+' · 已读页数 '+audit.readPages+' · 观察邮件 '+audit.observedMails+' · 服务端报告总数 '+(audit.totalReported??'未知')+(audit.reason?' · '+audit.reason:'')+'；完整覆盖 '+String(audit.allPagesComplete)+'，不证明原子快照或领取资格。':'原历史未保留覆盖摘要；不能据流程结束推断完整观察。'));}
+  for(const row of data.surveys||[]){
+    const audit=row.mailbox,naval=row.navalObservation;
+    box.appendChild(gpEl('p','只读调查节点 '+row.nodeId+(row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · '+(row.module||'未知模块')+' · '+(row.timestamp||'时间未知')));
+    if(naval){
+      const labels={BASELINE:'本次查询基线',UNCHANGED:'与上次响应一致',CHANGED:'当前响应已变化',UNKNOWN:'无法比较'};
+      box.appendChild(gpEl('p','海战观察 '+naval.status+' · 响应目标 '+(naval.targetCount??'未知')+' · 筛选通过 '+(naval.matchedCount??'未知')+' · 不匹配 '+(naval.failedCount??'未知')+' · 筛选未知 '+(naval.unknownCount??'未知')+' · '+(Object.hasOwn(labels,naval.comparison)?labels[naval.comparison]:'无法比较')+'；CURRENT_RESPONSE_ONLY，不证明全图覆盖、目标消失或允许攻击。'));
+    }else box.appendChild(gpEl('p',audit?'邮箱观察 '+audit.status+' · 页数上限 '+audit.maxPages+' · 已读页数 '+audit.readPages+' · 观察邮件 '+audit.observedMails+' · 服务端报告总数 '+(audit.totalReported??'未知')+(audit.reason?' · '+audit.reason:'')+'；完整覆盖 '+String(audit.allPagesComplete)+'，不证明原子快照或领取资格。':'原历史未保留覆盖摘要；不能据流程结束推断完整观察。'));
+  }
   for (const node of data.nodes) {
     box.appendChild(gpEl('h3', '节点 ' + node.nodeId + (node.round!==undefined?' · 第 '+node.round+' 轮':'')+' · ' + node.traceResult));
     if (node.module) box.appendChild(gpEl('p', '模块：' + node.module));

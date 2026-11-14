@@ -91,3 +91,28 @@ test('freshTarget evaluates worst-case age from trusted latest now and earliest 
 });
 
 test('freshTarget cannot mix trusted observation from another account or clock generation',()=>{for(const key of ['accountId','generation']){const current={status:'TRUSTED',reliable:true,nowMs:105000,earliestMs:105000,latestMs:105000,accountId:'synthetic-A',generation:1},observed={...current,nowMs:100000,earliestMs:100000,latestMs:100000};observed[key]=key==='accountId'?'synthetic-B':2;assert.equal(evaluateNavalRules([{id:'age',type:'freshTarget',value:10}],{now:105,gameTime:current,target:{observedAt:100,observedGameTime:observed}}).status,'UNKNOWN');}});
+
+test('bounded naval observation fingerprints ignore response order and local time but preserve exact identities',async()=>{
+ const {summarizeNavalObservation}=await import('../src/naval-rules.mjs');
+ const parameters={screenCenter:{x:7,y:-3}},a={buildingId:'same-label',playerId:'9007199254740993',guildId:'3',cityId:2,power:'9007199254740995',state:1},b={...a,playerId:'9007199254740994'};
+ const view=rows=>navalModule.view({now:100,worldReliable:true,worldFleets:rows,scope:{screenCenter:parameters.screenCenter,source:'WorldInfoResponse.fleets',completeness:'CURRENT_RESPONSE_ONLY'}},{parameters});
+ const first=summarizeNavalObservation(view([a,b]),{parameters}),again=summarizeNavalObservation(view([b,a]),{parameters,previous:first});
+ assert.equal(first.comparison,'BASELINE');assert.equal(first.targetCount,2);assert.equal(first.matchedCount,2);assert.equal(again.comparison,'UNCHANGED');assert.equal(first.sampleHash,again.sampleHash);assert.doesNotMatch(JSON.stringify(first),/same-label|9007199254740993/);
+ const changed=summarizeNavalObservation(view([a,{...b,curGridIdx:8}]),{parameters,previous:again});assert.equal(changed.comparison,'CHANGED');
+ const absent=summarizeNavalObservation(view([]),{parameters,previous:changed});assert.equal(absent.comparison,'CHANGED');assert.equal(absent.targetCount,0);assert.equal(absent.scope,'CURRENT_RESPONSE_ONLY');assert.equal(absent.source,'WorldInfoResponse.fleets');
+});
+test('naval observation comparison resets on query or rules changes and never bridges unknown evidence',async()=>{
+ const {summarizeNavalObservation}=await import('../src/naval-rules.mjs'),parameters={screenCenter:{x:0,y:0}};
+ const view=navalModule.view({now:100,worldReliable:true,worldFleets:[],scope:{screenCenter:parameters.screenCenter,source:'WorldInfoResponse.fleets',completeness:'CURRENT_RESPONSE_ONLY'}},{parameters});
+ const first=summarizeNavalObservation(view,{parameters});
+ for(const options of [{parameters:{...parameters,minimumPower:'0'}},{parameters,moduleConfig:{rules:[{id:'state',type:'targetState',value:1}]}}])assert.equal(summarizeNavalObservation(view,{...options,previous:first}).comparison,'BASELINE');
+ const unknown=summarizeNavalObservation({...view,worldReliable:false},{parameters,previous:first});assert.equal(unknown.status,'UNKNOWN');assert.equal(unknown.comparison,'UNKNOWN');assert.equal(unknown.sampleHash,null);assert.equal(unknown.targetCount,null);
+ assert.equal(summarizeNavalObservation(view,{parameters,previous:unknown}).comparison,'BASELINE');
+ assert.equal(summarizeNavalObservation({...view,scope:{...view.scope,screenCenter:{x:1,y:0}}},{parameters,previous:first}).status,'UNKNOWN');
+});
+test('naval observation cannot deduplicate missing or duplicate local associations or fabricated global scope',async()=>{
+ const {summarizeNavalObservation}=await import('../src/naval-rules.mjs'),fleet={buildingId:'a',playerId:'3',state:1};
+ const view=rows=>navalModule.view({worldReliable:true,worldFleets:rows,scope:{screenCenter:{x:0,y:0},source:'WorldInfoResponse.fleets',completeness:'CURRENT_RESPONSE_ONLY'}});
+ for(const rows of [[fleet,fleet],[{...fleet,playerId:null}]])assert.equal(summarizeNavalObservation(view(rows)).status,'UNKNOWN');
+ const v=view([fleet]);v.scope.completeness='GLOBAL';assert.equal(summarizeNavalObservation(v).status,'UNKNOWN');
+});
