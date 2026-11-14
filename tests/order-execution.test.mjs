@@ -15,13 +15,13 @@ protocol.DenyOrderRequest = {};
 const refreshRules = { version: 1, enabled: true, rules: [{ id: 'exp', priority: 1, type: 'MIN_EXPERIENCE',
   enabled: true, params: { value: 500, operator: 'GTE' }, onFail: 'REFRESH' }] };
 const eligibility = () => ({ source: 'offline-authoritative-fixture', allowed: true, free: true, remaining: 1 });
-function makeClient({ waters = [water(), water([], 4)], stock = 2, items, resources = { list: [] }, writeError, onRead } = {}) {
+function makeClient({ waters = [water(), water([], 4)], stock = 2, items, resources = { list: [] }, writeError, onRead, beforeWrite } = {}) {
   let stage = 0;
   const writes = [], reads = [], uncertain = new Set(), confirmed = [];
   const client = { connected: true, writes, reads, uncertain, confirmed,
     async request(name, body, response, timeout, options) {
       if (options?.mutate) {
-        writes.push({ name, body }); stage++;
+        beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body }); stage++;
         if (writeError) throw writeError;
         return {};
       }
@@ -33,7 +33,7 @@ function makeClient({ waters = [water(), water([], 4)], stock = 2, items, resour
       if (name === 'MyFleetsRequest') return { fleets: [] };
       throw new Error('unexpected request ' + name);
     },
-    async sendWatch(name, body) { writes.push({ name, body }); stage++; uncertain.add(JSON.stringify({ name, body })); return { status: 'UNKNOWN' }; },
+    async sendWatch(name, body, options = {}) { beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body }); stage++; uncertain.add(JSON.stringify({ name, body })); return { status: 'UNKNOWN' }; },
     markUnverifiedWrite(name, body) { uncertain.add(JSON.stringify({ name, body })); },
     confirmWatchedWrite(name, body) { confirmed.push({ name, body }); uncertain.delete(JSON.stringify({ name, body })); },
   };
@@ -365,4 +365,16 @@ test('Orders historical validator rejects fabricated scope, sources, quotas, per
  for(const change of [v=>v.executable=true,v=>v.scope='CURRENT',v=>v.eligible=true,v=>v.clientLimit=40,v=>v.completed.value=null,v=>v.completed.value='7',v=>v.completed.value=2147483648,v=>v.completed.source='invented',v=>v.completed.status='PROJECTED',v=>delete v.completed.value,v=>v.rewardedThrough={...v.rewardedThrough,status:'UNKNOWN'},v=>v.period.status='OBSERVED',v=>v.period.gameDay='today',v=>v.period.resetsAt=1000,v=>v.period.reason=null]){const bad=structuredClone(base);change(bad);assert.throws(()=>validateOrderProgressSummary(bad),{code:'WORKFLOW_INVALID'});}
  const inherited={...base,completed:Object.create(base.completed)};assert.throws(()=>validateOrderProgressSummary(inherited),{code:'WORKFLOW_INVALID'});
  for(const descriptor of [{value:7,enumerable:false},{get(){throw Error('getter must not execute');},enumerable:true}]){const bad=structuredClone(base);Object.defineProperty(bad.completed,'value',descriptor);assert.throws(()=>validateOrderProgressSummary(bad),{code:'WORKFLOW_INVALID'});}
+});
+
+const windowPolicy={version:1,enabled:true,rules:[{id:'local-window',priority:1,type:'LOCAL_TIME_WINDOW',enabled:true,params:{start:'09:00',end:'18:00',timeZone:'Asia/Shanghai'},onFail:'KEEP'}]};
+for(const phase of ['in-window','before-preflight','resource-check','wire-callback','unknown-clock','after-send'])test('explicit local strategy window rechecked in original order executor '+phase,async()=>{
+ let now=Date.parse('2026-11-15T17:59:59.900+08:00'),advance=false;const clock=()=>now;
+ const client=makeClient({onRead(name,c){if(advance&&phase==='resource-check'&&name==='AllItemRequest'&&c.reads.filter(x=>x==='AllItemRequest').length>=3)now+=1000;},beforeWrite(){if(phase==='wire-callback')now+=1000;}});
+ const plan=await makePlan(client,{rules:windowPolicy,clock});assert.equal(plan.actions.length,1);advance=true;if(phase==='before-preflight')now+=1000;if(phase==='unknown-clock')now=NaN;
+ if(phase==='after-send'){const request=client.request.bind(client);client.request=async(...args)=>{const value=await request(...args);if(args[4]?.mutate)now+=1000;return value;};}
+ const result=await execute(client,plan.actions[0],{rules:windowPolicy,clock});const success=['in-window','after-send'].includes(phase);assert.equal(client.writes.length,success?1:0);assert.equal(result.status,success?'SUCCESS':phase==='wire-callback'?'UNKNOWN':'NOT_EXECUTED');assert.equal(result.unresolvedWrite,phase==='wire-callback');if(success)assert.equal(result.verification.status,'CONFIRMED');
+});
+test('explicit local strategy window REFRESH advice still needs original free quota proof',async()=>{
+ const client=makeClient(),policy=structuredClone(windowPolicy);policy.rules[0].onFail='REFRESH';const plan=await makePlan(client,{rules:policy,clock:()=>Date.parse('2026-11-15T20:00:00+08:00')});assert.equal(plan.rows[0].actionType,'REFRESH');assert.equal(plan.actions.length,0);assert.match(plan.rows[0].blockedReason,/免费刷新/);assert.equal(client.writes.length,0);
 });

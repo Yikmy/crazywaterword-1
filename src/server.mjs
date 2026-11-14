@@ -531,7 +531,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
             || (inventory.has(need.id) && safeQuantity(inventory.get(need.id)) === null)) inventory.set(need.id, null);
       }
     }
-    const results = evaluateOrders(orders, inventory, policy);
+    const results = evaluateOrders(orders, inventory, policy, { localTimeMs: Date.now() });
     const waitConfig = loadConfigSafe(), resolveWaitType = makeTypeResolver(waitConfig);
     const captured = name => {
       const source = orderSource(snapshot, name), fact = snapshot?.facts?.[name], p = fact?.provenance;

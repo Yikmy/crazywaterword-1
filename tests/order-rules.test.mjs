@@ -26,7 +26,7 @@ test('configuration canonicalization sorts by priority and never aliases editabl
   result.rules[0].params.itemIds.push('new-id');
   assert.deepEqual(input.rules[1].params.itemIds, [itemId]);
   assert.deepEqual(input.rules.map(({ id }) => id), ['experience', 'forbidden']);
-  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE']);
+  assert.deepEqual(ORDER_RULE_TYPES.map(({ type }) => type), ['ITEM_FORBIDDEN', 'ITEM_REQUIRED', 'MIN_EXPERIENCE', 'MAX_ITEM_COUNT', 'INVENTORY_AVAILABLE', 'LOCAL_TIME_WINDOW']);
 });
 
 test('unsupported versions, rule types, duplicate ids/priorities and invalid parameters fail closed', () => {
@@ -200,4 +200,26 @@ test('evaluator has no action/network imports and does not consult ambient netwo
   try { assert.equal(evaluateOrder(order(), inventory(), rules(forbidden(), exp())).decision, 'RECOMMEND_SUBMIT'); }
   finally { globalThis.fetch = previousFetch; Date.now = previousNow; }
   assert.equal(fetches, 0);
+});
+
+const localWindowRule = (start='09:00',end='18:00',onFail='KEEP') => ({id:'local-window',priority:1,type:'LOCAL_TIME_WINDOW',enabled:true,params:{start,end,timeZone:'Asia/Shanghai'},onFail});
+for(const [start,end,at,expected] of [
+ ['09:00','18:00','08:59:59.999','FAIL'],['09:00','18:00','09:00:00.000','PASS'],['09:00','18:00','17:59:59.999','PASS'],['09:00','18:00','18:00:00.000','FAIL'],
+ ['22:00','06:00','21:59:59.999','FAIL'],['22:00','06:00','22:00:00.000','PASS'],['22:00','06:00','00:00:00.000','PASS'],['22:00','06:00','05:59:59.999','PASS'],['22:00','06:00','06:00:00.000','FAIL']
+])test('explicit local strategy window uses Shanghai half-open boundaries '+start+'/'+end+'/'+at,()=>{
+ const policy=rules(localWindowRule(start,end)),before=structuredClone(policy),localTimeMs=Date.parse('2026-11-15T'+at+'+08:00'),result=evaluateOrder(order(),inventory(),policy,{localTimeMs});
+ assert.equal(result.ruleResults[0].status,expected);assert.equal(result.decision,expected==='PASS'?'RECOMMEND_SUBMIT':'RECOMMEND_KEEP');assert.equal(result.ruleResults[0].strategyWindow.source,'EXPLICIT_USER_LOCAL_POLICY');assert.equal(result.ruleResults[0].strategyWindow.gameDay,null);assert.equal(result.ruleResults[0].strategyWindow.refreshEligibility,null);assert.deepEqual(policy,before);
+ assert.deepEqual(evaluateOrders([order()],inventory(),policy,{localTimeMs})[0],result);
+});
+for(const localTimeMs of [undefined,null,NaN,Infinity,-1,1.5,8640000000000001,'2026-11-15T09:00:00+08:00'])test('explicit local strategy window unknown clock never takes REFRESH branch '+String(localTimeMs),()=>{
+ const result=evaluateOrder(order(),inventory(),rules(localWindowRule('09:00','18:00','REFRESH')),{localTimeMs});assert.equal(result.ruleResults[0].status,'UNKNOWN');assert.equal(result.decision,'NEEDS_REVIEW');assert.equal(result.firstFailedRuleId,null);
+});
+for(const params of [{start:'9:00'},{end:'24:00'},{start:'09:60'},{end:'09:00'},{timeZone:'UTC'},{gameDay:'daily'},{localTimeMs:1},{start:null},{end:undefined}])test('explicit local strategy window rejects ambiguous or injected policy '+JSON.stringify(params),()=>{
+ const r=localWindowRule();Object.assign(r.params,params);assert.throws(()=>validateOrderRules(rules(r)),/本地策略时窗/);
+});
+for(const [onFail,decision]of [['KEEP','RECOMMEND_KEEP'],['REFRESH','RECOMMEND_REFRESH'],['REVIEW','NEEDS_REVIEW']])test('explicit local strategy window retains original failure advice '+onFail,()=>{
+ const result=evaluateOrder(order(),inventory(),rules(localWindowRule('09:00','18:00',onFail)),{localTimeMs:Date.parse('2026-11-15T20:00:00+08:00')});assert.equal(result.decision,decision);assert.equal(result.inventory.status,'SKIPPED');
+});
+test('explicit local strategy window does not alter refusal identity on each clock tick or bypass stock',()=>{
+ const policy=rules(localWindowRule()),at=Date.parse('2026-11-15T09:00:00+08:00');assert.deepEqual(evaluateOrder(order(),inventory(),policy,{localTimeMs:at}),evaluateOrder(order(),inventory(),policy,{localTimeMs:at+3600000}));assert.equal(evaluateOrder(order(),new Map(),policy,{localTimeMs:at}).decision,'RECOMMEND_KEEP');const disabled=localWindowRule();disabled.enabled=false;assert.equal(evaluateOrder(order(),inventory(),rules(disabled)).decision,'RECOMMEND_SUBMIT');
 });

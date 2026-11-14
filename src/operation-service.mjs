@@ -190,7 +190,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   }
   function view(accountId) { return { accountId, status: status(accountId), view: clone(cache.get(accountId)?.view ?? null), lastPlan: clone(plans.get(accountId)?.public ?? null) }; }
   function buildView(accountId, facts, config, rules) {
-    const orders = orderPlanner(facts, { config, rules, mode: 'Manual', ledger: new ResourceLedger(facts.stock), selections: [] });
+    const orders = orderPlanner(facts, { config, rules, clock, mode: 'Manual', ledger: new ResourceLedger(facts.stock), selections: [] });
     const city = cityViewer(facts, { config });
     const production = loadProduction(accountId);
     return { orders: (orders.rows ?? []).map(({ action, ...row }) => row), city: { ...city, candidates: city.candidates.map(({ action, ...row }) => row) }, productionShortages: productionDemand(facts,{policy:production.config,config}), productionPolicy: production.config, productionPolicyWarning: production.warning, productionRecommendations: selectProductionCandidates(facts, { policy: production.config, config, candidates: city.candidates }), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
@@ -224,7 +224,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const identity=observationIdentity(session,client);
       const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
       assertExecutionActive(client,{signal:surveySignal});
-      const options = { rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
+      const options = { ...(id==='orders'?{clock}:{}),rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
       const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||observationIdentity(session,client)!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
@@ -379,7 +379,7 @@ function authorizeWorkflowPlan(session,payload){
       const config = getConfig(), rules = loadRules(session.id).config;
       const moduleConfig = adapter ? moduleSettings.get(session.id,module).config : null;
       const production = loadProduction(session.id).config;
-      const options = { config, rules, mode, productionPolicy: production, player: session.player, signal: planSignal, parameters: normalizedParameters, moduleConfig };
+      const options = { ...(module==='orders'?{clock}:{}),config, rules, mode, productionPolicy: production, player: session.player, signal: planSignal, parameters: normalizedParameters, moduleConfig };
       const memorySourceAt=clock();
       const facts = await (adapter ? adapter.survey(client,protocol,options) : survey(client,protocol,options));
       assertExecutionActive(client,options);
@@ -394,7 +394,7 @@ function authorizeWorkflowPlan(session,payload){
         operations.push(...(result.actions ?? []).filter(op => op.action && selections.includes(op.actionId)).map(op => ({...op,module})));
       }
       if (!adapter && module !== 'city') {
-        const orderPlan = orderPlanner(facts, { config, rules, mode, ledger, selections });
+        const orderPlan = orderPlanner(facts, { config, rules, clock, mode, ledger, selections });
         // Planning adapters reserve in order; select the requested subset without charging other orders.
         const wanted = (orderPlan.actions ?? []).filter(action => selections.includes(action.actionId));
         operations.push(...wanted.map(operation => ({ ...operation, module: 'orders' })));
@@ -500,7 +500,7 @@ function authorizeWorkflowPlan(session,payload){
         let freshMemoryObserved=false;
         const adapter = decisionMemory&&originalAdapter&&!originalAdapter.execute ? {...originalAdapter,async survey(...args){freshMemorySourceAt=clock();return originalAdapter.survey(...args);},plan(facts,options){const planned=originalAdapter.plan(facts,options);if(!freshMemoryObserved){for(const fresh of planned.actions??[]){const candidate={...fresh,module:operation.module},fact=memoryFact(session,candidate,freshMemorySourceAt);assertMemoryAction(session,candidate,fact);entry.memoryFacts.set(fresh.actionId,fact);}freshMemoryObserved=true;}return planned;}} : originalAdapter;
         const executor = adapter ? adapter.execute ?? businessExecute : operation.module === 'orders' ? orderExecute : cityExecute;
-        const result = await executor(client, protocol, operation, { config: entry.config, rules: loadRules(session.id).config, player: session.player,
+        const result = await executor(client, protocol, operation, { ...(operation.module==='orders'?{clock}:{}),config: entry.config, rules: loadRules(session.id).config, player: session.player,
           rewardBinding: operation.module==='orders'?{...record.executionContext,runId:record.runId,batchId:entry.public.batchId,actionId:operation.actionId,identity:operation.identity,orderIndex:operation.target.index}:null, rewardContext:()=>executionContext(session),
           allowMutate: true, adapter, moduleConfig: entry.moduleConfig, parameters: entry.public.parameters, mode: entry.public.mode, productionPolicy: entry.public.productionPolicy, ...(operation.module === 'city' ? { survey } : {}), budget, signal, stop: run.stop, assertActive: authorizedCurrent, assertCurrent: authorizedCurrent,
           ...(executor === businessExecute ? { onStage(stage) {

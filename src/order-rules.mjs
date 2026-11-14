@@ -6,6 +6,7 @@ export const ORDER_RULE_TYPES = Object.freeze([
   { type: 'MIN_EXPERIENCE', label: '经验要求' },
   { type: 'MAX_ITEM_COUNT', label: '指定物品数量上限' },
   { type: 'INVENTORY_AVAILABLE', label: '库存充足' },
+  { type: 'LOCAL_TIME_WINDOW', label: '上海本地策略时窗' },
 ].map(Object.freeze));
 
 const types = new Set(ORDER_RULE_TYPES.map(({ type }) => type));
@@ -49,6 +50,10 @@ export function validateOrderRules(config) {
     } else if (rule.type === 'MAX_ITEM_COUNT') {
       if (!keysOnly(params, ['itemId', 'value']) || !text(params.itemId) || !count(params.value)) invalid('数量上限需要原始物品 ID 和非负安全整数');
       clean = { itemId: params.itemId, value: params.value };
+    } else if (rule.type === 'LOCAL_TIME_WINDOW') {
+      const time = value => typeof value === 'string' && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
+      if (!keysOnly(params, ['start', 'end', 'timeZone']) || !time(params.start) || !time(params.end) || params.start === params.end || params.timeZone !== 'Asia/Shanghai') invalid('本地策略时窗须明确上海时区、不同的HH:mm起止；起点包含、终点不含，可跨午夜');
+      clean = { start: params.start, end: params.end, timeZone: params.timeZone };
     } else {
       if (!keysOnly(params, [])) invalid('库存规则不接受额外参数');
       clean = {};
@@ -85,8 +90,17 @@ function inventoryResult(requirements, inventory) {
   return { status: 'PASS', missing: [], explanation: '本订单所需物品库存充足' };
 }
 
-function checkRule(rule, order, requirements, inventory) {
+function checkRule(rule, order, requirements, inventory, localTimeMs) {
   const params = rule.params;
+  if (rule.type === 'LOCAL_TIME_WINDOW') {
+    const strategyWindow = { source: 'EXPLICIT_USER_LOCAL_POLICY', ...params, status: 'UNKNOWN', gameDay: null, refreshEligibility: null };
+    if (!Number.isSafeInteger(localTimeMs) || localTimeMs < 0 || !Number.isFinite(new Date(localTimeMs).getTime())) return { status: 'UNKNOWN', strategyWindow, explanation: '本地策略时钟未知；不推断服务器日界或刷新资格' };
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: params.timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).formatToParts(localTimeMs);
+    const fields = Object.fromEntries(parts.map(part => [part.type, part.value])), minute = Number(fields.hour) * 60 + Number(fields.minute);
+    const minutes = value => Number(value.slice(0, 2)) * 60 + Number(value.slice(3));
+    const start = minutes(params.start), end = minutes(params.end), pass = start < end ? minute >= start && minute < end : minute >= start || minute < end;
+    return { status: pass ? 'PASS' : 'FAIL', strategyWindow: { ...strategyWindow, status: pass ? 'IN_WINDOW' : 'OUTSIDE_WINDOW' }, explanation: '用户上海本地策略时窗 ' + params.start + ' 至 ' + params.end + '（起点包含、终点不含，可跨午夜）：' + (pass ? '当前在时窗内' : '当前在时窗外') + '；不是游戏日界或免费刷新资格' };
+  }
   if (rule.type === 'ITEM_FORBIDDEN') {
     const found = params.itemIds.filter((id) => requirements.has(id));
     return found.length ? { status: 'FAIL', explanation: '包含禁止物品 ID：' + found.join('、') } : { status: 'PASS', explanation: '需求中不含指定的禁止物品 ID' };
@@ -110,7 +124,7 @@ function checkRule(rule, order, requirements, inventory) {
 
 const notChecked = () => ({ status: 'SKIPPED', missing: [], explanation: '尚未执行最终库存判断' });
 
-export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules()) {
+export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(), { localTimeMs } = {}) {
   const result = {
     orderId: object(order) && (text(order.index) || count(order.index)) ? order.index : null,
     decision: 'NEEDS_REVIEW', ruleResults: [], explanation: [], firstFailedRuleId: null, inventory: notChecked(),
@@ -128,8 +142,8 @@ export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(
       result.ruleResults.push({ ...base, status: 'SKIPPED', explanation: !rule.enabled ? '规则已禁用' : '未评估：' + stoppedReason });
       continue;
     }
-    const checked = input.error ? { status: 'UNKNOWN', explanation: input.error } : checkRule(rule, order, input.requirements, inventory);
-    result.ruleResults.push({ ...base, status: checked.status, explanation: checked.explanation });
+    const checked = input.error ? { status: 'UNKNOWN', explanation: input.error } : checkRule(rule, order, input.requirements, inventory, localTimeMs);
+    result.ruleResults.push({ ...base, status: checked.status, explanation: checked.explanation, ...(checked.strategyWindow ? { strategyWindow: checked.strategyWindow } : {}) });
     result.explanation.push('优先级 ' + rule.priority + '：' + checked.explanation);
     if (checked.status === 'FAIL') {
       result.firstFailedRuleId = rule.id;
@@ -149,11 +163,11 @@ export function evaluateOrder(order, inventory, rulesConfig = defaultOrderRules(
 
 // The default remains the existing independent, read-only preview. A composed plan
 // injects its shared resource ledger; no network, clock or Action dependency is added.
-export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules(), { ledger = null } = {}) {
-  if (!Array.isArray(orders)) return [evaluateOrder(null, inventory, rulesConfig)];
+export function evaluateOrders(orders, inventory, rulesConfig = defaultOrderRules(), { ledger = null, localTimeMs } = {}) {
+  if (!Array.isArray(orders)) return [evaluateOrder(null, inventory, rulesConfig, { localTimeMs })];
   return orders.map((order) => {
     const ids = Array.isArray(order?.requirements) ? order.requirements.map((row) => row?.id) : [];
-    const result = evaluateOrder(order, ledger ? ledger.inventory(ids) : inventory, rulesConfig);
+    const result = evaluateOrder(order, ledger ? ledger.inventory(ids) : inventory, rulesConfig, { localTimeMs });
     if (ledger && result.decision === 'RECOMMEND_SUBMIT' && !ledger.reserve(order.requirements)) {
       result.decision = 'NEEDS_REVIEW';
       result.inventory = { status: 'UNKNOWN', missing: [], explanation: '共享资源预算无法预留，停止提交建议' };

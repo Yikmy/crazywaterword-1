@@ -21,7 +21,7 @@ const config = { tables: {
 const wire = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFields', 'MyFleets', 'FinishWorkerOrder']
   .flatMap(name => [[name + 'Request', {}], [name + 'Response', {}]]));
 wire.BuildBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
-function fixture(stock = 4, outcome = 'SUCCESS') {
+function fixture(stock = 4, outcome = 'SUCCESS', options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-adapters-integration-'));
   const history = createExecutionHistory({ file: path.join(dir, 'history.json') });
   let productionPolicy = { version: 1, enabled: false, onlyShortages: true, productIds: [], maxOperations: 10 };
@@ -55,7 +55,7 @@ function fixture(stock = 4, outcome = 'SUCCESS') {
     confirmWatchedWrite(name, body) { uncertain.delete(JSON.stringify({ name, body })); },
   };
   const moduleSettings=createModuleSettings({file:path.join(dir,'settings.json'),modules:GAMEPLAY_MODULES});
-  const service = createOperationService({ moduleSettings, protocol: wire, getConfig: () => config, loadRules: () => ({ config: policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
+  const service = createOperationService({ moduleSettings, protocol: wire, getConfig: () => config, clock:options.clock,loadRules: () => ({ config: options.rules ?? policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
   const session = { id: 'synthetic-account', client, state: 'READY', generation: 1, abort: new AbortController(),
     player: { level: 3 }, loop: { running: false }, busy: null };
   const start = async (module, mode, selections) => {
@@ -207,4 +207,26 @@ test('registered core Service projection preserves explicit empty parameters for
   }
   assert.equal(f.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
  }finally{await f.cleanup();}
+});
+
+for(const route of ['legacy','registered'])for(const outcome of ['success','window-closes','refusal'])test('explicit local strategy window uses shared '+route+' order authorization history and memory '+outcome,async()=>{
+ let now=Date.parse('2026-11-15T17:59:59.900+08:00');const rules={version:1,enabled:true,rules:[{id:'local-window',priority:1,type:'LOCAL_TIME_WINDOW',enabled:true,params:{start:'09:00',end:'18:00',timeZone:'Asia/Shanghai'},onFail:'KEEP'}]},f=fixture(4,outcome==='refusal'?'REJECTED':'SUCCESS',{rules,clock:()=>now});
+ try{
+  f.session.player={...f.session.player,playerId:'1',worldId:17};f.session.connectionId='window-connection';f.service.saveModuleConfig(f.session.id,{module:'orders',config:{enabled:true}});
+  const view=route==='registered'?(await f.service.surveyModule(f.session,'orders')).view:(await f.service.survey(f.session)).view,row=route==='registered'?view.candidates[0]:view.orders[0];assert.equal(row.ruleResult.ruleResults[0].status,'PASS');
+  const payload={module:'orders',mode:'Manual',selections:[row.actionId],...(route==='registered'?{parameters:{}}:{})},plan=await f.service.plan(f.session,payload),permit=f.service.authorize(f.session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(a=>a.actionId),resourceBudget:plan.resourceBudget,confirm:true});if(outcome==='window-closes')now+=1000;
+  f.service.execute(f.session,permit);await f.service.settle(f.session.id);const run=f.history.list(f.session.id)[0];assert.equal(run.finalStatus,outcome==='window-closes'?'NOT_EXECUTED':outcome==='refusal'?'REJECTED':'SUCCESS');assert.equal(f.writes.length,outcome==='window-closes'?0:1);assert.throws(()=>f.service.execute(f.session,permit));
+  if(outcome==='refusal'){now=Date.parse('2026-11-16T10:00:00+08:00');await assert.rejects(f.service.plan(f.session,payload),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.writes.length,1);}
+  if(outcome==='window-closes'){const newView=(await f.service.survey(f.session)).view;assert.equal(newView.orders[0].actionType,'KEEP');assert.equal(newView.orders[0].executable,false);}
+ }finally{await f.service.settle(f.session.id);f.cleanup();}
+});
+
+for(const closes of [false,true])test('explicit local strategy window remains enforced inside original finite Workflow '+closes,async()=>{
+ const {createWorkflowRunner}=await import('../src/workflow.mjs');let now=Date.parse('2026-11-15T17:59:59.900+08:00');const rules={version:1,enabled:true,rules:[{id:'local-window',priority:1,type:'LOCAL_TIME_WINDOW',enabled:true,params:{start:'09:00',end:'18:00',timeZone:'Asia/Shanghai'},onFail:'KEEP'}]},f=fixture(4,'SUCCESS',{rules,clock:()=>now});let runner;
+ try{
+  f.session.player={...f.session.player,playerId:'1',worldId:17};f.session.connectionId='window-workflow';f.service.saveModuleConfig(f.session.id,{module:'orders',config:{enabled:true}});
+  runner=createWorkflowRunner({operations:f.service,getSession:()=>f.session,modules:GAMEPLAY_MODULES,clock:()=>now,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+  const graph={version:1,id:'original-window-orders',name:'Original orders local strategy',budget:{resources:[{id:'wood',num:2}],quotas:[],uids:[]},runPolicy:{maxDurationMs:60000,maxActions:1,modules:['orders']},nodes:[{id:'s',type:'START'},{id:'a',type:'ACTION',module:'orders',parameters:{},selection:{unique:true}},{id:'v',type:'VERIFY',module:'orders'},{id:'e',type:'STOP'}],edges:[{from:'s',to:'a'},{from:'a',to:'v'},{from:'v',to:'e'}]};
+  await runner.start(f.session.id,graph);await runner.settle();const waiting=runner.getStatus();assert.equal(waiting.status,'AWAITING_AUTHORIZATION');assert.equal(f.writes.length,0);if(closes)now+=1000;await runner.authorizeRun({offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true});await runner.settle();const final=runner.getStatus();assert.equal(final.status,closes?'UNKNOWN':'COMPLETED');assert.equal(f.writes.length,closes?0:1);assert.equal(f.history.list(f.session.id)[0].finalStatus,closes?'NOT_EXECUTED':'SUCCESS');assert.equal(f.service.workflowBudget(f.session.id).state,'CLOSED');assert.equal(final.running,false);
+ }finally{runner?.stop();await runner?.settle();await f.service.settle(f.session.id);f.cleanup();}
 });

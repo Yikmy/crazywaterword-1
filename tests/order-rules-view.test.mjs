@@ -256,3 +256,10 @@ test('cached order preview explains observed counts, client ceiling and unconfir
  assert.ok(h.requests.every(r=>!r.url.includes('/authorize')&&!r.url.includes('/execute')));
  const missing=previewFixture();missing.progress={completed:{value:null},clientLimit:{value:null},remainingProjection:{value:null}};await preview(h,missing);assert.match(h.node('order-preview-meta').textContent,/观察完成 未知 单/);assert.match(h.node('order-preview-list').textContent,/等待标记或采集时服务器时间未知/);
 });
+
+test('explicit local strategy window page requires both times, preserves Shanghai scope and uses original save only',async()=>{
+ const h=await boot(),data=fixture('A',{version:1,enabled:true,rules:[]});data.ruleTypes=[...types,{type:'LOCAL_TIME_WINDOW',label:'上海本地策略时窗'}];await load(h,data);h.node('order-rule-add-type').value='LOCAL_TIME_WINDOW';h.node('order-rule-add').onclick();assert.deepEqual(draft(h).rules[0].params,{start:'',end:'',timeZone:'Asia/Shanghai'});
+ for(const [key,value]of [['start','22:00'],['end','06:00']]){const input=field(h,0,key);assert.equal(input.type,'time');input.value=value;input.oninput();}assert.deepEqual(draft(h).rules[0].params,{start:'22:00',end:'06:00',timeZone:'Asia/Shanghai'});assert.match(card(h).textContent,/不是服务器日界/);assert.equal(draft(h).rules[0].onFail,'KEEP');
+ const expected=draft(h),saved=h.node('order-rules-save').onclick(),request=h.pending('/api/order-rules','A');assert.deepEqual(JSON.parse(request.options.body),{config:expected});h.respond('/api/order-rules','A',{accountId:'A',config:expected,source:'account',warning:null});await saved;assert.equal(field(h,0,'start').value,'22:00');assert.equal(h.requests.some(r=>['authorize','execute','workflows/start'].some(path=>r.url.includes(path))),false);
+ const pending=h.node('order-rules-preview').onclick();field(h,0,'end').value='07:00';field(h,0,'end').oninput();h.respond('/api/order-rules/preview','A',previewFixture());await pending;assert.equal(draft(h).rules[0].params.end,'07:00');assert.doesNotMatch(h.node('order-preview-list').textContent,/合成最终解释/);
+});

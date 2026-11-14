@@ -127,3 +127,7 @@ test('read I/O failure returns a warning and default; account files and snapshot
 });
 
 test.after(() => fs.rmSync(isolated, { recursive: true, force: true }));
+
+test('explicit local strategy window roundtrips in original account store without implicit execution or shared settings',()=>{
+ reset();const policy={version:1,enabled:true,rules:[{id:'local-window',priority:1,type:'LOCAL_TIME_WINDOW',enabled:true,params:{start:'22:00',end:'06:00',timeZone:'Asia/Shanghai'},onFail:'KEEP'}]};saveOrderRules('A',policy);const bytes=fs.readFileSync(ORDER_RULES_PATH,'utf8');assert.deepEqual(loadOrderRules('A').config,policy);safeDefault(loadOrderRules('B'));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);const invalid=structuredClone(policy);invalid.rules[0].params.timeZone='UTC';assert.throws(()=>saveOrderRules('A',invalid));assert.equal(fs.readFileSync(ORDER_RULES_PATH,'utf8'),bytes);
+});

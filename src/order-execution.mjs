@@ -169,16 +169,16 @@ export async function surveyOrderExecution(client, protocol, { survey = surveyWo
 }
 
 export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(survey?.stockReliable === true ? survey.stock : null),
-  mode = 'Manual', refreshEligibility, selections } = {}) {
+  mode = 'Manual', refreshEligibility, selections, clock = Date.now } = {}) {
   if (!modes.has(mode)) throw notExecuted('不支持的订单执行模式');
   const policy = validateOrderRules(rules);
   if (selections !== undefined && (!Array.isArray(selections) || selections.some((id) => typeof id !== 'string'))) throw notExecuted('订单选择必须为 actionId 数组');
   const selectedIds = selections === undefined ? null : new Set(selections);
-  const rows = [], actions = [], notes = [], refreshQuotas = new Map();
+  const rows = [], actions = [], notes = [], refreshQuotas = new Map(), localTimeMs = clock();
   for (const order of survey?.orders ?? []) {
     const state = snapshot(order), identity = state ? hash(state) : null;
     const costs = state?.requirements ?? [];
-    const ruleResult = evaluateOrder(order, survey.stockReliable === true ? survey.stock : null, policy);
+    const ruleResult = evaluateOrder(order, survey.stockReliable === true ? survey.stock : null, policy, { localTimeMs });
     const actionType = { RECOMMEND_SUBMIT: 'SUBMIT', RECOMMEND_REFRESH: 'REFRESH', RECOMMEND_KEEP: 'KEEP', NEEDS_REVIEW: 'REVIEW' }[ruleResult.decision];
     const actionId = `orders:${actionType}:${hash({ identity, policy })}`;
     const selected = selectedIds === null || selectedIds.has(actionId);
@@ -213,7 +213,7 @@ export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(
 
 export async function executeOrderOperation(client, protocol, operation, { rules, config = null, player = null,
   budget = { ledger: null }, signal, stop, assertActive = () => {}, onStep,
-  survey = surveyWorld, refreshEligibility, timeout = 15000, window = 400, rewardBinding = null, rewardContext = () => null } = {}) {
+  survey = surveyWorld, refreshEligibility, timeout = 15000, window = 400, rewardBinding = null, rewardContext = () => null, clock = Date.now } = {}) {
   const startedAt = new Date().toISOString();
   let beforeSurvey, afterSurvey, beforeState = null, afterState = null, requestResult = null, reservationBefore, dispatched = false, executingAction = null, refreshReservation = null;
   const costs = operation?.costs;
@@ -245,7 +245,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     const current = trustedOrder(beforeSurvey, indexOf(operation.target.index));
     beforeState = snapshot(current);
     if (!beforeState || hash(beforeState) !== operation.identity) throw notExecuted('订单身份已变化，请重新规划');
-    const ruleResult = evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy);
+    const ruleResult = evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock() });
     const expectedDecision = operation.actionType === 'SUBMIT' ? 'RECOMMEND_SUBMIT' : 'RECOMMEND_REFRESH';
     if (ruleResult.decision !== expectedDecision) throw notExecuted('当前订单不再符合已规划的规则动作');
     if (beforeSurvey.stockReliable !== true) throw notExecuted('当前库存来源不可靠');
@@ -266,9 +266,13 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     executingAction = action;
     if (refreshReservation) budget.orderRefreshQuotas.set(refreshReservation.source, refreshReservation.after);
     reservationBefore = budget.ledger?.reserved instanceof Map ? [...budget.ledger.reserved].map(([id, num]) => ({ id, num })) : [];
+    const assertLocalWindow = () => {
+      if (policy.rules.some(rule => rule.enabled && rule.type === 'LOCAL_TIME_WINDOW') && evaluateOrder(current, beforeSurvey.stockReliable === true ? beforeSurvey.stock : null, policy, { localTimeMs: clock() }).decision !== expectedDecision) throw notExecuted('本地策略时窗已变化，原订单计划不再符合规则动作');
+    };
+    const dispatchOptions = options => ({ ...options, beforeDispatch: () => { active(); assertLocalWindow(); options?.beforeDispatch?.(); } });
     const guarded = new Proxy(client, { get(target, key) {
-      if (key === 'request') return async (...args) => { if (args[4]?.mutate) { active(); dispatched = true; } const value=await target.request(...args); if(args[0]==='FinishWorkerOrderRequest'&&args[2]==='FinishWorkerOrderResponse'&&args[1]?.index===beforeState.index){responseObservation={value:toSnapshotJson(value),sourceAt:Date.now()};} return value; };
-      if (key === 'sendWatch') return (...args) => { active(); dispatched = true; return target.sendWatch(...args); };
+      if (key === 'request') return async (...args) => { if (args[4]?.mutate) { active(); assertLocalWindow(); args[4] = dispatchOptions(args[4]); dispatched = true; } const value=await target.request(...args); if(args[0]==='FinishWorkerOrderRequest'&&args[2]==='FinishWorkerOrderResponse'&&args[1]?.index===beforeState.index){responseObservation={value:toSnapshotJson(value),sourceAt:Date.now()};} return value; };
+      if (key === 'sendWatch') return (...args) => { active(); assertLocalWindow(); args[2] = dispatchOptions(args[2]); dispatched = true; return target.sendWatch(...args); };
       const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
     } });
     const run = await runWorld(guarded, protocol, { actions: [action] }, { allowMutate: true, budget, signal, stop, timeout, window });

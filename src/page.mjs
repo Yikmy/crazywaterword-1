@@ -793,6 +793,7 @@ function orderRuleParams(type) {
   if (type === 'ITEM_FORBIDDEN' || type === 'ITEM_REQUIRED') return { itemIds: [] };
   if (type === 'MIN_EXPERIENCE') return { value: 700, operator: 'GT' };
   if (type === 'MAX_ITEM_COUNT') return { itemId: '', value: 1 };
+  if (type === 'LOCAL_TIME_WINDOW') return { start: '', end: '', timeZone: 'Asia/Shanghai' };
   return {};
 }
 function renderOrderRulesEditor() {
@@ -855,6 +856,12 @@ function renderOrderRulesEditor() {
     } else if (rule.type === 'MAX_ITEM_COUNT') {
       addField('限制的原始物品 ID', itemInput('itemId', rule.params.itemId || '', (value) => { rule.params.itemId = value.trim(); }));
       addField('需求数量上限', numberInput('value', rule.params.value, (value) => { rule.params.value = value; }));
+    } else if (rule.type === 'LOCAL_TIME_WINDOW') {
+      for (const [field, label] of [['start', '上海本地起点（包含）'], ['end', '上海本地终点（不含）']]) {
+        const input = el('input'); input.type = 'time'; input.step = '60'; input.dataset.field = field; input.value = rule.params[field] || '';
+        input.oninput = () => modify(() => { rule.params[field] = input.value; }, false); addField(label, input);
+      }
+      fields.appendChild(el('span', 'dim', 'Asia/Shanghai；每日本地策略筛选，可跨午夜。起止须明确且不同。不是服务器日界、免费刷新资格或定时执行授权；派发前重新核对。'));
     } else {
       fields.appendChild(el('span', 'dim', '检查当前订单的完整需求是否有足够库存；所有规则通过后仍会独立检查库存。'));
     }

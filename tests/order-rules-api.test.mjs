@@ -74,7 +74,7 @@ test('policy settings and missing preview never allocate a Runtime, connection, 
   const app = await harness();
   try {
     const loaded = await app.call(); assert.equal(loaded.status, 200); assert.equal(loaded.data.source, 'default');
-    assert.deepEqual(loaded.data.config, { version: 1, enabled: false, rules: [] }); assert.equal(loaded.data.ruleTypes.length, 5);
+    assert.deepEqual(loaded.data.config, { version: 1, enabled: false, rules: [] }); assert.equal(loaded.data.ruleTypes.length, 6);
     assert.ok(loaded.data.items.some((item) => item.id === 'item/toilet' && item.source.includes('WorkerOrderCfg.itemId')));
     const result = await preview(app); assert.equal(result.status, 200); assert.equal(result.data.status, 'UNKNOWN'); assert.deepEqual(result.data.orders, []);
     assert.equal(app.sessions.size, 0); assert.deepEqual(app.counts(), { clients: 0, collections: 0 }); assert.equal(fs.existsSync(ORDER_RULES_PATH), false);
@@ -321,5 +321,15 @@ test('original cached Tasks HTTP preserves unknown daily order scope and explici
   const result=await app.call('/api/tasks');assert.equal(result.status,200,JSON.stringify(result.data));assert.equal(result.data.orderOfTheDay.orderNum,12);assert.equal(result.data.orderOfTheDay.rewardedNum,6);assert.equal(result.data.orderOfTheDay.status,'UNKNOWN');assert.equal(result.data.orderOfTheDay.reason,'ORDER_REWARD_CONTEXT_UNAVAILABLE');assert.equal(result.data.orderOfTheDay.claimable,false);assert.ok(!result.data.plan.some(row=>row.kind==='orderDaily'));assert.match(result.data.text,/观察完成 12 单.*下一档 未知/);assert.deepEqual(app.counts(),{clients:0,collections:0});
   delete data.ok.OnWaterRequest.orderOfTheDay.orderNum;delete data.raw.OnWaterRequest.orderOfTheDay.orderNum;const missing=await app.call('/api/tasks');assert.equal(missing.data.orderOfTheDay.orderNum,null);assert.equal(missing.data.orderOfTheDay.claimable,false);assert.match(missing.data.text,/观察完成 未知 单/);
   assert.equal((await app.call('/api/tasks/run','A',{})).status,403);
+ }finally{await app.close();}
+});
+
+test('explicit local strategy window API previews current local policy independently of cached game time and saves per account',async()=>{
+ const app=await harness();try{
+  const data=snapshot(),before=structuredClone(data);app.sessions.set('A',cached(data));const now=new Date(Date.now()+8*3600000),minute=now.getUTCHours()*60+now.getUTCMinutes(),hhmm=value=>{const m=(value+1440)%1440;return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');};
+  const window=(start,end,onFail='KEEP')=>policy([rule('local-window',1,'LOCAL_TIME_WINDOW',{start:hhmm(start),end:hhmm(end),timeZone:'Asia/Shanghai'},onFail)]),inside=window(minute-1,minute+5),outside=window(minute+5,minute+10);
+  const active=await preview(app,inside);assert.equal(active.status,200);assert.equal(active.data.orders[1].result.decision,'RECOMMEND_SUBMIT');assert.equal(active.data.orders[1].result.ruleResults[0].strategyWindow.status,'IN_WINDOW');
+  const closed=await preview(app,outside);assert.equal(closed.data.orders[1].result.decision,'RECOMMEND_KEEP');assert.equal(closed.data.orders[1].result.ruleResults[0].strategyWindow.gameDay,null);assert.equal(closed.data.orders[1].result.ruleResults[0].strategyWindow.refreshEligibility,null);
+  const refresh=await preview(app,window(minute+5,minute+10,'REFRESH'));assert.equal(refresh.data.orders[1].result.decision,'RECOMMEND_REFRESH');assert.deepEqual(data,before);assert.equal((await app.call('/api/order-rules','A',inside)).status,200);assert.deepEqual((await app.call()).data.config,inside);assert.deepEqual((await app.call('/api/order-rules','B')).data.config,{version:1,enabled:false,rules:[]});assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
