@@ -1326,7 +1326,7 @@ function wfOpenUnified(entry){
  if(!current||wfPending||wfData?.status?.running)return;
  const field=$('wf-unified-intent'),existing=field.value.trim().length>0;
  if(!existing){const intent={entry,tasks:[],dailies:entry==='tasks'?[]:[{taskId:1002},{taskId:1006},{taskId:1009}],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}};field.value=gpJson(intent);}
- try{wfUnifiedRender();$('wf-unified-blocked').textContent=existing?'已保留原声明、步骤、预算和运行边界；如需切换入口，请在原表单明确应用。':entry==='tasks'?'请填写要领取的精确 kind 和 taskId，再生成预览。':'请填写累计预算和业务选择，再生成预览。';}
+ try{if(existing)wfUnifiedData();else wfUnifiedRender();$('wf-unified-blocked').textContent=existing?'已保留原声明、步骤、预算和运行边界；如需切换入口，请在原表单明确应用。':entry==='tasks'?'请填写要领取的精确 kind 和 taskId，再生成预览。':'请填写累计预算和业务选择，再生成预览。';}
  catch(error){$('wf-unified-blocked').textContent='原声明已保留，请修正后再加载：'+error.message;}
  for(const section of document.querySelectorAll('main > section'))section.classList.toggle('hidden',section.id!=='tab-workflow');
  for(const button of document.querySelectorAll('nav button'))button.classList.toggle('on',button.dataset.tab==='workflow');

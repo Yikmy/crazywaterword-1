@@ -2572,3 +2572,20 @@ test('unified reopen cannot overwrite a running declaration and account changes 
  h.respond('/api/workflows',{accountId:'B',csrfToken:'synthetic-csrf-B',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
  assert.deepEqual(unifiedDraft(h).budget,{resources:[],quotas:[],uids:[]});assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
 });
+
+for(const entry of ['tasks','dailies','loop'])test(entry+' unified reopen preserves unapplied form edits and requires explicit advanced reload',async()=>{
+ const h=await unifiedForm('loop'),source=h.node('wf-unified-intent').value;
+ const pending={entry:'dailies',rounds:'3',every:'250',target:'1010','pirate-city':'17','budget-id':'wood','budget-num':'9','budget-type':'pirate'};
+ for(const [field,value]of Object.entries(pending))h.node('wf-unified-'+field).value=value;
+ h.node('wf-unified-phase').value='dailies';h.node('wf-unified-phase').onchange();
+ h.node('wf-unified-kind').value='pirate-sweep';h.node('wf-unified-kind').onchange();
+ const before=h.requests.length,opening=h.node(entry+'-unified').click();await tick();
+ for(const [field,value]of Object.entries(pending))assert.equal(h.node('wf-unified-'+field).value,value,field);
+ assert.equal(h.node('wf-unified-kind').value,'pirate-sweep');assert.equal(h.node('wf-unified-intent').value,source);
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[]});await opening;
+ for(const [field,value]of Object.entries(pending))assert.equal(h.node('wf-unified-'+field).value,value,field);
+ assert.equal(h.requests.length,before+1);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
+ h.node('wf-unified-form-load').click();
+ assert.equal(h.node('wf-unified-entry').value,'loop');assert.equal(h.node('wf-unified-rounds').value,'1');assert.equal(h.node('wf-unified-every').value,'0');
+ assert.equal(h.node('wf-unified-intent').value,source);assert.equal(writes(h).length,0);
+});
