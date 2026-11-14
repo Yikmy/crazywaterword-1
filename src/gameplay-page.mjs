@@ -957,6 +957,8 @@ function wfHistoryList(rows) {
 function wfHistoryRender(data) {
   const box = gpClear($('wf-history-detail'));
   box.appendChild(gpEl('p', '运行 ' + data.workflowRunId + ' · 流程 ' + data.workflowDefinitionId + ' · ' + data.status + (data.recovered ? ' · 已恢复的只读记录' : '')));
+  if(data.currentNode)box.appendChild(gpEl('p','原运行位置：'+data.currentNode+'；位置记录不证明该节点完成或业务成功。'));
+  if(data.reason)box.appendChild(gpEl('p','运行说明：'+data.reason));
   if (data.preparation) {
     box.appendChild(gpEl('p', '原声明入口：' + data.preparation.entry + '；编译未纳入 ' + data.preparation.blocked.length + ' 项。此信息仅供审计，不证明游戏资格或已执行。'));
     for (const row of data.preparation.blocked) box.appendChild(gpEl('p', row.phase + ' 第 ' + (row.index + 1) + ' 项 · 任务 ' + row.taskId + ' · 未执行：' + row.reason));

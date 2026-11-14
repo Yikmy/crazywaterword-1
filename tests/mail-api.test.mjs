@@ -105,3 +105,24 @@ test('HTTP Loop world SURVEY uses original mail Function and persists each bound
  }finally{await app.close();}
  app=await harness();try{const history=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(history.status,200);assert.equal(history.data.surveys.length,2);assert.equal(history.data.resumable,false);assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});}finally{await app.close();}
 });
+
+test('HTTP interrupted survey exposes persisted location and stop reason after restart without replay',async()=>{
+ let app=await harness(),runId,finish;const pending=new Promise(r=>finish=r);
+ try{
+  await app.call('/api/workflows');const session=app.ready('A');session.onRead=()=>pending;
+  const prepared=await app.call('/api/workflows/prepare',{body:{entry:'tasks',tasks:[{kind:'mail-enumeration',maxPages:3}],budget:{resources:[],quotas:[],uids:[]}}});
+  const started=await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});assert.equal(started.status,200);
+  for(let i=0;i<100&&!app.reads.length;i++)await new Promise(r=>setTimeout(r,5));assert.equal(app.reads.length,1);
+  const current=await app.call('/api/workflows');runId=current.data.status.runId;
+  const before=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(before.status,200);assert.equal(before.data.currentNode,'tasks-0-1');assert.equal(before.data.status,'RUNNING');assert.deepEqual(before.data.surveys,[]);assert.equal(before.data.resumable,false);
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+  await app.call('/api/workflows/stop',{body:{}});
+  let stopped;for(let i=0;i<100;i++){stopped=await app.call('/api/workflows/history?workflowRunId='+runId);if(stopped.data.status==='CANCELLED')break;await new Promise(r=>setTimeout(r,5));}
+  assert.equal(stopped.data.status,'CANCELLED');assert.equal(stopped.data.currentNode,'tasks-0-1');assert.match(stopped.data.reason,/停止|取消/);assert.deepEqual(stopped.data.surveys,[]);
+  finish();await new Promise(r=>setImmediate(r));assert.equal(app.reads.length,1);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
+ }finally{finish();await app.close();}
+ app=await harness();try{
+  const reopened=await app.call('/api/workflows/history?workflowRunId='+runId);assert.equal(reopened.status,200);assert.equal(reopened.data.currentNode,'tasks-0-1');assert.equal(reopened.data.status,'CANCELLED');assert.match(reopened.data.reason,/停止|取消/);assert.equal(reopened.data.resumable,false);assert.deepEqual(reopened.data.surveys,[]);
+  assert.equal((await app.call('/api/workflows')).data.status.status,'IDLE');assert.equal(app.reads.length,0);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{creates:0,collects:0});
+ }finally{await app.close();}
+});

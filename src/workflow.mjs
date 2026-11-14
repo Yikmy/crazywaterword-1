@@ -279,6 +279,7 @@ function repeatAfterStop(ctx,node){
         if (node.type === 'STOP') { await trace(ctx, node, 'STOP'); current(ctx); if(await repeatAfterStop(ctx,node))continue;await finish(ctx, 'COMPLETED', ctx.trace.some(row => row.result.startsWith('BLOCKED_')) || ctx.graph.preparation?.blocked.length ? '工作流到达 STOP；含未执行的阻塞节点或编译未纳入步骤，详情见运行历史' : '工作流到达 STOP'); break; }
         if (node.type === 'START') { await trace(ctx, node, 'START'); ctx.nodeId = next(ctx); continue; }
         if (node.type === 'SURVEY') {
+          await onUpdate(getStatus()); current(ctx);
           ctx.survey = await cancelled(ctx, operations.surveyModule(ctx.session, node.module, copy(node.parameters ?? {}), { workflowId: ctx.runId, signal: ctx.cancel.signal }));
           current(ctx); ctx.surveyModule = node.module;
           const mailbox=node.module==='mail'&&node.parameters?.action==='enumerate'?ctx.survey?.view?.mailbox:null;
@@ -289,6 +290,7 @@ function repeatAfterStop(ctx,node){
         if (node.type === 'ACTION') {
           if(ctx.graph.runPolicy&&ctx.actionPlans>=ctx.graph.runPolicy.maxActions)throw fail('累计动作计划已到声明上限','WORKFLOW_LIMIT');
           ctx.lastPlan = null; ctx.lastRun = null; ctx.lastActionModule = null;
+          await onUpdate(getStatus()); current(ctx);
           operations.bindWorkflowNode?.(ctx.session,ctx.runId,{workflowId:ctx.graph.id,nodeId:node.id,...(ctx.graph.runPolicy?.maxRounds!==undefined?{round:ctx.round}:{})});
           let selectedId = typeof node.selection === 'string' ? node.selection : node.selection.actionId;
           if (node.selection?.unique === true) {
@@ -542,6 +544,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
   }
   return { accountId, workflowRunId, workflowDefinitionId, ...(workflowRun.runAuthorization?{runAuthorization:copy(workflowRun.runAuthorization)}:{}),...(workflowRun.trigger?{trigger:copy(workflowRun.trigger)}:{}),...(workflowRun.eventTrigger?{eventTrigger:copy(workflowRun.eventTrigger)}:{}), ...(workflowRun.runPolicy?{runPolicy:validateRunPolicy(workflowRun.runPolicy),expiresAt:workflowRun.expiresAt,actionPlans:workflowRun.actionPlans,...(workflowRun.runPolicy.maxRounds!==undefined?{round:workflowRun.round,completedRounds:workflowRun.completedRounds}:{})}:{}), ...(workflowRun.preparation !== undefined ? {preparation:validatePreparation(workflowRun.preparation)} : {}), status: workflowRun.status,
     startedAt: workflowRun.startedAt ?? null, finishedAt: workflowRun.finishedAt ?? null, recovered: workflowRun.recovered === true,
+    currentNode: workflowRun.currentNode ?? null, reason: workflowRun.reason ?? null,
     readOnly: true, resumable: false, coverage: 'PERSISTED_WORKFLOW_OPERATION_LINKS_ONLY', unlinkedOperationCount,
     waits: trace.filter(row=>row?.type==='WAIT'||row?.type==='STOP'&&['ROUND_WAIT_STARTED','ROUND_WAITED'].includes(row.result)).map(row=>({nodeId:row.nodeId,result:row.result,timestamp:row.timestamp??null,...traceEvidence(row)})),
     surveys: trace.filter(row=>row?.type==='SURVEY'&&row.result==='SURVEYED').map(row=>({nodeId:row.nodeId,timestamp:row.timestamp??null,...traceEvidence(row)})),

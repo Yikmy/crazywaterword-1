@@ -727,3 +727,34 @@ test('Loop world mail SURVEY shares explicit enumeration bounds without becoming
  for(const parameters of [{action:'enumerate',maxPages:0},{action:'enumerate',maxPages:101},{action:'enumerate',maxPages:2,selection:'all'}])assert.throws(()=>build(parameters),{code:'INVALID_PARAMETERS'});
  const result=build({action:'enumerate',maxPages:2});assert.equal(result.graph.nodes[1].type,'SURVEY');assert.equal(Object.hasOwn(result.graph.nodes[1],'selection'),false);
 });
+
+for(const kind of ['SURVEY','ACTION','UNIQUE_ACTION'])test('business checkpoint preserves interrupted node before '+kind+' and restart stays read-only',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-node-checkpoint-')),file=path.join(dir,'workflow.json');t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=createWorkflowStore({file,modules});let entered,finish;const active=new Promise(r=>entered=r),pending=new Promise(r=>finish=r),calls=[];
+ const node={id:'business',type:kind==='SURVEY'?'SURVEY':'ACTION',module:'fixture',...(kind==='SURVEY'?{}:{selection:kind==='UNIQUE_ACTION'?{unique:true}:'one'})};
+ const g={version:1,id:'interrupted',name:'Interrupted',nodes:[{id:'s',type:'START'},node,{id:'z',type:'STOP'}],edges:[{from:'s',to:'business'},{from:'business',to:'z'}]};
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};
+ const wait=async()=>{calls.push('business');entered();return pending;};
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:wait,plan:wait,history:()=>({runs:[]})},onUpdate:state=>store.record('A',state)});
+ t.after(async()=>{runner.stop();finish({});await runner.settle();});
+ const running=runner.start('A',g);await active;
+ const bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules}),row=reopened.history('A')[0];
+ assert.equal(row.status,'RECOVERED_STOPPED');assert.equal(row.currentNode,'business');assert.equal(row.steps,2);assert.equal(row.resumable,false);
+ assert.equal(row.trace.some(r=>r.nodeId==='business'),false);assert.deepEqual(reopened.history('B'),[]);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.deepEqual(calls,['business']);
+ runner.stop();const stopped=await running;assert.equal(stopped.status,'CANCELLED');assert.equal(store.history('A')[0].currentNode,'business');
+ finish({});await new Promise(r=>setImmediate(r));assert.deepEqual(calls,['business']);assert.equal(runner.getStatus().status,'CANCELLED');
+});
+for(const kind of ['SURVEY','ACTION','UNIQUE_ACTION'])test('failed '+kind+' checkpoint prevents business investigation or planning',async()=>{
+ let invoked=0;
+ const f=fixture({surveyModule:async()=>{invoked++;return {};},plan:async()=>{invoked++;return {};}},
+ {onUpdate:state=>{if(state.currentNode==='business'&&state.status==='RUNNING')throw Error('synthetic checkpoint disk failure');}});
+ const node={id:'business',type:kind==='SURVEY'?'SURVEY':'ACTION',module:'fixture',...(kind==='SURVEY'?{}:{selection:kind==='UNIQUE_ACTION'?{unique:true}:'one'})};
+ const g={version:1,id:'checkpoint-fail',name:'Checkpoint fail',nodes:[{id:'s',type:'START'},node,{id:'z',type:'STOP'}],edges:[{from:'s',to:'business'},{from:'business',to:'z'}]};
+ const result=await f.runner.start(f.session.id,g);assert.equal(result.status,'FAILED');assert.equal(invoked,0);assert.equal(f.released(),1);assert.match(result.reason,/checkpoint disk failure/);
+});
+test('stop during checkpoint persistence prevents late investigation and preserves a cancelled snapshot',async()=>{
+ let entered,finish,invoked=0;const active=new Promise(r=>entered=r),pending=new Promise(r=>finish=r);
+ const f=fixture({surveyModule:async()=>{invoked++;return {};}},
+ {onUpdate:async state=>{if(state.currentNode==='q'&&state.status==='RUNNING'){entered();await pending;}}});
+ const running=f.runner.start(f.session.id,graph());await active;f.runner.stop();finish();assert.equal((await running).status,'CANCELLED');assert.equal(invoked,0);assert.equal(f.released(),1);
+});

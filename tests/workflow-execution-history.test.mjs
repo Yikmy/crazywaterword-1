@@ -385,3 +385,8 @@ test('mailbox observation history validates exact coverage, rejects forged summa
  assert.throws(()=>createWorkflowStore({file,modules:GAMEPLAY_MODULES}).history('A'),{code:'WORKFLOW_STORE_UNAVAILABLE'});assert.equal(fs.readFileSync(file,'utf8'),damaged);
  }finally{fs.rmSync(scratch,{recursive:true,force:true});}
 });
+
+test('legacy history projection exposes missing node and reason as unknown without inference',()=>{
+ const base={accountId:'A',runId:'legacy-location',workflowId:'legacy-flow',status:'UNKNOWN',trace:[]};
+ const view=projectWorkflowExecutionHistory('A',base,[]);assert.equal(view.currentNode,null);assert.equal(view.reason,null);assert.equal(view.resumable,false);assert.equal(base.currentNode,undefined);assert.equal(base.reason,undefined);
+});

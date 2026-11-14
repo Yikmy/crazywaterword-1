@@ -2346,3 +2346,13 @@ test('Loop survey copy preserves Tasks and Dailies declarations, full lists and 
  unifiedLoad(h,{entry:'loop',world:Array.from({length:48},()=>({type:'SURVEY',module:'mail',parameters:{pageNo:0}})),budget:{resources:[],quotas:[],uids:[]}});const source=h.node('wf-unified-intent').value;h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-mail-hint').textContent,/最多48项/);
  const loading=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf-A',status:{running:true,status:'RUNNING'},graphs:[],history:[]});await loading;assert.equal(h.node('gp-mail-unified-survey').disabled,true);h.node('gp-mail-unified-survey').click();assert.equal(h.node('wf-unified-intent').value,source);assert.equal(writes(h).length,0);
 });
+
+test('workflow history shows interrupted location and reason as safe text without restoring execution',async()=>{
+ const h=await boot(),loading=h.node('wf-load').click();await tick();
+ h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'stopped-history',workflowId:'flow',status:'RECOVERED_STOPPED'}]});await loading;
+ const marker='<img src=x onerror=alert(1)>',history={accountId:'A',workflowRunId:'stopped-history',workflowDefinitionId:'flow',status:'RECOVERED_STOPPED',recovered:true,currentNode:marker,reason:marker+' interrupted',readOnly:true,resumable:false,unlinkedOperationCount:0,nodes:[],waits:[],surveys:[]};
+ const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',history);await reading;
+ const box=h.node('wf-history-detail');assert.ok(box.textContent.includes('原运行位置：'+marker));assert.ok(box.textContent.includes('运行说明：'+marker+' interrupted'));assert.match(box.textContent,/位置记录不证明该节点完成或业务成功/);assert.equal(descendants(box).some(n=>String(n.tagName).toLowerCase()==='img'),false);
+ const late=h.node('wf-history-read').click();await tick();h.run("selectAccount('B')");h.respond('/api/workflows/history',history);await late;assert.equal(h.node('wf-history-detail').textContent,'');
+ assert.equal(writes(h,'/api/workflows/resume').length,0);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
