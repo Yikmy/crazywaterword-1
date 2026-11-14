@@ -9,6 +9,7 @@
 // PromptResponse，所以一律走 client.sendWatch()，见 docs/gameplay.md 第 11.3 节。
 
 import { normalize } from './worlds.mjs';
+import { observeOrderProgress } from './order-execution.mjs';
 import { safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
 
@@ -47,16 +48,22 @@ export function taskTarget(row) {
   return Number.isFinite(n) ? n : null;
 }
 
-// 每日订单档位：rewardedNum 是「最后一个已领档位的 reqNum」，所以下一档就是第一个
-// reqNum 大于它的档位（客户端 OrderUtil.isOrderReward 就是这么算的）。
-// 各赛季的 reqNum 序列共享 6/12/18/24/30/40 前缀，合并去重后不会歧义。
-export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0 } = {}) {
-  const reqNums = [...new Set((config?.tables?.OrderDailyRewardCfg?.data ?? []).map((row) => row.reqNum))]
-    .filter((num) => Number.isFinite(num))
-    .sort((a, b) => a - b);
-  const tier = reqNums.find((num) => num > rewardedNum) ?? null;
-  if (tier === null) return { tier: null, reqNums, claimable: false };
-  return { tier, reqNums, claimable: orderNum >= tier };
+// A threshold calculation requires explicit counts and one applicable config
+// list. Never merge season/worldOpenDays rows; the legacy Tasks read set cannot
+// establish that context. Reward identity/period still needs its own contract.
+export function nextOrderTier(config, { orderNum, rewardedNum } = {}) {
+  const unknown = reason => ({ status: 'UNKNOWN', reason, tier: null, reqNums: [], claimable: false });
+  const count = value => Number.isInteger(value) && value >= 0 && value <= 2147483647;
+  if (!count(orderNum) || !count(rewardedNum)) return unknown('ORDER_COUNTS_UNAVAILABLE');
+  const rows = config?.tables?.OrderDailyRewardCfg?.data;
+  if (!Array.isArray(rows) || !rows.length) return unknown('ORDER_REWARD_CONFIG_UNAVAILABLE');
+  if (rows.some(row => row && ['season','worldOpenDays'].some(key => Object.hasOwn(row,key)))) return unknown('ORDER_REWARD_CONTEXT_UNAVAILABLE');
+  if (rows.some(row => !count(row?.reqNum) || row.reqNum === 0)
+    || new Set(rows.map(row => row.reqNum)).size !== rows.length) return unknown('ORDER_REWARD_CONFIG_INVALID');
+  const reqNums = rows.map(row => row.reqNum).sort((a,b) => a-b);
+  if (rewardedNum !== 0 && !reqNums.includes(rewardedNum) || rewardedNum > orderNum) return unknown('ORDER_REWARDED_THRESHOLD_INCONSISTENT');
+  const tier = reqNums.find(num => num > rewardedNum) ?? null;
+  return { status: 'CALCULATED', reason: null, tier, reqNums, claimable: tier !== null && orderNum >= tier };
 }
 
 // 只读探测：把三类任务和每日订单档位都拉一遍，算出每一条能不能领。
@@ -162,25 +169,16 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
   }
 
   // 每日订单档位奖励：空体请求，服务端按 reqNum 发下一档。
-  const order = waterBody.orderOfTheDay ?? {};
-  const tier = nextOrderTier(config, { orderNum: order.orderNum ?? 0, rewardedNum: order.rewardedNum ?? 0 });
-  const orderView = {
-    orderNum: order.orderNum ?? 0,
-    rewardedNum: order.rewardedNum ?? 0,
-    tier: tier.tier,
-    claimable: tier.claimable,
-  };
-  if (tier.tier === null) notes.push(`每日订单：各档位都已领完（rewardedNum=${orderView.rewardedNum}）`);
-  else if (!tier.claimable) notes.push(`每日订单：下一档要 ${tier.tier} 单，现在 ${orderView.orderNum} 单`);
+  const progress = observeOrderProgress(config, { orderOfTheDay: waterBody.orderOfTheDay });
+  const tier = nextOrderTier(config, { orderNum: progress.completed.value, rewardedNum: progress.rewardedThrough.value });
+  const orderView = { orderNum: progress.completed.value, rewardedNum: progress.rewardedThrough.value,
+    tier: tier.tier, claimable: tier.claimable, status: tier.status, reason: tier.reason, progress };
+  if (tier.status === 'UNKNOWN') notes.push('每日订单：档位资格未知（' + tier.reason + '）；不生成领取计划');
+  else if (tier.tier === null) notes.push('每日订单：本配置列表的阈值均已达到，周期及实际奖励归属未证');
+  else if (!tier.claimable) notes.push('每日订单：下一配置阈值为 ' + tier.tier + ' 单，观察完成 ' + orderView.orderNum + ' 单');
   else {
-    plan.push({
-      kind: 'orderDaily',
-      id: tier.tier,
-      request: 'GetNextOrderOTDRewardRequest',
-      body: {},
-      label: `每日订单 ${tier.tier} 单档位奖励`,
-      reward: null,
-    });
+    plan.push({ kind: 'orderDaily', id: tier.tier, request: 'GetNextOrderOTDRewardRequest', body: {},
+      label: '每日订单 ' + tier.tier + ' 单档位奖励', reward: null });
   }
 
   return { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
@@ -235,7 +233,7 @@ export function formatTaskPlan(survey) {
     lines.push(`${mark(planned('achievement', a.id))} 成就 ${String(a.id).padEnd(6)}${a.progress}/${a.target ?? '?'}${a.claimed ? ' 已领' : ''}`);
   }
   const o = survey.orderOfTheDay;
-  lines.push(`${mark(o.claimable)} 订单 今日 ${o.orderNum} 单，已领档位 ${o.rewardedNum}，下一档 ${o.tier ?? '无'}`);
+  lines.push(`${mark(o.claimable)} 订单 观察完成 ${o.orderNum ?? '未知'} 单，已领奖阈值 ${o.rewardedNum ?? '未知'}，下一档 ${o.status === 'UNKNOWN' ? '未知' : o.tier ?? '无'}；周期与重置时间未知`);
   for (const note of survey.notes) lines.push(`跳过 ${note}`);
   return lines.join('\n');
 }

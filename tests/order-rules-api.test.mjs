@@ -16,6 +16,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
     { itemId: 'GOLD', reward: [['EXP', 1]] },
   ] }],
   [1, 'ResourceCfg', { data: [{ id: 'GOLD', show_name: '金币' }] }],
+  [5, 'OrderDailyRewardCfg', { data: [{season:1,worldOpenDays:1,reqNum:40},{season:2,worldOpenDays:5,reqNum:45}] }],
   [4, 'OrderParamCfg', { data: [{ paramName:'订单每日上限',paramValue:40 }] }],
   [2, 'BuildingCfg', { data: [{ buildingType: '食品厂' }] }],
   [3, 'BuildingProduceCfg', { data: [
@@ -311,5 +312,14 @@ test('two accounts and generation changes keep cached order counts and markers i
   const a=progressSnapshot('A'),b=progressSnapshot('B');b.ok.OnWaterRequest.orderOfTheDay.orderNum=20;b.raw.OnWaterRequest.orderOfTheDay.orderNum=20;b.facts.OnWaterRequest.value.orderOfTheDay.orderNum=20;b.facts.OnWaterRequest.provenance.serverTime=1040000;
   app.sessions.set('A',cached(a));app.sessions.set('B',cached(b));const [ra,rb]=await Promise.all([preview(app,policy(),'A'),preview(app,policy(),'B')]);assert.equal(ra.data.progress.completed.value,12);assert.equal(rb.data.progress.completed.value,20);assert.equal(rb.data.orders[0].refreshTiming.status,'ELAPSED_UNCONFIRMED');
   const restarted=cached(structuredClone(a));restarted.generation=1;app.sessions.set('A',restarted);const result=await preview(app);assert.equal(result.data.progress.completed.value,null);assert.equal(result.data.orders[0].refreshTiming.status,'UNKNOWN');
+ }finally{await app.close();}
+});
+
+test('original cached Tasks HTTP preserves unknown daily order scope and explicit counts without game access',async()=>{
+ const app=await harness();try{
+  const data=progressSnapshot();data.ok.MainTaskInfoRequest={branch:[]};data.ok.AchievementInfoRequest={task:[]};data.raw=structuredClone(data.ok);app.sessions.set('A',cached(data));
+  const result=await app.call('/api/tasks');assert.equal(result.status,200,JSON.stringify(result.data));assert.equal(result.data.orderOfTheDay.orderNum,12);assert.equal(result.data.orderOfTheDay.rewardedNum,6);assert.equal(result.data.orderOfTheDay.status,'UNKNOWN');assert.equal(result.data.orderOfTheDay.reason,'ORDER_REWARD_CONTEXT_UNAVAILABLE');assert.equal(result.data.orderOfTheDay.claimable,false);assert.ok(!result.data.plan.some(row=>row.kind==='orderDaily'));assert.match(result.data.text,/观察完成 12 单.*下一档 未知/);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  delete data.ok.OnWaterRequest.orderOfTheDay.orderNum;delete data.raw.OnWaterRequest.orderOfTheDay.orderNum;const missing=await app.call('/api/tasks');assert.equal(missing.data.orderOfTheDay.orderNum,null);assert.equal(missing.data.orderOfTheDay.claimable,false);assert.match(missing.data.text,/观察完成 未知 单/);
+  assert.equal((await app.call('/api/tasks/run','A',{})).status,403);
  }finally{await app.close();}
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getEventListeners } from 'node:events';
-import { runTasks, surveyTasks } from '../src/tasks.mjs';
+import { runTasks, surveyTasks, nextOrderTier, formatTaskPlan } from '../src/tasks.mjs';
 import { runLoop, formatLoopRound } from '../src/loop.mjs';
 import { awaitExecution, executionDelay } from '../src/execution.mjs';
 
@@ -140,4 +140,38 @@ test('invalid or missing task progress cannot authorize main, branch or achievem
     assert.deepEqual(survey.plan, []);
     assert.equal(survey.plan.some((step) => step.kind === 'achievement'), false);
   }
+});
+
+const dailyTierConfig={tables:{OrderDailyRewardCfg:{data:[{reqNum:6},{reqNum:12},{reqNum:18}]},...config.tables}};
+test('order tier math retains exact explicit thresholds for a single unscoped list',()=>{
+ const result=nextOrderTier(dailyTierConfig,{orderNum:12,rewardedNum:6});assert.equal(result.status,'CALCULATED');assert.equal(result.tier,12);assert.equal(result.claimable,true);assert.deepEqual(result.reqNums,[6,12,18]);
+ assert.equal(nextOrderTier(dailyTierConfig,{orderNum:0,rewardedNum:0}).claimable,false);const done=nextOrderTier(dailyTierConfig,{orderNum:18,rewardedNum:18});assert.equal(done.tier,null);assert.equal(done.claimable,false);assert.equal(done.status,'CALCULATED');
+});
+for(const data of [{},{orderNum:12},{rewardedNum:6},{orderNum:-1,rewardedNum:0},{orderNum:12,rewardedNum:1.5},{orderNum:'12',rewardedNum:6},{orderNum:2147483648,rewardedNum:6}])test('missing or malformed daily order fields cannot create tier eligibility '+JSON.stringify(data),()=>{
+ const result=nextOrderTier(dailyTierConfig,data);assert.equal(result.status,'UNKNOWN');assert.equal(result.tier,null);assert.equal(result.claimable,false);
+});
+for(const rows of [[],[{reqNum:6},{reqNum:6}],[{reqNum:6},{reqNum:-1}],[{reqNum:6},{reqNum:0}],[{reqNum:'6'}],[{season:1,worldOpenDays:1,reqNum:40},{season:2,worldOpenDays:5,reqNum:45}],[{reqNum:6},{season:2,reqNum:12}]])test('daily order unknown or scoped configuration cannot become a merged completion list '+JSON.stringify(rows),()=>{
+ const cfg={tables:{OrderDailyRewardCfg:{data:rows}}},result=nextOrderTier(cfg,{orderNum:99,rewardedNum:0});assert.equal(result.status,'UNKNOWN');assert.equal(result.tier,null);assert.equal(result.claimable,false);assert.deepEqual(result.reqNums,[]);
+});
+test('unrecognized or impossible rewarded-through values do not silently skip a daily order threshold',()=>{
+ for(const data of [{orderNum:12,rewardedNum:5},{orderNum:6,rewardedNum:12}]){const result=nextOrderTier(dailyTierConfig,data);assert.equal(result.reason,'ORDER_REWARDED_THRESHOLD_INCONSISTENT');assert.equal(result.claimable,false);}
+});
+async function taskOrderSurvey(orderOfTheDay,cfg=dailyTierConfig,{water=null,signal}={}){
+ const reads=[],writes=[],client={connected:true,async request(name){reads.push(name);if(name==='MainTaskInfoRequest')return {task:{taskId:1,progress:1,rewardClaimed:false},branch:[]};if(name==='AchievementInfoRequest')return {task:[]};return {orderOfTheDay};},async sendWatch(){writes.push(true);}};
+ const survey=await surveyTasks(client,{}, {config:cfg,water,signal});return {survey,reads,writes};
+}
+test('Tasks keeps explicit zero and scoped tier unknown, while independent main-task observation remains available',async()=>{
+ const cfg={tables:{...dailyTierConfig.tables,OrderDailyRewardCfg:{data:[{season:1,worldOpenDays:1,reqNum:40},{season:2,worldOpenDays:5,reqNum:45}]}}};
+ const {survey,reads,writes}=await taskOrderSurvey({orderNum:40,rewardedNum:40},cfg);assert.equal(survey.orderOfTheDay.orderNum,40);assert.equal(survey.orderOfTheDay.rewardedNum,40);assert.equal(survey.orderOfTheDay.status,'UNKNOWN');assert.equal(survey.orderOfTheDay.reason,'ORDER_REWARD_CONTEXT_UNAVAILABLE');assert.equal(survey.orderOfTheDay.claimable,false);assert.equal(survey.orderOfTheDay.progress.period.status,'UNKNOWN');assert.equal(survey.plan.some(row=>row.kind==='orderDaily'),false);assert.equal(survey.plan.some(row=>row.kind==='main'),true);assert.deepEqual(reads,['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest']);assert.equal(writes.length,0);assert.match(formatTaskPlan(survey),/观察完成 40 单.*下一档 未知.*周期与重置时间未知/);assert.doesNotMatch(formatTaskPlan(survey),/各档位都已领完|订单 今日/);
+ const zero=await taskOrderSurvey({orderNum:0,rewardedNum:0});assert.equal(zero.survey.orderOfTheDay.orderNum,0);assert.equal(zero.survey.orderOfTheDay.rewardedNum,0);assert.equal(zero.survey.orderOfTheDay.tier,6);
+});
+test('Tasks never promotes inherited Codec defaults or missing order response into zero progress or all-claimed status',async()=>{
+ const {loadProtocol}=await import('../src/proto.mjs'),p=loadProtocol(),wire=body=>p.OrderOfTheDay.decode(p.OrderOfTheDay.encode(body).finish());
+ for(const body of [undefined,{},wire({}),wire({orderNum:12}),wire({rewardedNum:6})]){
+  const {survey}=await taskOrderSurvey(body);assert.equal(survey.orderOfTheDay.status,'UNKNOWN');assert.equal(survey.orderOfTheDay.claimable,false);assert.equal(survey.plan.some(row=>row.kind==='orderDaily'),false);assert.ok(survey.plan.some(row=>row.kind==='main'));assert.doesNotMatch(formatTaskPlan(survey),/各档位都已领完|订单 今日/);
+ }
+ const explicit=await taskOrderSurvey(wire({orderNum:0,rewardedNum:0}));assert.equal(explicit.survey.orderOfTheDay.status,'CALCULATED');assert.equal(explicit.survey.orderOfTheDay.orderNum,0);
+});
+test('preprovided Tasks water reuses the same raw observation and does not request another snapshot',async()=>{
+ const {survey,reads,writes}=await taskOrderSurvey(null,dailyTierConfig,{water:{orderOfTheDay:{orderNum:12,rewardedNum:6}}});assert.equal(survey.orderOfTheDay.tier,12);assert.equal(survey.orderOfTheDay.claimable,true);assert.deepEqual(reads,['MainTaskInfoRequest','AchievementInfoRequest']);assert.equal(writes.length,0);
 });
