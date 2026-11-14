@@ -204,3 +204,26 @@ for(const phase of ['authorization','execution'])for(const key of sourceFields)t
   assert.equal(f.calls.length,0);assert.deepEqual(f.history.list(session.id),[]);assert.equal(session.busy,null);
  }finally{f.cleanup();}
 });
+
+
+test('production coverage projects only account history and survives a stopped restart without replay or filtering away gaps', () => {
+  const timestamp='2026-11-10T04:00:00Z', clock=()=>Date.parse(timestamp), f=fixture({clock});
+  const action={actionId:'collect',actionType:'gainFactory',requestStatus:'SUCCESS',result:'SUCCESS',verification:{status:'CONFIRMED'},timestamp,
+    beforeState:{factory:{finishedProducts:[{id:'布匹',num:2}]}},afterState:{factory:{finishedProducts:[]}},
+    beforeInventory:[{id:'布匹',num:0}],afterInventory:[{id:'布匹',num:2}],beforeInventoryReliable:true,afterInventoryReliable:true};
+  const record=(accountId,runId,row)=>({accountId,runId,module:'city',finalStatus:row.result,actions:[row]});
+  try {
+    f.history.put(record('A','confirmed',action));
+    f.history.put(record('A','interrupted',{...action,actionId:'pending',result:'EXECUTING',requestStatus:'DISPATCHING',verification:{status:'NOT_STARTED'}}));
+    f.history.put(record('B','confirmed',{...action,afterInventory:[{id:'布匹',num:999}]}));
+    const before=fs.readFileSync(f.file,'utf8'), selected=f.service.history('A','confirmed');
+    assert.equal(selected.runs.length,1); assert.equal(selected.runs[0].runId,'confirmed');
+    assert.deepEqual(selected.dailyReport.collected,[{id:'布匹',num:2}]); assert.equal(selected.dailyReport.coverageDetails.unresolvedOperations,1);
+    const reloaded=createExecutionHistory({file:f.file}), restarted=createOperationService({protocol:{},history:reloaded,clock});
+    const report=restarted.history('A').dailyReport;
+    assert.deepEqual(report,selected.dailyReport); assert.equal(restarted.history('A').runs.find(r=>r.runId==='interrupted').finalStatus,'UNKNOWN');
+    assert.deepEqual(restarted.history('missing').dailyReport.collected,[]); assert.equal(restarted.history('B').dailyReport.coverageDetails.unquantifiedCollections,1);
+    assert.equal(report.coverageDetails.fullDayCoverage,false); assert.equal(reloaded.unresolved('A'),true);
+    assert.equal(fs.readFileSync(f.file,'utf8'),before); assert.equal(f.calls.length,0); assert.equal(f.surveys(),0);
+  } finally { f.cleanup(); }
+});

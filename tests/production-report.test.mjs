@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeProductionHistory } from '../src/production-report.mjs';
+import { summarizeProductionHistory, productionCoverageReport } from '../src/production-report.mjs';
 const timestamp = '2026-11-10T04:00:00.000Z';
 const collect = (extra = {}) => ({ actionId: 'collect-A', actionType: 'gainFactory', result: 'SUCCESS', verification: { status: 'CONFIRMED' }, timestamp,
   beforeState: { factory: { finishedProducts: [{ id: '布匹', num: 2 }] } }, afterState: { factory: { finishedProducts: [] } },
@@ -69,4 +69,94 @@ test('invalid date, timezone and history shapes fail explicitly', () => {
 test('summary does not mutate persisted evidence or trust a collectedProducts claim without backing facts', () => {
   const action = collect({ beforeState: null, collectedProducts: [{ id: '布匹', num: 999 }] }), original = structuredClone(action);
   assert.deepEqual(summarize([action]).collected, []); assert.deepEqual(action, original);
+});
+
+test('coverage distinguishes quantified, unquantified, unresolved and excluded operations without proving full-day production', () => {
+  const actions = [collect(), collect({actionId:'missing',afterInventoryReliable:false}),
+    collect({actionId:'unknown',result:'UNKNOWN',requestStatus:'UNKNOWN',unresolvedWrite:true}),
+    collect({actionId:'rejected',result:'REJECTED'}), collect({actionId:'other-day',timestamp:'2026-11-11T04:00:00Z'}),
+    collect({actionId:'undated',timestamp:undefined}), collect({actionId:undefined}),
+    {actionId:'start',actionType:'startProduce',result:'SUCCESS',verification:{status:'CONFIRMED'},timestamp}];
+  const runs=[{runId:'A',actions}], report=summarizeProductionHistory(runs,{date:'2026-11-10'}), c=report.coverageDetails;
+  assert.deepEqual(productionCoverageReport(runs,{date:'2026-11-10'}),c);
+  assert.equal(c.source,'EXECUTION_HISTORY'); assert.equal(c.dateBasis,'LOCAL_CALENDAR');
+  assert.equal(c.fullDayCoverage,false); assert.equal(c.gameDayKnown,false); assert.equal(c.totalGameProduction,null);
+  assert.equal(c.quantifiedCollections,1); assert.equal(c.unquantifiedCollections,1); assert.equal(c.unresolvedOperations,1);
+  assert.equal(c.otherOperations,1); assert.equal(c.undatedOperations,1); assert.equal(c.unidentifiedOperations,1);
+  assert.deepEqual(report.collected,[{id:'布匹',num:2}]); assert.equal(report.collectedOperations,2); assert.equal(report.startedOperations,1);
+});
+
+test('empty history and completely quantified local history both retain unknown full-day coverage', () => {
+  for(const actions of [[],[collect()]]) {
+    const c=summarize(actions).coverageDetails;
+    assert.equal(c.fullDayCoverage,false); assert.equal(c.gameDayKnown,false); assert.equal(c.totalGameProduction,null);
+    assert.equal(c.unquantifiedCollections,0); assert.equal(c.unresolvedOperations,0);
+  }
+});
+
+test('a confirmed result with an unresolved write is excluded using the shared uncertainty contract', () => {
+  const report=summarize([collect({unresolvedWrite:true})]);
+  assert.equal(report.collectedOperations,0); assert.deepEqual(report.collected,[]); assert.equal(report.coverageDetails.unresolvedOperations,1);
+});
+
+test('conflicting action identities exclude all versions regardless of history ordering', () => {
+  const first=collect(), second=collect({afterInventory:[{id:'布匹',num:9}]});
+  for(const actions of [[first,second],[second,first]]) {
+    const report=summarize(actions); assert.equal(report.collectedOperations,0); assert.deepEqual(report.collected,[]);
+    assert.equal(report.coverageDetails.conflictingRecords,1); assert.match(report.notes.join(' '),/冲突/);
+  }
+});
+
+test('unresolved and confirmed copies of the same action never become a confirmed collection', () => {
+  for(const actions of [[collect(),collect({result:'UNKNOWN'})],[collect({result:'UNKNOWN'}),collect()]]) {
+    const report=summarize(actions); assert.equal(report.collectedOperations,0); assert.equal(report.coverageDetails.conflictingRecords,1);
+  }
+});
+
+test('deduplication uses exact tuple identities including account without delimiter collisions', () => {
+  const runs=[{accountId:'A',runId:'a:b',actions:[collect({actionId:'c'})]},
+    {accountId:'A',runId:'a',actions:[collect({actionId:'b:c'})]},
+    {accountId:'B',runId:'a',actions:[collect({actionId:'b:c'})]}];
+  const report=summarizeProductionHistory(runs,{date:'2026-11-10'});
+  assert.equal(report.collectedOperations,3); assert.deepEqual(report.collected,[{id:'布匹',num:6}]);
+});
+
+test('equivalent duplicate objects with reordered keys are counted once', () => {
+  const a=collect(), b=Object.fromEntries(Object.entries(a).reverse());
+  const report=summarize([a,b]); assert.equal(report.collectedOperations,1); assert.equal(report.coverageDetails.duplicateRecords,1);
+  assert.equal(report.coverageDetails.conflictingRecords,0);
+});
+
+test('coverage exposes quantity overflow while preserving other proven resource totals', () => {
+  const large=collect({beforeState:{factory:{finishedProducts:[{id:'布匹',num:Number.MAX_SAFE_INTEGER}]}},afterInventory:[{id:'布匹',num:Number.MAX_SAFE_INTEGER}]});
+  const wood=collect({actionId:'wood',beforeState:{factory:{finishedProducts:[{id:'木材',num:1}]}},beforeInventory:[{id:'木材',num:0}],afterInventory:[{id:'木材',num:1}]});
+  const report=summarize([large,{...large,actionId:'large-B'},wood]);
+  assert.deepEqual(report.collected,[{id:'木材',num:1}]); assert.deepEqual(report.coverageDetails.unsafeResourceTotals,['布匹']);
+});
+
+test('missing identities are excluded rather than silently counted multiple times', () => {
+  for(const runs of [[{actions:[collect()]}],[{runId:'A',actions:[collect({actionId:''})]}]]) {
+    const report=summarizeProductionHistory(runs,{date:'2026-11-10'});
+    assert.equal(report.collectedOperations,0); assert.deepEqual(report.collected,[]); assert.equal(report.coverageDetails.unidentifiedOperations,1);
+  }
+});
+
+test('coverage is a pure projection and does not turn reconciliation claims into replay or quantity proof', () => {
+  const action=collect({result:'UNKNOWN',requestStatus:'UNKNOWN',reconciliations:[{status:'APPLIED',evidence:{collectedProducts:[{id:'布匹',num:999}]}}]});
+  const runs=[{runId:'A',actions:[action]}], original=structuredClone(runs);
+  const c=productionCoverageReport(runs,{date:'2026-11-10'});
+  assert.equal(c.unresolvedOperations,1); assert.equal(c.quantifiedCollections,0); assert.deepEqual(runs,original);
+});
+
+
+test('conflicting dates are detected before selecting the local calendar day', () => {
+  for(const actions of [[collect(),collect({timestamp:'2026-11-11T04:00:00Z'})], [collect({timestamp:'2026-11-11T04:00:00Z'}),collect()]]) {
+    const report=summarize(actions); assert.equal(report.collectedOperations,0); assert.equal(report.coverageDetails.conflictingRecords,1);
+  }
+});
+
+test('conflicting nonproduction action type cannot conceal a collision with a production identity', () => {
+  const report=summarize([collect(),collect({actionType:'UPGRADE'})]);
+  assert.equal(report.collectedOperations,0); assert.equal(report.coverageDetails.conflictingRecords,1);
+  assert.equal(summarize([collect({actionType:'UPGRADE'})]).coverageDetails.conflictingRecords,0);
 });

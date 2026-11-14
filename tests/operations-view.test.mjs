@@ -721,3 +721,19 @@ test('workflow memory scope edits discard late success and failure without reviv
  settleMemoryRequest(reads[0].request,memoryFixture('A',{events:[memoryEvent({workflowId:'old-success',reason:'late-evidence'})]}));await reads[0].promise;
  settleMemoryRequest(reads[1].request,{error:'late-error'},false);await reads[1].promise;assert.equal(memoryText(h),shown);assert.match(shown,/current-evidence/);
 });
+
+
+test('production coverage renders gaps and unsafe totals literally while stale account responses stay excluded', async () => {
+  const h=await boot(); const dailyReport={date:'2026-11-10',timeZone:'Asia/Shanghai',coverage:'tool-verified-only',totalGameProduction:null,
+    startedOperations:1,collectedOperations:2,collected:[{id:'木材',num:2}],notes:[],coverageDetails:{source:'EXECUTION_HISTORY',
+    quantifiedCollections:1,unquantifiedCollections:1,unresolvedOperations:3,otherOperations:4,undatedOperations:5,unidentifiedOperations:6,
+    conflictingRecords:7,duplicateRecords:8,unsafeResourceTotals:['<img onerror=alert(1)>']}};
+  const pending=h.node('ops-history-load').onclick();h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport});await pending;
+  const box=h.node('ops-production-report'),text=box.textContent;
+  for(const expected of ['本地日历','权威游戏日界未知','不按零计算','数量已证实1','数量缺证据1','结果未决3','未确认成功4',
+    '缺可靠日期5','缺精确身份6','身份冲突，已排除7','重复记录，已去重8','<img onerror=alert(1)>','合计未知','游戏完整产量未知']) assert.ok(text.includes(expected),expected);
+  assert.ok(descendants(box).every(node=>node.tagName!=='img'));assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+  const old=h.node('ops-history-load').onclick();h.run("selectAccount('B')");
+  h.respond('/api/operations/history','A',{accountId:'A',runs:[],dailyReport});await old;
+  assert.doesNotMatch(h.node('ops-production-report').textContent,/结果未决3|onerror/);
+});

@@ -1258,7 +1258,18 @@ function renderOperationHistory(data, historyScope = viewGuard.begin('operations
   if (daily?.coverage === 'tool-verified-only') {
     report.appendChild(el('div', 'dim', '本工具验证收取记录 · ' + (daily.date || '当日') + ' · ' + (daily.timeZone || '服务器时区') + ' · 游戏完整产量未知。'));
     report.appendChild(el('div', null, '已确认开始生产操作：' + (daily.startedOperations ?? 0) + ' 次；已确认收取操作：' + (daily.collectedOperations ?? 0) + ' 次。'));
-    report.appendChild(table(['已验证收取材料', '可靠数量'], (daily.collected || []).map((item) => [item.id, item.num])));
+    report.appendChild(table(['已验证收取材料', '可靠数量（仅已证实部分）'], (daily.collected || []).map((item) => [item.id, item.num])));
+    const coverage = daily.coverageDetails;
+    if (coverage?.source === 'EXECUTION_HISTORY') {
+      report.appendChild(el('div', 'dim', '覆盖明细 · 本地日历日期，权威游戏日界未知；缺证据和未决项不按零计算。'));
+      report.appendChild(table(['记录范围', '操作数'], [
+        ['收取数量已证实', coverage.quantifiedCollections], ['收取已确认但数量缺证据', coverage.unquantifiedCollections],
+        ['结果未决', coverage.unresolvedOperations], ['未确认成功', coverage.otherOperations],
+        ['缺可靠日期', coverage.undatedOperations], ['缺精确身份', coverage.unidentifiedOperations],
+        ['身份冲突，已排除', coverage.conflictingRecords], ['重复记录，已去重', coverage.duplicateRecords]
+      ].map(([label, count]) => [label, Number.isSafeInteger(count) && count >= 0 ? count : '未知'])));
+      if (coverage.unsafeResourceTotals?.length) report.appendChild(el('div', 'dim', '累计数量超出可靠范围：' + coverage.unsafeResourceTotals.join('、') + '。这些材料的合计未知。'));
+    }
     if (!daily.collected?.length) report.appendChild(el('div', 'dim', '尚无可靠收取数量；操作次数不作为材料产量。'));
     for (const note of daily.notes || []) report.appendChild(el('div', 'dim', typeof note === 'string' ? note : JSON.stringify(note)));
   } else report.textContent = '尚未提供当日本工具已复核汇总；游戏完整产量未知。';

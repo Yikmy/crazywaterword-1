@@ -11,13 +11,13 @@ const { saveStore } = await import('../src/accounts.mjs');
 const { createExecutionHistory } = await import('../src/execution-history.mjs');
 const account = id => ({ id, label: 'label-' + id, url: 'wss://example.invalid/ws', login: { eworldParams: { openId: id, token: 'synthetic-api-token', sign: 'synthetic-api-sign', timestamp: 1 } } });
 const op = { actionId: 'order:one', actionType: 'SUBMIT', target: { index: 0 }, beforeState: { requirements: [{ id: 'wood', num: 2 }] }, costs: [{ id: 'wood', num: 2 }], executable: true, action: { request: 'InternalRequest', body: {} } };
-async function harness({ executor, outcome = 'SUCCESS' } = {}) {
+async function harness({ executor, clock, outcome = 'SUCCESS' } = {}) {
   saveStore({ version: 1, activeId: 'A', accounts: [account('A'), account('B')] });
   let surveys = 0, clients = 0, collections = 0; const writes = [];
   const history = createExecutionHistory({ file: path.join(root, 'history-' + Math.random() + '.json') });
   const app = createConsole({ port: 0, protocol: {}, tracePath: path.join(root, 'trace.log'), stageSideResolver: () => 'LEFT',
     clientFactory: () => { clients++; throw Error('No game client allowed'); }, collect: () => { collections++; throw Error('No full collector allowed'); },
-    operationOptions: { history, getConfig: () => null, loadRules: () => ({ config: { version: 1, enabled: true, rules: [] } }),
+    operationOptions: { history, clock, getConfig: () => null, loadRules: () => ({ config: { version: 1, enabled: true, rules: [] } }),
       survey: async () => { surveys++; return { stockReliable: true, stock: new Map([['wood', 4]]) }; },
       orderPlanner: (_facts, { ledger, selections }) => ({ rows: [op], actions: (!selections || selections.includes(op.actionId)) && ledger.reserve(op.costs) ? [op] : [] }),
       cityViewer: () => ({ buildings: [], factories: [], candidates: [] }), cityPlanner: () => ({ actions: [] }),
@@ -38,7 +38,7 @@ async function harness({ executor, outcome = 'SUCCESS' } = {}) {
   const plan = () => call('/api/operations/plan', { body: { module: 'orders', mode: 'Manual', selections: [op.actionId] } });
   const approve = p => call('/api/operations/authorize', { body: { batchId: p.batchId, planHash: p.planHash, approvedActionIds: p.actions.map(action => action.actionId), resourceBudget: p.resourceBudget, confirm: true } });
   const start = async () => { const p = await plan(); assert.equal(p.status, 200); const permit = await approve(p.data); assert.equal(permit.status, 200); return call('/api/operations/execute', { body: permit.data }); };
-  return { ...app, call, ready, plan, approve, start, origin, writes, counts: () => ({ clients, collections, surveys }) };
+  return { ...app, history, call, ready, plan, approve, start, origin, writes, counts: () => ({ clients, collections, surveys }) };
 }
 test('new read routes require exact account and never allocate or connect a runtime', async () => {
   const app = await harness();
@@ -128,5 +128,24 @@ test('production policy settings are account-local, strict, CSRF gated and inval
     assert.equal((await app.call('/api/operations/production-policy', { id: 'B' })).data.config.enabled, false);
     assert.equal((await app.call('/api/operations/execute', { body: permit.data })).status, 409); assert.equal(app.writes.length, 0);
     const daily = (await app.call('/api/operations/history')).data.dailyReport; assert.equal(daily.coverage, 'tool-verified-only'); assert.equal(daily.totalGameProduction, null);
+  } finally { await app.close(); }
+});
+
+
+test('production coverage API reads durable account gaps offline without clients, surveys, collection or permit allocation', async () => {
+  const timestamp='2026-11-10T04:00:00Z', app=await harness({clock:()=>Date.parse(timestamp)});
+  const row={actionId:'collect',actionType:'gainFactory',requestStatus:'UNKNOWN',result:'UNKNOWN',verification:{status:'UNCONFIRMED'},timestamp};
+  try {
+    app.history.put({accountId:'A',runId:'unresolved-production',module:'city',finalStatus:'UNKNOWN',actions:[row]});
+    const before=fs.readFileSync(app.history.storagePath,'utf8');
+    for(const route of ['/api/operations/history','/api/operations/history?runId=not-found']) {
+      const response=await app.call(route); assert.equal(response.status,200);
+      assert.equal(response.data.dailyReport.coverageDetails.unresolvedOperations,1);
+      assert.equal(response.data.dailyReport.coverageDetails.fullDayCoverage,false);
+      assert.equal(response.data.dailyReport.totalGameProduction,null); assert.deepEqual(response.data.dailyReport.collected,[]);
+    }
+    assert.equal((await app.call('/api/operations/history',{id:'B'})).data.dailyReport.coverageDetails.unresolvedOperations,0);
+    assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),before);
+    assert.equal(app.sessions.size,0); assert.equal(app.writes.length,0); assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});
   } finally { await app.close(); }
 });
