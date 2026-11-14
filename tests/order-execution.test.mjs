@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observeOrderProgress, observeOrderRefreshTiming, decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
+import { summarizeOrderProgress, validateOrderProgressSummary, observeOrderProgress, observeOrderRefreshTiming, decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { surveyWorld } from '../src/world.mjs';
 
@@ -346,4 +346,23 @@ test('order wait marker uses captured server time, preserves fractions and never
 test('missing, malformed and inherited wait markers or captured clocks cannot become zero waits',()=>{
  for(const order of [null,{},Object.create({refreshTime:0}),{refreshTime:-1},{refreshTime:1.5},{refreshTime:'120'},{refreshTime:2147483648}])assert.equal(observeOrderRefreshTiming(order,{serverTimeMs:100000}).status,'UNKNOWN');
  for(const serverTimeMs of [null,undefined,-1,NaN,Infinity,100.5,'100000']){const view=observeOrderRefreshTiming({refreshTime:120},{serverTimeMs});assert.equal(view.status,'UNKNOWN');assert.equal(view.remainingSeconds,null);assert.equal(view.executable,false);}
+});
+
+
+test('Orders historical summary retains explicit independent zero counts and excludes projections and current authority',()=>{
+ const view={progress:observeOrderProgress(progressConfig,{orderOfTheDay:{orderNum:0,rewardedNum:0},effects:{effects:[{id:18,value:5}]}})},before=structuredClone(view),summary=summarizeOrderProgress(view);
+ assert.equal(summary.completed.value,0);assert.equal(summary.rewardedThrough.value,0);assert.equal(summary.period.status,'UNKNOWN');assert.equal(summary.executable,false);assert.equal(summary.clientLimit,undefined);assert.equal(summary.remainingProjection,undefined);assert.deepEqual(view,before);assert.deepEqual(validateOrderProgressSummary(JSON.parse(JSON.stringify(summary))),summary);summary.completed.value=10;assert.equal(view.progress.completed.value,0);
+});
+test('Orders historical summary preserves missing scalar independently and never infers an inherited or malformed count',()=>{
+ for(const value of [undefined,null,-1,1.5,'0',2147483648,NaN]){
+  const progress=observeOrderProgress(null,{orderOfTheDay:{orderNum:value,rewardedNum:6}}),summary=summarizeOrderProgress({progress});assert.equal(summary.completed.value,null);assert.equal(summary.completed.status,'UNKNOWN');assert.equal(summary.rewardedThrough.value,6);
+ }
+ const progress=observeOrderProgress(null,{orderOfTheDay:{orderNum:7,rewardedNum:0}});progress.completed=Object.create(progress.completed);assert.equal(summarizeOrderProgress({progress}).completed.value,null);assert.equal(summarizeOrderProgress(Object.create({progress})).rewardedThrough.value,null);
+ Object.defineProperty(progress,'completed',{get(){throw Error('getter must not execute');}});assert.equal(summarizeOrderProgress({progress}).completed.value,null);assert.equal(summarizeOrderProgress(null).rewardedThrough.value,null);
+});
+test('Orders historical validator rejects fabricated scope, sources, quotas, periods and authority instead of sanitizing them',()=>{
+ const base=summarizeOrderProgress({progress:observeOrderProgress(null,{orderOfTheDay:{orderNum:7,rewardedNum:0}})});
+ for(const change of [v=>v.executable=true,v=>v.scope='CURRENT',v=>v.eligible=true,v=>v.clientLimit=40,v=>v.completed.value=null,v=>v.completed.value='7',v=>v.completed.value=2147483648,v=>v.completed.source='invented',v=>v.completed.status='PROJECTED',v=>delete v.completed.value,v=>v.rewardedThrough={...v.rewardedThrough,status:'UNKNOWN'},v=>v.period.status='OBSERVED',v=>v.period.gameDay='today',v=>v.period.resetsAt=1000,v=>v.period.reason=null]){const bad=structuredClone(base);change(bad);assert.throws(()=>validateOrderProgressSummary(bad),{code:'WORKFLOW_INVALID'});}
+ const inherited={...base,completed:Object.create(base.completed)};assert.throws(()=>validateOrderProgressSummary(inherited),{code:'WORKFLOW_INVALID'});
+ for(const descriptor of [{value:7,enumerable:false},{get(){throw Error('getter must not execute');},enumerable:true}]){const bad=structuredClone(base);Object.defineProperty(bad.completed,'value',descriptor);assert.throws(()=>validateOrderProgressSummary(bad),{code:'WORKFLOW_INVALID'});}
 });

@@ -99,6 +99,30 @@ export function observeOrderProgress(config, { orderOfTheDay, effects } = {}) {
       value: total === null || completed.value === null ? null : Math.max(0, total - completed.value), executable: false },
     period: { status: 'UNKNOWN', reason: 'ORDER_PERIOD_ID_AND_RESET_UNAVAILABLE', gameDay: null, resetsAt: null } };
 }
+// Persist only the two explicit counters from the captured Orders view. A
+// historical count never supplies a game day, reward target or write authority.
+const orderProgressSources={completed:'OnWaterResponse.orderOfTheDay.orderNum',rewardedThrough:'OnWaterResponse.orderOfTheDay.rewardedNum'};
+const progressShape=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&keys.every(k=>{const d=Object.getOwnPropertyDescriptor(v,k);return d&&Object.hasOwn(d,'value')&&d.enumerable===true;});
+const progressCounter=v=>Number.isInteger(v)&&v>=0&&v<=2147483647;
+const progressData=(v,key)=>v&&typeof v==='object'?Object.getOwnPropertyDescriptor(v,key)?.value:undefined;
+export function validateOrderProgressSummary(value){
+ const invalid=()=>Object.assign(new Error('订单历史观察缺少精确计数来源或未知周期'),{code:'WORKFLOW_INVALID',statusCode:400});
+ if(!progressShape(value,['scope','executable','completed','rewardedThrough','period'])||value.scope!=='CAPTURED_ORDER_PROGRESS'||value.executable!==false)throw invalid();
+ for(const [key,source]of Object.entries(orderProgressSources)){
+  const row=value[key];if(!progressShape(row,['status','value','source'])||row.source!==source||!(row.status==='OBSERVED'?progressCounter(row.value):row.status==='UNKNOWN'&&row.value===null))throw invalid();
+ }
+ const period=value.period;if(!progressShape(period,['status','reason','gameDay','resetsAt'])||period.status!=='UNKNOWN'||period.reason!=='ORDER_PERIOD_ID_AND_RESET_UNAVAILABLE'||period.gameDay!==null||period.resetsAt!==null)throw invalid();
+ return structuredClone(value);
+}
+export function summarizeOrderProgress(view){
+ const progress=progressData(view,'progress'),known=progressData(progress,'scope')==='CAPTURED_ORDER_PROGRESS'&&progressData(progress,'executable')===false;
+ const summary={scope:'CAPTURED_ORDER_PROGRESS',executable:false};
+ for(const [key,source]of Object.entries(orderProgressSources)){
+  const row=known?progressData(progress,key):null,observed=progressData(row,'value'),value=progressData(row,'status')==='OBSERVED'&&progressData(row,'source')===source&&progressCounter(observed)?observed:null;
+  summary[key]={status:value===null?'UNKNOWN':'OBSERVED',value,source};
+ }
+ summary.period={status:'UNKNOWN',reason:'ORDER_PERIOD_ID_AND_RESET_UNAVAILABLE',gameDay:null,resetsAt:null};return validateOrderProgressSummary(summary);
+}
 // WorkerOrderPop displays refreshTime - captured server time. Reaching zero in
 // that countdown does not remove the marker or establish eligibility; reread it.
 export function observeOrderRefreshTiming(order, { serverTimeMs = null } = {}) {
