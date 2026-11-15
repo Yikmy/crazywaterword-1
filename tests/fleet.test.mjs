@@ -16,7 +16,7 @@ test('premium acceleration, automatic fighting and fleet formation stay blocked'
 test('cargo fill uses exact 1-based slot without buying missing materials',()=>{const f=facts(),a=op(f,'cargoFill');assert.equal(a.decision,'READY');assert.deepEqual(a.action.body,{shipIndex:1,cargoIndex:[1]});assert.equal(a.costs[0].num,6);f.ships[0].orderItem[0].asset.id='RUBY';assert.equal(op(f,'cargoFill').reason,'PREMIUM_BLOCKED')});
 test('cargo slots share ledger and missing stock prevents a plan',()=>{const f=facts();f.ships[0].orderItem.push(structuredClone(f.ships[0].orderItem[0]));const actions=view(f).candidates.filter(row=>row.actionType==='cargoFill');assert.equal(planFleet(f,{moduleConfig:enabled,selections:actions.map(row=>row.actionId)}).actions.length,1)});
 test('fleet API parameters reject transport and non-exact IDs',()=>{for(const parameters of [{body:{}},{costs:[]},{cityId:0},{buildingId:''},{cargoIndex:1.5}])assert.throws(()=>view(facts(),parameters),{code:'INVALID_INPUT'})});
-test('repair verify needs state transition or full durability',()=>{const before=facts(),after=facts(),action=op(before);assert.equal(verifyFleet(action,before,after).confirmed,false);after.fleets[0].state=4;after.fleets[0].repairing={startTs:100,endTs:175,endDura:2000};assert.equal(verifyFleet(action,before,after).confirmed,true);after.fleets[0].repairing.endDura=1900;assert.equal(verifyFleet(action,before,after).confirmed,false)});
+test('repair verify needs state transition or full durability',()=>{const before=facts(),after=facts(),action=op(before);assert.equal(verifyFleet(action,before,after).confirmed,false);after.fleets[0].state=4;after.fleets[0].repairing={startTs:100,endTs:175,endDura:2000};after.stock.set('汽油',900);assert.equal(verifyFleet(action,before,after).confirmed,true);after.fleets[0].repairing.endDura=1900;assert.equal(verifyFleet(action,before,after).confirmed,false)});
 test('movement verify checks exact target and does not infer siege victory',()=>{const before=facts(),after=facts();before.fleets[0].durability=1900;const action=op(before,'fleetMove',{cityId:2});after.fleets[0]={...after.fleets[0],state:2,targetCityId:2,moveStartTs:100,moveEndTs:200};assert.equal(verifyFleet(action,before,after).confirmed,true);after.fleets[0].targetCityId=3;assert.equal(verifyFleet(action,before,after).confirmed,false)});
 test('cargo verify requires exact slot, original reward, inventory and consumed arrival',()=>{
  const before=facts(),after=facts(),action=op(before,'cargoFill');
@@ -173,3 +173,72 @@ test('bounded Fleet cache distinguishes empty observations, failed sources and n
  const narrow=fleetOverviewProject({resourceFields:{fields:[]}});assert.equal(narrow.status,'UNKNOWN');assert.equal(narrow.fleets.listObserved,false);assert.equal(narrow.world.listObserved,false);
 });
 for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('bounded Fleet cache rejects mismatched '+key,()=>{const context={...fleetOverviewContext,[key]:key==='generation'?4:'other'};const r=fleetCacheOverview(fleetOverviewFacts(),{},{context,observedContext:fleetOverviewContext});assert.equal(r.status,'UNKNOWN');assert.deepEqual(r.fleets.rows,[]);assert.deepEqual(r.world.rows,[]);});
+
+
+function petrolCase(kind) {
+ const before=facts(),parameters=kind==='repair'?{}:{cityId:2};
+ if(kind!=='repair')before.fleets[0].durability=1900;
+ if(kind==='paid-move') {
+  before.cities[0].guildIdx=9;
+  before.config={tables:{CityCfg:{data:[{id:1,guildIndex:3}]},AttackCityConsumeCfg:{data:[{dist:1,cost:0.4}]}}};
+  before.map={width:10,tileWidth:100,tileHeight:75,cityInfo:{'1':{gridIdx:0},'2':{gridIdx:1}}};
+ }
+ const operation=op(before,kind==='repair'?'fleetRepair':'fleetMove',parameters),after=structuredClone(before);
+ assert.equal(operation.decision,'READY');
+ after.stock.set('汽油',2000-(operation.costs[0]?.num??0));
+ if(kind==='repair'){after.fleets[0].state=4;after.fleets[0].repairing={startTs:100,endTs:200,endDura:2000};}
+ else Object.assign(after.fleets[0],{state:2,targetCityId:2,moveStartTs:100,moveEndTs:200});
+ return {before,after,operation,parameters};
+}
+for(const kind of ['repair','paid-move','free-move'])test('fleet exact inventory confirms original state and declared petrol '+kind,()=>{
+ const {before,after,operation}=petrolCase(kind);assert.equal(verifyFleet(operation,before,after).confirmed,true);
+ for(const mutate of [f=>f.stock.set('汽油',f.stock.get('汽油')+1),f=>f.stock.set('汽油',f.stock.get('汽油')-1),f=>f.stock.set('木材',11),f=>f.stock.set('木材',9),f=>f.stockReliable=false,f=>f.stock.set('汽油',null)]){
+  const invalid=structuredClone(after);mutate(invalid);assert.equal(verifyFleet(operation,before,invalid).confirmed,false);
+ }
+ for(const costs of [undefined,[{id:'木材',num:operation.costs[0]?.num??0}],[{id:'汽油',num:null}],[{id:'汽油',num:-1}]])assert.equal(verifyFleet({...operation,costs},before,after).confirmed,false);
+ const unknown=structuredClone(before);unknown.stockReliable=false;assert.equal(verifyFleet(operation,unknown,after).confirmed,false);
+ const complete=structuredClone(after);if(kind==='repair'){complete.fleets[0].state=1;complete.fleets[0].repairing=null;complete.fleets[0].durability=2000;}else{complete.fleets[0].state=1;complete.fleets[0].cityId=2;}
+ assert.equal(verifyFleet(operation,before,complete).confirmed,true);
+});
+for(const kind of ['repair','free-move'])test('fleet original inventory parser blocks ambiguous qualification '+kind,()=>{
+ const {before,parameters}=petrolCase(kind),base={AllItemRequest:{available:true,body:{items:[{itemId:'汽油',num:2000},{itemId:'木材',num:10}]}},AllResourceRequest:{available:true,body:{list:[{res:3,amount:100}]}}};
+ for(const mutate of [x=>x.AllItemRequest.body.items.push({itemId:'汽油',num:1}),x=>delete x.AllItemRequest.body.items[0].num,x=>x.AllItemRequest.body.items=Array(1),x=>x.AllResourceRequest.available=false,x=>x.AllItemRequest.body.items.push({itemId:'GOLD',num:1}),x=>x.AllResourceRequest.body.list.push({res:3,amount:1},{res:3,amount:1})]) {
+  const f=structuredClone(before);f.sources=structuredClone(base);if(kind==='free-move')f.sources.AllResourceRequest.body.list=[{res:3,amount:100}];mutate(f.sources);
+  const row=op(f,kind==='repair'?'fleetRepair':'fleetMove',parameters);assert.equal(row.reason,'FACTS_UNRELIABLE');
+ }
+ const legacy=structuredClone(before);legacy.sources=structuredClone(base);legacy.sources.AllItemRequest.body.items=legacy.sources.AllItemRequest.body.items.map(({itemId,num})=>({id:itemId,count:num}));
+ assert.equal(op(legacy,kind==='repair'?'fleetRepair':'fleetMove',parameters).decision,'READY');
+});
+
+async function petrolServiceFixture(t,{kind='repair',outcome='SUCCESS',file=null,onWrite=null}={}) {
+ const [{loadProtocol},{createOperationService},{createExecutionHistory},{GAMEPLAY_MODULES},fs,os,path]=await Promise.all([import('../src/proto.mjs'),import('../src/operation-service.mjs'),import('../src/execution-history.mjs'),import('../src/function-registry.mjs'),import('node:fs'),import('node:os'),import('node:path')]);
+ const protocol=loadProtocol(),wire=(name,body)=>protocol[name].decode(protocol[name].encode(body).finish()),dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-fleet-petrol-')):null;file??=path.join(dir,'history.json');
+ const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}},base=petrolCase(kind),state={fuel:2000,items:[{itemId:'木材',num:10}],fleets:structuredClone(base.before.fleets),writes:[],onRead:null};
+ const client={connected:true,pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),factContext:{accountId:'fleet-petrol-A',generation:1,connectionId:'fleet-petrol-offline'},
+  markUnverifiedWrite(n,b){this.uncertainWrites.set(JSON.stringify([n,b]),true);},confirmWatchedWrite(n,b){this.uncertainWrites.delete(JSON.stringify([n,b]));},
+  async request(name,body,response,_timeout,options){assert.equal(options?.mutate,undefined);wire(name,body);await state.onRead?.(name);const answers={MyFleetsRequest:{fleets:state.fleets},AllItemRequest:{items:[{itemId:'汽油',num:state.fuel},...state.items]},AllResourceRequest:{list:[]},CargoShipsRequest:{ship:[]},WorldInfoRequest:{cities:[{id:2,state:1,guildIdx:3}]},GuildInfoRequest:{guild:{guildId:'3003'}},FleetRepairParamRequest:{unitRepairCost:2.2,unitRepairTime:0.15}};assert.ok(Object.hasOwn(answers,name),name);return wire(response,answers[name]);},
+  async sendWatch(name,body,options){wire(name,body);options.beforeDispatch?.();assert.equal(name,kind==='repair'?'RepairFleetRequest':'MoveFleetsToCityRequest');state.writes.push({name,body:structuredClone(body)});
+   if(outcome!=='REJECTED'){state.fleets=structuredClone(base.after.fleets);if(outcome==='SUCCESS')state.fuel=base.after.stock.get('汽油');else if(kind==='free-move')state.fuel--;}
+   await onWrite?.({state,session,client});return {status:outcome==='REJECTED'?'REJECTED':'UNKNOWN'};
+  }};
+ const session={id:'fleet-petrol-A',client,player:{playerId:'9007199254740993',worldId:'1000001'},state:'READY',generation:1,connectionId:'fleet-petrol-offline',abort:new AbortController(),loop:{running:false},busy:null};
+ const service=createOperationService({protocol,history,modules:GAMEPLAY_MODULES,getConfig:()=>({tables:{}}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:enabled})}}),parameters=kind==='repair'?{buildingId:'f1'}:{buildingId:'f1',cityId:2};
+ const plan=async()=>{const survey=await service.surveyModule(session,'fleet',parameters),row=survey.view.candidates.find(r=>r.actionType===base.operation.actionType);assert.equal(row.decision,'READY',JSON.stringify(row));return service.plan(session,{module:'fleet',mode:'Manual',parameters,selections:[row.actionId]});};
+ const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});
+ const run=async()=>{const p=await plan(),permit=authorize(p);service.execute(session,permit);await service.settle('fleet-petrol-A');return durable.originalRecords('fleet-petrol-A')[0];};
+ t.after(async()=>{session.abort.abort();await service.settle('fleet-petrol-A');if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
+ return {service,session,state,durable,journal,client,plan,authorize,run,file};
+}
+for(const kind of ['repair','free-move'])for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('original Fleet Service preserves petrol budget history and no replay '+kind+' '+outcome,async t=>{
+ const f=await petrolServiceFixture(t,{kind,outcome}),row=await f.run();assert.equal(row.finalStatus,outcome,JSON.stringify(row));assert.equal(f.state.writes.length,1);
+ const intent=f.journal.find(r=>r.actions[0].dispatchEvidence?.state==='MAY_HAVE_DISPATCHED');assert.ok(intent);assert.deepEqual(intent.runBudget.reserved.resources,kind==='repair'?[{id:'汽油',num:1100}]:[]);
+ const restarted=await petrolServiceFixture(t,{kind,file:f.file});assert.equal(restarted.state.writes.length,0);
+ if(outcome==='SUCCESS'){assert.equal(row.actions[0].verification.status,'CONFIRMED');assert.equal(f.client.uncertainWrites.size,0);}else{await assert.rejects(restarted.plan(),e=>['RECOVERY_UNCERTAIN','REJECTION_MEMORY_ACTIVE'].includes(e.code));assert.equal(restarted.state.writes.length,0);}
+});
+for(const field of ['generation','connectionId','playerId','worldId','client'])test('late Fleet petrol settlement retains UNKNOWN across identity '+field,async t=>{
+ const f=await petrolServiceFixture(t,{onWrite:({session})=>{if(field==='generation')session.generation++;else if(field==='connectionId')session.connectionId='changed';else if(field==='client')session.client={...session.client};else session.player[field]='changed';}}),row=await f.run();assert.equal(row.finalStatus,'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.service.history('fleet-petrol-B').runs.length,0);
+});
+test('Fleet petrol Service rejects changed fuel before dispatch and keeps unrelated income UNKNOWN',async t=>{
+ const f=await petrolServiceFixture(t),p=await f.plan(),permit=f.authorize(p);f.state.fuel=1000;f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id)[0].finalStatus,'NOT_EXECUTED');
+ const extra=await petrolServiceFixture(t,{onWrite:({state})=>state.items.push({itemId:'loot',num:1})}),row=await extra.run();assert.equal(row.finalStatus,'UNKNOWN');assert.equal(extra.state.writes.length,1);await assert.rejects(extra.plan());
+});

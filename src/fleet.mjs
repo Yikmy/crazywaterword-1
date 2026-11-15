@@ -239,6 +239,7 @@ function candidate(kind, target, costs, costSource, beforeState, expectedState, 
 function buildCandidates(facts, { config = facts.config, parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   parametersOf(parameters); const opts = validateFleetConfig(moduleConfig), candidates = [];
   if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return [resourceFieldCandidate(facts,parameters,opts)];
+  const inventory = cargoInventory(facts);
   const disabled = feature => opts.enabled !== true || opts[feature] !== true ? 'MODULE_DISABLED' : null;
   for (const fleet of facts.fleets ?? []) {
     if (parameters.buildingId !== undefined && parameters.buildingId !== fleet.buildingId) continue;
@@ -246,13 +247,13 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
     const paramReliable = Number.isFinite(param?.unitRepairCost) && param.unitRepairCost > 0 && Number.isFinite(param?.unitRepairTime) && param.unitRepairTime > 0;
     const cost = gap > 0 && paramReliable ? Math.ceil(gap * param.unitRepairCost) : null;
     let reason = disabled('repair');
-    if (!reason && (!facts.fleetReliable || !facts.stockReliable)) reason = 'FACTS_UNRELIABLE';
+    if (!reason && (!facts.fleetReliable || !inventory)) reason = 'FACTS_UNRELIABLE';
     if (!reason && (fleet.state !== 1 || fleet.autoFight?.isOn !== false || fleet.repairing || fleet.treasureLootUid !== 0 || gap === null || gap <= 0)) reason = 'FLEET_UNAVAILABLE';
     if (!reason && (fleet.maxDura <= 0 || fleet.durability / fleet.maxDura >= opts.repairBelowDurabilityRatio)) reason = 'REPAIR_THRESHOLD_NOT_MET';
     if (!reason && opts.repairMode === 'WAIT_NATURAL') reason = 'WAIT_NATURAL_OBSERVATION_ONLY';
     if (!reason && (!Number.isSafeInteger(cost) || cost < 0)) reason = 'REPAIR_COST_UNKNOWN';
     if (!reason && cost > opts.maximumRepairPetrolPerPlan) reason = 'REPAIR_PLAN_BUDGET';
-    if (!reason && (quantity(facts.stock?.get('汽油')) === null || facts.stock.get('汽油') < cost + opts.petrolReserve)) reason = 'INSUFFICIENT_PETROL';
+    if (!reason && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < cost + opts.petrolReserve)) reason = 'INSUFFICIENT_PETROL';
     candidates.push(candidate('fleetRepair', { buildingId: fleet.buildingId }, cost === null ? [] : [{ id: '汽油', num: cost }], paramReliable ? 'FleetRepairParamResponse.unitRepairCost × 缺失耐久，向上取整' : null, { fleet, param: param ?? null }, { maxDura: fleet.maxDura, repairingOrCompleted: true }, 'RepairFleetRequest', null, { buildingId: fleet.buildingId }, { buildingId: fleet.buildingId }, reason || (!facts.protocolReady?.RepairFleetRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     const stopRepairReason = disabled('stopRepair') || (!facts.fleetReliable || fleet.state !== 4 || !fleet.repairing ? 'FLEET_NOT_REPAIRING' : null) || (!fleet.autoFight || fleet.autoFight.isOn !== false ? 'AUTO_FIGHT_STATE_UNVERIFIED' : null) || (!facts.protocolReady?.StopRepairingRequest ? 'PROTOCOL_UNAVAILABLE' : null);
     candidates.push(candidate('fleetStopRepair', { buildingId: fleet.buildingId }, [], 'ArmyPop._onBtnCancel: StopRepairingRequest，无购买/加速支付参数', { fleet }, { state: 1, repairing: null }, 'StopRepairingRequest', null, { buildingId: fleet.buildingId }, { buildingId: fleet.buildingId }, stopRepairReason));
@@ -275,10 +276,10 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
     if (parameters.cityId !== undefined) {
       const matches = (facts.cities ?? []).filter(city => city.id === parameters.cityId), city = matches.length === 1 ? matches[0] : null, petrol = city ? movementCost(facts, config, city) : null;
       let moveReason = disabled('move');
-      if (!moveReason && (!facts.fleetReliable || !facts.citiesReliable || !facts.stockReliable || !city)) moveReason = 'FACTS_UNRELIABLE';
+      if (!moveReason && (!facts.fleetReliable || !facts.citiesReliable || !inventory || !city)) moveReason = 'FACTS_UNRELIABLE';
       if (!moveReason && (fleet.state !== 1 || fleet.autoFight?.isOn !== false || fleet.repairing || fleet.treasureLootUid !== 0 || fleet.durability === null || !fleet.maxDura || fleet.durability / fleet.maxDura < opts.minimumDurabilityRatio || fleet.cityId === city.id)) moveReason = 'FLEET_UNAVAILABLE';
       if (!moveReason && petrol === null) moveReason = 'MOVE_COST_UNKNOWN';
-      if (!moveReason && petrol > 0 && (quantity(facts.stock?.get('汽油')) === null || facts.stock.get('汽油') < petrol + opts.petrolReserve)) moveReason = 'INSUFFICIENT_PETROL';
+      if (!moveReason && petrol > 0 && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < petrol + opts.petrolReserve)) moveReason = 'INSUFFICIENT_PETROL';
       candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, 'MoveFleetsToCityRequest', null, { buildingId: [fleet.buildingId], cityId: parameters.cityId }, { buildingId: fleet.buildingId, cityId: parameters.cityId }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     }
   }
@@ -357,14 +358,17 @@ export function verifyFleet(operation, beforeFacts, afterFacts, response) {
     if (!beforeFacts?.fleetReliable || !afterFacts?.fleetReliable) return { confirmed: false, reason: 'MyFleets权威复读缺失' };
     const before = beforeFacts.fleets.find(fleet => fleet.buildingId === target?.buildingId), after = afterFacts.fleets.find(fleet => fleet.buildingId === target?.buildingId);
     if (!before || !after || before.state !== 1) return { confirmed: false, reason: '精确舰队身份或前置状态不一致' };
+    const costs=operation.costs;
+    const declaredPetrol=Array.isArray(costs) && (type==='fleetMove' && costs.length===0 || costs.length===1 && costs[0]?.id==='汽油' && Number.isSafeInteger(costs[0].num) && costs[0].num>0);
+    if(!declaredPetrol || !cargoInventoryMatches(beforeFacts,afterFacts,costs,[]))return {confirmed:false,reason:'完整库存未确认声明汽油净扣；保留UNKNOWN'};
     if (type === 'fleetRepair') {
       const completed = before.durability !== null && before.maxDura > before.durability && after.durability === before.maxDura;
       const repairing = after.state === 4 && after.repairing?.endDura === before.maxDura && after.repairing.startTs !== null && after.repairing.endTs > after.repairing.startTs && !before.repairing;
-      return { confirmed: completed || repairing, reason: completed || repairing ? '精确舰队维修已开始或已完成' : '未证实维修效果；保留UNKNOWN' };
+      return { confirmed: completed || repairing, reason: completed || repairing ? '精确舰队维修已开始或已完成且声明汽油净扣已确认' : '未证实维修效果；保留UNKNOWN' };
     }
     const moving = after.state === 2 && after.targetCityId === target.cityId && after.moveStartTs !== null && after.moveEndTs > after.moveStartTs;
     const arrived = [1, 3, 5].includes(after.state) && after.cityId === target.cityId && before.cityId !== target.cityId;
-    return { confirmed: moving || arrived, reason: moving || arrived ? '仅证实精确舰队移动或到达；不代表攻城胜利' : '未证实精确目标移动；保留UNKNOWN' };
+    return { confirmed: moving || arrived, reason: moving || arrived ? '精确舰队移动或到达且声明汽油净扣已确认；不代表攻城胜利' : '未证实精确目标移动；保留UNKNOWN' };
   }
   if (!['cargoFill','cargoClaim'].includes(type) || !beforeFacts?.cargoReliable || !afterFacts?.cargoReliable || !cargoHeaderReliable(beforeFacts.ships) || !cargoHeaderReliable(afterFacts.ships)) return {confirmed:false,reason:'CargoShips权威复读缺失'};
   const before=cargoShip(beforeFacts.ships.find(ship=>ship.index===target?.shipIndex)),after=cargoShip(afterFacts.ships.find(ship=>ship.index===target?.shipIndex));
