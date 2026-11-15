@@ -19,6 +19,11 @@ import { summarizeNavalObservation, validateNavalObservationSummary } from './na
 export const WORKFLOW_LIMITS = Object.freeze({ nodes: 50, edges: 100, steps: 200, waitMs: 60000, bytes: 131072, runDurationMs: 86400000, actionPlans: 200, rounds: 200 });
 const TYPES = new Set(['START','SURVEY','CONDITION','RULE','ACTION','WAIT','VERIFY','BRANCH','STOP']);
 const ACTIVE = new Set(['STARTING','RUNNING','WAITING','AWAITING_AUTHORIZATION']);
+// Survey history records declared targets, using the original Function parser.
+function taskSurveyTarget(parameters) {
+  const target = validateTaskRewardsParameters(parameters);
+  return Object.hasOwn(target, 'kind') ? target : null;
+}
 const historyIdentity = value => typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 512 || Number.isSafeInteger(value) && value >= 0;
 function captureWorkflowContext(session) {
   const player = session.player, own = (value, key) => value && Object.hasOwn(value, key) ? toSnapshotJson(value[key]) : null;
@@ -376,7 +381,7 @@ function repeatAfterStop(ctx,node){
           const tradeObservation=node.module==='trade'?summarizeTradeObservation(ctx.survey?.view):null;
           const orderProgress=node.module==='orders'?summarizeOrderProgress(ctx.survey?.view):null;
           const recruitCooldown=node.module==='free-recruit'&&ctx.survey?.view?.cooldownObservation?validateFreeRecruitCooldownObservation(ctx.survey.view.cooldownObservation):null;
-          const taskObservation=node.module==='task-rewards'&&['main','branch','achievement','daily','open-rank-war'].includes(node.parameters?.kind)?validateTaskRewardsParameters(node.parameters):null;
+          const taskObservation=node.module==='task-rewards'?taskSurveyTarget(node.parameters):null;
           await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(taskObservation?{taskObservation}:{}),...(orderProgress?{orderProgress}:{})});
           ctx.nodeId = next(ctx); continue;
         }
@@ -578,7 +583,7 @@ function traceEvidence(row) {
   if(row.tradeObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='trade'||row.result!=='SURVEYED')throw fail('海商王观察摘要仅属于原trade SURVEY');evidence.tradeObservation=validateTradeObservationSummary(row.tradeObservation);}
   if(row.recruitCooldown!==undefined){if(row.type!=='SURVEY'||row.module!=='free-recruit'||row.result!=='SURVEYED')throw fail('招募冷却摘要仅属于原free-recruit SURVEY');evidence.recruitCooldown=validateFreeRecruitCooldownObservation(row.recruitCooldown);}
   if(row.orderProgress!==undefined){if(row.type!=='SURVEY'||row.module!=='orders'||row.result!=='SURVEYED')throw fail('订单计数观察仅属于原orders SURVEY');evidence.orderProgress=validateOrderProgressSummary(row.orderProgress);}
-  if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED'||!['main','branch','achievement','daily','open-rank-war'].includes(row.taskObservation?.kind))throw fail('任务观察目标仅属于原task-rewards SURVEY');evidence.taskObservation=validateTaskRewardsParameters(row.taskObservation);}
+  if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED')throw fail('任务观察目标仅属于原task-rewards SURVEY');const target=taskSurveyTarget(row.taskObservation);if(!target)throw fail('任务观察历史须有明确目标');evidence.taskObservation=target;}
   if(row.cooldownWait!==undefined){cooldownWaitHistoryRow(row);evidence.cooldownWait=copy(row.cooldownWait);}
   if(row.round!==undefined){if(!Number.isSafeInteger(row.round)||row.round<1||row.round>WORKFLOW_LIMITS.rounds)throw fail('历史轮次无效');evidence.round=row.round;}
   if(row.durationMs!==undefined){

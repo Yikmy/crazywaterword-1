@@ -157,10 +157,13 @@ export function compileUnifiedExecution(input, { modules } = {}) {
       }
       // Explicit observation reuses the native survey; no plan, selection or claim is generated.
       if(['tasks','dailies'].includes(phase)&&row?.action==='observe'){
-        exact(row,phase==='tasks'?['kind','taskId','action']:['taskId','action']);
-        const kind=phase==='tasks'?row.kind:'daily';
-        if(!['main','branch','achievement','daily'].includes(kind))invalid('只读任务观察仅支持明确主线、支线、成就或每日任务');
-        try{parameters=validateTaskRewardsParameters({kind,taskId:row.taskId});}catch{invalid('只读任务观察须明确正int32任务ID');}
+        try {
+          const descriptors=Object.getOwnPropertyDescriptors(row);delete descriptors.action;
+          const target=Object.create(Object.getPrototypeOf(row),descriptors);
+          if(phase==='dailies'&&!Object.hasOwn(target,'kind'))target.kind='daily';
+          parameters=validateTaskRewardsParameters(target);
+          if(!Object.hasOwn(parameters,'kind')||phase==='dailies'&&['main','branch','achievement'].includes(parameters.kind))invalid('该分组不支持此任务观察');
+        }catch{invalid('只读观察须使用原任务Function的明确完整目标');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
       }
       if(phase==='tasks'&&row?.kind==='afk-income'){
