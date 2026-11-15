@@ -190,3 +190,30 @@ for(const step of [0,1])for(const dimension of ['account','player','world','gene
 test('Farm replant Service reverse plot order and distinct next crops debit only initial seed sums',async()=>{const f=await replantFixture({seeds:3});try{f.config.tables.FarmlandPlantCfg.data.push({id:'玉米',material:['玉米种子',2],time:1800,produceNum:5});f.stock.set('玉米种子',2);f.payload.targets.reverse();f.payload.replant=f.payload.targets.map((t,i)=>({buildingId:t.buildingId,productId:i?'小麦':'玉米'}));f.prepared=await f.operations.prepareFarmHarvestSource(f.account,f.payload);f.account.client.onPlant=result=>{if(f.writes.at(-1).body.args[0].productId==='玉米'){f.stock.set(seed,f.stock.get(seed)+1);f.stock.set('玉米种子',f.stock.get('玉米种子')-2);}return result;};assert.deepEqual(f.prepared.graph.budget.resources,[{id:'玉米种子',num:2},{id:seed,num:1}]);let r=await f.runner.start(f.account.id,f.prepared.graph);for(let i=0;i<4;i++){assert.equal((await f.execute(r.plan)).finalStatus,'SUCCESS');r=await f.runner.resume();}assert.equal(r.status,'COMPLETED');assert.deepEqual(f.writes.map(w=>w.body),[{buildingId:['2农田']},{args:[{buildingId:'2农田',productId:'玉米'}]},{buildingId:['1农田']},{args:[{buildingId:'1农田',productId:'小麦'}]}]);assert.equal(f.stock.get(seed),2);assert.equal(f.stock.get('玉米种子'),0);}finally{await f.closeSequence();}});
 test('Farm replant Service missing second crop UID cannot borrow the confirmed first harvest',async()=>{const f=await replantFixture();try{f.prepared.graph.budget.uids.pop();let r=await f.runner.start(f.account.id,f.prepared.graph);for(let i=0;i<2;i++){assert.equal((await f.execute(r.plan)).finalStatus,'SUCCESS');r=await f.runner.resume();}await assert.rejects(f.execute(r.plan),{code:'RUN_BUDGET_INVALID'});assert.equal(f.writes.length,2);assert.equal(f.raw.building[1].farm.productId,'小麦');const history=f.durable.list(f.account.id);assert.equal(history.length,3);const rejected=history.find(row=>row.finalStatus==='NOT_EXECUTED');assert.ok(rejected);assert.equal(rejected.actions[0].requestStatus,'NOT_DISPATCHED');assert.equal(rejected.actions[0].result,'NOT_EXECUTED');}finally{await f.closeSequence();}});
 test('Farm replant Service corrupted durable history after authorization cannot send a plant',async()=>{const f=await replantFixture({plots:1});try{assert.equal((await f.execute(await f.plan(f.prepared.graph.nodes[1].parameters))).finalStatus,'SUCCESS');const p=await f.plan(f.prepared.graph.nodes.find(n=>n.id==='plant-0').parameters),permit=f.authorize(p);fs.writeFileSync(f.file,'{');await assert.rejects(f.execute(p,permit));assert.equal(f.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),'{');}finally{await f.closeSequence();}});
+
+for(const harvest of [false,true])for(const phase of ['before','after'])for(const alias of ['id','count'])
+ test('farm shared inventory conflict '+alias+' '+phase+' '+(harvest?'harvest':'plant')+' preserves original authorization and UNKNOWN history',async()=>{
+  const f=fixture({harvest});
+  try{
+   const p=await f.plan(),permit=f.authorize(p),request=f.account.client.request.bind(f.account.client);
+   f.account.client.request=async(...args)=>{
+    const value=await request(...args);
+    if(args[0]==='AllItemRequest'&&(phase==='before'||f.writes.length)){
+     const row=value.items.find(r=>r.itemId===seed);row[alias]=alias==='id'?'foreign-seed':99;
+    }
+    return value;
+   };
+   const run=await f.execute(p,permit);
+   assert.equal(run.finalStatus,phase==='before'?'NOT_EXECUTED':'UNKNOWN');assert.equal(f.writes.length,phase==='before'?0:1);
+   assert.equal(run.actions[0].dispatched,phase==='after');
+   if(phase==='before'){assert.equal(reserved(run.runBudget),0);assert.equal(run.runBudget.reserved.uids.length,0);assert.equal(f.stock.get(seed),3);}
+   else{
+    assert.equal(run.actions[0].unresolvedWrite,true);assert.equal(run.actions[0].verification.status,'UNCONFIRMED');
+    assert.equal(reserved(run.runBudget),harvest?0:1);assert.equal(run.runBudget.reserved.uids.length,harvest?1:0);
+    const reopened=f.restart();assert.equal(reopened.operations.status(f.account.id).blocked,true);
+    assert.equal(reopened.operations.executionMemory(f.account.id).events[0].status,'UNKNOWN');
+    await assert.rejects(reopened.operations.plan(reopened.account,{module:'farm',mode:'Manual',selections:p.actions.map(r=>r.actionId),parameters:harvest?{buildingId:'1农田',action:'harvest'}:params('1农田')}),{code:'RECOVERY_UNCERTAIN'});
+    assert.equal(f.writes.length,1);assert.equal(f.durable.list(f.account.id)[0].finalStatus,'UNKNOWN');
+   }
+  }finally{await f.cleanup();}
+ });

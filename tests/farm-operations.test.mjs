@@ -193,3 +193,37 @@ const replantQuote={...replantSource,nextProductId:'玉米',seedId:'玉米种子
 for(const corrupt of ['d6','seed','next','first','pending','mismatch','cost','extra'])test('Farm replant domain rejects '+corrupt+' source guard',()=>{const v={buildingId:'1农田',action:'plant',productId:'玉米',replant:[structuredClone(replantQuote)]};if(corrupt==='d6')v.replant[0].seedId='RUBY';if(corrupt==='seed')delete v.replant[0].seedId;if(corrupt==='next')v.replant[0].nextProductId='小麦';if(corrupt==='first')v.buildingId='2农田';if(corrupt==='pending')v.pendingHarvests=[replantSource];if(corrupt==='mismatch')v.productId='小麦';if(corrupt==='cost')v.replant[0].seedNum=0;if(corrupt==='extra')v.replant[0].afterState={};assert.throws(()=>validateFarmParameters(v),{code:'INVALID_PARAMETERS'});});
 
 test('Farm replant domain inherited defaults cannot supply absent explicit crop or source fields',()=>{const original=Object.getOwnPropertyDescriptor(Object.prototype,'productId');try{Object.defineProperty(Object.prototype,'productId',{configurable:true,writable:true,value:'小麦'});const input=structuredClone(replantInput);delete input.replant[0].productId;assert.throws(()=>validateFarmReplantPreparation(input),{code:'INVALID_PARAMETERS'});const row=structuredClone(replantQuote);delete row.productId;assert.throws(()=>validateFarmParameters({buildingId:'1农田',action:'plant',productId:'玉米',replant:[row]}),{code:'INVALID_PARAMETERS'});}finally{if(original)Object.defineProperty(Object.prototype,'productId',original);else delete Object.prototype.productId;}});
+
+for (const field of ['id', 'count']) test('farm inventory rejects conflicting canonical and legacy ' + field + ' before granting plant qualification', () => {
+ const raw=core(),row=raw.rawAllItem.items[0];row[field]=field==='id'?'other-seed':99;
+ const before=structuredClone(raw),f=facts(raw);
+ assert.equal(f.stockReliable,false);assert.deepEqual([...f.stock],[]);assert.equal(plan(f).actions.length,0);assert.deepEqual(raw,before);
+});
+
+for (const format of ['canonical','matching','legacy-only','del-id','duplicate','sparse','inherited','collision','resource-range'])
+ test('farm shared inventory keeps canonical compatibility and domain boundaries '+format,()=>{
+  const raw=core();
+  if(format==='matching')for(const row of raw.rawAllItem.items){row.id=row.itemId;row.count=row.num;}
+  if(format==='legacy-only')raw.rawAllItem.items=raw.rawAllItem.items.map(row=>({id:row.itemId,count:row.num}));
+  if(format==='del-id')raw.rawAllItem.items.push({itemId:'bad'+String.fromCharCode(127),num:1});
+  if(format==='duplicate')raw.rawAllItem.items.push({...raw.rawAllItem.items[0]});
+  if(format==='sparse')raw.rawAllItem.items=Array(2);
+  if(format==='inherited')raw.rawAllItem.items[0]=Object.create({itemId:'小麦种子',num:3});
+  if(format==='collision')raw.rawAllItem.items.push({itemId:'GOLD',num:50});
+  if(format==='resource-range')raw.rawAllResource.list.push({res:2147483648,amount:1});
+  const f=facts(raw),known=['canonical','matching'].includes(format);
+  assert.equal(f.stockReliable,known);assert.equal(plan(f).actions.length,known?1:0);
+  if(known){assert.deepEqual([...f.stock],[['小麦种子',3],['玉米种子',3],['小麦',10],['GOLD',50]]);assert.deepEqual(operation(f).costs,[{id:'小麦种子',num:1}]);}
+ });
+
+test('farm shared net debit preserves last seed removal and rejects unrelated inventory appearance',()=>{
+ const before=facts(core({items:[{itemId:'小麦种子',num:1}]})),op=operation(before),raw=core({buildings:[growing()],items:[]}),after=facts(raw);
+ assert.equal(verifyFarmOperation(op,before,after,null).confirmed,true);
+ raw.rawAllItem.items.push({itemId:'unrelated',num:1});assert.equal(verifyFarmOperation(op,before,facts(raw),null).confirmed,false);
+});
+
+test('farm shared harvest delta preserves typed total and rejects new unrelated balances',async()=>{
+ const f=await harvestFixture();f.apply();f.raw.rawAllItem.items.push({itemId:'unrelated',num:1});
+ const result=verifyFarmOperation(f.op,f.before,await f.read(),f.receipt());
+ assert.equal(result.confirmed,false);assert.equal(result.reason,'EXACT_HARVEST_NET_INVENTORY_NOT_CONFIRMED');
+});

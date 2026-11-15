@@ -2,7 +2,9 @@
 // cancellation and UNKNOWN. This module never dispatches or changes autoFarming.
 import { createHash } from 'node:crypto';
 import { surveyCoreOperations } from './core-operation-adapters.mjs';
-import { ResourceLedger, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES, operationBudgetClaims } from './resource-ledger.mjs';
+import { ResourceLedger, safeResourceQuantity, operationBudgetClaims } from './resource-ledger.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { createStateFact, factsFreshnessPolicy, readGameTime } from './state-facts.mjs';
 import { assertExecutionActive } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -80,13 +82,12 @@ function catalogFrom(config) {
   return {types,crops,reliable:types!==null&&types.includes('农田')&&dense(raw)&&raw.length>0};
 }
 function inventory(items,resources) {
-  if(!own(items,'items')||!dense(items.items)||!own(resources,'list')||!dense(resources.list))return {stock:new Map(),stockReliable:false};
-  const names=new Set();
-  for(const row of items.items){if(!own(row,'itemId')||!id(row.itemId)||!own(row,'num')||safeResourceQuantity(row.num)===null||names.has(row.itemId))return {stock:new Map(),stockReliable:false};names.add(row.itemId);}
-  const res=new Set();
-  for(const row of resources.list){if(!own(row,'res')||!positive(row.res)||!own(row,'amount')||safeResourceQuantity(row.amount)===null||res.has(row.res)||names.has(RESOURCE_NAMES[row.res]??String(row.res)))return {stock:new Map(),stockReliable:false};res.add(row.res);}
-  return {stock:stockFromResponses(items,resources),stockReliable:true};
+  const parsed=parseOperationInventory(items,resources);
+  // Farm IDs additionally exclude DEL. Keep that domain restriction and the
+  // original canonical-only inputs while sharing completeness/conflict checks.
+  return parsed.stockReliable&&items.items.some(row=>!id(row.itemId))?{stock:new Map(),stockReliable:false}:parsed;
 }
+
 function exactIdentity(v) {
   if(typeof v==='number'&&!Number.isSafeInteger(v))return null;
   const n=toSnapshotJson(v);if(!(typeof n==='number'&&Number.isSafeInteger(n))&&!(typeof n==='string'&&/^[1-9]\d*$/.test(n)))return null;
@@ -267,12 +268,10 @@ export function verifyFarmOperation(operation,beforeFacts,afterFacts,response) {
     let amount=0;const critical=[];
     for(const row of response.reward){const reward=own(row,'reward')?row.reward:null,num=own(reward,'num')?safeResourceQuantity(reward.num):null;
       if(!own(row,'critical')||!uint(row.critical)||!own(reward,'type')||reward.type!==0||!own(reward,'id')||reward.id!==original.target.productId||num===null||num<=0||!Number.isSafeInteger(amount+num))return fail('FARM_TYPED_CROP_REWARD_INVALID');amount+=num;critical.push(row.critical);}
-    const keys=new Set([...beforeFacts.stock.keys(),...afterFacts.stock.keys(),original.target.productId]);
-    for(const key of keys){const before=safeResourceQuantity(beforeFacts.stock.get(key)??0),next=safeResourceQuantity(afterFacts.stock.get(key)??0);if(before===null||next===null||!Number.isSafeInteger(before+(key===original.target.productId?amount:0))||next!==before+(key===original.target.productId?amount:0))return fail('EXACT_HARVEST_NET_INVENTORY_NOT_CONFIRMED');}
+    if(!stockMatchesDelta(beforeFacts.stock,afterFacts.stock,[],[{id:original.target.productId,num:amount}]))return fail('EXACT_HARVEST_NET_INVENTORY_NOT_CONFIRMED');
     return {confirmed:true,reason:'同批次单田清空与typed作物数量、完整库存净入共同确认',afterState:copy(after.raw),responseEvidence:{buildingId:parameters.buildingId,productId:original.target.productId,num:amount,critical}};
   }
-  const costs=new Map(original.costs.map(r=>[r.id,r.num])),keys=new Set([...beforeFacts.stock.keys(),...afterFacts.stock.keys()]);
-  for(const key of keys){const before=safeResourceQuantity(beforeFacts.stock.get(key)??0),next=safeResourceQuantity(afterFacts.stock.get(key)??0);if(before===null||next===null||before<(costs.get(key)??0)||next!==before-(costs.get(key)??0))return fail('EXACT_SEED_DEBIT_AND_NET_INVENTORY_NOT_CONFIRMED');}
+  if(!stockMatchesDelta(beforeFacts.stock,afterFacts.stock,original.costs,[]))return fail('EXACT_SEED_DEBIT_AND_NET_INVENTORY_NOT_CONFIRMED');
   return {confirmed:true,reason:'新OnWater精确地块/作物与AllItem+AllResource精确种子净扣确认；静默窗口本身不是成功',afterState:copy(after.raw)};
 }
 export function prepareFarmHarvestWorkflow(facts,{config,moduleConfig=FARM_DEFAULT_CONFIG,...payload}={}){
