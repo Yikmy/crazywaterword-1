@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { parseEquipmentOwnership } from './equipment-forge.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -223,7 +224,6 @@ export function planEquipmentGrowth(f,{config,moduleConfig=EQUIPMENT_GROWTH_DEFA
   const row=candidate(f,parameters,{config,moduleConfig});if(row.executable&&(selections===undefined||selections.includes(row.actionId))&&(!isPutOn(row.parameters)||putOnFresh(f))&&ledger.reserve(row.costs))return {module:'equipment-growth',actions:[row],notes:[]};return {module:'equipment-growth',actions:[],notes:[row.blockedReason??'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_INSUFFICIENT']};
 }
 const without=(value,keys)=>Object.fromEntries(Object.entries(value).filter(([key])=>!keys.includes(key)));
-function inventoriesMatch(b,a,costs){const debits=new Map(costs.map(row=>[row.id,row.num]));for(const key of new Set([...b.stock.keys(),...a.stock.keys()])){const before=b.stock.get(key)??0;if(before<(debits.get(key)??0)||(a.stock.get(key)??0)!==before-(debits.get(key)??0))return false;}return true;}
 function verifyPutOn(op,b,a,p,config){
   const fail=reason=>({confirmed:false,reason}),before=putOnState(b,config,p),after=putOnState(a,config,p);
   if(!before||!after||!same(b.identityContext,a.identityContext))return fail('EQUIPMENT_AUTHORITY_OR_CONTEXT_UNKNOWN');
@@ -237,7 +237,7 @@ function verifyPutOn(op,b,a,p,config){
   if(!same(without(heroBefore,['power','attributes','equips']),without(heroAfter,['power','attributes','equips']))||
      !same(b.ownership.heroes.filter(hero=>hero.heroId!==p.heroId),a.ownership.heroes.filter(hero=>hero.heroId!==p.heroId))||
      !same(b.ownership.pool,a.ownership.pool)||!same(b.ownership.bag.filter(row=>row.uid!==p.uid),a.ownership.bag))return fail('NON_TARGET_EQUIPMENT_OR_OWNER_CHANGED');
-  if(!inventoriesMatch(b,a,[]))return fail('ZERO_COST_INVENTORY_UNCHANGED_NOT_CONFIRMED');
+  if(!stockMatchesDelta(b.stock,a.stock,[],[]))return fail('ZERO_COST_INVENTORY_UNCHANGED_NOT_CONFIRMED');
   if(!putOnFresh(b)||!putOnFresh(a))return fail('EQUIPMENT_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {confirmed:true,reason:'完整 Equips 和 AllHero 复读确认原闲置 UID 穿到指定英雄的空槽，装备池及库存不变',afterState:{hero:copy(heroAfter),equipment:copy(equipment)},responseEvidence:null};
 }
@@ -251,7 +251,7 @@ export function verifyEquipmentGrowth(op,b,a){
   if(!same(expected,afterEquipment)||!same(expected,after.equips.find(row=>row.uid===p.uid)))return fail(refine?'EXACT_SINGLE_EQUIPMENT_REFINE_NOT_CONFIRMED':'EXACT_SINGLE_EQUIPMENT_LEVEL_NOT_CONFIRMED');
   if(!same(without(before,['power','attributes','equips']),without(after,['power','attributes','equips']))||!same(before.equips.filter(row=>row.uid!==p.uid),after.equips.filter(row=>row.uid!==p.uid)))return fail('NON_TARGET_HERO_FIELDS_CHANGED');
   if(!same(b.ownership.heroes.filter(hero=>hero.heroId!==p.heroId),a.ownership.heroes.filter(hero=>hero.heroId!==p.heroId))||!same(b.ownership.pool.filter(row=>row.uid!==p.uid),a.ownership.pool.filter(row=>row.uid!==p.uid))||!same(b.ownership.bag,a.ownership.bag)||!same(b.ownership.uids,a.ownership.uids))return fail('NON_TARGET_EQUIPMENT_OR_OWNER_CHANGED');
-  if(!inventoriesMatch(b,a,contract.costs))return fail(refine?'EXACT_REFINE_DEBITS_OR_OTHER_INVENTORY_CHANGED':'EXACT_IRON_DEBIT_OR_OTHER_INVENTORY_CHANGED');
+  if(!stockMatchesDelta(b.stock,a.stock,contract.costs,[]))return fail(refine?'EXACT_REFINE_DEBITS_OR_OTHER_INVENTORY_CHANGED':'EXACT_IRON_DEBIT_OR_OTHER_INVENTORY_CHANGED');
   return {confirmed:true,reason:refine?'新 Equips 与 AllHero 同UID同归属复读确认单次精炼+1、精铁及精炼石精确扣除；仅目标英雄权威power/attributes可变化':isInitial(p)?'新 Equips 与 AllHero 同UID同归属复读确认首次0→1，完整库存不变；仅目标英雄权威power/attributes可变化':'新 Equips 与 AllHero 同UID同归属复读确认单次等级+1、精铁精确扣除；仅目标英雄权威power/attributes可变化',afterState:{hero:copy(after),equipment:copy(afterEquipment)},responseEvidence:null};
 }
 export function equipmentGrowthDependencyVersions({config,moduleConfig=EQUIPMENT_GROWTH_DEFAULT_CONFIG,parameters={}}={}){parameters=validateEquipmentGrowthParameters(parameters);return {moduleConfig:copy(moduleConfig),...Object.fromEntries(tablesFor(parameters).map(name=>['config.'+name,copy(config?.tables?.[name]??null)]))};}
@@ -311,7 +311,7 @@ function verifyStar(op,b,a,p,config){
   if(!same(expected,afterEquipment)||!same(expected,after.equips.find(row=>row.uid===p.uid)))return fail('EXACT_SINGLE_EQUIPMENT_STAR_NOT_CONFIRMED');
   if(!same(without(before,['power','attributes','equips']),without(after,['power','attributes','equips']))||!same(before.equips.filter(row=>row.uid!==p.uid),after.equips.filter(row=>row.uid!==p.uid)))return fail('NON_TARGET_HERO_FIELDS_CHANGED');
   if(!same(b.ownership.heroes.filter(hero=>hero.heroId!==p.heroId),a.ownership.heroes.filter(hero=>hero.heroId!==p.heroId))||!same(b.ownership.pool.filter(row=>row.uid!==p.uid),a.ownership.pool.filter(row=>row.uid!==p.uid))||!same(b.ownership.bag,a.ownership.bag)||!same(b.ownership.uids,a.ownership.uids))return fail('NON_TARGET_EQUIPMENT_OR_OWNER_CHANGED');
-  if(!inventoriesMatch(b,a,contract.costs))return fail('EXACT_STAR_DEBITS_OR_OTHER_INVENTORY_CHANGED');
+  if(!stockMatchesDelta(b.stock,a.stock,contract.costs,[]))return fail('EXACT_STAR_DEBITS_OR_OTHER_INVENTORY_CHANGED');
   if(!putOnFresh(b)||!putOnFresh(a))return fail('EQUIPMENT_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {confirmed:true,reason:'新 Equips 与 AllHero 双重完整复读确认同UID单次升星、原归属和等级/精炼/洗练不变，升星石及精铁精确净扣；目标随机属性及英雄派生数值仅保留服务器观察',afterState:{hero:copy(after),equipment:copy(afterEquipment)},responseEvidence:null};
 }

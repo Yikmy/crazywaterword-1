@@ -559,3 +559,10 @@ test('fixed configuration subtracts observed partial XP without rounding or impl
  assert.ok(operation);assert.deepEqual(operation.costs,[{id:xpItem,num:3},{id:'GOLD',num:60}]);
  assert.equal(operation.action.body.expItemNum,3);assert.equal(operation.expectedState.exp,0);
 });
+
+for(const wireMode of [false,true])test('badge exact last XP and gold debit permits omitted empty item with codec '+wireMode,async()=>{
+ const client=fake({wireMode,response:{material:{asset:[]}},afterWrite(c){assert.equal(c.stock.get(xpItem),0);assert.equal(c.stock.get('GOLD'),0);c.stock.delete(xpItem);c.stock=new Map([...c.stock].reverse());}}),config=cfg();
+ client.stock.set(xpItem,5);client.stock.set('GOLD',100);
+ const before=await survey(client,config),operation=plan(before,config).actions[0];assert.ok(operation);assert.deepEqual(operation.costs,costs);
+ const result=await run({client,config,operation});assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.stock.has(xpItem),false);assert.equal(client.stock.get('GOLD'),0);assert.equal(client.stock.get('其他'),1);assert.equal(client.uncertainWrites.size,0);
+});

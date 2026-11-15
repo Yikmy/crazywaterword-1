@@ -440,3 +440,10 @@ test('initial level no effect remains UNKNOWN and reservation still requires an 
  const f=await initialPrepared({apply:false});const result=await initialRun(f);assert.equal(result.status,'UNKNOWN');assert.equal(f.client.writes.length,1);assert.equal(f.client.pool[0].level,0);assert.equal(f.client.uncertainWrites.size,1);
  const g=await initialPrepared();const denied=await initialRun(g,{budget:budgetFor(g.operation,{iron:0,uids:[]})});assert.equal(denied.status,'NOT_EXECUTED');assert.equal(g.client.writes.length,0);
 });
+
+for(const wireMode of [false,true])test('equipment exact last iron debit permits omitted empty item without changing other inventory, codec '+wireMode,async()=>{
+ const client=fake({wireMode,afterWrite(c){assert.equal(c.stock.get('精铁'),0);c.stock.delete('精铁');c.stock=new Map([...c.stock].reverse());}});
+ client.stock.set('精铁',4);
+ const facts=await survey(client),operation=plan(facts).actions[0];assert.ok(operation);assert.deepEqual(operation.costs,[{id:'精铁',num:4}]);
+ const result=await run(client,operation);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.stock.has('精铁'),false);assert.equal(client.stock.get('GOLD'),100);assert.equal(client.stock.get('其他'),7);assert.equal(client.uncertainWrites.size,0);
+});

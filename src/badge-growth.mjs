@@ -5,6 +5,7 @@ import { stableBusinessValue, businessRejectionIdentityFromHistory } from './bus
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationHero, parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 
@@ -437,12 +438,6 @@ export function planBadgeGrowth(facts, { config, moduleConfig, parameters = {}, 
     : { module: moduleId, actions: [], notes: [selected.blockedReason ?? 'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_INSUFFICIENT'] };
 }
 
-function exactDebits(before, after, costs) {
-  const debits = new Map(costs.map(({ id, num }) => [id, num]));
-  return [...new Set([...before.keys(), ...after.keys(), ...debits.keys()])].every(key =>
-    (after.get(key) ?? 0) === (before.get(key) ?? 0) - (debits.get(key) ?? 0));
-}
-
 function noMaterial(responseBody) {
   if (!fields(responseBody, ['material'])) return false;
   if (!own(responseBody, 'material')) return true;
@@ -500,7 +495,7 @@ export function verifyBadgeGrowth(operation, before, after, responseBody) {
       || !same(before.ownership.heroes.filter(hero => hero.heroId !== params.heroId), after.ownership.heroes.filter(hero => hero.heroId !== params.heroId))) {
     return fail('BADGE_SLOT_OR_NON_TARGET_HERO_CHANGED');
   }
-  if (!exactDebits(before.stock, after.stock, contract.costs)) return fail('BADGE_EXACT_EXP_AND_GOLD_DEBIT_NOT_CONFIRMED');
+  if (!stockMatchesDelta(before.stock, after.stock, contract.costs, [])) return fail('BADGE_EXACT_EXP_AND_GOLD_DEBIT_NOT_CONFIRMED');
   if (!freshFacts(before) || !freshFacts(after)) return fail('BADGE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {
     confirmed: true, reason: '完整 Badges 和 AllHero 复读确认同槽纹章单次等级+1、经验余量为零及自有经验和金币精确扣除',
@@ -568,7 +563,7 @@ function verifyStar(params, contract, before, after) {
   const expectedSlots = beforeHero.badges.map(row => row.uid === params.uid ? {...without(expectedBadge,['exp']),pos:row.pos} : row);
   if (!same(expectedSlots,afterHero.badges) || !same(without(beforeHero,['power','attributes','badges']),without(afterHero,['power','attributes','badges']))
       || !same(before.ownership.heroes.filter(hero => hero.heroId !== params.heroId),after.ownership.heroes.filter(hero => hero.heroId !== params.heroId))) return fail('BADGE_SLOT_OR_NON_TARGET_HERO_CHANGED');
-  if (!exactDebits(before.stock,after.stock,contract.costs)) return fail('BADGE_EXACT_STAR_STONE_AND_GOLD_DEBIT_NOT_CONFIRMED');
+  if (!stockMatchesDelta(before.stock,after.stock,contract.costs,[])) return fail('BADGE_EXACT_STAR_STONE_AND_GOLD_DEBIT_NOT_CONFIRMED');
   if (!freshFacts(before) || !freshFacts(after)) return fail('BADGE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {confirmed:true,reason:'完整 Badges 与 AllHero 确认原UID同槽红徽章单星增长，等级与经验不变，升星石及金币精确净扣；仅目标随机属性和英雄派生数值采纳服务器新观察',
     afterState:{hero:copy(afterHero),badge:copy(afterBadge)},responseEvidence:{material:'NONE'}};
