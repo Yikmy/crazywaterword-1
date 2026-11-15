@@ -273,3 +273,9 @@ test('activity alliance overview reuses original festival private-context observ
 test('activity alliance overview source time is unknown when its own outcome omitted time rather than borrowing snapshot collection time',()=>{
  const state=activityOverviewState();delete state.outcomes.AllGuildAbstractionRequest.updatedAt;const result=activityOverview(state);assert.equal(result.updatedAt,overviewTime);assert.equal(result.sources.find(row=>row.request==='AllGuildAbstractionRequest').updatedAt,null);assert.equal(result.sources.find(row=>row.request==='WeekInfoRequest').updatedAt,overviewTime);assert.equal(result.alliance.status,'OBSERVED');
 });
+
+test('activity overview uses the original checklist open-rank window projection with cache identity isolation',()=>{
+ const state=activityOverviewState();state.sessionFacts={openRankActivity:{...overviewContext,status:'OBSERVED',reliable:true,source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',seq:1,observedAt:overviewTime,activityTime:[{type:4,startTime:100,endTime:400}]}};
+ const before=structuredClone(state),v=activityOverview(state);assert.equal(v.checklist.openRank.status,'OBSERVED');assert.equal(v.checklist.openRank.rows[0].type,4);assert.equal(v.checklist.openRank.rows[0].eligible,null);assert.equal(v.checklist.openRank.rows[0].executable,false);assert.deepEqual(state,before);
+ const changed=activityOverview(state,{context:{...overviewContext,worldId:'2000001'}});assert.equal(changed.checklist.openRank.status,'UNKNOWN');assert.deepEqual(changed.checklist.openRank.rows,[]);
+});

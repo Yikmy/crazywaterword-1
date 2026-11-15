@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readFestivalActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readFestivalActivitySnapshot, readOpenRankActivitySnapshot, parseOpenRankActivity, readTradeActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -557,4 +557,67 @@ test('task source revisions cover claim-only changes without firing another prog
  socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'2')]},2);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cacheRevision,2);
  socket.receive('SCAchievementUpdate',{},3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cacheRevision,2);
  assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).cacheRevision,0);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).cacheRevision,0);
+});
+
+const openRankWindow=(type=4,extra={})=>({type,startTime:100,endTime:400,...extra});
+const openRankPush=(activityTime=[openRankWindow()],extra={})=>({openRankActivity:{activityTime},...extra});
+test('open-rank windows attest only accepted private pushes and the original collector adds zero queries',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());assert.equal(readOpenRankActivitySnapshot(f.client).status,'UNKNOWN');
+ const socket=await f.ready({result:0,playerInfo:{playerId:'9007199254740993',worldId:'9'}}),before=socket.sent.length;
+ f.client.emit('message',{name:'SCAllActivity',seq:1,body:openRankPush()});assert.equal(readOpenRankActivitySnapshot(f.client).status,'UNKNOWN');
+ socket.receive('SCAllActivity',openRankPush([openRankWindow(4),openRankWindow(1,{startTime:0,endTime:1})]),1);
+ const got=readOpenRankActivitySnapshot(f.client);assert.equal(got.status,'OBSERVED');assert.equal(got.playerId,'9007199254740993');assert.equal(got.worldId,'9');assert.equal(got.seq,1);assert.deepEqual(got.activityTime,[openRankWindow(4),openRankWindow(1,{startTime:0,endTime:1})]);
+ assert.equal(got.executable,false);assert.equal(got.complete,false);assert.equal(got.independentRereadAvailable,false);assert.equal(got.source,'SCAllActivity.openRankActivity');
+ got.activityTime[0].endTime=9;assert.equal(readOpenRankActivitySnapshot(f.client).activityTime[0].endTime,400);assert.equal(readOpenRankActivitySnapshot({factContext:f.client.factContext}).status,'UNKNOWN');
+ const reads=[];f.client.request=async(name,body)=>{reads.push({name,body});return {};};const snap=await collectState(f.client,protocol);assert.equal(reads.length,48);assert.deepEqual(reads.map(r=>r.name).sort(),ENTRY_QUERIES.map(r=>r.name).sort());assert.equal(snap.sessionFacts.openRankActivity.status,'OBSERVED');assert.equal(snap.sessionFacts.openRankActivity.playerId,'9007199254740993');
+ const checklist=dailyChecklist(snap);assert.deepEqual(checklist.openRank.rows.map(r=>r.type),[4,1]);assert.equal(checklist.openRank.rows[0].eligible,null);assert.equal(checklist.openRank.rows[0].claimStatus,'UNKNOWN');assert.equal(socket.sent.length,before);
+ f.client.request=async()=>{f.client.factContext.connectionId='changed-during-collection';return {};};const stale=await collectState(f.client,protocol);assert.equal(stale.sessionFacts.openRankActivity.status,'UNKNOWN');assert.equal(dailyChecklist(stale).openRank.rows.length,0);
+});
+test('open-rank windows share strict own-field parsing across decoded and cached data',()=>{
+ const decoded=codec.decode(codec.encode('SCAllActivity',1,openRankPush())).body.openRankActivity;
+ assert.deepEqual(parseOpenRankActivity(decoded),parseOpenRankActivity(openRankPush().openRankActivity));
+ assert.deepEqual(parseOpenRankActivity({activityTime:[]}),[]);
+ const bad=[undefined,{}, {activityTime:Array(1)}, {activityTime:[openRankWindow(),openRankWindow()]}, {activityTime:[openRankWindow(5)]}, {activityTime:[{type:4,startTime:100}]}, {activityTime:[openRankWindow(4,{startTime:-1})]}, {activityTime:[openRankWindow(4,{startTime:400})]}, {activityTime:[openRankWindow(4,{endTime:2147483648})]}, {activityTime:[openRankWindow(4,{type:'4'})]},Object.create({activityTime:[openRankWindow()]})];
+ const getter={};Object.defineProperty(getter,'activityTime',{enumerable:true,get(){throw Error('getter must not run');}});bad.push(getter);
+ const row=Object.create(openRankWindow());bad.push({activityTime:[row]});
+ const list=[openRankWindow()];list.extra=1;bad.push({activityTime:list});
+ for(const value of bad)assert.equal(parseOpenRankActivity(value),null);
+});
+test('open-rank malformed or missing windows affect only that fragment and a later accepted window is observable',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();let seq=1;
+ for(const openRankActivity of [undefined,{activityTime:[{type:4,endTime:400}]},{activityTime:[openRankWindow(),openRankWindow()]},{activityTime:[openRankWindow(0)]},{activityTime:[openRankWindow(4,{endTime:100})]}]){
+  socket.receive('SCAllActivity',openRankPush(),seq++);assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');
+  socket.receive('SCAllActivity',{festivalActivities:[festivalRecord()],trade:{period:7,startTime:100,endTime:400},...(openRankActivity===undefined?{}:{openRankActivity})},seq++);
+  assert.equal(readOpenRankActivitySnapshot(f.client).status,'UNKNOWN');assert.equal(readOpenRankActivitySnapshot(f.client).activityTime,null);assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readTradeActivitySnapshot(f.client).status,'OBSERVED');
+ }
+ socket.receive('SCAllActivity',{openRankActivity:{}},seq++);assert.deepEqual(readOpenRankActivitySnapshot(f.client).activityTime,[]);assert.equal(readOpenRankActivitySnapshot(f.client).complete,false);
+ socket.receive('SCAllActivity',openRankPush([]),seq++);assert.deepEqual(readOpenRankActivitySnapshot(f.client).activityTime,[]);assert.equal(readOpenRankActivitySnapshot(f.client).complete,false);
+ socket.receive('SCAllActivity',openRankPush(),seq++);assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');
+});
+for(const mode of ['duplicate','gap','zero-seq','decode','close','role','world','account','generation','connection','socket','stop'])test('open-rank window source preserves stream and identity isolation on '+mode,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',openRankPush(),1);
+ if(mode==='duplicate'){socket.receive('SCAllActivity',openRankPush([openRankWindow(1)]),1);assert.equal(readOpenRankActivitySnapshot(f.client).activityTime[0].type,4);return;}
+ if(mode==='gap'){socket.receive('SCAllActivity',openRankPush(),3);socket.receive('SCAllActivity',openRankPush(),2);}
+ else if(mode==='zero-seq')socket.receive('SCAllActivity',openRankPush(),0);
+ else if(mode==='decode')f.client.onMessage(new Uint8Array([255]));
+ else if(mode==='close')socket.end();
+ else if(mode==='socket')f.client.socket={};
+ else if(mode==='stop')f.client.stop();
+ else f.client.factContext[{role:'playerId',world:'worldId',account:'accountId',generation:'generation',connection:'connectionId'}[mode]]=mode==='generation'?4:'changed';
+ const result=readOpenRankActivitySnapshot(f.client);assert.equal(result.status,'UNKNOWN');assert.equal(result.activityTime,null);assert.equal(result.executable,false);
+});
+test('open-rank reconnect, wrap, late replies, expected identity and new instances never reuse prior windows',async t=>{
+ const a=fixture(),b=fixture({accountId:'B'});t.after(()=>a.client.stop());t.after(()=>b.client.stop());const socket=await a.ready(),handler=socket.onmessage;await b.ready();
+ socket.receive('SCAllActivity',openRankPush(),MAX_SEQ);socket.receive('SCAllActivity',openRankPush([openRankWindow(2)]),1);assert.equal(readOpenRankActivitySnapshot(a.client).seq,1);assert.equal(readOpenRankActivitySnapshot(b.client).status,'UNKNOWN');
+ const identity={accountId:'vip-account',generation:3,connectionId:'vip-connection',playerId:'9007199254740993',worldId:'9'};
+ assert.equal(readOpenRankActivitySnapshot(a.client,identity).status,'OBSERVED');
+ for(const key of Object.keys(identity)){const changed={...identity,[key]:key==='generation'?4:'other'};assert.equal(readOpenRankActivitySnapshot(a.client,changed).status,'UNKNOWN');assert.equal(readOpenRankActivitySnapshot(a.client,identity).status,'OBSERVED');}
+ a.client.stop();await a.ready();assert.equal(readOpenRankActivitySnapshot(a.client).status,'UNKNOWN');handler({data:codec.encode('SCAllActivity',2,openRankPush())});assert.equal(readOpenRankActivitySnapshot(a.client).status,'UNKNOWN');assert.equal(readOpenRankActivitySnapshot(b.client).status,'UNKNOWN');
+});
+
+test('malformed festival list does not invalidate independent open-rank, trade or existing revision observations',async t=>{
+ const {readPetRevision,readResourceFieldRevision}=await import('../src/client.mjs'),f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();
+ socket.receive('SCAllActivity',openRankPush(undefined,{festivalActivities:Array.from({length:10001},()=>({})),trade:{period:7,startTime:100,endTime:400}}),1);
+ assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readTradeActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readPetRevision(f.client).revision,0);assert.equal(readResourceFieldRevision(f.client).revision,0);
+ socket.receive('SCAllActivity',openRankPush(undefined,{festivalActivities:[festivalRecord()]}),2);assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');
 });

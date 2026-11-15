@@ -258,3 +258,22 @@ test('cached checklist shares original domain parsers while preserving partial o
   assert.ok(parsed);assert.equal(v.tasks.rows[i].eligible,claimableDailyTasks({dailyTask:[raw]}).length===1);assert.equal(v.tasks.rows[i].executable,false);
  }
 });
+
+const openRankObservation=()=>({...festivalObservation(),source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',activityTime:[{type:4,startTime:100,endTime:400},{type:1,startTime:0,endTime:1}]});
+const withOpenRank=(observation=openRankObservation())=>({...fixture(),sessionFacts:{openRankActivity:observation}});
+test('open-rank cached windows preserve server values without granting completion, claims, or current availability',()=>{
+ const s=withOpenRank(),before=toSnapshotJson(s),v=dailyChecklist(s,{config}),a=v.openRank;
+ assert.equal(a.status,'OBSERVED');assert.equal(a.complete,false);assert.equal(a.independentRereadAvailable,false);assert.equal(a.executable,false);assert.deepEqual(a.rows.map(r=>r.type),[4,1]);assert.deepEqual(a.rows.map(r=>r.startTime),[100,0]);assert.equal(a.rows[0].label,'战争');
+ for(const row of a.rows){assert.equal(row.eligible,null);assert.equal(row.claimStatus,'UNKNOWN');assert.equal(row.executable,false);assert.equal(Object.hasOwn(row,'action'),false);assert.equal(Object.hasOwn(row,'claimParameters'),false);}
+ assert.match(formatDailyChecklist(v),/开服排行窗口：OBSERVED.*当前领取资格未知/);assert.deepEqual(toSnapshotJson(s),before);a.rows[0].endTime=1;assert.equal(dailyChecklist(s).openRank.rows[0].endTime,400);
+ s.sessionFacts.openRankActivity.activityTime=[];const empty=dailyChecklist(s).openRank;assert.equal(empty.status,'OBSERVED');assert.deepEqual(empty.rows,[]);assert.equal(empty.complete,false);
+});
+for(const [label,mutate]of[
+ ['missing source',s=>delete s.source],['unknown status',s=>s.status='UNKNOWN'],['unreliable',s=>s.reliable=false],['wrong source',s=>s.source='SCAllActivity.festivalActivities'],['wrong scope',s=>s.scope='PUBLIC_EVENT'],['missing connection',s=>delete s.connectionId],['missing role',s=>delete s.playerId],['bad world',s=>s.worldId=0],['bad time',s=>s.observedAt='invalid'],['missing generation',s=>delete s.generation],['zero sequence',s=>s.seq=0],['missing windows',s=>delete s.activityTime],['sparse',s=>s.activityTime=Array(1)],['unknown type',s=>s.activityTime[0].type=9],['duplicate type',s=>s.activityTime[1].type=4],['missing start',s=>delete s.activityTime[0].startTime],['reversed',s=>s.activityTime[0].endTime=99],
+])test('open-rank '+label+' stays unknown independently of daily tasks and gifts',()=>{
+ const s=openRankObservation();mutate(s);const v=dailyChecklist(withOpenRank(s),{config});assert.equal(v.openRank.status,'UNKNOWN');assert.deepEqual(v.openRank.rows,[]);assert.equal(v.openRank.executable,false);assert.equal(v.tasks.counts.total,3);assert.equal(v.gift.eligible,true);
+});
+test('open-rank cached windows require current five-dimensional identity without hiding other daily observations',()=>{
+ const s=withOpenRank(),context={accountId:'synthetic-A',generation:2,connectionId:'festival-connection',playerId:'9007199254740993',worldId:17};assert.equal(dailyChecklist(s,{context}).openRank.status,'OBSERVED');
+ for(const key of Object.keys(context)){const c={...context,[key]:key==='generation'?3:'other'},v=dailyChecklist(s,{context:c});assert.equal(v.openRank.status,'UNKNOWN');assert.deepEqual(v.openRank.rows,[]);assert.equal(v.openRank.source.reason,'OPEN_RANK_CURRENT_CONTEXT_MISMATCH');assert.equal(v.tasks.counts.total,3);}
+});

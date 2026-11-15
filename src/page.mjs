@@ -752,6 +752,8 @@ function renderActivityAlliance(data){
  box.appendChild(el('p','dim','达到门槛不等于可领取；日界、周期与实际奖励仍由原业务合同核验。'));
  const festival=daily?.festival;draw('活动推送片段',['活动ID','观察状态','开始原值','开放原值','关闭原值','结束原值','签到记录'],(festival?.rows||[]).map(row=>[known(row.activityId),labels[row.status]||'未知',known(row.startTime),known(row.openTime),known(row.closeTime),known(row.endTime),row.checkInRecord?.status==='OBSERVED'?row.checkInRecord.checkInId.join('、'):'未知']));
  box.appendChild(el('p','dim','推送来源：'+(labels[festival?.source?.status]||'未知')+' · '+(festival?.source?.observedAt?when(festival.source.observedAt):'未知')+'。未出现不证明不存在，窗口不证明当前开放或签到资格。'));
+ const openRank=daily?.openRank;draw('开服排行窗口原值',['类型','开始原值','结束原值','当前领取资格'],(openRank?.rows||[]).map(row=>[row.label+' / '+known(row.type),known(row.startTime),known(row.endTime),'未知']));
+ box.appendChild(el('p','dim','开服排行来源：'+(labels[openRank?.source?.status]||'未知')+' · '+(openRank?.source?.observedAt?when(openRank.source.observedAt):'未知')+'。'+(openRank?.note||'窗口不构成领奖资格。')));
  draw('周活动窗口原值',['类型','周期','开始原值','结束原值'],(view.weekly?.rows||[]).map(row=>[known(row.type),known(row.period),known(row.startTime),known(row.endTime)]));
  if(!view.weekly?.rows?.length)box.appendChild(el('p','dim',view.weekly?.listObserved?'本次窗口列表为空；不代表完整活动目录。':'周活动窗口未知。'));
  draw('公会摘要观察',['摘要ID','观察等级'],(view.alliance?.rows||[]).map(row=>[known(row.id),known(row.level)]));
@@ -2281,6 +2283,12 @@ function renderDailyChecklist(data) {
       row.checkInRecord.checkInId===null?'未知':row.checkInRecord.checkInId.length?row.checkInRecord.checkInId.join('、'):'服务器报告空列表',
       known(row.checkInRecord.activeScore)+' / '+known(row.checkInRecord.claimedRewardId)+' / '+known(row.checkInRecord.checkRuby),row.status+(row.reason?'：'+row.reason:''),'未知：签到资格及独立复读缺证'
     ])));box.appendChild(el('p','dim',activity.note));
+  }
+  if(view.openRank){
+    const activity=view.openRank;box.appendChild(el('h3','','开服排行 · 最近窗口观察'));
+    box.appendChild(el('p','dim','来源 '+activity.source.source+' · '+activity.source.status+' · '+(activity.source.observedAt||'时间未知')+' · 序列 '+known(activity.source.seq)));
+    box.appendChild(table(['类型','开始原值（秒）','结束原值（秒）','当前领取资格'],activity.rows.map(row=>[row.label+' / '+row.type,known(row.startTime),known(row.endTime),'未知'])));
+    box.appendChild(el('p','dim',activity.note));
   }
   const source=view.sources;
   $('dailies-view').textContent=(data.stale?'缓存已过期；':'')+'每日任务来源 '+source.daily.status+' / '+(source.daily.observedAt||'采集时间未知')+'；赠礼来源 '+source.gift.status+' / '+(source.gift.observedAt||'采集时间未知')+String.fromCharCode(10)+view.note;

@@ -384,10 +384,10 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
 const liveFestivalActivities = new WeakMap();
 function resetFestivalActivities(client, reason) {
   const previous=liveFestivalActivities.get(client);
-  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0,tradeSnapshot:null,tradeReason:reason,tradeRevision:0,resFieldRevision:0,petRevision:0});
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0,tradeSnapshot:null,tradeReason:reason,tradeRevision:0,openRankSnapshot:null,openRankReason:reason,resFieldRevision:0,petRevision:0});
 }
 function invalidateFestivalActivities(client, reason) {
-  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;state.tradeSnapshot=null;state.tradeReason=reason;}
+  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;state.tradeSnapshot=null;state.tradeReason=reason;state.openRankSnapshot=null;state.openRankReason=reason;}
 }
 function festivalContextCurrent(client,state) {
   return vipCurrentContext(client,state)&&['playerId','worldId'].every(k=>!vipOwn(client.factContext,k)||vipIdentity(vipValue(client.factContext,k))===state.identity?.[k]);
@@ -403,8 +403,9 @@ function updateFestivalActivities(client,body,seq,receivedAt) {
   if(!state||state.invalid)return;
   if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'FESTIVAL_CONNECTION_OR_IDENTITY_CHANGED');return;}
   const rows=vipValue(body,'festivalActivities');
-  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!Array.isArray(rows)||Object.getPrototypeOf(rows)!==Array.prototype||rows.length>10000||Reflect.ownKeys(rows).length!==rows.length+1||!Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))){invalidateFestivalActivities(client,'FESTIVAL_PUSH_STRUCTURE_OR_SEQUENCE_UNKNOWN');return;}
-  try{state.snapshot={seq,observedAt:new Date(receivedAt).toISOString(),activities:structuredClone(rows)};state.reason=null;}catch{invalidateFestivalActivities(client,'FESTIVAL_PUSH_NOT_COPYABLE');}
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ){invalidateFestivalActivities(client,'FESTIVAL_PUSH_SEQUENCE_UNKNOWN');return;}
+  if(!Array.isArray(rows)||Object.getPrototypeOf(rows)!==Array.prototype||rows.length>10000||Reflect.ownKeys(rows).length!==rows.length+1||!Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))){state.snapshot=null;state.reason='FESTIVAL_PUSH_STRUCTURE_UNKNOWN';return;}
+  try{state.snapshot={seq,observedAt:new Date(receivedAt).toISOString(),activities:structuredClone(rows)};state.reason=null;}catch{state.snapshot=null;state.reason='FESTIVAL_PUSH_NOT_COPYABLE';}
 }
 export function readFestivalActivitySnapshot(client,expected=null) {
   const state=liveFestivalActivities.get(client);
@@ -450,6 +451,31 @@ export function readTradeActivitySnapshot(client,expected=null) {
   const identity=state?{...state.context,...state.identity}:{};
   if(!state||state.invalid||!state.seeded||!state.tradeSnapshot||expected&&['accountId','generation','connectionId','playerId','worldId'].some(k=>vipValue(expected,k)!==identity[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.tradeReason??state?.reason??'TRADE_PERIOD_NOT_OBSERVED',period:null,seq:null,observedAt:null,stateRevision:null};
   return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.tradeSnapshot),stateRevision:state.tradeRevision};
+}
+
+// Shared pure parser for the private stream and cached read-only consumers.
+// No clock, progress, claims or reward eligibility is inferred from these windows.
+export function parseOpenRankActivity(value) {
+  const rows=vipValue(value,'activityTime');
+  if(!Array.isArray(rows)||Object.getPrototypeOf(rows)!==Array.prototype||rows.length>4||Reflect.ownKeys(rows).length!==rows.length+1||!Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value')))return null;
+  const parsed=rows.map(row=>Object.fromEntries(['type','startTime','endTime'].map(k=>[k,vipValue(row,k)])));
+  if(parsed.some(row=>![1,2,3,4].includes(row.type)||!vipLevel(row.startTime)||!vipLevel(row.endTime)||row.startTime>=row.endTime)||new Set(parsed.map(row=>row.type)).size!==parsed.length)return null;
+  return parsed;
+}
+function updateOpenRankActivity(client,body,seq,receivedAt) {
+  const state=liveFestivalActivities.get(client);if(!state||state.invalid)return;
+  state.openRankSnapshot=null;state.openRankReason='OPEN_RANK_WINDOW_UNKNOWN';
+  if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'ACTIVITY_CONNECTION_OR_IDENTITY_CHANGED');return;}
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ){invalidateFestivalActivities(client,'OPEN_RANK_PUSH_SEQUENCE_UNKNOWN');return;}
+  const activityTime=parseOpenRankActivity(vipValue(body,'openRankActivity'));if(activityTime===null)return;
+  state.openRankSnapshot={seq,observedAt:new Date(receivedAt).toISOString(),activityTime};state.openRankReason=null;
+}
+export function readOpenRankActivitySnapshot(client,expected=null) {
+  readFestivalActivitySnapshot(client);
+  const state=liveFestivalActivities.get(client),identity=state?{...state.context,...state.identity}:{},common={readOnly:true,source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',complete:false,independentRereadAvailable:false,executable:false};
+  const mismatch=expected&&(['accountId','generation','connectionId'].some(k=>vipValue(expected,k)!==identity[k])||['playerId','worldId'].some(k=>vipOwn(expected,k)&&vipIdentity(vipValue(expected,k))!==identity[k]));
+  if(!state||state.invalid||!state.seeded||!state.openRankSnapshot||mismatch)return {...common,status:'UNKNOWN',reliable:false,reason:mismatch?'OPEN_RANK_CONTEXT_MISMATCH':state?.openRankReason??state?.reason??'OPEN_RANK_WINDOW_NOT_OBSERVED',activityTime:null,seq:null,observedAt:null};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...identity,...structuredClone(state.openRankSnapshot)};
 }
 
 // A revision invalidates resource-field plans; it never proves ownership or settlement.
@@ -970,7 +996,7 @@ export class GameClient extends EventEmitter {
     if(name==='SCMainTaskUpdate')observeTaskProgress(this,'main',body,seq,receivedAt);
     if(name==='SCBranchTaskUpdate')observeTaskProgress(this,'branch',body,seq,receivedAt);
     if(name==='SCAchievementUpdate')observeTaskProgress(this,'achievement',body,seq,receivedAt);
-    if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);}
+    if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);updateOpenRankActivity(this,body,seq,receivedAt);}
     if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
       if(activity&&!activity.invalid&&activity.seeded&&festivalContextCurrent(this,activity)){

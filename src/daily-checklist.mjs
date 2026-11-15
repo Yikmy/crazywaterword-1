@@ -2,6 +2,7 @@ import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
 import { CHEST_TABLE, describeDailyTask, planDailyGift, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
 import { taskObservation, taskQualification } from './tasks.mjs';
+import { parseOpenRankActivity } from './client.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const has = (v,k) => object(v) && Object.hasOwn(v,k);
@@ -158,9 +159,21 @@ function festivalView(state,context=null) {
     note:'仅显示本连接最近一次已接受推送中的活动ID、窗口和签到记录。未报活动不推导为不存在；不据窗口/列表推算游戏日界、当前可领或领奖成功。签到写操作仍缺资格及独立复读合同。'};
 }
 
+function openRankView(state,context=null) {
+  const s=own(own(state,'sessionFacts'),'openRankActivity'),raw=parseOpenRankActivity(s);
+  const matches=context===null||['accountId','generation','connectionId'].every(k=>own(context,k)!==undefined&&own(context,k)===own(s,k))&&['playerId','worldId'].every(k=>festivalInteger(own(context,k),true)!==null&&String(festivalInteger(own(context,k),true))===String(festivalInteger(own(s,k),true)));
+  const observed=matches&&own(s,'status')==='OBSERVED'&&own(s,'reliable')===true&&own(s,'source')==='SCAllActivity.openRankActivity'&&own(s,'scope')==='ACCEPTED_STREAM_WINDOWS_ONLY'
+    &&text(own(s,'accountId'))&&Number.isSafeInteger(own(s,'generation'))&&own(s,'generation')>=0&&text(own(s,'connectionId'))&&festivalInteger(own(s,'playerId'),true)!==null&&festivalInteger(own(s,'worldId'),true)!==null
+    &&text(own(s,'observedAt'))&&Number.isFinite(Date.parse(own(s,'observedAt')))&&positive(own(s,'seq'))&&raw!==null;
+  const source={source:'SCAllActivity.openRankActivity',status:observed?'OBSERVED':'UNKNOWN',observedAt:observed?s.observedAt:null,seq:observed?s.seq:null,reason:observed?null:!matches?'OPEN_RANK_CURRENT_CONTEXT_MISMATCH':own(s,'reason')??'OPEN_RANK_WINDOW_UNKNOWN'};
+  const names={1:'订单',2:'闯关',3:'海盗',4:'战争'};
+  return {readOnly:true,status:source.status,source,rows:observed?raw.map(row=>({...row,label:names[row.type],eligible:null,claimStatus:'UNKNOWN',executable:false})):[],complete:false,eligible:null,executable:false,independentRereadAvailable:false,
+    note:'仅显示当前连接最近一次已接受推送中的开服排行类型与窗口原值；未报类型不证明不存在。窗口不证明当前开放、进度、已领档位或奖励到账；领取仍需独立排行信息、精确档位和结算合同。'};
+}
+
 export function dailyChecklist(state,{config=null,context=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest');
-  return {readOnly:true,festival:festivalView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+  return {readOnly:true,festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
     gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
@@ -170,5 +183,6 @@ export function formatDailyChecklist(view) {
     '成就：'+known(view.achievements.counts.eligible)+' 项达到门槛；普通免费点金剩余 '+known(view.freeGold.remaining),
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
     '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',
-    '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',view.note].join('\n');
+    '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',
+    '开服排行窗口：'+view.openRank.status+'，观察到 '+view.openRank.rows.length+' 类；当前领取资格未知',view.note].join('\n');
 }

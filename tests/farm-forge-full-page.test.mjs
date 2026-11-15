@@ -3029,3 +3029,15 @@ test('recruit payment switch discards an existing plan and cannot reuse its auth
 test('recruit payment cannot change while the account is busy',async()=>{
  const spec=cases.find(s=>s.module==='free-recruit'),h=await loaded(spec),control=descendants(h.node('gp-free-recruit-facts')).find(n=>n.dataset?.recruitPayment==='ticket'),before=h.node('gp-free-recruit-parameters').value;h.run("snapshot.busy='synthetic'");control.click();assert.equal(h.node('gp-free-recruit-parameters').value,before);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+test('assembled daily page renders open-rank server windows as observations with zero claim or automatic requests',async()=>{
+ const h=await boot(),view=dailyChecklist({sessionFacts:{openRankActivity:{status:'OBSERVED',reliable:true,source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',accountId:'A',generation:1,connectionId:'synthetic-push',playerId:'1',worldId:'17',seq:1,observedAt:'2026-11-16T01:00:00.000Z',activityTime:[{type:4,startTime:100,endTime:400}]}}}),before=h.requests.length;
+ h.run('renderDailies('+JSON.stringify({checklist:view,tasks:[]})+')');const text=h.node('dailies-table').textContent;assert.match(text,/开服排行.*最近窗口观察/);assert.match(text,/SCAllActivity.openRankActivity.*OBSERVED/);assert.ok(text.includes('战争 / 4'));assert.match(text,/100/);assert.match(text,/400/);assert.match(text,/窗口不证明当前开放/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+test('assembled overview renders the same read-only open-rank projection and clears it on account change',async()=>{
+ const h=await boot(),context={accountId:'A',generation:1,connectionId:'synthetic-push',playerId:'1',worldId:'17'},checklist=dailyChecklist({sessionFacts:{openRankActivity:{...context,status:'OBSERVED',reliable:true,source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',seq:1,observedAt:'2026-11-16T01:00:00.000Z',activityTime:[{type:4,startTime:100,endTime:400}]}}}),data={account:{id:'A'},dataContext:context,activityAlliance:{accountId:'A',context,readOnly:true,executable:false,complete:false,coverage:'CURRENT_CACHE_ONLY',status:'OBSERVED',checklist,sources:[]}},before=h.requests.length;
+ h.run('renderActivityAlliance('+JSON.stringify(data)+')');const text=h.node('overview-activity-alliance').textContent;assert.match(text,/开服排行窗口原值/);assert.ok(text.includes('战争 / 4'));assert.match(text,/窗口不证明当前开放/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run("selectAccount('B')");assert.equal(h.node('overview-activity-alliance').textContent,'');assert.equal(writes(h,'/api/operations/execute').length,0);
+});
