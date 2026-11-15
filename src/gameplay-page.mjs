@@ -487,6 +487,13 @@ function gpRenderDomain(id,view){
   const scope=viewGuard.capture(),revision=gpRevision;
   for(const [payment,count] of [['free',1],['ticket',1],['ticket',10],['ticket',50]]){const prepare=gpEl('button',payment==='ticket'?'准备用自有抽卡券招募'+count+'次':'准备免费单次');prepare.dataset.recruitPayment=count>1?'ticket-'+count:payment;prepare.disabled=!gpDomainSelectable(id);prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;$('gp-'+id+'-parameters').value=gpJson(payment==='ticket'?{payment:'ticket',...(count>1?{count}:{})}:{});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择'+(payment==='ticket'?'自有抽卡券'+count+'张':'免费单次')+'；重新探测资格和库存，再预览并单独授权。';};box.appendChild(prepare);s.actionControls.push(prepare);}
   table('英雄招募',['支付模式','当前冷却标记','当前累计次数','广播站','开放等级','当前状态'],(view?.candidates||[]).map(row=>[row.parameters?.payment==='ticket'?'自有抽卡券'+(row.parameters.count??1)+'张':'免费',view.recruit?.hero?.freeEndTimeSeconds,view.recruit?.hero?.recruitTimes,view.broadcast?.level,row.requiredLevel,row.executable?'可预览明确招募':row.blockedReason]));
+  const antique=view?.antiqueObservation;
+  if(antique){
+   const requirements=value=>value===true?'已观察到所需条件':value===false?'所需条件未满足':'未知';
+   table('古董招募条件（仅只读）',['来源','当前冷却标记','当前累计次数','开放等级','自有藏品券','免费冷却'],[[antique.source,antique.recruit?.freeEndTimeSeconds,antique.recruit?.recruitTimes,antique.requiredLevel,antique.ownedTickets,antique.readiness]]);
+   table('古董招募模式（写入冻结）',['模式','次数','已观察条件','执行状态'],(antique.modes||[]).map(row=>[row.payment==='free'?'免费':'自有藏品券',row.count,requirements(row.observedRequirementsMet),'不可执行']));
+   box.appendChild(gpEl('p','古董条件来自本次同一调查，不代表任务完成、奖励到账或写入资格。古董独立结算合同尚未闭合，所有古董模式均不可执行；广告招募需独立广告流程，保持关闭。'));
+  }
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='free-gold'){
   table('普通免费点金',['已用','上限','剩余','服务器重置标记','当前状态'],(view?.candidates||[]).map(row=>[view.gold?.freeTimes,row.limit,row.remaining,view.gold?.resetTime,row.executable?'可预览免费单次':row.blockedReason]));

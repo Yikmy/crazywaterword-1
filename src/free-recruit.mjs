@@ -29,6 +29,9 @@ export const FREE_RECRUIT_EVIDENCE=Object.freeze({
  ticketSemantics:'Explicit RECRUIT_SINGLE(2): one owned ticket, only while free marker remains future; independent receipt/state and exact net inventory required',
  batchSemantics:'Explicit RECRUIT_BATCH_10(3)/RECRUIT_BATCH_50(4), exactly 10/50 owned tickets; independent batch branch, no free substitution; exact typed reward count and net state required',
  batchDispatchModuleByteOffset:3609201,batchCostModuleByteOffset:5533184,
+ antiqueObservationModuleByteOffset:265838,
+ antiqueObservationSemantics:'AntiqueRecruitItem uses RecruitInfo.antique, the same free marker comparison, and owned 藏品券 costs 1/10/50; separate AntiqueRecruitRequest type/way and configured duplicate conversion require their own settlement contract',
+ advertisingSemantics:'RecruitView._onBtnAdRecruit calls recruitAdv only after AdvUtils.playAdv success; RECRUIT_ADV(5) is advertising, never ordinary free authorization',
  realGame:'REAL_UNVERIFIED'
 });
 export const FREE_RECRUIT_DEFAULT_CONFIG=Object.freeze({enabled:false});
@@ -37,9 +40,10 @@ export function validateFreeRecruitConfig(v={}) {
  return {enabled:v.enabled??false};
 }
 // Shared with the legacy read-only driver; never grants execution authority.
+const ownedRecruitCosts=(way,id)=>way===1?[]:[{id,num:({2:1,3:10,4:50})[way]}];
 export function heroRecruitCosts(way) {
  if(![1,2,3,4].includes(way))throw invalid('仅明确免费、单券、十连或五十连招募有成本合同');
- return way===1?[]:[{id:'抽卡券',num:({2:1,3:10,4:50})[way]}];
+ return ownedRecruitCosts(way,'抽卡券');
 }
 export function validateFreeRecruitParameters(v={}) {
  if(!fields(v,['payment','count'])||own(v,'payment')&&!['free','ticket'].includes(v.payment)||own(v,'count')&&(v.payment!=='ticket'||![1,10,50].includes(v.count)))throw invalid('默认免费单次；自有券仅接受明确 payment=ticket 与 count=1、10或50');
@@ -159,9 +163,29 @@ function recruitCooldownObservation(f) {
   serverBounds:bounds,readiness:valid?freeRecruitReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
 }
 
+// Read-only sibling observation from the same existing RecruitInfo survey.
+// It never creates action IDs, requests, task progress, permits or recovery facts.
+function antiqueRecruitObservation(f,{config}={}) {
+ const rows=f?.configEvidence?.tables?.ModuleOpenCfg?.data;
+ const gates=dense(rows)?rows.filter(r=>own(r,'moduleId')&&r.moduleId==='藏品'):[];
+ const level=gates.length===1&&own(gates[0],'playerLevel')&&positive(gates[0].playerLevel)?gates[0].playerLevel:null;
+ const defs=catalog(f?.configEvidence),data=parseRecruitData(f?.state?.recruit?.antique);
+ const valid=authority(f)&&same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null))&&defs?.itemIds.includes('藏品券')&&level!==null&&positive(f.context.playerLevel)&&data!==null;
+ const clock=valid?currentClock(f):null,readiness=valid?freeRecruitReadiness(data.freeEndTimeSeconds,clock):'UNKNOWN';
+ const ownedTickets=valid?(f.stock.get('藏品券')??0):null;
+ return {kind:'antique',status:valid?'OBSERVED':'UNKNOWN',source:'RecruitInfoResponse.antique',recruit:valid?copy(data):null,
+  requiredLevel:valid?level:null,ticketId:'藏品券',ownedTickets,readiness,eligibility:null,executable:false,autoResume:false,
+  blockedReason:'ANTIQUE_RECRUIT_SETTLEMENT_CONTRACT_UNVERIFIED',
+  modes:[1,2,3,4].map(way=>{
+   const costs=ownedRecruitCosts(way,'藏品券'),count=way===1?1:costs[0].num;
+   const observedRequirementsMet=!valid?null:f.context.playerLevel<level?false:!clock||readiness==='UNKNOWN'?null:way===1?readiness==='READY_BY_CLOCK':way===2?readiness==='COOLDOWN'&&ownedTickets>=count:ownedTickets>=count;
+   return {way,payment:way===1?'free':'ticket',count,costs,observedRequirementsMet,executable:false};
+  })};
+}
+
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??f?.parameters??{});
- return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，高级、古董和购买仍关闭，未知结果不重放。']};
+ return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，广告招募、古董写入和购买仍关闭；古董资格仅展示原调查的独立只读条件，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);

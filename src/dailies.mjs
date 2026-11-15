@@ -252,7 +252,7 @@ export const DAILY_DRIVERS = {
       const freeEnd = explicitCount(info, 'freeEndTimeSeconds');
       if (freeEnd === null || !Number.isFinite(now) || now < 0) return { status: 'unknown', reason: '免费招募状态缺失或不可靠' };
       const actions = [];
-      // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
+      // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=广告；单抽花 1 张抽卡券。
       if (freeRecruitReadiness(freeEnd,{earliestMs:now*1000,latestMs:now*1000}) === 'READY_BY_CLOCK') {
         actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:1}), response: 'RecruitStartResponse', costs: heroRecruitCosts(1), cost: '免费次数', note: '免费招募' });
       }

@@ -371,3 +371,42 @@ for(const count of [10,50])test('batch Workflow reuses registered Function and e
 });
 
 for(const count of [10,50])for(const kind of ['resource','uid'])test('batch exact parent '+kind+' budget stops before dispatch '+count,async()=>{const f=await ready({ticket:true,count}),b=budget(f),limits=clone(b.limits);if(kind==='resource')limits.resources[0].num=count-1;else limits.uids=[];b.runBudget=createRunBudgetContext({scope:b.scope,limits});const r=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:freeRecruitModule,allowMutate:true,budget:b});assert.equal(r.status,'NOT_EXECUTED');assert.equal(f.state.writes.length,0);assert.equal(f.client.uncertainWrites.size,0);assert.deepEqual(b.runBudget.snapshot().reserved,{resources:[],quotas:[],uids:[]});});
+
+// Same read set, separate antique identity and requirements; no settlement permit.
+for(const codec of [false,true])for(const [marker,tickets,expected]of [[0,0,[true,false,false,false]],[0,50,[true,false,true,true]],[2000,50,[false,true,true,true]],[2000,9,[false,true,false,false]]])test('antique recruitment read-only conditions use shared marker/cost parsing '+codec+' '+marker+' '+tickets,async()=>{
+ const f=fixture({codec});f.state.recruit.antique.freeEndTimeSeconds=marker;f.state.stock.push({itemId:'藏品券',num:tickets});
+ const facts=await surveyFreeRecruit(f.client,protocol,f.options),view=viewFreeRecruit(facts,f.options),a=view.antiqueObservation;
+ assert.equal(a.status,'OBSERVED');assert.equal(a.kind,'antique');assert.equal(a.source,'RecruitInfoResponse.antique');assert.equal(a.requiredLevel,10);assert.equal(a.ownedTickets,tickets);assert.equal(a.recruit.freeEndTimeSeconds,marker);
+ assert.deepEqual(a.modes.map(r=>r.observedRequirementsMet),expected);assert.deepEqual(a.modes.map(r=>r.costs),[[],[{id:'藏品券',num:1}],[{id:'藏品券',num:10}],[{id:'藏品券',num:50}]]);
+ assert.equal(a.eligibility,null);assert.equal(a.executable,false);assert.equal(a.autoResume,false);assert.equal(Object.hasOwn(a,'completion'),false);assert.equal(Object.hasOwn(a,'rewardClaimed'),false);
+ for(const row of a.modes){assert.equal(row.executable,false);assert.equal(Object.hasOwn(row,'action'),false);assert.equal(Object.hasOwn(row,'actionId'),false);assert.equal(Object.hasOwn(row,'parameters'),false);}
+ assert.equal(view.candidates.length,1);assert.equal(view.candidates[0].action.request,'RecruitStartRequest');assert.equal(view.candidates[0].target.way,1);
+ assert.deepEqual(f.state.reads,['RecruitInfoRequest','AllHeroRequest','OnWaterRequest','AllItemRequest','AllResourceRequest']);assert.equal(f.state.writes.length,0);
+});
+for(const [label,mutate]of [
+ ['missing antique',f=>delete f.state.recruit.antique],
+ ['missing marker',f=>delete f.state.recruit.antique.freeEndTimeSeconds],
+ ['invalid marker',f=>f.state.recruit.antique.freeEndTimeSeconds=-1],
+ ['missing task',f=>delete f.state.recruit.antique.task],
+ ['missing gotId',f=>delete f.state.recruit.antique.task.gotId],
+ ['unknown level',f=>delete f.options.config.tables.ModuleOpenCfg.data.find(r=>r.moduleId==='藏品').playerLevel],
+ ['duplicate gate',f=>f.options.config.tables.ModuleOpenCfg.data.push(clone(f.options.config.tables.ModuleOpenCfg.data.find(r=>r.moduleId==='藏品')))],
+ ['missing ticket config',f=>f.options.config.tables.ItemCfg.data=f.options.config.tables.ItemCfg.data.filter(r=>r.id!=='藏品券')],
+])test('antique read-only unknown is local and preserves hero qualification: '+label,async()=>{
+ const f=fixture();mutate(f);const facts=await surveyFreeRecruit(f.client,protocol,f.options),view=viewFreeRecruit(facts,f.options);
+ assert.equal(view.antiqueObservation.status,'UNKNOWN');assert.equal(view.antiqueObservation.recruit,null);assert.equal(view.antiqueObservation.ownedTickets,null);assert.ok(view.antiqueObservation.modes.every(r=>r.observedRequirementsMet===null&&r.executable===false));
+ assert.equal(view.candidates[0].executable,true,JSON.stringify(view.candidates[0]));assert.equal(f.state.writes.length,0);
+});
+for(const [label,change]of [
+ ['account',f=>f.client.factContext.accountId='synthetic-B'],['generation',f=>f.client.factContext.generation++],['connection',f=>f.client.factContext.connectionId='other'],['role',f=>f.options.player.playerId='7'],['world',f=>f.options.player.worldId='8'],['disconnect',f=>f.client.connected=false],
+])test('antique read-only conditions cannot survive changed '+label,async()=>{
+ const f=fixture();const facts=await surveyFreeRecruit(f.client,protocol,f.options);assert.equal(viewFreeRecruit(facts,f.options).antiqueObservation.status,'OBSERVED');change(f);
+ const a=viewFreeRecruit(facts,f.options).antiqueObservation;assert.equal(a.status,'UNKNOWN');assert.equal(a.eligibility,null);assert.ok(a.modes.every(r=>r.observedRequirementsMet===null));assert.equal(f.state.writes.length,0);
+});
+test('antique read-only clock, level, config and persisted copies cannot grant eligibility',async()=>{
+ const f=fixture();f.state.stock.push({itemId:'藏品券',num:50});f.options.player.level=9;let facts=await surveyFreeRecruit(f.client,protocol,f.options);
+ assert.ok(viewFreeRecruit(facts,f.options).antiqueObservation.modes.every(r=>r.observedRequirementsMet===false));f.options.player.level=10;facts=await surveyFreeRecruit(f.client,protocol,f.options);
+ f.client.gameClock={read:()=>({status:'UNKNOWN'})};let a=viewFreeRecruit(facts,f.options).antiqueObservation;assert.equal(a.readiness,'UNKNOWN');assert.ok(a.modes.every(r=>r.observedRequirementsMet===null));
+ const changed=clone(f.options);changed.config.tables.ModuleOpenCfg.data.find(r=>r.moduleId==='藏品').playerLevel=1;assert.equal(viewFreeRecruit(facts,changed).antiqueObservation.status,'UNKNOWN');
+ a=viewFreeRecruit(clone(facts),f.options).antiqueObservation;assert.equal(a.status,'UNKNOWN');assert.ok(a.modes.every(r=>r.observedRequirementsMet===null));assert.equal(a.eligibility,null);assert.equal(f.state.writes.length,0);
+});
