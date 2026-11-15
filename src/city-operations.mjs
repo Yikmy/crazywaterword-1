@@ -8,6 +8,7 @@ import { assertExecutionActive, executionOutcome, operationResult } from './exec
 import { selectProductionCandidates } from './production-policy.mjs';
 import { stockMatchesDelta } from './naval-facts.mjs';
 
+const exactDebitKinds = new Set(['build', 'upgrade', 'startProduce', 'speedUpUpgrade', 'speedUpProduce']);
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantity = (value) => safeResourceQuantity(value) !== null;
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -110,7 +111,7 @@ function candidatesFor(survey, config, ledger) {
     ];
     for (const [kind, detail] of choices) {
       if (!isReliable(survey, building, kind)) continue;
-      if (['startProduce', 'speedUpUpgrade', 'speedUpProduce', 'gainFactory', 'collectProduct'].includes(kind)
+      if ((exactDebitKinds.has(kind) || ['gainFactory', 'collectProduct'].includes(kind))
         && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
       const action = plannedAction(survey, config, building, kind, detail, ledger);
       if (!action) continue;
@@ -206,7 +207,7 @@ function collectedAssets(kind, before, after) {
 function verified(operation, before, after, beforeSurvey, afterSurvey) {
   const kind = operation.actionType;
   if (!after || after.type !== before.type || after.buildingId !== before.buildingId) return false;
-  if (['startProduce', 'speedUpUpgrade', 'speedUpProduce'].includes(kind)) {
+  if (exactDebitKinds.has(kind)) {
     const costs = costsOf(operation.costs);
     if (beforeSurvey.stockReliable !== true || afterSurvey.stockReliable !== true
       || beforeSurvey.productionInventoryReliable !== true || afterSurvey.productionInventoryReliable !== true
@@ -320,7 +321,7 @@ export async function executeCityAction(client, protocol, planned, {
     if (!after || !isReliable(afterSurvey, after, candidate.actionType)
       || !verified(candidate, candidate.beforeState, detail.afterState, beforeSurvey, afterSurvey)) return finish('UNKNOWN', { error: '权威复读尚未确认预期状态变化，保留预算及未决指纹' });
     active(); client.confirmWatchedWrite?.(candidate.action.request, candidate.action.body);
-    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : ['speedUpUpgrade', 'speedUpProduce'].includes(candidate.actionType) ? '权威复读确认原加速状态变化、完整库存精确道具净扣及其他余额不变' : ['gainFactory', 'collectProduct'].includes(candidate.actionType) ? '权威复读确认实际产物移除量与完整库存精确净入、其他余额不变' : '权威复读确认预期城市状态变化' };
+    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : ['speedUpUpgrade', 'speedUpProduce'].includes(candidate.actionType) ? '权威复读确认原加速状态变化、完整库存精确道具净扣及其他余额不变' : ['gainFactory', 'collectProduct'].includes(candidate.actionType) ? '权威复读确认实际产物移除量与完整库存精确净入、其他余额不变' : ['build', 'upgrade'].includes(candidate.actionType) ? '权威复读确认原建造状态变化、完整库存精确材料净扣及其他余额不变' : '权威复读确认预期城市状态变化' };
     if (['gainFactory', 'collectProduct'].includes(candidate.actionType)) {
       detail.collectedProducts = collectedAssets(candidate.actionType, candidate.beforeState, detail.afterState);
     }

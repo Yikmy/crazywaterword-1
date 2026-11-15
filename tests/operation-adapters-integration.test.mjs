@@ -20,7 +20,7 @@ const config = { tables: {
 } };
 const wire = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFields', 'MyFleets', 'FinishWorkerOrder']
   .flatMap(name => [[name + 'Request', {}], [name + 'Response', {}]]));
-wire.BuildBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
+wire.BuildBuildingRequest = {}; wire.UpgradeBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
 wire.SpeedUpUpgradeBuildingRequest = {}; wire.SpeedUpFactoryProduceRequest = {};
 for (const name of ["CollectBuildingProduct", "GainFactoryProduce"]) { wire[name + "Request"] = {}; wire[name + "Response"] = {}; }
 function fixture(stock = 4, outcome = 'SUCCESS', options = {}) {
@@ -57,7 +57,7 @@ function fixture(stock = 4, outcome = 'SUCCESS', options = {}) {
     confirmWatchedWrite(name, body) { uncertain.delete(JSON.stringify({ name, body })); },
   };
   const moduleSettings=createModuleSettings({file:path.join(dir,'settings.json'),modules:GAMEPLAY_MODULES});
-  const service = createOperationService({ moduleSettings, protocol: wire, getConfig: () => config, clock:options.clock,loadRules: () => ({ config: options.rules ?? policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
+  const service = createOperationService({ moduleSettings, protocol: wire, getConfig: () => options.config ?? config, clock:options.clock,loadRules: () => ({ config: options.rules ?? policy }), loadProduction: () => ({ config: structuredClone(productionPolicy), warning: null }), history });
   const session = { id: 'synthetic-account', client, state: 'READY', generation: 1, abort: new AbortController(),
     player: { level: 3 }, loop: { running: false }, busy: null };
   const start = async (module, mode, selections) => {
@@ -428,6 +428,49 @@ for (const kind of ['collectProduct', 'gainFactory']) for (const entry of
           generation: 2, connectionId: 'restart', busy: null, workflowOwner: null, abort: new AbortController() };
         assert.equal(restarted.blocked(next.id), true);
         await assert.rejects(restarted.surveyModule(next, kind === 'collectProduct' ? 'city' : 'production'), { code: 'RECOVERY_UNCERTAIN' });
+        assert.equal(durable.list(next.id)[0].finalStatus, 'UNKNOWN'); assert.equal(f.writes.length, 1);
+      }
+    } finally { await f.service.settle(f.session.id); f.cleanup(); }
+  });
+
+for (const kind of ['build', 'upgrade']) for (const entry of ['city', 'combined']) for (const debit of [false, true])
+  test('construction shared settlement ' + kind + ' ' + entry + ' exact-debit=' + debit, async () => {
+    const cfg = structuredClone(config);
+    cfg.tables.BuildingUpgradeCfg.data = [1, 2].map(level => ({ ...cfg.tables.BuildingUpgradeCfg.data[0], level, consume: [['wood', 2]] }));
+    const f = fixture(4, 'SUCCESS', { config: cfg });
+    try {
+      f.session.player.playerId = '1'; f.session.player.worldId = 17; f.session.connectionId = 'construction-settlement';
+      f.raw.building[0].level = kind === 'build' ? 0 : 1;
+      f.service.saveModuleConfig(f.session.id, { module: 'city', config: { enabled: true } });
+      const request = f.client.request.bind(f.client);
+      f.client.request = async (...args) => {
+        const value = await request(...args);
+        if (args[0] === 'AllItemRequest' && f.writes.length && debit) value.items.find(row => row.itemId === 'wood').num = 2;
+        return value;
+      };
+      f.client.sendWatch = async (name, body) => {
+        assert.equal(f.history.list(f.session.id)[0].actions[0].requestStatus, 'DISPATCHING');
+        assert.equal(name, kind === 'build' ? 'BuildBuildingRequest' : 'UpgradeBuildingRequest');
+        f.writes.push({ name, body }); f.raw.building[0].level++;
+        f.client.uncertainWrites.add(JSON.stringify({ name, body })); return { status: 'UNKNOWN', sent: true };
+      };
+      const row = (await f.service.survey(f.session)).view.city.candidates.find(r => r.actionType === kind);
+      assert.ok(row);
+      const plan = await f.start(entry, 'Manual', [row.actionId]), record = f.history.list(f.session.id)[0];
+      assert.deepEqual(plan.resourceBudget, [{ id: 'wood', num: 2 }]);
+      assert.equal(record.finalStatus, debit ? 'SUCCESS' : 'UNKNOWN');
+      assert.equal(record.actions[0].verification.status, debit ? 'CONFIRMED' : 'UNCONFIRMED');
+      assert.equal(record.actions[0].unresolvedWrite, !debit);
+      assert.deepEqual(record.runBudget.reserved.resources, [{ id: 'wood', num: 2 }]);
+      assert.equal(f.writes.length, 1); assert.equal(f.client.uncertainWrites.size, debit ? 0 : 1);
+      if (!debit) {
+        const durable = createExecutionHistory({ file: f.history.storagePath });
+        const restarted = createOperationService({ history: durable, protocol: wire, getConfig: () => cfg,
+          moduleSettings: { get: () => ({ config: { enabled: true } }) }, loadRules: () => ({ config: policy }) });
+        const next = { ...f.session, client: { ...f.client, connected: true, pending: [], watchers: [], lateResponses: new Map(),
+          uncertainWrites: new Set(), factContext: { accountId: f.session.id, generation: 2, connectionId: 'restart', playerId: '1', worldId: 17 } },
+          generation: 2, connectionId: 'restart', busy: null, workflowOwner: null, abort: new AbortController() };
+        assert.equal(restarted.blocked(next.id), true); await assert.rejects(restarted.surveyModule(next, 'city'), { code: 'RECOVERY_UNCERTAIN' });
         assert.equal(durable.list(next.id)[0].finalStatus, 'UNKNOWN'); assert.equal(f.writes.length, 1);
       }
     } finally { await f.service.settle(f.session.id); f.cleanup(); }

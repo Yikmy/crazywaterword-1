@@ -106,7 +106,7 @@ test('raw missing state, ambiguous identities, queue fields or unknown costs nev
 
 for (const actionType of ['build', 'upgrade']) test(`${actionType} quiet write succeeds only after authoritative construction change`, async () => {
   const client = fake([rawBuilding('1民居', { level: actionType === 'build' ? 0 : 1 })], undefined, {
-    write(name, body, c) { c.buildings[0].level++; },
+    write(name, body, c) { c.buildings[0].level++; if (actionType === 'upgrade') c.stock.set('木材', c.stock.get('木材') - 2); },
   });
   const planned = await select(client, actionType), stages = [];
   const result = await execute(client, planned, { onStage: (stage) => stages.push(stage) });
@@ -118,6 +118,7 @@ for (const actionType of ['build', 'upgrade']) test(`${actionType} quiet write s
 
 test('construction that remains in progress verifies using new authoritative timestamps', async () => {
   const client = fake(undefined, undefined, { write(name, body, c) {
+    c.stock.set('木材', c.stock.get('木材') - 2);
     c.buildings[0].buildStartTime = Math.floor(Date.now() / 1000); c.buildings[0].buildFinishTime = c.buildings[0].buildStartTime + 120;
   } });
   assert.equal((await execute(client, await select(client, 'upgrade'))).status, 'SUCCESS');
@@ -483,3 +484,59 @@ for (const kind of ['gainFactory', 'collectProduct']) for (const fault of ['miss
     assert.equal(cityView(await read(client), { config }).candidates.some(row => row.actionType === kind), false);
     assert.deepEqual(client.writes, []);
   });
+
+for (const kind of ['build', 'upgrade']) for (const fault of [
+  'no-debit', 'under-debit', 'over-debit', 'incoming', 'new-item', 'duplicate-item', 'missing-num', 'ruby',
+]) test('construction exact settlement ' + kind + ' rejects ' + fault, async () => {
+  const cfg = structuredClone(config);
+  cfg.tables.BuildingUpgradeCfg.data.forEach(row => { row.consume = [['木材', 2]]; });
+  const client = fake([rawBuilding('1民居', { level: kind === 'build' ? 0 : 1 })], undefined, {
+    write(_name, _body, c) {
+      c.buildings[0].level++; c.stock.set('木材', 2);
+      if (fault === 'no-debit') c.stock.set('木材', 4);
+      if (fault === 'under-debit') c.stock.set('木材', 3);
+      if (fault === 'over-debit') c.stock.set('木材', 1);
+      if (fault === 'incoming') c.stock.set('加速器', 4);
+      if (fault === 'new-item') c.stock.set('unexpected', 1);
+    },
+    read(name, c) {
+      if (name === 'AllResourceRequest' && fault === 'ruby') return { list: [{ res: 4, amount: c.writes.length ? 49 : 50 }] };
+      if (name === 'AllItemRequest' && c.writes.length && ['duplicate-item', 'missing-num'].includes(fault)) {
+        const items = [...c.stock].map(([itemId, num]) => ({ itemId, num }));
+        if (fault === 'duplicate-item') items.push({ ...items[0] }); else delete items[0].num;
+        return { items };
+      }
+    },
+  });
+  const candidate = cityView(await read(client, { config: cfg }), { config: cfg }).candidates.find(row => row.actionType === kind);
+  const budget = { ledger: null }, result = await execute(client, candidate, { config: cfg, budget });
+  assert.equal(result.status, 'UNKNOWN', JSON.stringify(result)); assert.equal(result.unresolvedWrite, true);
+  assert.equal(client.confirmations.length, 0); assert.equal(client.pending.length, 1); assert.equal(client.writes.length, 1);
+  assert.deepEqual(result.resourceReservation, [{ id: '木材', num: 2 }]); assert.equal(budget.ledger.available('木材'), 2);
+});
+
+for (const kind of ['build', 'upgrade']) for (const completed of [false, true])
+  test('construction exact mixed debit ' + kind + ' completed=' + completed, async () => {
+    const cfg = structuredClone(config); cfg.tables.BuildingUpgradeCfg.data.forEach(row => { row.consume = [['木材', 2], ['GOLD', 3]]; });
+    let gold = 10;
+    const client = fake([rawBuilding('1民居', { level: kind === 'build' ? 0 : 1 })], undefined, {
+      write(_name, _body, c) {
+        c.stock.set('木材', 2); gold -= 3;
+        if (completed) c.buildings[0].level++;
+        else Object.assign(c.buildings[0], { buildStartTime: Math.floor(Date.now() / 1000), buildFinishTime: Math.floor(Date.now() / 1000) + 120 });
+      },
+      read(name) { if (name === 'AllResourceRequest') return { list: [{ res: 3, amount: gold }] }; },
+    });
+    const candidate = cityView(await read(client, { config: cfg }), { config: cfg }).candidates.find(row => row.actionType === kind);
+    const result = await execute(client, candidate, { config: cfg });
+    assert.equal(result.status, 'SUCCESS'); assert.equal(result.verification.status, 'CONFIRMED');
+    assert.deepEqual(result.resourceReservation, [{ id: '木材', num: 2 }, { id: 'GOLD', num: 3 }]);
+    assert.equal(client.confirmations.length, 1); assert.equal(client.pending.length, 0); assert.equal(client.writes.length, 1);
+  });
+
+for (const kind of ['build', 'upgrade']) test('construction incomplete inventory blocks ' + kind, async () => {
+  const client = fake([rawBuilding('1民居', { level: kind === 'build' ? 0 : 1 })], undefined,
+    { read(name) { if (name === 'AllItemRequest') return { items: [{ itemId: '木材', num: 2 }, { itemId: '木材', num: 2 }] }; } });
+  assert.equal(cityView(await read(client), { config }).candidates.some(row => row.actionType === kind), false);
+  assert.deepEqual(client.writes, []);
+});
