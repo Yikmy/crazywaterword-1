@@ -413,3 +413,73 @@ for (const kind of ['speedUpUpgrade', 'speedUpProduce']) for (const fault of ['d
     const view = cityView(await read(client), { config });
     assert.equal(view.candidates.some(row => row.actionType === kind), false); assert.deepEqual(client.writes, []);
   });
+
+for (const kind of ['gainFactory', 'collectProduct']) for (const fault of [
+  'under-credit', 'over-credit', 'unrelated-debit', 'unexpected-item', 'missing-num', 'duplicate-item', 'ruby', 'missing-resources',
+]) test('collection exact settlement ' + kind + ' rejects ' + fault, async () => {
+  const assets = [{ id: '布匹', num: 3 }];
+  const building = kind === 'gainFactory' ? rawFactory({ factory: { autoProductId: '', factoryQ: [], finishedProducts: assets } })
+    : rawBuilding('1民居', { product: { asset: assets } });
+  const client = fake([building], undefined, {
+    write(_name, _body, c) {
+      if (kind === 'gainFactory') c.buildings[0].factory.finishedProducts = []; else c.buildings[0].product.asset = [];
+      c.stock.set('布匹', fault === 'under-credit' ? 1 : fault === 'over-credit' ? 4 : 3);
+      if (fault === 'unrelated-debit') c.stock.set('木材', 3);
+      if (fault === 'unexpected-item') c.stock.set('unexpected', 1);
+    },
+    read(name, c) {
+      if (name === 'AllResourceRequest' && fault === 'ruby') return { list: [{ res: 4, amount: c.writes.length ? 49 : 50 }] };
+      if (!c.writes.length) return;
+      if (name === 'AllItemRequest' && ['missing-num', 'duplicate-item'].includes(fault)) {
+        const items = [...c.stock].map(([itemId, num]) => ({ itemId, num }));
+        if (fault === 'missing-num') delete items[0].num; else items.push({ ...items[0] });
+        return { items };
+      }
+      if (name === 'AllResourceRequest' && fault === 'missing-resources') return {};
+    },
+  });
+  const result = await execute(client, await select(client, kind));
+  assert.equal(result.status, 'UNKNOWN', JSON.stringify(result)); assert.equal(result.unresolvedWrite, true);
+  assert.equal(result.verification.status, 'UNCONFIRMED'); assert.equal(client.writes.length, 1);
+  assert.equal(client.confirmations.length, 0); assert.equal(client.pending.length, 1);
+});
+
+for (const kind of ['gainFactory', 'collectProduct']) for (const partial of [false, true])
+  test('collection exact settlement preserves ' + kind + ' partial=' + partial, async () => {
+    const assets = [{ id: '布匹', num: 2 }, { id: '布匹', num: 3 }, { id: 'GOLD', num: 3 }];
+    const building = kind === 'gainFactory' ? rawFactory({ factory: { autoProductId: '', factoryQ: [], finishedProducts: assets } })
+      : rawBuilding('1民居', { product: { asset: assets } });
+    let gold = 10;
+    const client = fake([building], new Map([['布匹', 4], ['加速器', 3]]), {
+      write(_name, _body, c) {
+        const rest = partial ? [{ id: '布匹', num: 2 }, { id: 'GOLD', num: 1 }] : [];
+        if (kind === 'gainFactory') c.buildings[0].factory.finishedProducts = rest; else c.buildings[0].product.asset = rest;
+        c.stock.set('布匹', 4 + (partial ? 3 : 5)); gold += partial ? 2 : 3;
+      },
+      read(name) { if (name === 'AllResourceRequest') return { list: [{ res: 3, amount: gold }] }; },
+    });
+    const result = await execute(client, await select(client, kind));
+    assert.equal(result.status, 'SUCCESS'); assert.equal(client.writes.length, 1);
+    assert.deepEqual(result.collectedProducts, [{ id: '布匹', num: partial ? 3 : 5 }, { id: 'GOLD', num: partial ? 2 : 3 }]);
+    assert.equal(result.beforeInventoryReliable, true); assert.equal(result.afterInventoryReliable, true);
+    assert.equal(client.confirmations.length, 1); assert.equal(client.pending.length, 0);
+  });
+
+for (const kind of ['gainFactory', 'collectProduct']) test('collection incomplete inventory blocks ' + kind + ' before dispatch', async () => {
+  const assets = [{ id: '布匹', num: 1 }];
+  const building = kind === 'gainFactory' ? rawFactory({ factory: { autoProductId: '', factoryQ: [], finishedProducts: assets } })
+    : rawBuilding('1民居', { product: { asset: assets } });
+  const client = fake([building], undefined, { read(name) { if (name === 'AllItemRequest') return { items: [{ itemId: '木材', num: 1 }, { itemId: '木材', num: 1 }] }; } });
+  assert.equal(cityView(await read(client), { config }).candidates.some(row => row.actionType === kind), false);
+  assert.deepEqual(client.writes, []);
+});
+
+for (const kind of ['gainFactory', 'collectProduct']) for (const fault of ['missing-num', 'overflow'])
+  test('collection unknown output ' + kind + ' blocks ' + fault, async () => {
+    const assets = fault === 'overflow' ? [{ id: '布匹', num: Number.MAX_SAFE_INTEGER }, { id: '布匹', num: 1 }] : [{ id: '布匹' }];
+    const building = kind === 'gainFactory' ? rawFactory({ factory: { autoProductId: '', factoryQ: [], finishedProducts: assets } })
+      : rawBuilding('1民居', { product: { asset: assets } });
+    const client = fake([building]);
+    assert.equal(cityView(await read(client), { config }).candidates.some(row => row.actionType === kind), false);
+    assert.deepEqual(client.writes, []);
+  });

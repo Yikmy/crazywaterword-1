@@ -22,6 +22,7 @@ const wire = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFiel
   .flatMap(name => [[name + 'Request', {}], [name + 'Response', {}]]));
 wire.BuildBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
 wire.SpeedUpUpgradeBuildingRequest = {}; wire.SpeedUpFactoryProduceRequest = {};
+for (const name of ["CollectBuildingProduct", "GainFactoryProduce"]) { wire[name + "Request"] = {}; wire[name + "Response"] = {}; }
 function fixture(stock = 4, outcome = 'SUCCESS', options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-adapters-integration-'));
   const history = createExecutionHistory({ file: path.join(dir, 'history.json') });
@@ -380,3 +381,54 @@ test('accelerator settlement UNKNOWN stops original finite Workflow before succe
     assert.equal(f.raw.building[0].level, 0); assert.equal(f.history.list(f.session.id)[0].workflowNodeId, 'p');
   } finally { await runner?.stop(); await f.service.settle(f.session.id); f.cleanup(); }
 });
+
+function collectionFixture(kind, credit) {
+  const f = fixture();
+  f.session.player.playerId = '1'; f.session.player.worldId = 17; f.session.connectionId = 'collection-settlement';
+  for (const module of ['city', 'production']) f.service.saveModuleConfig(f.session.id, { module, config: { enabled: true } });
+  if (kind === 'collectProduct') Object.assign(f.raw.building[0], { level: 1, product: { asset: [{ id: 'bread', num: 3 }] } });
+  else f.raw.building[1].factory.finishedProducts.push({ id: 'bread', num: 3 });
+  const requestName = kind === 'collectProduct' ? 'CollectBuildingProductRequest' : 'GainFactoryProduceRequest';
+  const request = f.client.request.bind(f.client);
+  let received = 0;
+  f.client.request = async (...args) => {
+    if (args[0] === requestName && args[4]?.mutate) {
+      assert.equal(f.history.list(f.session.id)[0].actions[0].requestStatus, 'DISPATCHING');
+      f.writes.push({ name: args[0], body: args[1] }); received += credit;
+      if (kind === 'collectProduct') f.raw.building[0].product.asset = []; else f.raw.building[1].factory.finishedProducts = [];
+      return {};
+    }
+    const value = await request(...args);
+    if (args[0] === 'AllItemRequest') value.items.find(row => row.itemId === 'bread').num = received;
+    return value;
+  };
+  return f;
+}
+
+for (const kind of ['collectProduct', 'gainFactory']) for (const entry of
+  kind === 'collectProduct' ? ['city', 'combined'] : ['city', 'production', 'combined']) for (const credit of [1, 3])
+  test('collection shared settlement ' + kind + ' ' + entry + ' actual-credit=' + credit, async () => {
+    const f = collectionFixture(kind, credit);
+    try {
+      const row = (await f.service.survey(f.session)).view.city.candidates.find(r => r.actionType === kind);
+      assert.ok(row);
+      const plan = await f.start(entry, 'Manual', [row.actionId]), record = f.history.list(f.session.id)[0], confirmed = credit === 3;
+      assert.deepEqual(plan.resourceBudget, []); assert.equal(f.writes.length, 1);
+      assert.equal(record.finalStatus, confirmed ? 'SUCCESS' : 'UNKNOWN');
+      assert.equal(record.actions[0].result, confirmed ? 'SUCCESS' : 'UNKNOWN');
+      assert.equal(record.actions[0].verification.status, confirmed ? 'CONFIRMED' : 'UNCONFIRMED');
+      assert.equal(record.actions[0].unresolvedWrite, !confirmed); assert.equal(f.client.uncertainWrites.size, confirmed ? 0 : 1);
+      if (confirmed) assert.deepEqual(record.actions[0].collectedProducts, [{ id: 'bread', num: 3 }]);
+      else {
+        const durable = createExecutionHistory({ file: f.history.storagePath });
+        const restarted = createOperationService({ history: durable, protocol: wire, getConfig: () => config,
+          moduleSettings: { get: () => ({ config: { enabled: true } }) }, loadRules: () => ({ config: policy }) });
+        const next = { ...f.session, client: { ...f.client, connected: true, pending: [], watchers: [], lateResponses: new Map(),
+          uncertainWrites: new Set(), factContext: { accountId: f.session.id, generation: 2, connectionId: 'restart', playerId: '1', worldId: 17 } },
+          generation: 2, connectionId: 'restart', busy: null, workflowOwner: null, abort: new AbortController() };
+        assert.equal(restarted.blocked(next.id), true);
+        await assert.rejects(restarted.surveyModule(next, kind === 'collectProduct' ? 'city' : 'production'), { code: 'RECOVERY_UNCERTAIN' });
+        assert.equal(durable.list(next.id)[0].finalStatus, 'UNKNOWN'); assert.equal(f.writes.length, 1);
+      }
+    } finally { await f.service.settle(f.session.id); f.cleanup(); }
+  });

@@ -15,7 +15,7 @@ const copy = (value) => JSON.parse(JSON.stringify(value));
 const stable = (value) => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
 const costsOf = (value) => { try { return resourceCosts(value); } catch { return null; } };
-const assetsReliable = (value) => Array.isArray(value) && value.every((a) => text(a?.id) && quantity(a.num));
+const assetsReliable = (value) => Array.isArray(value) && value.every((a) => text(a?.id) && Object.hasOwn(a, 'num') && quantity(a.num)) && costsOf(value) !== null;
 const queueReliable = (value) => Array.isArray(value) && value.every((q) => quantity(q?.idx)
   && text(q.productId) && quantity(q.finishTime)) && new Set(value.map((q) => Number(q.idx))).size === value.length;
 
@@ -110,8 +110,7 @@ function candidatesFor(survey, config, ledger) {
     ];
     for (const [kind, detail] of choices) {
       if (!isReliable(survey, building, kind)) continue;
-      if (['gainFactory', 'collectProduct'].includes(kind) && survey.stockReliable !== true) continue;
-      if (['startProduce', 'speedUpUpgrade', 'speedUpProduce'].includes(kind)
+      if (['startProduce', 'speedUpUpgrade', 'speedUpProduce', 'gainFactory', 'collectProduct'].includes(kind)
         && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
       const action = plannedAction(survey, config, building, kind, detail, ledger);
       if (!action) continue;
@@ -189,9 +188,19 @@ export function planCityOperations(survey, { config = null, selections = [],
 }
 
 function assetTotals(list) {
-  const totals = new Map();
-  for (const a of list) totals.set(a.id, (totals.get(a.id) ?? 0) + a.num);
+  const totals = new Map(resourceCosts(list).map(({ id, num }) => [id, num]));
+  for (const { id } of list) if (!totals.has(id)) totals.set(id, 0);
   return totals;
+}
+
+// The same observed removal projection feeds verification and durable receipts.
+// Partial collections remain supported; no expected future production is added.
+function collectedAssets(kind, before, after) {
+  const previous = assetTotals(kind === 'gainFactory' ? before.factory.finishedProducts : before.product);
+  const current = assetTotals(kind === 'gainFactory' ? after.factory.finishedProducts : after.product);
+  if (!previous.size || [...current].some(([id, num]) => !previous.has(id) && num > 0)) return null;
+  const gains = [...previous].map(([id, num]) => ({ id, num: num - (current.get(id) ?? 0) }));
+  return gains.every(({ num }) => Number.isSafeInteger(num) && num > 0) ? gains : null;
 }
 
 function verified(operation, before, after, beforeSurvey, afterSurvey) {
@@ -236,11 +245,10 @@ function verified(operation, before, after, beforeSurvey, afterSurvey) {
       || !current && (assetTotals(after.factory.finishedProducts).get(previous.productId) ?? 0) > (assetTotals(before.factory.finishedProducts).get(previous.productId) ?? 0);
   }
   if (kind === 'gainFactory' || kind === 'collectProduct') {
-    if (beforeSurvey.stockReliable !== true || afterSurvey.stockReliable !== true) return false;
-    const oldAssets = assetTotals(kind === 'gainFactory' ? before.factory.finishedProducts : before.product);
-    const newAssets = assetTotals(kind === 'gainFactory' ? after.factory.finishedProducts : after.product);
-    return oldAssets.size > 0 && [...oldAssets].every(([id, num]) => num > 0 && (newAssets.get(id) ?? 0) < num
-      && quantity(beforeSurvey.have(id)) && quantity(afterSurvey.have(id)) && afterSurvey.have(id) > beforeSurvey.have(id));
+    const gains = collectedAssets(kind, before, after);
+    return beforeSurvey.stockReliable === true && afterSurvey.stockReliable === true
+      && beforeSurvey.productionInventoryReliable === true && afterSurvey.productionInventoryReliable === true
+      && gains !== null && stockMatchesDelta(beforeSurvey.stock, afterSurvey.stock, [], gains);
   }
   return false;
 }
@@ -312,11 +320,9 @@ export async function executeCityAction(client, protocol, planned, {
     if (!after || !isReliable(afterSurvey, after, candidate.actionType)
       || !verified(candidate, candidate.beforeState, detail.afterState, beforeSurvey, afterSurvey)) return finish('UNKNOWN', { error: '权威复读尚未确认预期状态变化，保留预算及未决指纹' });
     active(); client.confirmWatchedWrite?.(candidate.action.request, candidate.action.body);
-    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : ['speedUpUpgrade', 'speedUpProduce'].includes(candidate.actionType) ? '权威复读确认原加速状态变化、完整库存精确道具净扣及其他余额不变' : '权威复读确认预期城市状态变化' };
+    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : ['speedUpUpgrade', 'speedUpProduce'].includes(candidate.actionType) ? '权威复读确认原加速状态变化、完整库存精确道具净扣及其他余额不变' : ['gainFactory', 'collectProduct'].includes(candidate.actionType) ? '权威复读确认实际产物移除量与完整库存精确净入、其他余额不变' : '权威复读确认预期城市状态变化' };
     if (['gainFactory', 'collectProduct'].includes(candidate.actionType)) {
-      const remaining = assetTotals(candidate.actionType === 'gainFactory' ? detail.afterState.factory.finishedProducts : detail.afterState.product);
-      detail.collectedProducts = [...assetTotals(output)].map(([id, num]) => ({ id, num: num - (remaining.get(id) ?? 0) }))
-        .filter(({ id, num }) => Number.isSafeInteger(num) && num > 0 && afterSurvey.have(id) - beforeSurvey.have(id) === num);
+      detail.collectedProducts = collectedAssets(candidate.actionType, candidate.beforeState, detail.afterState);
     }
     return finish('SUCCESS');
   } catch (error) {
