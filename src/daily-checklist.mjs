@@ -1,6 +1,7 @@
 import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
-import { CHEST_TABLE, claimableDailyTasks, describeDailyTask, planDailyGift } from './dailies.mjs';
+import { CHEST_TABLE, claimableDailyTasks, describeDailyTask, planDailyGift, parseDailyTaskObservation } from './dailies.mjs';
+import { taskObservation, taskQualification } from './tasks.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const has = (v,k) => object(v) && Object.hasOwn(v,k);
@@ -39,7 +40,7 @@ function dailyTasks(body,config) {
     const taskId=own(row,'id'),progress=count(row,'progress'),target=count(row,'targetProgress'),claimed=own(row,'rewardClaimed');
     const rewardClaimed=typeof claimed==='boolean'?claimed:null;
     const parsed={id:taskId,progress,targetProgress:target,rewardClaimed};
-    const known=progress!==null&&target!==null&&target>0&&rewardClaimed!==null;
+    const known=parseDailyTaskObservation(parsed)!==null;
     const eligible=known?claimableDailyTasks({dailyTask:[parsed]}).length===1:null;
     const status=rewardClaimed===true?'CLAIMED':!known?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE';
     const definition=validConfig?configured.find(r=>own(r,'taskId')===taskId):null;
@@ -87,26 +88,13 @@ function activityView(body,config,kind) {
   base.nextAt=known&&pending.length?Math.min(...pending.map(row=>row.requiredActivity)):null;
   return {...base,status:known?'AVAILABLE':'PARTIAL',reason:known?null:unknownClaim?'CLAIMED_TIER_UNRECOGNIZED':'ACTIVITY_FIELDS_OR_THRESHOLDS_UNKNOWN'};
 }
-// Achievement counters are signed int64, unlike the daily task int32 fields.
-// Never round them through Number or inherit protobuf scalar defaults.
-function decimalCount(value) {
-  let parsed;
-  if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;parsed=BigInt(value);}
-  else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)parsed=BigInt(value);
-  else if(object(value)) {
-    const low=own(value,'low'),high=own(value,'high');
-    if(!Number.isInteger(low)||!Number.isInteger(high)||low< -2147483648||low>2147483647||high< -2147483648||high>2147483647||own(value,'unsigned')!==false)return null;
-    parsed=(BigInt(high)<<32n)+BigInt(low>>>0);
-  } else return null;
-  return parsed>=0n&&parsed<(1n<<63n)?String(parsed):null;
-}
 function achievementsView(body) {
   const raw=own(body,'task'),unknown={status:'UNKNOWN',reason:'ACHIEVEMENT_LIST_UNKNOWN',rows:[],counts:{total:null,completed:null,claimed:null,eligible:null}};
   if(!dense(raw)||!raw.every(row=>positive(own(row,'id')))||new Set(raw.map(row=>own(row,'id'))).size!==raw.length)return unknown;
   const rows=raw.map(row=>{
-    const id=own(row,'id'),progress=decimalCount(own(row,'progress')),target=decimalCount(own(row,'targetProgress')),claimed=own(row,'rewardClaimed');
-    const rewardClaimed=typeof claimed==='boolean'?claimed:null,complete=progress!==null&&target!==null&&BigInt(target)>0n?BigInt(progress)>=BigInt(target):null;
-    const eligible=complete!==null&&rewardClaimed!==null?complete&&!rewardClaimed:null;
+    const observed=taskObservation(row,'achievement'),qualification=taskQualification(observed,observed.targetProgress,'achievement');
+    const id=observed.taskId,progress=observed.progress,target=observed.targetProgress,rewardClaimed=observed.rewardClaimed;
+    const complete=qualification.completion==='UNKNOWN'?null:qualification.completion==='COMPLETE',eligible=qualification.claimable;
     return {id,progress,targetProgress:target,rewardClaimed,complete,eligible,status:rewardClaimed===true?'CLAIMED':eligible===null?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE',
       configuredRewards:null,executable:false,blockedReason:'USE_TASK_REWARDS_FUNCTION'};
   });

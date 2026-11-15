@@ -5,6 +5,8 @@ import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { dailyChecklist, formatDailyChecklist } from '../src/daily-checklist.mjs';
 import { toSnapshotJson } from '../src/game.mjs';
+import { taskObservation, taskQualification } from '../src/tasks.mjs';
+import { parseDailyTaskObservation, claimableDailyTasks } from '../src/dailies.mjs';
 
 const config={tables:getConfig().tables},codec=createCodec(loadProtocol()),clone=v=>structuredClone(v);
 const typed=(request,body)=>codec.decode(codec.encode(request.replace(/Request$/,'Response'),1,body)).body;
@@ -238,4 +240,21 @@ test('cached daily rows expose original unified drivers without inventing execut
 
 test('ordinary AFK daily1004 cache points to original Function without interval defaults or execution eligibility',()=>{
  const state={raw:{DailyTaskInfoRequest:typed('DailyTaskInfoRequest',{dailyTask:[{id:1004,progress:0,targetProgress:1,rewardClaimed:false}]})},outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}},row=dailyChecklist(state,{config}).tasks.rows[0];assert.equal(row.functionId,'afk-level-rewards');assert.equal(row.executable,false);assert.equal(row.eligible,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily',taskId:1004});assert.equal(Object.hasOwn(row,'parameters'),false);assert.equal(Object.hasOwn(row,'afkStartTime'),false);
+});
+
+
+test('cached checklist shares original domain parsers while preserving partial observations',()=>{
+ const s=fixture();
+ s.raw.AchievementInfoRequest={task:[{id:1,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:false},{id:2,progress:1,targetProgress:1},{id:3,progress:1,targetProgress:1,rewardClaimed:true}]};
+ s.outcomes.AchievementInfoRequest={status:'SUCCESS'};
+ const v=dailyChecklist(s,{config});
+ for(let i=0;i<s.raw.AchievementInfoRequest.task.length;i++){
+  const task=taskObservation(s.raw.AchievementInfoRequest.task[i],'achievement'),q=taskQualification(task,task.targetProgress,'achievement'),row=v.achievements.rows[i];
+  assert.equal(row.eligible,q.claimable);assert.equal(row.complete,q.completion==='UNKNOWN'?null:q.completion==='COMPLETE');assert.equal(row.progress,task.progress);assert.equal(row.rewardClaimed,task.rewardClaimed);assert.equal(row.executable,false);
+ }
+ assert.equal(v.achievements.rows[1].complete,true);assert.equal(v.achievements.rows[1].eligible,null);
+ for(let i=0;i<s.raw.DailyTaskInfoRequest.dailyTask.length;i++){
+  const raw=s.raw.DailyTaskInfoRequest.dailyTask[i],parsed=parseDailyTaskObservation(raw);
+  assert.ok(parsed);assert.equal(v.tasks.rows[i].eligible,claimableDailyTasks({dailyTask:[raw]}).length===1);assert.equal(v.tasks.rows[i].executable,false);
+ }
 });

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewTaskRewards,planTaskRewards,verifyTaskReward,taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
-import { claimDailies, activityRewardDefinition, dailyGiftDefinition, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
+import { parseDailyTaskObservation, claimableDailyTasks, claimDailies, activityRewardDefinition, dailyGiftDefinition, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
 import { DAILY_TASK_REWARD_EVIDENCE } from '../src/daily-task-rewards.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -1001,4 +1001,22 @@ test('legacy claim rejects missing permits, unrelated Function scopes and differ
 
 test('Tasks compatibility cannot consume an authorized daily Function batch',async t=>{
  const f=serviceFixture(t,{gift:true}),permit=f.authorize(await f.plan());const result=await runTasks(f.client,protocol,{plan:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.equal(result[0].status,'NOT_EXECUTED');assert.equal(result[0].code,'INVALID_INPUT');assert.equal(f.state.writes.length,0);f.permit=permit;assert.equal((await claimAuthorized(f))[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
+});
+
+
+test('daily Function reuses original progress observation and keeps period and reward authority separate',async()=>{
+ for(const mode of ['ready','incomplete','claimed','missing','overflow','period-unknown']){
+  const f=fixture({codec:false}),raw=f.state.daily.dailyTask[0];
+  if(mode==='incomplete')raw.progress=0;
+  if(mode==='claimed')raw.rewardClaimed=true;
+  if(mode==='missing')delete raw.rewardClaimed;
+  if(mode==='overflow')raw.progress=2147483648;
+  if(mode==='period-unknown')f.state.daily.dailyResetTime=1;
+  const parsed=parseDailyTaskObservation(raw),preview=claimableDailyTasks(f.state.daily),facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0];
+  if(parsed)assert.deepEqual(facts.daily.tasks.find(x=>x.taskId===raw.id),parsed);else assert.equal(facts.daily,null);
+  assert.equal(preview.includes(raw),['ready','period-unknown'].includes(mode));
+  assert.equal(row.executable,mode==='ready');
+  if(mode==='period-unknown')assert.equal(row.blockedReason,'DAILY_TASK_PERIOD_UNKNOWN');
+  assert.equal(f.state.writes.length,0);
+ }
 });

@@ -41,7 +41,10 @@ export function taskTarget(row) {
   return Number.isFinite(n) ? n : null;
 }
 
-const own = (v,k) => v !== null && typeof v === 'object' && Object.hasOwn(v,k);
+const own = (v,k) => {
+  const descriptor = v !== null && typeof v === 'object' ? Object.getOwnPropertyDescriptor(v,k) : null;
+  return descriptor?.enumerable === true && Object.hasOwn(descriptor,'value');
+};
 const taskIdKnown = n => Number.isInteger(n) && n > 0 && n <= 2147483647;
 const denseTaskList = v => Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && v.length <= 10000 && Reflect.ownKeys(v).length === v.length+1 && Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&own(d,'value'));
 
@@ -50,7 +53,7 @@ export function achievementProgressCount(value) {
   let n;
   if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;n=BigInt(value);}
   else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)n=BigInt(value);
-  else if(value&&typeof value==='object'&&own(value,'low')&&own(value,'high')&&own(value,'unsigned')&&value.unsigned===false&&[value.low,value.high].every(v=>Number.isInteger(v)&&v>=-2147483648&&v<=2147483647))n=(BigInt(value.high)<<32n)+BigInt(value.low>>>0);
+  else if(value&&typeof value==='object'&&!Array.isArray(value)&&own(value,'low')&&own(value,'high')&&own(value,'unsigned')&&value.unsigned===false&&[value.low,value.high].every(v=>Number.isInteger(v)&&v>=-2147483648&&v<=2147483647))n=(BigInt(value.high)<<32n)+BigInt(value.low>>>0);
   else return null;
   return n>=0n&&n<(1n<<63n)?String(n):null;
 }

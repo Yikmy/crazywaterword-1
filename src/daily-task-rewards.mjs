@@ -1,7 +1,7 @@
 // W16 / BIZ-D18 / BIZ-D19 sub-contract of the existing task-rewards Function.
 import { createHash } from 'node:crypto';
 import { ACTIONS, buildBody, FREE_DAILY_PACK_ID } from './actions.mjs';
-import { activityRewardDefinition, activityTierAvailable, dailyGiftDefinition, planDailyGift } from './dailies.mjs';
+import { activityRewardDefinition, activityTierAvailable, dailyGiftDefinition, planDailyGift, parseDailyTaskObservation } from './dailies.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -43,7 +43,7 @@ function clockOf(client,context) {
 function parseDaily(raw){
  const keys=['dailyActivity','weeklyActivity','dailyResetTime'];
  if(!keys.every(k=>own(raw,k)&&uint(raw[k]))||!positive(raw.dailyResetTime)||!own(raw,'dailyTask')||!dense(raw.dailyTask))return null;
- const tasks=raw.dailyTask.map(row=>['id','progress','targetProgress','rewardClaimed'].every(k=>own(row,k))&&positive(row.id)&&uint(row.progress)&&positive(row.targetProgress)&&typeof row.rewardClaimed==='boolean'?{taskId:row.id,progress:row.progress,targetProgress:row.targetProgress,rewardClaimed:row.rewardClaimed}:null);
+ const tasks=raw.dailyTask.map(parseDailyTaskObservation);
  if(tasks.some(r=>r===null)||new Set(tasks.map(r=>r.taskId)).size!==tasks.length)return null;
  const claims={};for(const key of['dailyRewardClaimed','weeklyRewardClaimed']){if(!own(raw,key)||!dense(raw[key])||raw[key].some(v=>!positive(v))||new Set(raw[key]).size!==raw[key].length)return null;claims[key]=[...raw[key]].sort((a,b)=>a-b);}
  return {resetTime:raw.dailyResetTime,dailyActivity:raw.dailyActivity,weeklyActivity:raw.weeklyActivity,...claims,tasks:tasks.sort((a,b)=>a.taskId-b.taskId)};

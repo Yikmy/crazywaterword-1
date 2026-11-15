@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
-import { DAILY_DRIVERS, runDailies, claimDailies, surveyDailies } from '../src/dailies.mjs';
+import { DAILY_DRIVERS, runDailies, claimDailies, surveyDailies, parseDailyTaskObservation, claimableDailyTasks } from '../src/dailies.mjs';
 
 const protocol = loadProtocol();
 const noSleep = async () => {};
@@ -182,4 +182,21 @@ test('a failed required probe stays unknown instead of advertising a writable pl
   assert.equal(report.tasks[0].status, 'unknown');
   assert.match(report.tasks[0].reason, /offline probe failure/);
   assert.deepEqual(report.tasks[0].actions, []);
+});
+
+
+test('daily progress preview and Function share exact explicit int32 row observations',()=>{
+ const row={id:1001,progress:1,targetProgress:1,rewardClaimed:false,extra:'retained'};
+ assert.deepEqual(parseDailyTaskObservation(row),{taskId:1001,progress:1,targetProgress:1,rewardClaimed:false});
+ assert.deepEqual(claimableDailyTasks({dailyTask:[row]}),[row]);assert.equal(claimableDailyTasks({dailyTask:[row]})[0],row);assert.equal(row.extra,'retained');
+ for(const changed of [{...row,progress:0},{...row,rewardClaimed:true}]){assert.ok(parseDailyTaskObservation(changed));assert.deepEqual(claimableDailyTasks({dailyTask:[changed]}),[]);}
+ for(const key of ['id','progress','targetProgress','rewardClaimed']){
+  const missing={...row};delete missing[key];assert.equal(parseDailyTaskObservation(missing),null);
+  const inherited=Object.assign(Object.create({[key]:row[key]}),missing);assert.equal(parseDailyTaskObservation(inherited),null);
+  const accessor={...missing};Object.defineProperty(accessor,key,{enumerable:true,get(){throw Error('must not call accessor');}});assert.equal(parseDailyTaskObservation(accessor),null);
+ }
+ for(const changed of [{...row,id:0},{...row,id:2147483648},{...row,progress:2147483648},{...row,progress:'1'},{...row,targetProgress:0},{...row,targetProgress:2147483648},{...row,rewardClaimed:0}]){assert.equal(parseDailyTaskObservation(changed),null);assert.deepEqual(claimableDailyTasks({dailyTask:[changed]}),[]);}
+ const type=protocol.DailyTaskInfoResponse;
+ const absent=type.decode(type.encode({dailyTask:[{id:1001,targetProgress:1,rewardClaimed:false}]}).finish()).dailyTask[0];
+ assert.equal(absent.progress,0);assert.equal(parseDailyTaskObservation(absent),null);
 });

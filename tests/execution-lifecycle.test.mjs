@@ -232,3 +232,14 @@ test('legacy unknown or ambiguous identities only freeze their own task list',as
  const {survey}=await legacyQualificationSurvey({main:{taskId:1,progress:1},achievement:[{id:1,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:false}]});
  assert.equal(survey.main.qualification.completion,'COMPLETE');assert.equal(survey.main.qualification.claimable,null);assert.equal(survey.main.claimed,null);assert.equal(survey.achievement[0].progress,'9007199254740993');assert.equal(survey.achievement[0].qualification.claimable,false);
 });
+
+
+test('shared Tasks observations never execute accessor or non-enumerable protocol defaults',()=>{
+ const row={taskId:1,progress:1,rewardClaimed:false};
+ for(const key of ['taskId','progress','rewardClaimed']){
+  const hidden={...row};Object.defineProperty(hidden,key,{enumerable:false,value:row[key]});assert.equal(parseTaskObservation(hidden,'main'),null);
+  const accessor={...row};Object.defineProperty(accessor,key,{enumerable:true,get(){throw Error('must not execute');}});assert.equal(parseTaskObservation(accessor,'main'),null);assert.equal(taskQualification(accessor,1,'main').claimable,null);
+ }
+ const count={low:1,high:0,unsigned:false};Object.defineProperty(count,'low',{enumerable:true,get(){throw Error('must not execute Long getter');}});
+ assert.equal(achievementProgressCount(count),null);
+});

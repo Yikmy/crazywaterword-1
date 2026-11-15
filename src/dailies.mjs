@@ -202,14 +202,22 @@ function explicitCount(value, key) {
   return value && Object.hasOwn(value, key) && typeof value[key] === 'number'
     && Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : null;
 }
-// The CLI reward preview and the reward executor share the same explicit-state gate.
+// Daily protocol rows use explicit int32 fields; period and reward settlement are separate.
+export function parseDailyTaskObservation(row) {
+  const fields = ['id', 'progress', 'targetProgress', 'rewardClaimed'];
+  if (!row || typeof row !== 'object'
+    || !fields.every(key => Object.hasOwn(Object.getOwnPropertyDescriptor(row, key) ?? {}, 'value'))) return null;
+  const count = value => Number.isInteger(value) && value >= 0 && value <= 2147483647;
+  if (!count(row.id) || row.id === 0 || !count(row.progress)
+    || !count(row.targetProgress) || row.targetProgress === 0 || typeof row.rewardClaimed !== 'boolean') return null;
+  return { taskId: row.id, progress: row.progress, targetProgress: row.targetProgress, rewardClaimed: row.rewardClaimed };
+}
+
+// This preview is progress eligibility only; the Function separately requires a current daily period.
 export function claimableDailyTasks(daily) {
-  return (Array.isArray(daily?.dailyTask) ? daily.dailyTask : []).filter((task) => {
-    const id = explicitCount(task, 'id');
-    const progress = explicitCount(task, 'progress');
-    const target = explicitCount(task, 'targetProgress');
-    return id !== null && id > 0 && progress !== null && target !== null && target > 0
-      && progress >= target && Object.hasOwn(task, 'rewardClaimed') && task.rewardClaimed === false;
+  return (Array.isArray(daily?.dailyTask) ? daily.dailyTask : []).filter(row => {
+    const task = parseDailyTaskObservation(row);
+    return task !== null && task.progress >= task.targetProgress && task.rewardClaimed === false;
   });
 }
 
