@@ -227,9 +227,9 @@ export function planWorld(survey, {
     if ((b.factory.finishedProducts ?? []).length > 0) {
       actions.push({
         kind: 'gainFactory',
-        request: 'GainFactoryProduceRequest',
-        response: 'GainFactoryProduceResponse',
-        body: { buildingId: b.buildingId },
+        request: ACTIONS.factoryGain.request,
+        response: ACTIONS.factoryGain.response,
+        body: buildBody(ACTIONS.factoryGain,{buildingId:b.buildingId}),
         label: `收成品 ${b.buildingId}`,
       });
     }
@@ -252,9 +252,9 @@ export function planWorld(survey, {
       finishing.add(b.buildingId);
       actions.push({
         kind: 'finishUpgrade',
-        request: 'FinishUpgradeBuildingRequest',
-        response: null,
-        body: { buildingId: b.buildingId },
+        request: ACTIONS.buildingFinish.request,
+        response: ACTIONS.buildingFinish.response,
+        body: buildBody(ACTIONS.buildingFinish,{buildingId:b.buildingId}),
         label: `竣工 ${b.buildingId}`,
       });
     }
@@ -300,9 +300,9 @@ export function planWorld(survey, {
     actions.push({
       kind: 'build',
       costs: resourceCosts(u.consume),
-      request: 'BuildBuildingRequest',
-      response: null,
-      body: { buildingId: u.building.buildingId },
+      request: ACTIONS.buildBuilding.request,
+      response: ACTIONS.buildBuilding.response,
+      body: buildBody(ACTIONS.buildBuilding,{buildingId:u.building.buildingId}),
       label: `建造 ${u.building.buildingId}（需等级 ${u.row.playerLevel}）`,
     });
   }
@@ -321,9 +321,9 @@ export function planWorld(survey, {
       actions.push({
         kind: 'finishOrder',
         costs: requirements,
-        request: 'FinishWorkerOrderRequest',
-        response: 'FinishWorkerOrderResponse',
-        body: { index: order.index },
+        request: ACTIONS.finishOrder.request,
+        response: ACTIONS.finishOrder.response,
+        body: buildBody(ACTIONS.finishOrder,{index:order.index}),
         label: `交订单 #${order.index}（经验 ${order.rewardExp ?? '?'}）`,
       });
       continue;
@@ -334,9 +334,9 @@ export function planWorld(survey, {
     } else if ((order.rewardExp ?? 0) < minOrderExp) {
       actions.push({
         kind: 'denyOrder',
-        request: 'DenyOrderRequest',
-        response: null,
-        body: { index: order.index },
+        request: ACTIONS.rerollOrder.request,
+        response: ACTIONS.rerollOrder.response,
+        body: buildBody(ACTIONS.rerollOrder,{index:order.index}),
         label: `拒绝低价值订单 #${order.index}（经验 ${order.rewardExp ?? '?'} < ${minOrderExp}）`,
       });
     } else {
@@ -374,9 +374,9 @@ export function planWorld(survey, {
     actions.push({
       kind: 'startProduce',
       costs,
-      request: 'StartFactoryProduceRequest',
-      response: null,
-      body: { buildingId: b.buildingId, productId: best.itemId },
+      request: ACTIONS.startProduce.request,
+      response: ACTIONS.startProduce.response,
+      body: buildBody(ACTIONS.startProduce,{buildingId:b.buildingId,productId:best.itemId}),
       label: `排产 ${b.buildingId} -> ${best.itemId}（${best.produceTime}s${need ? `，订单缺 ${need}` : ''}）`,
     });
   }
@@ -410,9 +410,9 @@ export function planWorld(survey, {
     actions.push({
       kind: 'upgrade',
       costs: resourceCosts(u.consume),
-      request: 'UpgradeBuildingRequest',
-      response: null,
-      body: { buildingId: u.building.buildingId },
+      request: ACTIONS.upgradeBuilding.request,
+      response: ACTIONS.upgradeBuilding.response,
+      body: buildBody(ACTIONS.upgradeBuilding,{buildingId:u.building.buildingId}),
       label: `升级 ${u.building.buildingId} ${u.building.level}->${u.building.level + 1}（${u.costTime}s，人口 ${u.row.curPeople}）`,
     });
   }
