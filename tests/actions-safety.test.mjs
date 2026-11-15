@@ -323,3 +323,14 @@ test('resource field give-up D6 requires exact own zero cost and one nonnegative
 test('resource field release preview reuses the catalog builder including exact grid zero',()=>{
  for(const gridIdx of [0,7,2147483647]){const planned=planFieldGiveUp({resFields:{fields:[{gridIdx}]}},gridIdx).action;assert.deepEqual(planned.body,buildBody(ACTIONS.giveUpField,{gridIdx}));assert.equal(planned.request,ACTIONS.giveUpField.request);assert.throws(()=>assertPaymentAllowed(planned),{code:'COST_UNKNOWN'});}
 });
+
+test('unqualified arena requests cannot become known-cost writes from a request name or guessed points',()=>{
+ const body={rank:8,challengeId:'9007199254740993'},codec=protocol.ArenaChallengeRequest;
+ const decoded=codec.decode(codec.encode(body).finish());assert.equal(decoded.rank,8);assert.equal(decoded.challengeId.toString(),body.challengeId);
+ for(const costs of [undefined,[],[{id:'ARENA_POINT',num:1}],[{id:'ARENA_POINT',num:2}],[{id:'GOLD',num:1}]]){
+  const a={request:'ArenaChallengeRequest',body,...(costs===undefined?{}:{costs}),executable:true,costSource:'claimed ready'};
+  for(const allowPaid of [false,true])assert.throws(()=>assertPaymentAllowed(a,{allowPaid}),{code:'COST_UNKNOWN'});
+ }
+ assert.throws(()=>assertPaymentAllowed({request:'ArenaChallengeRequest',body,costs:[{id:'RUBY',num:1}]},{allowPaid:true}),{code:'D6_FORBIDDEN'});
+ assert.throws(()=>assertPaymentAllowed({request:'ArenaSweepRequest',body,costs:[{id:'ARENA_POINT',num:1}]}),{code:'COST_UNKNOWN'});
+});

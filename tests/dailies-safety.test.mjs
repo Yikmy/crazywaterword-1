@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
+import { assertPaymentAllowed } from '../src/actions.mjs';
 import { DAILY_DRIVERS, runDailies, claimDailies, surveyDailies, parseDailyTaskObservation, claimableDailyTasks, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from '../src/dailies.mjs';
 
 const protocol = loadProtocol();
@@ -264,4 +265,12 @@ test('one daily list parser preserves exact rows and rejects ambiguous identitie
  }
  const accessor={};Object.defineProperty(accessor,'dailyTask',{enumerable:true,get(){throw Error('must not invoke list getter');}});assert.equal(dailyTaskRows(accessor),null);assert.deepEqual(claimableDailyTasks(accessor),[]);
  const f=fixture({replies:{DailyTaskInfoRequest:{dailyTask:[row,{...row}]}}}),report=await surveyDailies(f.client,protocol);assert.equal(report.taskListStatus,'UNKNOWN');assert.deepEqual(report.tasks,[]);assert.deepEqual(f.mutations,[]);
+});
+
+test('legacy arena keeps original low-power suggestions but no guessed cost or local flag authorizes writes',async()=>{
+ const task=daily(1005,1),targets=[{id:'9007199254740993',rankNo:8,power:200},{id:'9007199254740994',rankNo:9,power:100}];
+ const f=fixture({tasks:[task],replies:{ArenaInfoRequest:{challenges:targets}}}),report=await surveyDailies(f.client,protocol),row=report.tasks.find(r=>r.task.id===1005);
+ assert.equal(report.readOnly,true);assert.equal(report.executable,false);assert.equal(row.status,'ready');assert.equal(row.actions.length,1);assert.deepEqual(row.actions[0].body,{rank:9,challengeId:'9007199254740994'});assert.equal(row.actions[0].request,'ArenaChallengeRequest');
+ assert.throws(()=>assertPaymentAllowed(row.actions[0]),{code:'COST_UNKNOWN'});assert.throws(()=>assertPaymentAllowed({...row.actions[0],costs:[{id:'ARENA_POINT',num:1}]},{allowPaid:true}),{code:'COST_UNKNOWN'});
+ const reads=f.calls.length;const result=await runDailies(f.client,protocol,report,{allowMutate:true,allowPaid:true});assert.equal(result.length,1);assert.equal(result[0].status,'NOT_EXECUTED');assert.equal(result[0].code,'AUTHORIZATION_REQUIRED');assert.equal(f.calls.length,reads);assert.deepEqual(f.mutations,[]);
 });
