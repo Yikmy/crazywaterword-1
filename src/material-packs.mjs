@@ -101,3 +101,24 @@ export function verifyMaterialPack(operation,before,after){
 }
 export function materialPackDependencyVersions({config,moduleConfig=MATERIAL_PACK_DEFAULT_CONFIG}={}){return {moduleConfig:validateMaterialPackConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const materialPackModule=Object.freeze({id:moduleId,label:'持有材料包兑换',capabilities:Object.freeze(['BIZ-R14']),defaultConfig:MATERIAL_PACK_DEFAULT_CONFIG,validateConfig:validateMaterialPackConfig,validateParameters:validateMaterialPackParameters,survey:surveyMaterialPacks,view:viewMaterialPacks,plan:planMaterialPacks,verify:verifyMaterialPack,rejectionIdentity:businessRejectionIdentity,dependencyVersions:materialPackDependencyVersions});
+
+// A dependency consumes the original durable exchange evidence, never a projected gain.
+export function confirmedMaterialPackSettlement(runs,context,identity,config){
+ try{
+  if(!dense(runs)||!text(identity)||!context)return null;
+  const matching=runs.filter(run=>run?.accountId===context.accountId&&run.module===moduleId&&same(run.executionContext&&{accountId:run.executionContext.accountId,generation:run.executionContext.generation,connectionId:run.executionContext.connectionId,playerId:roleId(run.executionContext.playerId),worldId:roleId(run.executionContext.worldId)},context)&&run.actions?.some(row=>row.identity===identity));
+  if(matching.length!==1)return null;const run=matching[0],row=run.actions[0],summary=run.planSummary,authorization=run.authorizationSummary;
+  if(run.finalStatus!=='SUCCESS'||!dense(run.actions)||run.actions.length!==1||!text(run.runId)||!Number.isFinite(Date.parse(run.startedAt))||!Number.isFinite(Date.parse(run.finishedAt))||Date.parse(run.finishedAt)<Date.parse(run.startedAt)||Date.parse(run.finishedAt)>Date.now()||summary?.module!==moduleId||!text(summary.batchId)||!text(summary.planHash)||authorization?.batchId!==summary.batchId||authorization?.planHash!==summary.planHash||!same(authorization.actionIds,[row.actionId])||!dense(summary.actions)||summary.actions.length!==1)return null;
+  if(row.module!==moduleId||row.actionType!=='EXCHANGE'||row.result!=='SUCCESS'||!['SUCCESS','UNKNOWN'].includes(row.requestStatus)||row.dispatched!==true||row.unresolvedWrite!==false||row.verification?.status!=='CONFIRMED'||row.beforeInventoryReliable!==true||row.afterInventoryReliable!==true)return null;
+  if(['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims'].some(key=>!same(row[key],summary.actions[0][key])))return null;
+  const p=validateMaterialPackParameters(row.parameters),r=reward(config,p.packId,p.itemId),season=seasonOf(context),before=row.beforeState;
+  const inventory=list=>dense(list)&&list.every(x=>fields(x,['id','num'])&&own(x,'id')&&text(x.id)&&own(x,'num')&&Number.isSafeInteger(x.num)&&x.num>=0)&&new Set(list.map(x=>x.id)).size===list.length?new Map(list.map(x=>[x.id,x.num])):null;
+  const initial=inventory(before?.inventory),prior=inventory(row.beforeInventory),final=inventory(row.afterInventory);
+  if(!r||season<r.season||!same(before?.context,context)||!initial||!prior||!final||!same(stockState(initial),stockState(prior))||!same(before.inventory,stockState(initial))||(initial.get(p.packId)??0)<p.num)return null;
+  const gain=p.num*r.num;initial.set(p.packId,initial.get(p.packId)-p.num);initial.set(p.itemId,(initial.get(p.itemId)??0)+gain);
+  if(!Number.isSafeInteger(gain)||!Number.isSafeInteger(initial.get(p.itemId)))return null;
+  const expected={context:copy(context),inventory:stockState(initial)},costs=[{id:p.packId,num:p.num}],claims={resources:costs,quotas:[],uids:[]};
+  if(row.identity!==hash({beforeState:before,parameters:p,reward:r,season})||row.actionId!==moduleId+':'+row.identity||!same(row.target,{packId:p.packId,itemId:p.itemId})||!same(row.costs,costs)||row.costSource!==costSource||!same(row.budgetClaims,claims)||!same(summary.resourceBudget,costs)||!same(authorization.resourceBudget,costs)||!same(row.expectedState,expected)||!same(row.afterState,expected)||!same(stockState(final),expected.inventory)||!same(row.responseEvidence,{packId:p.packId,itemId:p.itemId,packsUsed:p.num,materialReceived:gain}))return null;
+  return {runId:run.runId,finishedAt:run.finishedAt,identity,parameters:p,state:expected};
+ }catch{return null;}
+}

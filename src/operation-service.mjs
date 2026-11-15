@@ -19,7 +19,7 @@ import { collectOperationRecovery, buildVerifiedReceipt, RECOVERY_DISPATCH_CONTR
 import { toSnapshotJson } from './game.mjs';
 import { createExecutionHistory, runHasUnresolvedWrites, actionNeedsReconciliation, actionWasUncertain } from './execution-history.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation } from './order-execution.mjs';
-import { surveyOrdersOperations } from './core-operation-adapters.mjs';
+import { surveyOrdersOperations, validateMaterialProductionPreparation, prepareMaterialProductionWorkflow } from './core-operation-adapters.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { GAMEPLAY_MODULES, listBusinessFunctions } from './function-registry.mjs';
 import { createModuleSettings } from './gameplay-settings.mjs';
@@ -215,7 +215,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     } finally { release(); }
   }
   function adapterFor(id) { if (!Object.hasOwn(modules, id)) throw error('未注册玩法', 'INVALID_INPUT', 400); return modules[id]; }
-  function executionAdapter(session,id) { const adapter=adapterFor(id),accountId=session.id;return ['afk-level-rewards','farm'].includes(id)?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,[id==='farm'?'readHarvestHistory':'readIncomeHistory']:()=>history.list(accountId)});}}:adapter; }
+  function executionAdapter(session,id) { const adapter=adapterFor(id),accountId=session.id;if(id==='production')return {...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,readExchangeHistory:()=>history.list(accountId)});},execute(client,protocol,operation,options){return adapter.execute(client,protocol,operation,{...options,readExchangeHistory:()=>history.list(accountId)});}};return ['afk-level-rewards','farm'].includes(id)?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,[id==='farm'?'readHarvestHistory':'readIncomeHistory']:()=>history.list(accountId)});}}:adapter; }
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id] ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
   function cacheModule(accountId, id, facts, options) {
     moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});
@@ -340,6 +340,18 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('装备厂准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=prepareEquipmentForgeWorkflow(facts,{config,moduleConfig,...payload});
       return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
+    }finally{release();}
+  }
+
+  async function prepareMaterialProductionSource(session,payload){
+    payload=validateMaterialProductionPreparation(payload);const release=acquire(session,'operations:MATERIAL_PRODUCTION_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
+    try{
+      plans.delete(session.id);const adapter=executionAdapter(session,'production'),pack=executionAdapter(session,'material-packs'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'production').config,materialPackConfig=moduleSettings.get(session.id,'material-packs').config;
+      const dependencies=()=>operationDigest([adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'production').config}),pack.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'material-packs').config})]),dependency=dependencies(),options={config,player:session.player,signal:session.abort.signal};
+      const facts=await adapter.survey(client,protocol,{...options,moduleConfig,parameters:{}});current(session,generation,client);
+      const parameters={packId:payload.packId,itemId:payload.itemId,num:payload.num},packFacts=await pack.survey(client,protocol,{...options,moduleConfig:materialPackConfig,parameters});current(session,generation,client);
+      if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('材料包生产准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+      const result=prepareMaterialProductionWorkflow(facts,packFacts,{config,moduleConfig,materialPackConfig,...payload});return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
     }finally{release();}
   }
   async function prepareFarmHarvestSource(session,payload){
@@ -680,7 +692,7 @@ function authorizeWorkflowPlan(session,payload){
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);

@@ -99,7 +99,7 @@ test('true dependencies separate unrelated order rules and production policy', (
   assert.equal(FUNCTION_CONTRACTS.orders.dependencyVersions.required.some(value => value.includes('productionPolicy')), false);
   for (const id of ids.filter(id => id !== 'orders')) assert.equal(FUNCTION_CONTRACTS[id].dependencyVersions.required.includes('rules'), false);
   for (const id of ids.filter(id => id !== 'production')) assert.equal(FUNCTION_CONTRACTS[id].dependencyVersions.required.some(value => value.includes('productionPolicy')), false);
-  assert.deepEqual(FUNCTION_CONTRACTS.production.dependencyVersions.conditional, [{ when: 'mode=Automatic', keys: ['productionPolicy'] }]);
+  assert.deepEqual(FUNCTION_CONTRACTS.production.dependencyVersions.conditional, [{ when: 'mode=Automatic', keys: ['productionPolicy'] }, { when: 'parameters.materialSource', keys: ['config.ItemCfg'] }]);
   assert.deepEqual(FUNCTION_CONTRACTS.naval.dependencyVersions.required, ['moduleConfig']);
   assert.equal(FUNCTION_CONTRACTS.stage.dependencyVersions.required.includes('config.StageCfg'), false); // Existing Runner consumes no StageCfg.
 });
@@ -107,7 +107,7 @@ test('input fields match seventeen existing domain parameter interfaces without 
   const expected = { 'material-packs':['packId','itemId','num'], 'pirate-sweep':['uid','cityId','allowLowerLevel'], 'antique-growth':['antiqueId','action','suitId','num'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal','expectedEquipmentCounts','expectedQueue'], farm: ['buildingId','action','productId','pendingHarvests','pendingPlants','replant'],
     formation: ['presetId','heroIds','heroPositions','mode','raidId'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num','action','shipId','crewId'],
     museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','resourceFieldGridIdx','presetId','heroIds','heroPositions'],
-    treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config','expectedStage'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal','num','expectedStar','expectedFragmentBalance','expectedStarCost'],
+    treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config','expectedStage'], orders: [], city: [], production: ['buildingId','productId','materialSource'], heroes: ['heroId','action','skillIdx','allowUniversal','num','expectedStar','expectedFragmentBalance','expectedStarCost'],
   };
   for (const [id, keys] of Object.entries(expected)) assert.deepEqual(Object.keys(FUNCTION_CONTRACTS[id].inputSchema.properties), keys);
 });

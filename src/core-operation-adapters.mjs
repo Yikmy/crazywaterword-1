@@ -1,5 +1,10 @@
 // Static wrappers over the existing core functions. Transport, resource algorithms,
 // authoritative verification, account locking and durable history stay with their owners.
+import { createHash } from 'node:crypto';
+import { stableBusinessValue } from './business-functions.mjs';
+import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPackSettlement } from './material-packs.mjs';
+import { resourceCosts } from './resource-ledger.mjs';
+import { assertPaymentAllowed } from './actions.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView } from './order-execution.mjs';
 import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
 import { defaultOrderRules } from './order-rules.mjs';
@@ -31,8 +36,8 @@ function settings(value = defaultConfig) {
   if (!plain(value) || Reflect.ownKeys(value).some(key => key !== 'enabled') || typeof value.enabled !== 'boolean') throw invalid('核心业务配置仅允许 enabled 布尔值');
   return { enabled: value.enabled };
 }
-function context(options = {}) {
-  validateCoreOperationParameters(options.parameters);
+function context(options = {}, id = null) {
+  if(id==='production')validateProductionParameters(options.parameters);else validateCoreOperationParameters(options.parameters);
   const mode = options.mode ?? 'Manual';
   if (!modes.has(mode)) throw invalid('不支持的核心业务执行模式');
   return { ...options, mode, moduleConfig: settings(options.moduleConfig), rules: options.rules ?? defaultOrderRules(), productionPolicy: options.productionPolicy ?? defaultProductionPolicy() };
@@ -47,7 +52,8 @@ function gated(row, options) {
 }
 function kinds(id) { return id === 'city' ? cityKinds : productionKinds; }
 function domainCandidates(id, facts, options) {
-  return cityView(facts, options).candidates.filter(row => kinds(id).has(row.actionType));
+  const rows=cityView(facts, options).candidates.filter(row => kinds(id).has(row.actionType));
+  return id==='production'?boundProductionCandidates(facts,options,rows):rows;
 }
 function blockNotes(id) { return { module: id, actions: [], notes: ['模块未启用；请使用账号 ModuleSettings 显式启用'] }; }
 
@@ -101,11 +107,13 @@ export async function surveyProductionOperations(client,protocol,options={}) {
  const clock=()=>{const c=client.factContext;let t;try{t=client.gameClock?.read?.(c);}catch{}const role=k=>{const v=toSnapshotJson(options.player?.[k]??null);return (typeof v==='string'&&/^[1-9][0-9]*$/.test(v)||typeof v==='number'&&Number.isSafeInteger(v)&&v>0)&&BigInt(v)<(1n<<63n)&&(!Object.hasOwn(c,k)||String(toSnapshotJson(c[k]))===String(v));};return c&&['accountId','connectionId'].every(k=>typeof c[k]==='string'&&c[k])&&['playerId','worldId'].every(role)&&Number.isSafeInteger(c.generation)&&c.generation>=0&&t?.status==='TRUSTED'&&t.reliable===true&&t.source==='PingResponse.serverTimestamp'&&t.accountId===c.accountId&&t.generation===c.generation&&['earliestMs','nowMs','latestMs'].every(k=>Object.hasOwn(t,k)&&Number.isFinite(t[k])&&t[k]>=0&&t[k]<=Number.MAX_SAFE_INTEGER)&&t.earliestMs<=t.nowMs&&t.nowMs<=t.latestMs?{earliestMs:t.earliestMs,latestMs:t.latestMs}:null;};
  let sourceAt=null,sourceClock=null;
  const observed=new Proxy(client,{get(target,key){if(key!=='request'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return async(...args)=>{current();const value=await target.request(...args);current();if(args[0]==='OnWaterRequest'){sourceAt=Date.now();sourceClock=clock();}return value;};}});
- const facts=await surveyCoreOperations(observed,protocol,options);
+ validateProductionParameters(options.parameters);
+ const facts=await surveyCoreOperations(observed,protocol,{...options,parameters:{}});
  const read=async name=>{current();const response=name.replace(/Request$/,"Response");if(!protocol?.[name]||!protocol?.[response])return null;try{const body=await awaitExecution(client.request(name,{},response,options.timeout??8000),client,options);current();return body;}catch(error){current();if(executionOutcome(error)==="CANCELLED")throw error;return null;}};
  const appointed=await read("AppointInfoRequest"),heroes=await read("AllHeroRequest");current();
  const result={...facts,productionContext:{appointment:appointProduceReduce(options.config,{appointed:appointed?.heroes,heroes:heroes?.heroes,reliable:Array.isArray(appointed?.heroes)&&Array.isArray(heroes?.heroes)})}},end=clock();
- productionQueueClocks.set(result,{raw:JSON.stringify(result.rawOnWater),identity:captured,current:identity,sourceAt,bounds:sourceClock&&end&&end.earliestMs>=sourceClock.earliestMs&&end.latestMs>=sourceClock.latestMs?end:null});return result;
+ productionQueueClocks.set(result,{raw:JSON.stringify(result.rawOnWater),identity:captured,current:identity,sourceAt,bounds:sourceClock&&end&&end.earliestMs>=sourceClock.earliestMs&&end.latestMs>=sourceClock.latestMs?end:null});
+ productionSources.set(result,{client,player:options.player,available:Object.keys(protocol??{}),have:result.have,at:sourceAt,context:productionScope(client,options.player),digest:productionFactsDigest(result),dependencies:productionConfigDigest(options),read:options.readExchangeHistory});return result;
 }
 function productionPlanningView(facts,view,config) {
  const appointment=facts.productionContext?.appointment??{reliable:false,seconds:null,reason:'APPOINT_SOURCE_UNKNOWN'};
@@ -132,14 +140,14 @@ export function planCoreOrders(facts, options = {}) {
   return planOrderExecution(facts, { ...args, selections: ids });
 }
 function viewCityDomain(id, facts, options = {}) {
-  const args = context(options), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
-  const candidates = view.candidates.filter(row => kinds(id).has(row.actionType)).map(row => gated({ ...row, module: id, parameters: {} }, args));
+  const args = context(options,id), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
+  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='production'?validateProductionParameters(args.parameters):{} }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
     : { module: id, ...planning, stock: view.stock, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };
 }
 function planCityDomain(id, facts, options = {}) {
-  const args = context(options), ids = selections(options.selections, args.mode);
+  const args = context(options,id), ids = selections(options.selections, args.mode);
   if (!args.moduleConfig.enabled) return blockNotes(id);
   const candidates = domainCandidates(id, facts, args);
   if (ids.some(actionId => !candidates.some(row => row.actionId === actionId))) throw invalid('选择不属于该核心业务的当前候选');
@@ -150,7 +158,7 @@ function planCityDomain(id, facts, options = {}) {
     }
   }
   const result = planCityOperations(facts, { ...args, selections: ids });
-  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id })) };
+  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id, ...(id==='production'&&args.parameters?.materialSource?{parameters:validateProductionParameters(args.parameters)}:{}) })) };
 }
 
 // Verify is a receipt projection, not a second state-verification algorithm.
@@ -169,11 +177,12 @@ function retainProof(operation, result) {
 async function executeCore(id, client, protocol, operation, options = {}) {
   let args;
   try {
-    args = context(options);
+    args = context(options,id);
     if (args.moduleConfig.enabled !== true || args.allowMutate !== true) return operationResult('NOT_EXECUTED', { dispatched: false, unresolvedWrite: false, error: '核心业务需要启用模块及当前单批授权' });
     if (operation?.module !== id || !(id === 'orders' ? ['SUBMIT', 'REFRESH'].includes(operation.actionType) : kinds(id).has(operation.actionType))) {
       throw invalid('操作不属于该核心业务');
     }
+    if(id==='production'&&(args.parameters?.materialSource||operation.parameters?.materialSource)&&!productionSame(operation.parameters,args.parameters))throw invalid('生产操作参数与授权的材料包来源不一致');
   } catch (error) {
     return operationResult('NOT_EXECUTED', { dispatched: false, unresolvedWrite: false, error: error.message });
   }
@@ -181,9 +190,12 @@ async function executeCore(id, client, protocol, operation, options = {}) {
   // post-dispatch persistence/callback failure must never become NOT_EXECUTED.
   // OrderExecution owns rule/identity/quota verification; CityAction owns
   // Automatic policy rechecks and authoritative state verification.
+  let sourceFacts=null;const guardedSource=id==='production'&&args.parameters?.materialSource;
+  const sourceSurvey=guardedSource?async(c,p,o)=>{if(sourceFacts)return surveyCoreOperations(c,p,o);const f=await surveyProductionOperations(c,p,{...args,...o,parameters:args.parameters});if(!boundProductionCandidates(f,args,cityView(f,args).candidates).some(row=>row.actionId===operation.actionId))throw invalid('材料包前置、目标工厂或配方来源已变化');sourceFacts=f;return f;}:surveyCoreOperations;
+  const sourceClient=guardedSource?new Proxy(client,{get(target,key){if(key!=='sendWatch'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return (...values)=>{if(!sourceFacts||!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('材料包已消费、历史变化或连接来源失效');const beforeDispatch=values[2]?.beforeDispatch;values[2]={...values[2],beforeDispatch(){beforeDispatch?.();if(!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('派发前材料包来源失效');}};return target.sendWatch(...values);};}}):client;
   const result = id === 'orders'
     ? await executeOrderOperation(client, protocol, operation, { ...args, survey: args.rules.rules.some(rule => rule.enabled && rule.type === 'MAX_PRODUCTION_WAIT') ? surveyOrdersOperations : surveyCityOperations })
-    : await executeCityAction(client, protocol, operation, { ...args, survey: surveyCoreOperations });
+    : await executeCityAction(sourceClient, protocol, operation, { ...args, parameters:{}, survey: sourceSurvey });
   return retainProof(operation, result);
 }
 
@@ -191,10 +203,10 @@ function tableVersions(config, names) {
   return Object.fromEntries(names.map(name => [name, structuredClone(config?.tables?.[name] ?? null)]));
 }
 function dependencies(id, options = {}) {
-  const args = context(options);
+  const args = context(options,id);
   const tableNames = id === 'orders' ? ['WorkerOrderCfg', 'WorkerSpecOrderCfg', 'BuildingCfg', 'BuildingProduceCfg']
     : id === 'city' ? ['BuildingCfg', 'BuildingUpgradeCfg']
-      : ['BuildingCfg', 'BuildingProduceCfg', 'BuildingProduceParamCfg', 'GameParamCfg', ...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"]];
+      : ['BuildingCfg', 'BuildingProduceCfg', 'BuildingProduceParamCfg', 'GameParamCfg', ...["AppointEffectCfg","AppointPosCfg","HeroCfg","FarmlandPlantCfg","SelectPackLibCfg"], ...(args.parameters?.materialSource?["ItemCfg"]:[])];
   return { moduleConfig: args.moduleConfig, config: tableVersions(args.config, tableNames),
     ...(id === 'orders' ? { rules: structuredClone(args.rules) } : {}),
     ...(id === 'production' && args.mode === 'Automatic' ? { productionPolicy: structuredClone(args.productionPolicy) } : {}) };
@@ -236,10 +248,62 @@ export const cityModule = Object.freeze({ ...shared, id: 'city', label: '城市�
   execute: (client, protocol, operation, options) => executeCore('city', client, protocol, operation, options),
   dependencyVersions: options => dependencies('city', options), dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingUpgradeCfg']),
   evidence: evidence(['src/city-operations.mjs:surveyCityOperations', 'src/city-operations.mjs:cityView', 'src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction']) });
-export const productionModule = Object.freeze({ ...shared, survey:surveyProductionOperations, id: 'production', label: '工厂生产', capabilities: Object.freeze(['C111', 'C113', 'C114', 'C115', 'C116']),
+export const productionModule = Object.freeze({ ...shared, validateParameters:validateProductionParameters, survey:surveyProductionOperations, id: 'production', label: '工厂生产', capabilities: Object.freeze(['C111', 'C113', 'C114', 'C115', 'C116']),
   view: (facts, options) => viewCityDomain('production', facts, options), plan: (facts, options) => planCityDomain('production', facts, options),
   execute: (client, protocol, operation, options) => executeCore('production', client, protocol, operation, options),
   dependencyVersions: options => dependencies('production', options),
-  dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg', 'config.GameParamCfg', 'Automatic:productionPolicy']),
+  dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingProduceCfg', 'config.BuildingProduceParamCfg', 'config.AppointEffectCfg', 'config.AppointPosCfg', 'config.HeroCfg', 'config.FarmlandPlantCfg', 'config.SelectPackLibCfg', 'materialSource:config.ItemCfg', 'config.GameParamCfg', 'Automatic:productionPolicy']),
   evidence: evidence(['src/city-operations.mjs:planCityOperations', 'src/city-operations.mjs:executeCityAction', 'src/production-policy.mjs:selectProductionCandidates', 'src/production-policy.mjs:productionDemand']) });
 export const CORE_OPERATION_MODULES = Object.freeze({ orders: ordersModule, city: cityModule, production: productionModule });
+
+// BIZ-R14 uses the original production executor after an exact owned-pack receipt.
+const productionSources=new WeakMap(),productionHash=value=>createHash('sha256').update(stableBusinessValue(value)).digest('hex');
+const productionSame=(a,b)=>stableBusinessValue(a)===stableBusinessValue(b);
+const productionOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value');
+const productionFields=(v,keys)=>plain(v)&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable&&productionOwn(v,k));
+const productionText=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
+function productionRole(v){const x=toSnapshotJson(v);try{return (typeof v!=='number'||Number.isSafeInteger(v))&&(typeof x==='string'&&/^[1-9][0-9]*$/.test(x)||typeof x==='number'&&Number.isSafeInteger(x)&&x>0)&&BigInt(x)<(1n<<63n)?String(x):null;}catch{return null;}}
+function productionScope(client,player){const c=client.factContext,role=k=>productionOwn(player,k)&&(!productionOwn(c,k)||productionRole(c[k])===productionRole(player[k]))?productionRole(player[k]):null;return {accountId:productionText(c?.accountId)?c.accountId:null,generation:Number.isSafeInteger(c?.generation)&&c.generation>=0?c.generation:null,connectionId:productionText(c?.connectionId)?c.connectionId:null,playerId:role('playerId'),worldId:role('worldId')};}
+function productionConfigDigest({config,moduleConfig}){return productionHash({moduleConfig:settings(moduleConfig),tables:tableVersions(config,['BuildingCfg','BuildingProduceCfg','BuildingProduceParamCfg','GameParamCfg','AppointEffectCfg','AppointPosCfg','HeroCfg','FarmlandPlantCfg','SelectPackLibCfg','ItemCfg'])});}
+function productionFactsDigest(f){return productionHash({water:f.rawOnWater,items:f.rawAllItem,resources:f.rawAllResource,stock:[...f.stock],reliability:f.cityReliability,buildings:f.buildings,factories:f.factories,stockCap:f.stockCap,factorySlots:f.factorySlots,strict:f.productionInventoryReliable,stockReliable:f.stockReliable});}
+function productionAuthority(f,options){const live=productionSources.get(f),c=live?.context;return live&&live.client.connected===true&&f.have===live.have&&c&&Object.values(c).every(v=>v!==null)&&Date.now()>=live.at&&Date.now()-live.at<=30000&&productionSame(c,productionScope(live.client,live.player))&&f.stockReliable===true&&f.productionInventoryReliable===true&&f.stock instanceof Map&&live.digest===productionFactsDigest(f)&&live.dependencies===productionConfigDigest(options)?live:null;}
+export function validateProductionParameters(value={}){
+ if(!productionFields(value,['buildingId','productId','materialSource']))throw invalid('生产参数仅允许明确工厂、产品及材料包来源；普通入口保持空对象');
+ if(Reflect.ownKeys(value).length===0)return {};
+ if(!['buildingId','productId','materialSource'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!productionFields(value.materialSource,['exchangeIdentity','productionIdentity'])||!['exchangeIdentity','productionIdentity'].every(k=>productionOwn(value.materialSource,k)&&typeof value.materialSource[k]==='string'&&/^[a-f0-9]{64}$/.test(value.materialSource[k])))throw invalid('组合生产须明确工厂、产品和完整固定来源摘要');
+ return structuredClone(value);
+}
+function productionQuote(f,options,buildingId,productId){
+ const live=productionAuthority(f,options);if(!live||!live.available.includes('StartFactoryProduceRequest'))return null;
+ const view=cityView(f,options),factory=view.factories.find(row=>row.buildingId===buildingId),raw=f.rawOnWater?.building?.filter(row=>row.buildingId===buildingId),recipes=options.config?.tables?.BuildingProduceCfg?.data?.filter(row=>row.buildType===factory?.type&&row.itemId===productId);
+ if(!factory?.reliable||factory.status==='AUTO'||!Number.isSafeInteger(factory.freeSlots)||factory.freeSlots<1||raw?.length!==1||recipes?.length!==1||factory.queue.some(row=>row.productId===productId)||!Number.isSafeInteger(f.stockCap)||f.stockCap<=0||(f.stock.get(productId)??0)>=f.stockCap)return null;
+ const recipe=recipes[0];if(!['buildType','itemId','unlockLevel','produceTime','costItem'].every(k=>productionOwn(recipe,k))||!Number.isSafeInteger(recipe.unlockLevel)||recipe.unlockLevel<0||factory.level<recipe.unlockLevel||!Number.isSafeInteger(recipe.produceTime)||recipe.produceTime<0)return null;
+ let costs;try{costs=resourceCosts(recipe.costItem);assertPaymentAllowed({request:'StartFactoryProduceRequest',body:{buildingId,productId},costs});}catch{return null;}
+ const identity=productionHash({context:live.context,factory:raw[0],recipe,dependencies:live.dependencies});return {identity,costs,factory,recipe};
+}
+function boundProductionCandidates(f,options,rows){
+ const parameters=validateProductionParameters(options.parameters);if(!parameters.materialSource)return rows;
+ const live=productionAuthority(f,options),quote=productionQuote(f,options,parameters.buildingId,parameters.productId);if(!live||!quote||quote.identity!==parameters.materialSource.productionIdentity||typeof live.read!=='function')return [];
+ let runs;try{runs=live.read();}catch{return [];}
+ const settlement=confirmedMaterialPackSettlement(runs,live.context,parameters.materialSource.exchangeIdentity,options.config);
+ const inventory=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
+ if(!settlement||!productionSame(settlement.state.inventory,inventory))return [];
+ const consumed=runs.some(run=>run?.accountId===live.context.accountId&&run.runId!==settlement.runId&&productionSame(run.executionContext&&{...run.executionContext,playerId:productionRole(run.executionContext.playerId),worldId:productionRole(run.executionContext.worldId)},live.context)&&run.actions?.some(row=>row.dispatched===true&&(Date.parse(run.finishedAt??run.startedAt)>=Date.parse(settlement.finishedAt)||row.parameters?.materialSource?.exchangeIdentity===settlement.identity)));
+ if(consumed)return [];
+ return rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId&&productionSame(row.costs,quote.costs));
+}
+export function validateMaterialProductionPreparation(value){
+ if(!productionFields(value,['packId','itemId','num','buildingId','productId','maxDurationMs'])||!['packId','itemId','num','buildingId','productId','maxDurationMs'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('准备须明确材料包、材料、包数、工厂、产品及1至86400000毫秒总时长');
+ const parameters=validateMaterialPackParameters({packId:value.packId,itemId:value.itemId,num:value.num});return {...parameters,buildingId:value.buildingId,productId:value.productId,maxDurationMs:value.maxDurationMs};
+}
+export function prepareMaterialProductionWorkflow(f,packFacts,{config,moduleConfig=defaultConfig,materialPackConfig={enabled:false},...input}={}){
+ const p=validateMaterialProductionPreparation(input),options={config,moduleConfig},quote=productionQuote(f,options,p.buildingId,p.productId),exchangeParameters={packId:p.packId,itemId:p.itemId,num:p.num},exchange=materialPackModule.view(packFacts,{config,moduleConfig:materialPackConfig,parameters:exchangeParameters}).candidates[0];
+ if(!productionAuthority(f,options))throw invalid('生产准备必须使用当前连接的完整私有来源');
+ const stock=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
+ if(!settings(moduleConfig).enabled||!quote||!exchange?.executable||!productionSame(exchange.beforeState?.context,productionSources.get(f)?.context)||!productionSame(exchange.beforeState.inventory,stock))throw invalid('须有同五维真实库存、明确持有包和完整工厂/配方来源；准备不制造可执行库存');
+ if((f.stock.get(p.productId)??0)+(p.productId===p.itemId?exchange.gain:0)>=f.stockCap||!quote.costs.some(row=>row.id===p.itemId)||quote.costs.some(row=>{const owned=f.stock.get(row.id)??0,gain=row.id===p.itemId?exchange.gain:0;return !Number.isSafeInteger(owned+gain)||owned+gain<row.num;}))throw invalid('明确兑换不能覆盖本配方；其他实际自有材料必须足额');
+ const limits=new Map();for(const cost of [...exchange.costs,...quote.costs]){const num=(limits.get(cost.id)??0)+cost.num;if(!Number.isSafeInteger(num))throw invalid('累计成本溢出');limits.set(cost.id,num);}
+ const budget={resources:[...limits].map(([id,num])=>({id,num})),quotas:[],uids:[]},parameters={buildingId:p.buildingId,productId:p.productId,materialSource:{exchangeIdentity:exchange.identity,productionIdentity:quote.identity}},nodes=[{id:'start',type:'START'},{id:'exchange',type:'ACTION',module:'material-packs',parameters:exchangeParameters,selection:exchange.actionId},{id:'verify-exchange',type:'VERIFY',module:'material-packs'},{id:'produce',type:'ACTION',module:'production',parameters,selection:{unique:true}},{id:'verify-produce',type:'VERIFY',module:'production'},{id:'stop',type:'STOP'}];
+ const graph={version:1,id:'material-production-'+productionHash({p,parameters,budget}).slice(0,20),name:'明确材料包确认后指定单份生产',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:2,modules:['material-packs','production']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
+ return {source:p,costs:structuredClone(quote.costs),exchange:{actionId:exchange.actionId,gain:exchange.gain,costs:structuredClone(exchange.costs)},graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'固定持有包、材料/包数、工厂/配方及累计支出上限。兑换SUCCESS/CONFIRMED落盘后，以同账号/角色/世界/连接/代次的完整库存和未消费来源重新调查及单独授权生产；投影不当库存，收入不扩大父预算。拒绝、UNKNOWN、来源/成本变化或到限停止；重启只读零重放。'};
+}
