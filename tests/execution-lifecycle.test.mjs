@@ -35,35 +35,35 @@ function loopFixture({ claimable = false } = {}) {
   return { client, protocol, reads, writes };
 }
 
-test('task rejection memory survives repeated calls without resending the rejected reward', async () => {
+test('legacy task previews and local rejection sets cannot replace a Service permit', async () => {
   const rejected = new Set(); let sends = 0;
   const client = { async sendWatch() { sends++; throw Object.assign(new Error('server prompt: denied'), { prompt: {} }); } };
   const survey = { plan: [task(1)] };
   const first = await runTasks(client, taskProtocol, survey, { allowMutate: true, rejected });
   const second = await runTasks(client, taskProtocol, survey, { allowMutate: true, rejected });
-  assert.equal(first[0].status, 'REJECTED');
+  assert.equal(first[0].status, 'NOT_EXECUTED'); assert.equal(first[0].code, 'AUTHORIZATION_REQUIRED');
   assert.equal(second[0].status, 'NOT_EXECUTED');
-  assert.equal(sends, 1);
+  assert.equal(sends, 0);
 });
 
-test('a silent or timed-out task is UNKNOWN and stops all following task writes', async () => {
+test('legacy task transport is never reached without the registered permit', async () => {
   for (const timeout of [false, true]) {
     let sends = 0; const rejected = new Set();
     const client = { async sendWatch() { sends++; if (timeout) throw new Error('timeout'); } };
     const results = await runTasks(client, taskProtocol, { plan: [task(1), task(2)] }, { allowMutate: true, rejected });
-    assert.equal(results.length, 1); assert.equal(sends, 1);
-    assert.equal(results[0].status, 'UNKNOWN'); assert.equal(results[0].ok, null);
+    assert.equal(results.length, 1); assert.equal(sends, 0);
+    assert.equal(results[0].status, 'NOT_EXECUTED'); assert.equal(results[0].code, 'AUTHORIZATION_REQUIRED'); assert.equal(results[0].ok, false);
     assert.equal(rejected.size, 0, 'uncertainty is never stored as a definite rejection');
   }
 });
 
-test('UNKNOWN ends the loop before daily/world surveys or another round', async () => {
+test('missing Service permit ends the legacy loop before daily/world surveys or another round', async () => {
   const env = loopFixture({ claimable: true });
   const result = await runLoop(env.client, env.protocol, { config, allowMutate: true, rounds: 3, everyMs: 0 });
-  assert.equal(result.status, 'UNKNOWN'); assert.equal(result.history.length, 1);
-  assert.equal(env.writes.length, 1);
+  assert.equal(result.status, 'NOT_EXECUTED'); assert.equal(result.history.length, 1);
+  assert.equal(env.writes.length, 0);
   assert.deepEqual(env.reads, ['MainTaskInfoRequest', 'AchievementInfoRequest', 'OnWaterRequest']);
-  assert.match(formatLoopRound(result.history[0]), /未知 1/);
+  assert.equal(result.history[0].tasks.results[0].code, 'AUTHORIZATION_REQUIRED'); assert.match(formatLoopRound(result.history[0]), /NOT_EXECUTED/);
 });
 
 test('plain stop cancels an in-flight survey promptly; late data cannot start the next query', async () => {
@@ -116,14 +116,14 @@ test('completion and abort release execution listeners, including a cancelled de
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
 });
 
-test('the fixed loop passes rejected reward memory into the following round', async () => {
+test('legacy loop cannot turn a local rejection set into a second write chain', async () => {
   const env = loopFixture({ claimable: true }); let sends = 0;
   env.client.sendWatch = async () => { sends++; throw Object.assign(new Error('server prompt: denied'), { prompt: {} }); };
   const result = await runLoop(env.client, env.protocol, { config, allowMutate: true, rounds: 2, everyMs: 0 });
-  assert.equal(result.status, 'SUCCESS'); assert.equal(result.history.length, 2);
-  assert.equal(result.history[0].tasks.results[0].status, 'REJECTED');
-  assert.equal(result.history[1].tasks.results[0].status, 'NOT_EXECUTED');
-  assert.equal(sends, 1);
+  assert.equal(result.status, 'NOT_EXECUTED'); assert.equal(result.history.length, 1);
+  assert.equal(result.history[0].tasks.results[0].status, 'NOT_EXECUTED');
+  assert.equal(result.history[0].tasks.results[0].code, 'AUTHORIZATION_REQUIRED');
+  assert.equal(sends, 0);
 });
 
 
@@ -174,4 +174,10 @@ test('Tasks never promotes inherited Codec defaults or missing order response in
 });
 test('preprovided Tasks water reuses the same raw observation and does not request another snapshot',async()=>{
  const {survey,reads,writes}=await taskOrderSurvey(null,dailyTierConfig,{water:{orderOfTheDay:{orderNum:12,rewardedNum:6}}});assert.equal(survey.orderOfTheDay.tier,12);assert.equal(survey.orderOfTheDay.claimable,true);assert.deepEqual(reads,['MainTaskInfoRequest','AchievementInfoRequest']);assert.equal(writes.length,0);
+});
+
+for(const mode of ['missing','duplicate','wrong-account','wrong-run','empty-actions','account-switch','client-switch'])test('compatibility reporting refuses missing or mismatched persistent result '+mode,async()=>{
+ const client={connected:true},session={id:'synthetic-A',client},record={accountId:session.id,runId:'synthetic-run',finalStatus:'SUCCESS',actions:[{actionId:'synthetic-action',result:'SUCCESS'}]};let executed=0;
+ const service={executeTaskRewards(){executed++;return {runId:record.runId};},async settle(){if(mode==='account-switch')session.id='synthetic-B';if(mode==='client-switch')session.client={connected:true};},history(){if(mode==='wrong-account')record.accountId='synthetic-B';if(mode==='wrong-run')record.runId='other-run';if(mode==='empty-actions')record.actions=[];return {runs:mode==='missing'?[]:mode==='duplicate'?[record,record]:[record]};}};
+ const result=await runTasks(client,{}, {plan:[]},{allowMutate:true,operationService:service,session,authorization:{}});assert.equal(result.length,1);assert.equal(result[0].status,'UNKNOWN');assert.equal(result[0].ok,null);assert.equal(executed,1);
 });

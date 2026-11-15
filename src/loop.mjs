@@ -29,7 +29,7 @@ export async function runLoop(client, protocol, {
   const active = () => assertExecutionActive(client, options);
   const observe = (task) => awaitExecution(task, client, options);
   const halted = (results) => {
-    const entry = results.find(stopsExecution);
+    const entry = results.find(row => stopsExecution(row) || row.code === 'AUTHORIZATION_REQUIRED');
     if (!entry) return false;
     status = entry.status;
     error = entry.error ?? entry.reason ?? '执行结果未确认，已停止后续操作';

@@ -5,14 +5,13 @@
 // 算不出目标值的任务不排进计划，只在 notes 里写明，宁可漏领也不乱发请求。
 // 成就的响应自带 targetProgress，不需要配置表。
 //
-// 这四条领取请求在协议表里都没有配套的 *Response：成功时服务端一声不吭，被拒时只推
-// PromptResponse，所以一律走 client.sendWatch()，见 docs/gameplay.md 第 11.3 节。
+// 旧调查保留只读预览；写入仅转交注册Function的当前许可，结算和拒绝/UNKNOWN由原Service持久化。
 
 import { ACTIONS, buildBody } from './actions.mjs';
 import { normalize } from './worlds.mjs';
 import { observeOrderProgress } from './order-execution.mjs';
 import { safeResourceQuantity } from './resource-ledger.mjs';
-import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
+import { assertExecutionActive, awaitExecution, delegateAuthorizedBatch } from './execution.mjs';
 
 // 客户端 TaskUtil.taskProgress 的第二组：目标值取 params[1]（params[0] 是物品名或类型名）。
 const TARGET_FROM_PARAM1 = new Set([
@@ -185,36 +184,12 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
   return { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
 }
 
-// 逐条领取；调用方持有 rejected 跨轮记忆。静默窗口结束是 UNKNOWN，停止后续写操作。
-export async function runTasks(client, protocol, survey, {
-  allowMutate = false, window = 400, onStep, rejected = new Set(), signal, stop,
-} = {}) {
-  if (!allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
-  const options = { signal, stop };
-  const results = [];
-  for (const step of survey.plan) {
-    const key = `${step.kind}:${step.id}`;
-    let entry;
-    try {
-      assertExecutionActive(client, options);
-      if (rejected.has(key)) {
-        entry = operationResult('NOT_EXECUTED', { step, skipped: true, error: '刚被服务端拒过，跳过' });
-      } else if (!protocol[step.request]) {
-        entry = operationResult('NOT_EXECUTED', { step, error: `协议表里没有 ${step.request}` });
-      } else {
-        const sent = await awaitExecution(client.sendWatch(step.request, step.body, { window, signal }), client, options);
-        entry = operationResult('UNKNOWN', { step, sent, error: '请求已发送，尚未验证服务端最终状态' });
-      }
-    } catch (error) {
-      const status = executionOutcome(error);
-      if (status === 'REJECTED') rejected.add(key);
-      entry = operationResult(status, { step, error: error.message });
-    }
-    results.push(entry);
-    onStep?.(entry);
-    if (stopsExecution(entry)) break;
-  }
-  return results;
+// Compatibility entry: a legacy plan/--yes never authorizes a second write path.
+export async function runTasks(client, protocol, survey, options = {}) {
+  if (!options.allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
+  const decorate = row => ({ ...row, step: { kind: row.target?.kind, id: row.target?.taskId, label: row.label ?? '任务奖励' } });
+  const results = await delegateAuthorizedBatch(client, { ...options, onStep: row => options.onStep?.(decorate(row)) }, 'executeTaskRewards');
+  return results.map(decorate);
 }
 
 export function formatTaskPlan(survey) {

@@ -1,3 +1,4 @@
+import { runTasks } from '../src/tasks.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -262,4 +263,28 @@ test('mismatched original identity cannot supply business facts to unlock refusa
  const saved=f.durable.list(f.session.id)[0];saved.actions[0].identity='different-original';f.durable.put(saved);
  const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='replacement';next.state.tasks.task.progress++;
  await assert.rejects(next.plan(),{code:'MEMORY_EVENT_CONFLICT'});assert.equal(next.state.writes.length,0);
+});
+const invokeLegacyTasks=(f,permit,options={})=>runTasks(f.client,protocol,{plan:[{kind:'orderDaily',id:999,request:'forged-preview-request',body:{}}]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit,...options});
+for(const kind of ['main','branch','achievement'])for(const apply of [true,false])test('Tasks compatibility delegates exact registered '+kind+' result '+apply,async t=>{
+ const f=serviceFixture(t,{apply,selectedParameters:{kind,taskId:kind==='main'?1:kind==='branch'?8001:1001}}),permit=f.authorize(await f.plan()),events=[];
+ const result=await invokeLegacyTasks(f,permit,{onStep:row=>events.push(row)});assert.equal(result.length,1);assert.equal(result[0].status,apply?'SUCCESS':'UNKNOWN');assert.equal(result[0].ok,apply?true:null);assert.deepEqual(events,result);assert.equal(result[0].step.kind,kind);assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].body[kind==='achievement'?'id':'taskId'],kind==='main'?1:kind==='branch'?8001:1001);
+ const saved=f.durable.list(f.session.id)[0];assert.equal(saved.finalStatus,result[0].status);assert.equal(saved.runId,result[0].runId);assert.equal(f.state.durableBeforeWrite.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.equal(saved.actions[0].verification.status,apply?'CONFIRMED':'UNCONFIRMED');assert.notEqual((await invokeLegacyTasks(f,permit))[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
+ if(!apply){const next=serviceFixture(t,{file:f.file});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+for(const timeout of [false,true])test('Tasks compatibility silent or timed-out result stays UNKNOWN '+timeout,async t=>{
+ const f=serviceFixture(t,{apply:false}),permit=f.authorize(await f.plan());if(timeout)f.state.onWrite=()=>{throw Error('synthetic timeout');};
+ const result=await invokeLegacyTasks(f,permit);assert.equal(result.length,1);assert.equal(result[0].status,'UNKNOWN');assert.equal(result[0].ok,null);assert.equal(f.state.writes.length,1);assert.equal(f.service.executionMemory(f.session.id).events[0].status,'UNKNOWN');await invokeLegacyTasks(f,permit);assert.equal(f.state.writes.length,1);
+});
+test('Tasks compatibility uses persistent rejection across calls and restart',async t=>{
+ const f=serviceFixture(t,{apply:false,watchStatus:'REJECTED'}),permit=f.authorize(await f.plan()),first=await invokeLegacyTasks(f,permit);assert.equal(first[0].status,'REJECTED');assert.equal(f.service.executionMemory(f.session.id).events[0].status,'REJECTED');assert.notEqual((await invokeLegacyTasks(f,permit))[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
+ const next=serviceFixture(t,{file:f.file});await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
+});
+for(const change of ['account','player','world','connection','generation','client','abort'])test('Tasks compatibility refuses '+change+' scope before transport',async t=>{
+ const f=serviceFixture(t),permit=f.authorize(await f.plan());if(change==='account')f.session.id='synthetic-B';if(change==='player')f.session.player.playerId='18';if(change==='world')f.session.player.worldId='18';if(change==='connection')f.session.connectionId='replacement';if(change==='generation')f.session.generation++;if(change==='client')f.session.client={...f.client};if(change==='abort')f.session.abort.abort();const result=await invokeLegacyTasks(f,permit);assert.notEqual(result[0].status,'SUCCESS');assert.equal(f.state.writes.length,0);
+});
+test('Tasks compatibility late cancellation keeps durable UNKNOWN and never replays',async t=>{
+ const f=serviceFixture(t,{apply:false}),permit=f.authorize(await f.plan());let release;f.state.onWrite=()=>new Promise(r=>release=r);const pending=invokeLegacyTasks(f,permit);for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();assert.equal((await pending)[0].status,'UNKNOWN');assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');assert.equal(f.state.writes.length,1);await invokeLegacyTasks(f,permit);assert.equal(f.state.writes.length,1);
+});
+test('Tasks compatibility requires both mutation confirmation and exact Service permit',async t=>{
+ const f=serviceFixture(t);assert.equal((await invokeLegacyTasks(f,null))[0].code,'AUTHORIZATION_REQUIRED');assert.equal(f.state.writes.length,0);await assert.rejects(invokeLegacyTasks(f,null,{allowMutate:false}));
 });

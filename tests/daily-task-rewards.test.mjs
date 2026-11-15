@@ -1,3 +1,4 @@
+import { runTasks } from '../src/tasks.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -996,4 +997,8 @@ test('legacy claim rejects missing permits, unrelated Function scopes and differ
  const f=serviceFixture(t,{weekly:true});f.permit=f.authorize(await f.plan());const blocked=await claimAuthorized(f);assert.equal(blocked[0].status,'NOT_EXECUTED');assert.equal(blocked[0].code,'INVALID_INPUT');assert.equal(f.state.writes.length,0);
  const g=serviceFixture(t,{gift:true});g.permit=g.authorize(await g.plan());
  const result=await claimDailies({},protocol,{allowMutate:true,operationService:g.service,session:g.session,authorization:g.permit});assert.equal(result[0].code,'AUTHORIZATION_REQUIRED');assert.equal(g.state.writes.length,0);
+});
+
+test('Tasks compatibility cannot consume an authorized daily Function batch',async t=>{
+ const f=serviceFixture(t,{gift:true}),permit=f.authorize(await f.plan());const result=await runTasks(f.client,protocol,{plan:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.equal(result[0].status,'NOT_EXECUTED');assert.equal(result[0].code,'INVALID_INPUT');assert.equal(f.state.writes.length,0);f.permit=permit;assert.equal((await claimAuthorized(f))[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
 });

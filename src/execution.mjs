@@ -57,3 +57,38 @@ export async function executionDelay(ms, options = {}) {
   try { await awaitExecution(delay, null, options); }
   finally { clearTimeout(timer); }
 }
+
+// Compatibility delegation only; the existing Service owns dispatch, budgets and history.
+function paymentFailure(error) {
+  return ['D6_FORBIDDEN', 'PAID_NOT_ALLOWED', 'COST_UNKNOWN'].includes(error.code);
+}
+function failedAuthorizedOutcome(error) {
+  return operationResult(paymentFailure(error) ? 'NOT_EXECUTED' : executionOutcome(error), {
+    error: error.message, code: error.code, ...(paymentFailure(error) ? { skipped: true, reason: error.message } : {}),
+  });
+}
+
+export async function delegateAuthorizedBatch(client, options, method) {
+  const { operationService: service, session, authorization, onStep } = options;
+  const report = outcome => { onStep?.(outcome); return [outcome]; };
+  try { assertExecutionActive(client, options); } catch (error) { return report(failedAuthorizedOutcome(error)); }
+  if (typeof service?.[method] !== 'function' || !session || session.client !== client || !authorization) return report(operationResult('NOT_EXECUTED', {
+    skipped: true, code: 'AUTHORIZATION_REQUIRED', reason: '操作须使用原注册Function的当前批次授权；预览不会派发',
+  }));
+  try {
+    assertExecutionActive(client, options);
+    const accountId = session.id;
+    const run = service[method](session, authorization);
+    await service.settle(accountId);
+    const records = service.history(accountId, run.runId).runs;
+    if (session.id !== accountId || session.client !== client || records.length !== 1 || records[0].accountId !== accountId || records[0].runId !== run.runId || !Array.isArray(records[0].actions) || records[0].actions.length === 0) return report(operationResult('UNKNOWN', { runId: run.runId, reason: '持久执行结果缺失或不唯一，禁止重放' }));
+    const record = records[0];
+    const results = record.actions.map(row => ({
+      ...operationResult(row.result ?? 'UNKNOWN'), actionId: row.actionId, runId: record.runId,
+      requestStatus: row.requestStatus, verification: row.verification, reason: row.reason, label: row.label, target: row.target,
+    }));
+    if (record.finalStatus !== 'SUCCESS' && results.every(row => row.status === 'SUCCESS')) results.push(operationResult(record.finalStatus ?? 'UNKNOWN', { runId: record.runId, reason: record.stopReason }));
+    results.forEach(row => onStep?.(row));
+    return results;
+  } catch (error) { return report(error.code === 'INVALID_INPUT' ? operationResult('NOT_EXECUTED', { code: error.code, reason: error.message }) : failedAuthorizedOutcome(error)); }
+}

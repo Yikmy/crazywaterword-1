@@ -20,7 +20,7 @@ import { nextTrialStage } from './trial-challenge.mjs';
 import { normalize } from './worlds.mjs';
 import { ACTIONS, buildBody, buildDailyDriverBody, FREE_DAILY_PACK_ID } from './actions.mjs';
 import { RESOURCE_NAMES, safeResourceQuantity, stockFromResponses } from './resource-ledger.mjs';
-import { assertExecutionActive, awaitExecution, executionOutcome, operationResult } from './execution.mjs';
+import { assertExecutionActive, awaitExecution, delegateAuthorizedBatch } from './execution.mjs';
 
 export const TASK_TITLES = {
   1001: '登录游戏',
@@ -536,50 +536,17 @@ async function dailyQuery(client, name, body, response, options, mutate = false)
   return awaitExecution(client.request(name, body, response, options.timeout ?? 15000, { mutate, signal: options.signal }), client, options);
 }
 
-function paymentFailure(error) {
-  return ['D6_FORBIDDEN', 'PAID_NOT_ALLOWED', 'COST_UNKNOWN'].includes(error.code);
-}
-function failedOutcome(error) {
-  return operationResult(paymentFailure(error) ? 'NOT_EXECUTED' : executionOutcome(error), {
-    error: error.message, code: error.code, ...(paymentFailure(error) ? { skipped: true, reason: error.message } : {}),
-  });
-}
-
 export async function runDailies(client, protocol, survey, options = {}) {
   if (!options.allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
-  return executeAuthorizedDailyBatch(client, options, 'executeDailyDriver');
+  return delegateAuthorizedBatch(client, options, 'executeDailyDriver');
 }
 
 // Compatibility entry: execution and final verification belong to the existing Service.
 // A legacy --yes flag or a preview is never a replacement for its exact single-use permit.
 export async function claimDailies(client, protocol, options = {}) {
   if (!options.allowMutate) throw new Error('领取日常奖励会改变账号状态，需要 --yes');
-  return executeAuthorizedDailyBatch(client, options, 'executeDailyRewards');
+  return delegateAuthorizedBatch(client, options, 'executeDailyRewards');
 }
-async function executeAuthorizedDailyBatch(client, options, method) {
-  const { operationService: service, session, authorization, onStep } = options;
-  const report = outcome => { onStep?.(outcome); return [outcome]; };
-  try { assertExecutionActive(client, options); } catch (error) { return report(failedOutcome(error)); }
-  if (typeof service?.[method] !== 'function' || !session || session.client !== client || !authorization) return report(operationResult('NOT_EXECUTED', {
-    skipped: true, code: 'AUTHORIZATION_REQUIRED', reason: '日常操作须使用原注册Function的当前批次授权；预览不会派发',
-  }));
-  try {
-    assertExecutionActive(client, options);
-    const run = service[method](session, authorization);
-    await service.settle(session.id);
-    const records = service.history(session.id, run.runId).runs;
-    if (records.length !== 1) return report(operationResult('UNKNOWN', { runId: run.runId, reason: '持久执行结果缺失或不唯一，禁止重放' }));
-    const record = records[0];
-    const results = record.actions.map(row => ({
-      ...operationResult(row.result ?? 'UNKNOWN'), actionId: row.actionId, runId: record.runId,
-      requestStatus: row.requestStatus, verification: row.verification, reason: row.reason,
-    }));
-    if (record.finalStatus !== 'SUCCESS' && results.every(row => row.status === 'SUCCESS')) results.push(operationResult(record.finalStatus ?? 'UNKNOWN', { runId: record.runId, reason: record.stopReason }));
-    results.forEach(row => onStep?.(row));
-    return results;
-  } catch (error) { return report(error.code === 'INVALID_INPUT' ? operationResult('NOT_EXECUTED', { code: error.code, reason: error.message }) : failedOutcome(error)); }
-}
-
 // 活跃奖励那两行：没得领的时候也要说清楚差多少，否则看不出是「领完了」还是「没在领」。
 function chestLine(name, chest) {
   if (chest.status === 'unknown') return `活跃奖励 ${name} 状态未知，未生成领取计划`;
