@@ -1582,3 +1582,27 @@ for(const change of ['account','player','world','connection','generation','confi
   const reply=await app.call(materialCoverageRoute,{body:materialCoverageTarget});assert.notEqual(reply.status,200);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);if(change==='generation')assert.equal(session.busy,'successor');
  }finally{await app.close();}
 });
+
+for(const fault of ['extra-item','extra-gold','other-tech'])test('Alliance exact technology settlement '+fault+' persists UNKNOWN and prevents replay after restart',async()=>{
+ const app=await harness({includeAlliance:true});
+ try{
+  const session=app.ready('A');await app.enable();const p=await app.plan(),permit=await app.approve(p.data);
+  const request=session.client.request.bind(session.client);
+  session.client.request=async(...args)=>{const value=await request(...args);if(app.requests.some(row=>row.name==='UpgradeGuildTechRequest')){
+   if(fault==='extra-item'&&args[0]==='AllItemRequest')value.items.push({itemId:'unrelated',num:1});
+   if(fault==='extra-gold'&&args[0]==='AllResourceRequest')value.list.push({res:3,amount:1});
+   if(fault==='other-tech'&&args[0]==='GuildTechInfoRequest')value.tech.push({techId:10102,level:1});
+  }return value;};
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+  const record=(await app.call('/api/operations/history')).data.runs[0];
+  assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].verification.status,'UNCONFIRMED');assert.equal(record.actions[0].unresolvedWrite,true);
+  assert.deepEqual(record.runBudget.reserved.resources,[{id:'公会科技点',num:2400}]);assert.deepEqual(app.history.list('A')[0].runBudget.reserved.resources,[{id:'公会科技点',num:2400}]);
+  assert.equal(session.client.uncertainWrites.has('UpgradeGuildTechRequest'),true);assert.equal(app.history.unresolved('A'),true);
+  assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);
+  const bytes=fs.readFileSync(app.history.storagePath,'utf8'),{createOperationService}=await import('../src/operation-service.mjs');
+  const reopened=createExecutionHistory({file:app.history.storagePath}),service=createOperationService({history:reopened,modules:app.operations.modules,protocol});
+  assert.equal(service.blocked('A'),true);const fresh=app.ready('A');
+  await assert.rejects(service.surveyModule(fresh,'alliance',{techId:10101,targetLevel:2}),{code:'RECOVERY_UNCERTAIN'});
+  assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);assert.equal(app.requests.filter(row=>row.name==='UpgradeGuildTechRequest').length,1);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

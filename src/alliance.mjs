@@ -3,6 +3,7 @@ import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 import { readGuildShipActivitySnapshot } from './client.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 // Alliance adapter only; the shared service owns authorization and transport.
 // Evidence: cached GuildHelpRequest/Pop:1455-1459, GuildCityArmyPop:1445,
 // GuildChestPop:1441, GuildUtil:1533, static protocol and configuration.
@@ -241,7 +242,9 @@ export function verifyAlliance(op,b,a,response,options={}){
   if(op.actionType==='upgradeTech'){
     const old=b.tech?.find(x=>x.techId===t.techId),next=a.tech?.find(x=>x.techId===t.techId),reply=response?.tech;
     const level=old?.level??0;
-    return b.techReliable===true&&a.techReliable===true&&b.worldId===a.worldId&&b.season===a.season&&b.seasonStage===a.seasonStage&&Number.isSafeInteger(b.worldId)&&b.worldId>0&&techInteger(level)&&t.targetLevel===level+1&&next?.level===t.targetLevel&&field(reply,'techId')===t.techId&&quantity(field(reply,'level'))===t.targetLevel&&consume(b,a,op.costs)&&op.costs.every(({id,num})=>(b.stock.get(id)??0)-(a.stock.get(id)??0)===num);
+    // A missing row in the complete map is level zero, as in the original view.
+    const other=f=>f.tech.filter(row=>row.techId!==t.techId&&row.level!==0).sort((x,y)=>x.techId-y.techId);
+    return b.techReliable===true&&a.techReliable===true&&b.worldId===a.worldId&&b.season===a.season&&b.seasonStage===a.seasonStage&&Number.isSafeInteger(b.worldId)&&b.worldId>0&&techInteger(level)&&t.targetLevel===level+1&&next?.level===t.targetLevel&&field(reply,'techId')===t.techId&&quantity(field(reply,'level'))===t.targetLevel&&b.stockReliable===true&&a.stockReliable===true&&stockMatchesDelta(b.stock,a.stock,op.costs,[])&&stable(other(b))===stable(other(a));
   }
   if(op.actionType==='help'){const old=b.asks?.find(x=>x.reqId===t.reqId&&x.askerId===t.playerId&&x.itemId===t.itemId);return !!old&&b.asksReliable&&a.asksReliable&&time.latest!==null&&time.latest<old.endTime&&!a.asks.some(x=>x.reqId===t.reqId)&&consume(b,a,op.costs);}
   if(op.actionType==='cancel'){const old=b.ownAids?.find(x=>x.reqId===t.reqId&&!x.helperId);return !!old&&b.ownReliable&&a.ownReliable&&time.latest!==null&&time.latest<old.endTime&&!a.ownAids.some(x=>x.reqId===t.reqId);}

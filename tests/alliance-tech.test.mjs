@@ -109,3 +109,34 @@ for(const phase of ['before','after'])for(const alias of ['id','count'])
   if(phase==='after'){assert.equal(result.unresolvedWrite,true);assert.equal(budget.ledger.reserved.get('公会科技点'),24);assert.equal(c.uncertainWrites.size,1);}
   else assert.equal(budget.ledger?.reserved.get('公会科技点')??0,0);
  });
+
+for(const fault of ['other-point-debit','other-point-credit','new-item','extra-gold','non-target-tech','missing-non-target-tech'])
+ test('technology exact settlement rejects '+fault+' despite correct target level and exact point debit',async()=>{
+  const b=await read(fake({GuildTechInfoRequest:{tech:[{techId:10101,level:1},{techId:10102,level:1}]}})),op=action(b);
+  const a=after(b,{tech:[{techId:10101,level:2},{techId:10102,level:1}]});
+  if(fault==='other-point-debit')a.stock.set('联盟职级科技点',49);
+  if(fault==='other-point-credit')a.stock.set('联盟职级科技点',51);
+  if(fault==='new-item')a.stock.set('unexpected-material',1);
+  if(fault==='extra-gold')a.stock.set('GOLD',1);
+  if(fault==='non-target-tech')a.tech[1].level=2;
+  if(fault==='missing-non-target-tech')a.tech.pop();
+  assert.equal(verifyAlliance(op,b,a,{tech:{techId:10101,level:2}}),false);
+ });
+
+test('technology shared settlement preserves last point removal, reordered maps and omitted zero-level rows',async()=>{
+ const b=await read(fake({AllItemRequest:{items:[{itemId:'公会科技点',num:24},{itemId:'联盟职级科技点',num:50}]},GuildTechInfoRequest:{tech:[{techId:10103,level:0},{techId:10102,level:1},{techId:10101,level:1}]}})),op=action(b);
+ const a=after(b,{tech:[{techId:10101,level:2},{techId:10102,level:1}],stock:new Map([['联盟职级科技点',50]])});
+ assert.equal(verifyAlliance(op,b,a,{tech:{techId:10101,level:2}}),true);assert.deepEqual(op.costs,[{id:'公会科技点',num:24}]);
+ a.tech.reverse();assert.equal(verifyAlliance(op,b,a,{tech:{techId:10101,level:2}}),true);
+});
+
+for(const fault of ['other-item','gold','other-tech'])test('original technology executor keeps '+fault+' settlement mismatch UNKNOWN with full point reservation',async()=>{
+ const c=fake(),f=await read(c),op=action(f),request=c.request.bind(c),budget={ledger:null};c.uncertainWrites=new Set();c.markUnverifiedWrite=n=>c.uncertainWrites.add(n);
+ c.request=async(...args)=>{const value=await request(...args);if(c.writes.length){
+  if(fault==='other-item'&&args[0]==='AllItemRequest')value.items[1].num--;
+  if(fault==='gold'&&args[0]==='AllResourceRequest')value.list.push({res:3,amount:1});
+  if(fault==='other-tech'&&args[0]==='GuildTechInfoRequest')value.tech.push({techId:10102,level:1});
+ }return value;};
+ const result=await executeBusinessOperation(c,protocol,op,{adapter:allianceModule,config,moduleConfig,parameters,player,allowMutate:true,budget});
+ assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(c.writes.length,1);assert.equal(budget.ledger.reserved.get('公会科技点'),24);assert.equal(c.uncertainWrites.size,1);
+});
