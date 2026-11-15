@@ -242,3 +242,49 @@ test('production history accepts an explicit local date independently of exact r
     assert.equal(f.calls.length,0);assert.equal(f.surveys(),0);
   }finally{f.cleanup();}
 });
+
+
+const {allianceModule:cachedAllianceModule}=await import('../src/alliance.mjs');
+function allianceCacheFixture({gate=null,viewOverride=null}={}){
+ const f=fixture(),session=f.session('A');let reads=0;
+ Object.assign(session,{connectionId:'synthetic-connection',player:{playerId:'9007199254740993',worldId:1000001}});
+ session.client.factContext={accountId:'A',generation:1,connectionId:session.connectionId,playerId:'9007199254740993',worldId:1000001};
+ const facts={module:'alliance',parameters:{},guildId:'10',playerId:'9007199254740993',members:[{playerId:'2',nickname:'synthetic-member',online:false,title:0}],membersReliable:true,tech:[],techReliable:true,order:{requirements:[],nextRefreshTime:0},sourceAt:{GuildMemberRequest:1800000000000},stock:new Map(),available:[],notes:[]};
+ const service=createOperationService({protocol:{},history:f.history,loadRules:()=>({config:{version:1,rules:[]}}),modules:{alliance:{...cachedAllianceModule,view(facts,options){return viewOverride?viewOverride(facts,options):cachedAllianceModule.view(facts,options);},async survey(){reads++;if(gate)await gate.promise;return structuredClone(facts);}}},moduleSettings:{get:()=>({config:{enabled:false}})}});
+ return {...f,service,session,reads:()=>reads,facts};
+}
+test('Service own alliance overview reads same explicit cache without transport or private source leaks',async()=>{
+ const f=allianceCacheFixture();try{
+  assert.equal(f.service.allianceOverview(f.session).status,'UNKNOWN');assert.equal(f.reads(),0);
+  const observed=await f.service.surveyModule(f.session,'alliance');assert.equal(observed.view.members.length,1);assert.equal(Object.hasOwn(observed.view,'observation'),false);
+  const r=f.service.allianceOverview(f.session);assert.equal(r.members.rows[0].nickname,'synthetic-member');assert.equal(r.members.rows[0].online,false);assert.equal(r.context.playerId,'9007199254740993');assert.equal(r.context.worldId,'1000001');assert.equal(r.members.observedAt,new Date(1800000000000).toISOString());
+  r.members.rows[0].nickname='modified';assert.equal(f.service.allianceOverview(f.session).members.rows[0].nickname,'synthetic-member');assert.equal(f.reads(),1);assert.equal(f.service.moduleView('A','alliance').view.members.length,1);
+  assert.equal(f.service.allianceOverview({...f.session,id:'B',client:{...f.session.client}}).status,'UNKNOWN');assert.deepEqual(f.service.history('A').runs,[]);
+  const fresh=createOperationService({protocol:{},history:f.history,loadRules:()=>({config:{}})});assert.equal(fresh.allianceOverview(f.session).status,'UNKNOWN');assert.equal(f.reads(),1);
+ }finally{f.cleanup();}
+});
+for(const change of ['account','generation','connection','player','world','client','client-account','client-generation','client-connection','client-player','client-world','disconnect','abort'])test('Service own alliance cache refuses '+change+' identity without reread or replay',async()=>{
+ const f=allianceCacheFixture();try{
+  await f.service.surveyModule(f.session,'alliance');const s=f.session;
+  if(change==='account')s.id='B';if(change==='generation')s.generation++;if(change==='connection')s.connectionId='another';if(change==='player')s.player.playerId='2';if(change==='world')s.player.worldId=2000001;if(change==='client')s.client={...s.client};if(change.startsWith('client-'))s.client.factContext[{'client-account':'accountId','client-generation':'generation','client-connection':'connectionId','client-player':'playerId','client-world':'worldId'}[change]]=change==='client-generation'?2:'other';if(change==='disconnect')s.client.connected=false;if(change==='abort')s.abort.abort();
+  const r=f.service.allianceOverview(s);assert.equal(r.status,'UNKNOWN');assert.equal(r.guildId,null);assert.deepEqual(r.members.rows,[]);assert.equal(f.reads(),1);
+ }finally{f.cleanup();}
+});
+test('Service late alliance survey cannot seed cache after role changes or release successor lock',async()=>{
+ let resolve;const gate={promise:new Promise(yes=>{resolve=yes;})},f=allianceCacheFixture({gate});try{
+  const pending=f.service.surveyModule(f.session,'alliance');f.session.player.worldId=2000001;f.session.busy='successor';resolve();await assert.rejects(pending,error=>error.code==='CANCELLED');assert.equal(f.service.allianceOverview(f.session).status,'UNKNOWN');assert.equal(f.session.busy,'successor');assert.equal(f.reads(),1);
+ }finally{f.cleanup();}
+});
+test('Service disconnected empty session has unknown own alliance without creating client',()=>{
+ const service=createOperationService({protocol:{},loadRules:()=>({config:{}})});assert.equal(service.allianceOverview({id:'A',generation:1,state:'IDLE',client:null,player:null,connectionId:null}).status,'UNKNOWN');
+});
+
+
+
+test('Service failed alliance view cannot pair old cache provenance with new survey facts',async()=>{
+ let failing=false;const f=allianceCacheFixture({viewOverride:(facts,options)=>{if(failing)throw Error('synthetic projection failure');return cachedAllianceModule.view(facts,options);}});try{
+  await f.service.surveyModule(f.session,'alliance');const before=f.service.allianceOverview(f.session);
+  f.facts.members[0].nickname='must-not-replace';failing=true;
+  await assert.rejects(f.service.surveyModule(f.session,'alliance'),/synthetic projection failure/);assert.deepEqual(f.service.allianceOverview(f.session),before);assert.equal(f.reads(),2);
+ }finally{f.cleanup();}
+});

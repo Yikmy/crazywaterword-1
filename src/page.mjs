@@ -714,6 +714,20 @@ function renderFishing(data, readFailed = false) {
   box.appendChild(el('p', 'dim', '待捕鱼、收线剩余时间和续接状态：未知。此页只读。'));
 }
 
+function renderOwnAlliance(box,data,scope,draw,known,labels){
+  const own=data?.ownAlliance,valid=own?.accountId===scope.account&&own.readOnly===true&&own.executable===false&&own.complete===false&&own.coverage==='LATEST_EXPLICIT_SURVEY_ONLY'&&['accountId','generation','connectionId','playerId','worldId'].every(k=>own.context?.[k]!==undefined&&own.context[k]===data?.dataContext?.[k]);
+  if(!valid){box.appendChild(el('p','dim','本人联盟来源未知；请在原联盟页显式调查。'));return;}
+  box.appendChild(el('h3','','本人联盟调查摘要'));
+  box.appendChild(el('p','dim','联盟ID：'+known(own.guildId)+' · '+(labels[own.status]||'未知')+' · 调查完成：'+(own.surveyedAt?when(own.surveyedAt):'未知')+'。本人归属仅为调查时观察。'));
+  draw('成员历史观察',['角色ID','昵称','在线原值','职级原值'],(own.members?.rows||[]).map(row=>[known(row.playerId),known(row.nickname),known(row.online),known(row.title)]));
+  draw('科技历史观察',['科技ID','名称','已观察等级'],(own.technology?.rows||[]).map(row=>[known(row.techId),known(row.name),known(row.level)]));
+  draw('订单历史观察',['材料','数量原值'],(own.order?.requirements||[]).map(row=>[known(row.id),known(row.num)]));
+  box.appendChild(el('p','dim','订单刷新时间原值：'+known(own.order?.nextRefreshTime)+'；不代表可刷新或可交付。'));
+  draw('商船历史观察',['船ID','类型原值','状态原值','船长ID','准备截止原值','移动截止原值'],(own.ship?.rows||[]).map(row=>[known(row.shipId),known(row.type),known(row.state),known(row.leaderId),known(row.preparedEndTime),known(row.mvEndTime)]));
+  draw('本人联盟来源',['查询','状态','来源更新'],[own.members,own.technology,own.order,own.ship].map(row=>[row?.request||'未知',labels[row?.status]||'未知',row?.observedAt?when(row.observedAt):'未知']));
+  box.appendChild(el('p','dim',own.note||'原联盟页显式调查；缓存观察不构成操作资格或授权。'));
+}
+
 function renderActivityAlliance(data){
  const box=clear($('overview-activity-alliance')),scope=viewGuard.capture(),view=data?.activityAlliance,known=v=>v===null||v===undefined?'未知':String(v);
  const valid=()=>Boolean(data?.account?.id===scope.account&&view?.accountId===scope.account&&view?.context?.accountId===scope.account&&['accountId','generation','connectionId','playerId','worldId'].every(k=>view.context[k]!==undefined&&view.context[k]===data?.dataContext?.[k])&&view.readOnly===true&&view.executable===false&&view.complete===false&&view.coverage==='CURRENT_CACHE_ONLY'&&Array.isArray(view.sources));
@@ -730,6 +744,7 @@ function renderActivityAlliance(data){
  if(!view.weekly?.rows?.length)box.appendChild(el('p','dim',view.weekly?.listObserved?'本次窗口列表为空；不代表完整活动目录。':'周活动窗口未知。'));
  draw('公会摘要观察',['摘要ID','观察等级'],(view.alliance?.rows||[]).map(row=>[known(row.id),known(row.level)]));
  box.appendChild(el('p','dim',view.alliance?.listObserved?(view.alliance.rows.length?'摘要列表不代表本人联盟；本人归属、成员与操作资格请到原联盟页核查。':'本次摘要列表为空；不能认定未加入联盟。'):'公会摘要未知；不能推定本人联盟。'));
+ renderOwnAlliance(box,data,scope,draw,known,labels);
  draw('活动与联盟来源',['查询','状态','更新时间','缓存','精度'],view.sources.map(row=>[row.name||row.request,labels[row.status]||'未知',row.updatedAt?when(row.updatedAt):'未知',row.stale?'过期':'本次缓存',row.precision==='DECODED_EXACT'?'精确解码':'旧归一化']));
  box.appendChild(el('p','dim',view.note||'观察不构成授权；需在原专业页重新调查与预览。'));
  for(const [label,tab,section] of [['打开日常清单','dailies','dailies-table'],['打开任务奖励','idle','gp-task-rewards-section'],['打开联盟专业页','alliance','tab-alliance'],['打开活动数据目录','explorer','explorer-list']]){

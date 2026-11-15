@@ -140,11 +140,11 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
 export function seasonFromWorldId(value) { const worldId=quantity(value); return worldId!==null&&worldId>0?Number(BigInt(worldId)/1000000n%1000n):null; }
 
 export async function surveyAlliance(client,protocol,{config=null,player=null,signal,stop,parameters={},moduleConfig={},timeout=8000}={}){
-  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);if(['ship-order','ship-seek'].includes(parameters.action))return surveyAllianceShip(client,protocol,{config,player,signal,stop,parameters,moduleConfig,timeout});const notes=[],available=Object.keys(protocol??{}),observations={},context=allianceFortContext(client,player),options={signal,stop};
+  parameters=parametersOf(parameters);validateAllianceConfig(moduleConfig);if(['ship-order','ship-seek'].includes(parameters.action))return surveyAllianceShip(client,protocol,{config,player,signal,stop,parameters,moduleConfig,timeout});const notes=[],available=Object.keys(protocol??{}),observations={},sourceAt={},context=allianceFortContext(client,player),options={signal,stop};
   const observationKeys={GuildInfoRequest:'guild',GuildCityInfoRequest:'cities',CityFortInfoRequest:'fort',AllItemRequest:'items',AllResourceRequest:'resources'};
   const get=async(name,body={})=>{assertExecutionActive(client,options);const response=name.replace(/Request$/,'Response');
     if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': 协议不可用');return null;}
-    try{const value=await awaitExecution(client.request(name,body,response,timeout,{signal}),client,options);assertExecutionActive(client,options);if(observationKeys[name])observations[observationKeys[name]]={value,sourceAt:Date.now(),gameTime:readGameTime(client).gameTime};return value;}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': UNKNOWN');return null;}};
+    try{const value=await awaitExecution(client.request(name,body,response,timeout,{signal}),client,options);assertExecutionActive(client,options);sourceAt[name]=Date.now();if(observationKeys[name])observations[observationKeys[name]]={value,sourceAt:Date.now(),gameTime:readGameTime(client).gameTime};return value;}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': UNKNOWN');return null;}};
   const [info,membersRes,aidRes,ownRes,orderRes,citiesRes,countersRes,items,resources,techRes,stageRes]=await Promise.all([
     get('GuildInfoRequest'),get('GuildMemberRequest'),get('GuildAidListRequest',{type:0}),get('MyGuildAidRequest',{type:0}),get('GuildOrderRequest'),get('GuildCityInfoRequest'),get('CounterInfoRequest'),get('AllItemRequest'),get('AllResourceRequest'),get('GuildTechInfoRequest'),get('SeasonTaskStageRequest'),parameters.cityId?get('CityFortInfoRequest',{cityId:parameters.cityId}):null]);
   assertExecutionActive(client,options);
@@ -158,7 +158,7 @@ export async function surveyAlliance(client,protocol,{config=null,player=null,si
   const techReliable=!!tech&&tech.every(t=>techInteger(t.techId)&&t.techId>0&&techInteger(t.level))&&unique(tech,t=>t.techId);
   const worldId=quantity(field(player,'worldId')),season=seasonFromWorldId(worldId),seasonStage=quantity(field(stageRes,'stage'));
   const stock=stockFromResponses(itemsValid?items:null,resourcesValid?resources:null),stockReliable=itemsValid&&resourcesValid&&[...stock.values()].every(n=>n!==null);
-  return {module:'alliance',available,fortFacts,...readGameTime(client),
+  return {module:'alliance',available,sourceAt,fortFacts,...readGameTime(client),
     playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),worldId,season,seasonStage:techInteger(seasonStage)?seasonStage:null,tech,techReliable,helpAllowance:null,helpUsage:null,guildId:allianceId(info?.guild?.guildId),guild:info?.guild?{guildId:field(info.guild,'guildId'),welfarePack:info.guild.welfarePack,gotWelfareTime:quantity(field(info.guild,'gotWelfareTime'))}:null,members,
     membersReliable:!!members&&members.every(m=>!!m.playerId)&&unique(members,m=>m.playerId),asks,asksReliable:!!asks&&asks.every(a=>aidValid(a,true))&&unique(asks,a=>a.reqId),ownAids,ownReliable:!!ownAids&&ownAids.every(a=>aidValid(a))&&unique(ownAids,a=>a.reqId),order:orderRes?.order?{requirements:Array.isArray(orderRes.order.requirements)?orderRes.order.requirements.map(r=>({id:field(r,'id'),num:quantity(field(r,'num'))})):null,nextRefreshTime:quantity(field(orderRes.order,'nextRefreshTime'))}:null,cities:Array.isArray(citiesRes?.cities)?citiesRes.cities.map(c=>({cityId:field(c,'cityId'),recommended:field(c,'recommended')})):null,counters:Array.isArray(countersRes?.counters)?countersRes.counters.map(c=>({type:field(c,'type'),num:quantity(field(c,'num'))})):null,stock,stockReliable,parameters,notes};
 }
@@ -388,4 +388,32 @@ function verifyAllianceShip(op,b,a,options={}) {
  const actual=structuredClone(a.state);if(captain){const ship=actual.allShips.find(row=>row.shipId===op.target.shipId);if(!ship||ship.state!==1||ship.leaderId!==b.context.playerId||!shipPos(ship.preparedEndTime)||ship.preparedEndTime<=time.latest)return failed('独立商船复读未确认本人船长及明确未来准备截止');ship.preparedEndTime=structuredClone(shipAssignedDeadline);}
  if(stable(actual)!==stable(expected.expectedState))return failed('独立商船和完整库存复读未确认精确扣料、本人单舱归属及其他状态不变');
  return {confirmed:true,reason:captain?'独立GuildShipResponse确认同周期本人船长及服务端准备截止，完整英雄与库存不变；未向其他玩法外推英雄占用，未领取或预测奖励':'独立GuildShipResponse确认同周期同船同舱本人归属，完整库存精确扣料；未领取或预测航行奖励',afterState:structuredClone(a.state)};
+}
+
+/** Latest explicit Service survey only; observations never confer action eligibility. */
+export function allianceCacheOverview(facts, view, {context=null,observedContext=null}={}) {
+  const keys=['accountId','generation','connectionId','playerId','worldId'];
+  const identity=c=>c&&typeof c.accountId==='string'&&c.accountId.length>0&&Number.isSafeInteger(c.generation)&&c.generation>=0&&typeof c.connectionId==='string'&&c.connectionId.length>0&&allianceId(c.playerId)!==null&&allianceId(c.worldId)!==null;
+  const matching=identity(context)&&identity(observedContext)&&keys.every(k=>context[k]===observedContext[k]);
+  const stamp=n=>typeof n==='string'&&Number.isFinite(Date.parse(n))?n:Number.isSafeInteger(n)&&n>0&&n<=8640000000000000?new Date(n).toISOString():null;
+  const section=(observed,rows,request,time)=>({status:observed?'OBSERVED':'UNKNOWN',listObserved:observed,rows:observed?rows:[],request,observedAt:stamp(time)});
+  const result={accountId:context?.accountId??null,context:context?Object.fromEntries(keys.map(k=>[k,context[k]??null])):null,readOnly:true,executable:false,complete:false,coverage:'LATEST_EXPLICIT_SURVEY_ONLY',status:'UNKNOWN',surveyedAt:null,guildId:null,membershipObserved:false,
+    members:section(false,[],'GuildMemberRequest',null),technology:section(false,[],'GuildTechInfoRequest',null),order:{status:'UNKNOWN',requirements:null,nextRefreshTime:null,request:'GuildOrderRequest',observedAt:null},ship:section(false,[],'GuildShipRequest',null),
+    note:'仅最近一次显式联盟调查的历史观察；普通调查与商船调查各有范围。未知不补空，不证明当前资格、奖励或到账；操作仍走原联盟页重新调查和授权。'};
+  if(!matching||!facts||!view)return result;
+  const ship=['ship-order','ship-seek'].includes(facts.parameters?.action),guildId=allianceId(ship?facts.decoded?.guildId:facts.guildId),playerId=allianceId(ship?facts.context?.playerId:facts.playerId);
+  if(!guildId||playerId!==allianceId(context.playerId)||ship&&guildId!==allianceId(facts.context?.guildId))return result;
+  result.status='OBSERVED';result.surveyedAt=stamp(view.surveyedAt);result.guildId=guildId;result.membershipObserved=true;
+  const text=v=>typeof v==='string'?v:null,integer=v=>Number.isSafeInteger(v)&&v>=0?v:null;
+  if(ship){
+    const observed=!!facts.decoded&&Array.isArray(view.ship?.ships);
+    result.ship=section(observed,(view.ship?.ships??[]).map(row=>({shipId:integer(row.shipId),type:integer(row.type),state:integer(row.state),leaderId:allianceId(row.leaderId),preparedEndTime:integer(row.preparedEndTime),mvEndTime:integer(row.mvEndTime)})),'GuildShipRequest',facts.sourceAt?.ships);
+    return result;
+  }
+  result.members=section(facts.membersReliable===true&&Array.isArray(facts.members),(facts.members??[]).map(row=>({playerId:allianceId(row.playerId),nickname:text(row.nickname),online:typeof row.online==='boolean'?row.online:null,title:integer(row.title)})),'GuildMemberRequest',facts.sourceAt?.GuildMemberRequest);
+  const names=new Map((view.technologies??[]).map(row=>[row.techId,row.name]));
+  result.technology=section(facts.techReliable===true&&Array.isArray(facts.tech),(facts.tech??[]).map(row=>({techId:integer(row.techId),level:integer(row.level),name:text(names.get(row.techId))})),'GuildTechInfoRequest',facts.sourceAt?.GuildTechInfoRequest);
+  const order=facts.order,known=assetsValid(order?.requirements)&&quantity(order?.nextRefreshTime)!==null;
+  result.order={status:known?'OBSERVED':'UNKNOWN',requirements:known?order.requirements.map(row=>({id:row.id,num:row.num})):null,nextRefreshTime:known?order.nextRefreshTime:null,request:'GuildOrderRequest',observedAt:stamp(facts.sourceAt?.GuildOrderRequest)};
+  return result;
 }

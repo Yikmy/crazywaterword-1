@@ -539,3 +539,32 @@ test('activity alliance cached overview HTTP source identity captured before col
 test('activity alliance cached overview HTTP reuses accepted daily reset invalidation without sending or replaying',async()=>{
  const app=await dailyRuntimeHarness();try{const socket=await app.login();await app.refresh();const before=(await app.call('/api/overview')).data.activityAlliance;assert.equal(before.checklist.tasks.counts.eligible,1);const sent=app.sent.length;socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);const after=(await app.call('/api/overview')).data.activityAlliance;assert.equal(after.stale,true);assert.equal(after.checklist.sources.daily.status,'UNKNOWN');assert.equal(after.checklist.tasks.counts.total,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);}finally{await app.close();}
 });
+
+
+async function ownAllianceRuntime({gate=null,failed=null}={}){
+ const queries=['GuildInfo','GuildMember','GuildAidList','MyGuildAid','GuildOrder','GuildCityInfo','CounterInfo','AllItem','AllResource','GuildTechInfo','SeasonTaskStage'],protocol=Object.fromEntries(queries.flatMap(n=>[[n+'Request',{}],[n+'Response',{}]]));
+ const app=await harness({protocol}),reads=[],answers={GuildInfoRequest:{guild:{guildId:'9007199254740995'}},GuildMemberRequest:{titleList:[{guildTitle:0,members:[{playerId:'9007199254740997',nickname:'synthetic-owned-member',online:false}]}]},GuildAidListRequest:{askItems:[]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{order:{requirements:[],nextRefreshTime:0}},GuildCityInfoRequest:{cities:[]},CounterInfoRequest:{counters:[]},AllItemRequest:{items:[]},AllResourceRequest:{list:[]},GuildTechInfoRequest:{tech:[{techId:1,level:0}]},SeasonTaskStageRequest:{stage:0}};
+ await app.connect();Object.assign(app.sessions.get('account-A').player,{playerId:'9007199254740993',worldId:1000001});
+ app.clients[0].request=async name=>{reads.push(name);if(gate&&name==='GuildMemberRequest')await gate.promise;if(name===failed)throw Error('synthetic failure');return structuredClone(answers[name]);};
+ const headers=await importContext(app);
+ return {...app,reads,survey:()=>app.call('/api/gameplay/survey',{method:'POST',headers,body:{module:'alliance',parameters:{}}})};
+}
+test('own alliance HTTP overview reuses explicit Service survey independently of Collector with zero implicit requests',async()=>{
+ const app=await ownAllianceRuntime();try{
+  assert.equal((await app.call('/api/overview')).data.ownAlliance.status,'UNKNOWN');assert.equal(app.reads.length,0);
+  const surveyed=await app.survey();assert.equal(surveyed.status,200);assert.equal(surveyed.data.view.members[0].playerId,'9007199254740997');assert.equal(app.reads.length,11);
+  const r=(await app.call('/api/overview')).data;assert.equal(r.ownAlliance.status,'OBSERVED');assert.equal(r.activityAlliance.status,'UNKNOWN');assert.equal(r.ownAlliance.guildId,'9007199254740995');assert.equal(r.ownAlliance.members.rows[0].nickname,'synthetic-owned-member');assert.equal(r.ownAlliance.technology.rows[0].level,0);assert.equal(r.ownAlliance.order.nextRefreshTime,0);assert.equal(r.ownAlliance.membershipObserved,true);assert.ok(r.ownAlliance.members.observedAt);assert.ok(r.ownAlliance.surveyedAt);
+  for(const k of ['accountId','generation','connectionId','playerId','worldId'])assert.equal(r.dataContext[k],r.ownAlliance.context[k]);
+  for(let i=0;i<3;i++)await app.call('/api/overview');assert.equal(app.reads.length,11);assert.equal(app.collects,0);assert.equal(app.clients.length,1);
+  assert.equal((await app.call('/api/overview',{account:'account-B'})).data.ownAlliance.status,'UNKNOWN');for(const key of ['candidates','lastPlan','qualification','budgetClaims','inputs','identity'])assert.equal(Object.hasOwn(r.ownAlliance,key),false);
+ }finally{await app.close();}
+});
+test('own alliance HTTP failed member source preserves independent technology and order observations',async()=>{
+ const app=await ownAllianceRuntime({failed:'GuildMemberRequest'});try{assert.equal((await app.survey()).status,200);const r=(await app.call('/api/overview')).data.ownAlliance;assert.equal(r.members.status,'UNKNOWN');assert.equal(r.members.observedAt,null);assert.equal(r.technology.status,'OBSERVED');assert.equal(r.order.status,'OBSERVED');assert.equal(app.collects,0);assert.equal(app.reads.length,11);}finally{await app.close();}
+});
+for(const key of ['generation','connectionId','playerId','worldId'])test('own alliance HTTP '+key+' change clears former own alliance observation',async()=>{
+ const app=await ownAllianceRuntime();try{assert.equal((await app.survey()).status,200);const s=app.sessions.get('account-A');if(key==='generation')s.generation++;else if(key==='connectionId')s.connectionId='other';else s.player[key]=key==='playerId'?'18':2000001;const r=(await app.call('/api/overview')).data.ownAlliance;assert.equal(r.status,'UNKNOWN');assert.equal(r.guildId,null);assert.deepEqual(r.members.rows,[]);assert.equal(app.reads.length,11);}finally{await app.close();}
+});
+test('own alliance HTTP delayed explicit survey cannot publish across changed role context',async()=>{
+ const gate=deferred(),app=await ownAllianceRuntime({gate});try{const pending=app.survey();await until(()=>app.reads.includes('GuildMemberRequest'));app.sessions.get('account-A').player.worldId=2000001;gate.resolve();assert.equal((await pending).status,409);assert.equal((await app.call('/api/overview')).data.ownAlliance.status,'UNKNOWN');assert.equal(app.reads.length,11);}finally{gate.resolve();await app.close();}
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allianceId, allianceModule, surveyAlliance, allianceView, planAlliance, verifyAlliance, ALLIANCE_DEFAULT_CONFIG, validateAllianceConfig, allianceHelpRules, allianceBudgetDay } from '../src/alliance.mjs';
+import { allianceCacheOverview, allianceId, allianceModule, surveyAlliance, allianceView, planAlliance, verifyAlliance, ALLIANCE_DEFAULT_CONFIG, validateAllianceConfig, allianceHelpRules, allianceBudgetDay } from '../src/alliance.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 const names=['GuildInfo','GuildMember','GuildAidList','MyGuildAid','GuildOrder','GuildCityInfo','CounterInfo','AllItem','AllResource','FinishGuildOrder','GotGuildWelfarePack'];
 const protocol=Object.fromEntries([...names.flatMap(n=>[[n+'Request',{}],[n+'Response',{}]]),...['GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GuildAidAskRequest'].map(n=>[n,{}])]);
@@ -413,4 +413,35 @@ test('merchant captain shared refusal survives reconnect and transport revision 
 test('merchant synthetic socket preserves original heartbeat lifecycle without changing business state',async t=>{
  const f=await shipReady(t,{seek:true});for(let i=0;i<3;i++){f.client.tick();assert.equal(f.client.connected,true);assert.equal(f.client.lastPingTimestamp,0);}
  assert.equal(allianceView(f.facts,f.options).candidates.length,1);assert.equal(f.state.writes.length,0);assert.equal(f.state.seq,1);
+});
+
+
+const overviewIdentity={accountId:'synthetic-A',generation:1,connectionId:'synthetic-connection',playerId:'1',worldId:'1000001'};
+const projectAlliance=(facts,view,extra={})=>allianceCacheOverview(facts,view,{context:overviewIdentity,observedContext:overviewIdentity,...extra});
+test('own alliance cache projection reuses explicit facts and timestamps without action or response leaks',async()=>{
+ const c=fake({GuildTechInfoRequest:{tech:[{techId:1,level:0}]}}),wire={...protocol,GuildTechInfoRequest:{},GuildTechInfoResponse:{}};
+ const f=await surveyAlliance(c,wire,{player:{playerId:'1',worldId:1000001},parameters:{}}),v=allianceView(f,{config,moduleConfig}),before=c.reads.length,r=projectAlliance(f,{...v,surveyedAt:'2026-11-15T08:00:00Z',token:'synthetic-secret'});
+ assert.equal(r.status,'OBSERVED');assert.equal(r.guildId,'10');assert.equal(r.membershipObserved,true);assert.equal(r.members.rows.length,2);assert.equal(r.technology.rows[0].level,0);assert.equal(r.order.requirements[0].num,2);assert.equal(r.ship.status,'UNKNOWN');assert.equal(r.readOnly,true);assert.equal(r.complete,false);assert.equal(r.executable,false);assert.equal(c.reads.length,before);
+ assert.equal(r.members.observedAt,new Date(f.sourceAt.GuildMemberRequest).toISOString());assert.equal(r.order.observedAt,new Date(f.sourceAt.GuildOrderRequest).toISOString());
+ for(const secret of ['synthetic-secret','candidates','budgetClaims','actionId','qualification','welfarePack'])assert.equal(JSON.stringify(r).includes(secret),false);
+});
+for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('own alliance cache projection rejects changed '+key,async()=>{
+ const f=await read(fake()),r=projectAlliance(f,view(f),{context:{...overviewIdentity,[key]:key==='generation'?2:'other'}});
+ assert.equal(r.status,'UNKNOWN');assert.equal(r.membershipObserved,false);assert.equal(r.guildId,null);assert.deepEqual(r.members.rows,[]);assert.equal(r.order.requirements,null);
+});
+test('own alliance projection separates missing, failed and explicit empty domain lists',async()=>{
+ const f=await read(fake({GuildMemberRequest:new Error('synthetic unavailable'),GuildOrderRequest:{}})),r=projectAlliance(f,view(f));
+ assert.equal(r.members.status,'UNKNOWN');assert.equal(r.members.listObserved,false);assert.equal(r.members.observedAt,null);assert.equal(r.order.status,'UNKNOWN');
+ const empty=await read(fake({GuildMemberRequest:{titleList:[]},GuildOrderRequest:{order:{requirements:[],nextRefreshTime:0}}})),v=projectAlliance(empty,view(empty));
+ assert.equal(v.members.status,'OBSERVED');assert.deepEqual(v.members.rows,[]);assert.equal(v.order.status,'OBSERVED');assert.deepEqual(v.order.requirements,[]);assert.equal(v.order.nextRefreshTime,0);
+ delete empty.sourceAt.GuildMemberRequest;assert.equal(projectAlliance(empty,view(empty)).members.observedAt,null);
+});
+test('own alliance projection never converts ship-only fallback members into observed empty membership',()=>{
+ const f={parameters:{action:'ship-seek'},context:{guildId:'9007199254740993',playerId:'1'},decoded:{guildId:'9007199254740993'},sourceAt:{ships:1800000000000}},v={surveyedAt:'2026-11-15T08:00:00Z',members:[],technologies:[],candidates:[{token:'synthetic-secret'}],ship:{ships:[{shipId:1,type:0,state:0,leaderId:'9007199254740995',preparedEndTime:0,mvEndTime:null}],qualification:{secret:true}}},r=projectAlliance(f,v);
+ assert.equal(r.guildId,'9007199254740993');assert.equal(r.ship.rows[0].leaderId,'9007199254740995');assert.equal(r.ship.rows[0].type,0);assert.equal(r.ship.status,'OBSERVED');assert.equal(r.members.status,'UNKNOWN');assert.equal(r.technology.status,'UNKNOWN');assert.equal(r.order.status,'UNKNOWN');assert.equal(JSON.stringify(r).includes('qualification'),false);
+ assert.equal(projectAlliance({...f,decoded:null},v).ship.status,'UNKNOWN');assert.equal(projectAlliance({...f,context:{...f.context,playerId:'2'}},v).status,'UNKNOWN');
+});
+test('own alliance projection rejects missing or unsafe identities and preserves real member facts through Fort-only view',async()=>{
+ const f=await read(fake());assert.equal(projectAlliance(f,{members:[],technologies:[]}).members.rows.length,2);
+ for(const extra of [{context:null},{observedContext:null},{context:{...overviewIdentity,playerId:9007199254740992}},{observedContext:{...overviewIdentity,connectionId:null}}])assert.equal(projectAlliance(f,view(f),extra).status,'UNKNOWN');
 });

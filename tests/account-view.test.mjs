@@ -323,3 +323,21 @@ test('activity alliance overview PAGE observed strings are text rather than inje
 test('activity alliance overview PAGE shows observed festival window and check-in records with unknown claim eligibility',async()=>{
  const h=await boot(),reply=activityOverviewReply();reply.activityAlliance.checklist.festival={rows:[{activityId:'9007199254740995',status:'OBSERVED',startTime:100,openTime:110,closeTime:190,endTime:200,checkInRecord:{status:'OBSERVED',checkInId:[0,2]},eligible:null,executable:false}],source:{status:'OBSERVED',observedAt:'2026-11-15T08:00:00.000Z'}};const box=await loadActivityOverview(h,reply);assert.ok(box.textContent.includes('0、2'));assert.match(box.textContent,/窗口不证明当前开放或签到资格/);assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
 });
+
+
+function ownAllianceReply(){
+ const reply=activityOverviewReply(),context=reply.dataContext;reply.ownAlliance={accountId:'A',context:{...context},readOnly:true,executable:false,complete:false,coverage:'LATEST_EXPLICIT_SURVEY_ONLY',status:'OBSERVED',guildId:'9007199254740995',membershipObserved:true,surveyedAt:'2026-11-15T08:00:00Z',members:{request:'GuildMemberRequest',status:'OBSERVED',observedAt:'2026-11-15T07:59:59Z',rows:[{playerId:'9007199254740997',nickname:'<synthetic-member>',online:false,title:0}]},technology:{request:'GuildTechInfoRequest',status:'OBSERVED',rows:[{techId:1,name:'synthetic-technology',level:0}]},order:{request:'GuildOrderRequest',status:'UNKNOWN',requirements:null,nextRefreshTime:null},ship:{request:'GuildShipRequest',status:'UNKNOWN',rows:[]},note:'普通调查与商船调查各有范围；未知不补空。'};return reply;
+}
+test('own alliance PAGE shows read-only Service observations even while Collector sources remain unknown',async()=>{
+ const h=await boot(),reply=ownAllianceReply();reply.activityAlliance.status='UNKNOWN';reply.ownAlliance.ship={request:'GuildShipRequest',status:'OBSERVED',rows:[{shipId:1,type:0,state:0,leaderId:'9007199254740999',preparedEndTime:0,mvEndTime:null}]};
+ const before=h.requests.length,box=await loadActivityOverview(h,reply);assert.match(box.textContent,/本人联盟调查摘要/);assert.match(box.textContent,/9007199254740997/);assert.match(box.textContent,/<synthetic-member>/);assert.match(box.textContent,/synthetic-technology/);assert.match(box.textContent,/9007199254740999/);assert.match(box.textContent,/订单刷新时间原值：未知/);assert.match(box.textContent,/本人归属仅为调查时观察/);assert.equal(h.requests.length,before+1);assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
+ const all=e=>e.children.flatMap(child=>[child,...all(child)]);assert.equal(all(box).some(e=>e.tagName==='img'),false);
+});
+for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('own alliance PAGE rejects mismatched '+key+' without losing independent collector view',async()=>{
+ const h=await boot(),reply=ownAllianceReply();reply.ownAlliance.context[key]=key==='generation'?3:'other';const box=await loadActivityOverview(h,reply);assert.doesNotMatch(box.textContent,/synthetic-member/);assert.match(box.textContent,/本人联盟来源未知/);assert.match(box.textContent,/公会摘要观察/);
+});
+test('own alliance PAGE failed reread and account switch remove former own member observations',async()=>{
+ const h=await boot();let box=await loadActivityOverview(h,ownAllianceReply());assert.match(box.textContent,/synthetic-member/);
+ let work=h.run('refreshOverview()');const pending=h.pending('/api/overview','A');pending.settled=true;pending.reject(Error('synthetic failed'));await work;assert.doesNotMatch(box.textContent,/synthetic-member/);
+ box=await loadActivityOverview(h,ownAllianceReply());h.run("selectAccount('B')");assert.equal(box.textContent,'');assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
+});

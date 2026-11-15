@@ -1,3 +1,4 @@
+import { allianceId, allianceCacheOverview } from './alliance.mjs';
 import {prepareFarmHarvestWorkflow,validateFarmHarvestPreparation,prepareFarmPlantWorkflow,validateFarmPlantPreparation} from './farm-operations.mjs';
 import {prepareAfkUpgradeWorkflow,validateAfkUpgradePreparation} from './afk-level-rewards.mjs';
 import {prepareEquipmentForgeWorkflow,validateForgePreparation} from './equipment-forge.mjs';
@@ -220,12 +221,15 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       if(source)return {...adapter,dependencyVersions(options){return {...adapter.dependencyVersions(options),production:adapterFor('production').dependencyVersions({...options,parameters:source.parameters,moduleConfig:moduleSettings.get(accountId,'production').config})};},async survey(client,protocol,options){const production=adapterFor('production'),config=options.config,productionOptions={...options,parameters:{},moduleConfig:moduleSettings.get(accountId,'production').config},facts=await production.survey(client,protocol,productionOptions);return adapter.survey(client,protocol,{...options,validatePreparation:({identity,state})=>validateMaterialExchangeProductionSource(facts,state,source.parameters,identity,history.list(accountId),{config:getConfig(),moduleConfig:moduleSettings.get(accountId,'production').config})});}};
     }
     if(id==='production')return {...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,readExchangeHistory:()=>history.list(accountId)});},execute(client,protocol,operation,options){return adapter.execute(client,protocol,operation,{...options,readExchangeHistory:()=>history.list(accountId)});}};return ['afk-level-rewards','farm'].includes(id)?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,[id==='farm'?'readHarvestHistory':'readIncomeHistory']:()=>history.list(accountId)});}}:adapter; }
-  function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id] ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
-  function cacheModule(accountId, id, facts, options) {
-    moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});
+  function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id]?.view ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
+  function cacheModule(session, id, facts, options) {
+    const accountId=session.id;
+    const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')));
     const raw = adapterFor(id).view(facts, options);
     const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
-    moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: safe });
+    const observation={context:executionContext(session),identity:observationIdentity(session),client:session.client};
+    moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:cachedFacts});
+    moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: {view:safe,observation} });
   }
   async function surveyModule(session, id, parameters = {}, { workflowId = null, signal = null } = {}) {
     const adapter = executionAdapter(session,id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
@@ -235,7 +239,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const surveySignal=signal?AbortSignal.any([session.abort.signal,signal]):session.abort.signal;
       assertExecutionActive(client,{signal:surveySignal});
       const options = { ...(id==='orders'?{clock}:{}),rules:loadRules(session.id).config,mode:'Manual',productionPolicy:loadProduction(session.id).config,config: getConfig(), player: session.player, signal: surveySignal, parameters, moduleConfig: moduleSettings.get(session.id,id).config };
-      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||observationIdentity(session,client)!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session.id,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
+      const facts = await adapter.survey(client, protocol, options); assertExecutionActive(client,options); current(session,generation,client); if((session.workflowOwner??null)!==workflowId||observationIdentity(session,client)!==identity)throw error('工作流、账号角色世界或连接身份已变化', 'CANCELLED'); cacheModule(session,id,facts,options); plans.delete(session.id); return moduleView(session.id,id);
     } finally { release(); }
   }
   async function surveyAntiqueAttributes(session,payload={}) {
@@ -316,7 +320,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const runner=session.stageClient===client?session.stageRunner?.getStatus():null,progress=runner?.nextStage??session.player?.mainlineStage;
       if(runner?.running||runner?.inFlight||runner?.uncertain)throw error('旧主线运行尚未确定停止','STAGE_RECOMMENDATION_UNAVAILABLE');
       const result=prepareStageRecommendation(report,facts,{accountId:session.id,player:session.player,progress,presetId:payload.presetId,maxAttempts:payload.maxAttempts,...(Object.hasOwn(payload,'presetIds')?{presetIds:payload.presetIds}:{}),...(Object.hasOwn(payload,'maxDurationMs')?{maxDurationMs:payload.maxDurationMs}:{}),...(payload.selectionRule?{selectionRule:payload.selectionRule,minSamples:payload.minSamples,reports:historyReports}:{}),moduleConfig,now:clock()});
-      const graph=validateWorkflow(result.graph,{modules}).workflow;cacheModule(session.id,'formation',facts,options);
+      const graph=validateWorkflow(result.graph,{modules}).workflow;cacheModule(session,'formation',facts,options);
       return {accountId:session.id,...result,graph};
     }finally{release();}
   }
@@ -506,7 +510,7 @@ function authorizeWorkflowPlan(session,payload){
       summary.planHash = operationDigest(summary);
       const internal = { memoryFacts, contextHash, sourceIdentity, adapter: Boolean(adapter), dependencyHash: adapter?.dependencyVersions ? operationDigest(adapter.dependencyVersions(options)) : null, public: clone(summary), operations: clone(operations), generation, client, config, workflowId, moduleConfig, moduleHash: adapter ? operationDigest(moduleConfig) : null, configHash: operationDigest(config), productionHash: operationDigest(production), rulesHash: operationDigest(rules), stock: new Map(facts.stock), permit: null };
       plans.set(session.id, internal);
-      if(adapter) cacheModule(session.id,module,facts,options); else cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
+      if(adapter) cacheModule(session,module,facts,options); else cache.set(session.id, { view: buildView(session.id, facts, config, rules) });
       return clone(summary);
     } finally { release(); }
   }
@@ -657,7 +661,7 @@ function authorizeWorkflowPlan(session,payload){
       if(!sameProof()){formationProofs.delete(session.id);throw error('阵容复读期间账号角色世界或连接已变化，须重新授权保存','FORMATION_REQUIRED');}
       const formationKey=value=>operationDigest({...value,heroPositions:[...value.heroPositions].sort((a,b)=>a.heroId.localeCompare(b.heroId))});
       if(facts.reliability?.formation!==true || formationKey(facts.formation)!==formationKey(proof.operation.action.body.formation)) throw error('当前阵容已变化，请重新保存授权', 'FORMATION_CHANGED');
-      cacheModule(session.id,'formation',facts,{moduleConfig,config:getConfig()});
+      cacheModule(session,'formation',facts,{moduleConfig,config:getConfig()});
       return {confirmed:true,presetId:requested.presetId,formation:clone(facts.formation),client,playerId:session.player?.playerId,checkedAt:clock(),batchId:proof.batchId,planHash:proof.planHash};
     } finally { release(); }
   }
@@ -707,9 +711,16 @@ function authorizeWorkflowPlan(session,payload){
     } finally { release(); }
   }
 
+  function allianceOverview(session) {
+  const entry=moduleCache.get(session.id)?.alliance,observation=entry?.observation;
+  const context=toSnapshotJson({accountId:session.id,generation:session.generation,connectionId:session.connectionId??(session.client?connectionIds.get(session.client)??null:null),playerId:allianceId(session.player?.playerId),worldId:allianceId(session.player?.worldId)});
+  const aligned=['accountId','generation','connectionId','playerId','worldId'].every(key=>!Object.hasOwn(session.client?.factContext??{},key)||(key==='playerId'||key==='worldId'?allianceId(session.client.factContext[key]):session.client.factContext[key])===context[key]);
+  const valid=Boolean(aligned&&observation&&session.state==='READY'&&session.client?.connected===true&&!session.abort?.signal.aborted&&session.client===observation.client&&observation.identity===observationIdentity(session));
+  return allianceCacheOverview(valid?moduleFacts.get(session.id)?.alliance:null,valid?entry.view:null,{context,observedContext:observation?{...observation.context,playerId:allianceId(observation.context.playerId),worldId:allianceId(observation.context.worldId)}:null});
+}
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, stop, status,
+  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);
