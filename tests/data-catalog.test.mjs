@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DATA_DOMAINS, DATA_CATALOG, exploreSnapshot } from '../src/data-catalog.mjs';
+import { DATA_DOMAINS, DATA_CATALOG, exploreSnapshot, activityAllianceOverview } from '../src/data-catalog.mjs';
 import { collectState, ENTRY_QUERIES, formatState, summarize } from '../src/game.mjs';
 
 const successful = () => ({ ok: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, {}])), failed: {}, outcomes: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, { status: 'SUCCESS' }])) });
@@ -225,4 +225,51 @@ test('real codec fishing facts reach the unchanged collector, CLI summary and ex
   assert.equal(failed.fishing.inventory.owned, '9007199254740993');
   assert.equal(failed.fishing.collection.availableScore, 5);
   assert.equal(exploreSnapshot(snapshot, { config }).entries.find(row => row.request === 'GameEffectRequest').parsed, null);
+});
+
+const overviewContext={accountId:'synthetic-A',generation:2,connectionId:'synthetic-conn',playerId:'9007199254740993',worldId:'1000001'},overviewTime='2026-11-15T08:00:00.000Z';
+function activityOverviewState(){
+ const raw={AllGuildAbstractionRequest:{guilds:[{id:'9007199254740995',level:0}]},WeekInfoRequest:{activityTime:[{type:0,period:0,startTime:100,endTime:200}]},DailyTaskInfoRequest:{dailyTask:[],dailyActivity:0,weeklyActivity:0,dailyRewardClaimed:[],weeklyRewardClaimed:[],dailyResetTime:100}};
+ return {ok:structuredClone(raw),raw:structuredClone(raw),failed:{},outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS',updatedAt:overviewTime}]))};
+}
+function activityOverview(state=activityOverviewState(),options={}){return activityAllianceOverview(state,{context:overviewContext,observedContext:overviewContext,updatedAt:overviewTime,...options});}
+test('activity alliance overview composes original cache projections with precise observed guild and raw activity windows',()=>{
+ const state=activityOverviewState(),before=structuredClone(state),result=activityOverview(state);
+ assert.equal(result.status,'OBSERVED');assert.equal(result.readOnly,true);assert.equal(result.executable,false);assert.equal(result.complete,false);assert.equal(result.coverage,'CURRENT_CACHE_ONLY');assert.equal(result.alliance.membershipKnown,false);assert.equal(result.alliance.rows[0].id,'9007199254740995');assert.equal(result.alliance.rows[0].level,0);assert.equal(result.weekly.rows[0].period,0);assert.equal(result.checklist.tasks.counts.total,0);assert.equal(result.checklist.activity.daily.activity,0);assert.deepEqual(state,before);
+ assert.equal(result.sources.filter(row=>row.request==='WeekInfoRequest').length,1);assert.ok(result.sources.some(row=>row.request==='GuildTechInfoRequest'&&row.status==='NOT_COLLECTED'));assert.ok(result.sources.every(row=>!Object.hasOwn(row,'raw')&&!Object.hasOwn(row,'parsed')));assert.ok(result.sources.every(row=>row.status==='AVAILABLE'?row.updatedAt===overviewTime:true));assert.match(result.note,/不代表本人联盟/);
+});
+for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('activity alliance overview rejects mismatched '+key+' cache without borrowing previous context',()=>{
+ const context={...overviewContext,[key]:key==='generation'?3:key==='playerId'?'19':key==='worldId'?'10':'other'},result=activityOverview(undefined,{context});assert.equal(result.status,'UNKNOWN');assert.equal(result.alliance.status,'UNKNOWN');assert.deepEqual(result.alliance.rows,[]);assert.deepEqual(result.weekly.rows,[]);assert.equal(result.checklist.tasks.counts.total,null);assert.ok(result.sources.every(row=>row.status==='CONTEXT_UNKNOWN'));
+});
+test('activity alliance overview no snapshot identity or incomplete identities cannot imply data presence',()=>{
+ for(const options of [{observedContext:null},{context:null},{context:{...overviewContext,playerId:9007199254740992}},{observedContext:{...overviewContext,connectionId:null}}])assert.equal(activityOverview(undefined,options).status,'UNKNOWN');
+ const value=activityOverview(null);assert.equal(value.alliance.listObserved,false);assert.equal(value.weekly.listObserved,false);assert.equal(value.checklist.tasks.counts.total,null);
+});
+for(const failure of ['FAILED','NOT_EXECUTED','missing-body','missing-outcome','missing-raw','failed-conflict'])test('activity alliance overview '+failure+' source stays isolated from independent successful source',()=>{
+ const state=activityOverviewState(),name='AllGuildAbstractionRequest';if(failure==='missing-body'){delete state.raw[name];delete state.ok[name];}else if(failure==='missing-raw')delete state.raw[name];else if(failure==='missing-outcome')delete state.outcomes[name];else if(failure==='failed-conflict')state.failed[name]='failed';else state.outcomes[name].status=failure;
+ const result=activityOverview(state);assert.equal(result.alliance.listObserved,false);assert.equal(result.weekly.listObserved,true);assert.equal(result.checklist.tasks.counts.total,0);assert.notEqual(result.sources.find(row=>row.request===name).status,'AVAILABLE');
+});
+test('activity alliance overview stale observations retain original timestamp without granting completeness or membership',()=>{
+ const result=activityOverview(undefined,{stale:true});assert.equal(result.status,'STALE');assert.equal(result.updatedAt,overviewTime);assert.equal(result.alliance.rows[0].id,'9007199254740995');assert.equal(result.alliance.membershipKnown,false);assert.ok(result.sources.every(row=>row.stale));assert.equal(result.checklist.festival.eligible,null);
+});
+test('activity alliance overview original daily reset invalidation only clears daily-dependent fields',()=>{
+ const result=activityOverview(undefined,{dailyInvalid:true});assert.equal(result.checklist.sources.daily.status,'UNKNOWN');assert.equal(result.checklist.tasks.counts.total,null);assert.equal(result.checklist.activity.daily.activity,null);assert.equal(result.alliance.listObserved,true);assert.equal(result.weekly.listObserved,true);
+});
+for(const fault of ['missing-id','unsafe-id','duplicate','missing-level','missing-list','inherited'])test('activity alliance overview '+fault+' guild data never infers membership or defaults missing fields',()=>{
+ const state=activityOverviewState(),body=state.raw.AllGuildAbstractionRequest;if(fault==='missing-id')delete body.guilds[0].id;if(fault==='unsafe-id')body.guilds[0].id=9007199254740992;if(fault==='duplicate')body.guilds.push(structuredClone(body.guilds[0]));if(fault==='missing-level')delete body.guilds[0].level;if(fault==='missing-list')delete body.guilds;if(fault==='inherited')body.guilds[0]=Object.create({id:'17',level:2});const result=activityOverview(state);assert.equal(result.alliance.membershipKnown,false);assert.notEqual(result.alliance.status,'OBSERVED');if(fault==='duplicate')assert.ok(result.alliance.rows.every(row=>row.id===null));
+});
+test('activity alliance overview empty observed lists remain distinct from unavailable sources and expose no raw secrets',()=>{
+ const state=activityOverviewState();state.raw.AllGuildAbstractionRequest={guilds:[],token:'synthetic-secret'};state.raw.WeekInfoRequest={activityTime:[]};const result=activityOverview(state);assert.equal(result.alliance.listObserved,true);assert.deepEqual(result.alliance.rows,[]);assert.equal(result.weekly.listObserved,true);assert.deepEqual(result.weekly.rows,[]);assert.equal(JSON.stringify(result).includes('synthetic-secret'),false);delete state.raw.WeekInfoRequest.activityTime;assert.equal(activityOverview(state).weekly.listObserved,false);
+});
+test('activity alliance overview legacy normalized cache records precision limitation without recovering lost identifiers',()=>{
+ const state=activityOverviewState();delete state.raw;delete state.outcomes;state.ok.AllGuildAbstractionRequest.guilds[0].id=9007199254740992;const result=activityOverview(state);assert.equal(result.alliance.rows[0].id,null);assert.ok(result.sources.every(row=>row.precision==='LEGACY_NORMALIZED'));
+});
+
+test('activity alliance overview reuses original festival private-context observation without inferring sign eligibility or completeness',()=>{
+ const state=activityOverviewState();state.sessionFacts={festivalActivities:{...overviewContext,status:'OBSERVED',reliable:true,readOnly:true,executable:false,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',complete:false,independentRereadAvailable:false,seq:1,observedAt:overviewTime,activities:[{activityId:'9007199254740995',festival:0,type:'合成活动',season:0,startTime:100,openTime:110,closeTime:190,endTime:200,subActivity:[{subActivityType:11,dailyActive:{checkInId:[0,2],activeScore:0,claimedRewardId:0,checkRuby:'9007199254740993'}}]}]}};
+ const result=activityOverview(state),festival=result.checklist.festival;assert.equal(festival.status,'OBSERVED');assert.equal(festival.rows[0].activityId,'9007199254740995');assert.deepEqual(festival.rows[0].checkInRecord.checkInId,[0,2]);assert.equal(festival.rows[0].eligible,null);assert.equal(festival.rows[0].executable,false);assert.equal(festival.complete,false);state.sessionFacts.festivalActivities.connectionId='another';assert.equal(activityOverview(state).checklist.festival.status,'UNKNOWN');assert.equal(activityOverview(state).weekly.status,'OBSERVED');
+});
+
+test('activity alliance overview source time is unknown when its own outcome omitted time rather than borrowing snapshot collection time',()=>{
+ const state=activityOverviewState();delete state.outcomes.AllGuildAbstractionRequest.updatedAt;const result=activityOverview(state);assert.equal(result.updatedAt,overviewTime);assert.equal(result.sources.find(row=>row.request==='AllGuildAbstractionRequest').updatedAt,null);assert.equal(result.sources.find(row=>row.request==='WeekInfoRequest').updatedAt,overviewTime);assert.equal(result.alliance.status,'OBSERVED');
 });

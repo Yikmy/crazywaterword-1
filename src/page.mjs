@@ -173,6 +173,7 @@ export const PAGE = `<!doctype html>
     <h2>资源</h2><div class="icons" id="res"><span class="dim">连接后显示</span></div>
     <h2>库存</h2><div class="icons" id="items"><span class="dim">连接后显示</span></div>
     <h2>主力英雄</h2><div class="icons" id="hero-strip"><span class="dim">连接后显示</span></div>
+    <h2>活动与联盟观察</h2><div id="overview-activity-alliance"><span class="dim">尚未读取本账号缓存。</span></div>
     <h2>运行记录</h2>
     <div id="log"></div>
   </section>
@@ -573,7 +574,7 @@ function selectAccount(id) {
   resetGameplay();
   renderFishing(null);
   clear($('assets-readiness'));$('assets-hint').textContent='';
-  for (const id of ['who', 'res', 'items', 'hero-strip', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
+  for (const id of ['who', 'res', 'items', 'hero-strip', 'overview-activity-alliance', 'log', 'busy', 'hint', 'loot-hint', 'loot-view', 'loop-hint', 'loop-view', 'tasks-hint', 'tasks-view', 'world-hint', 'world-view', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'hero-hint', 'hero-view', 'hero-table', 'dailies-hint', 'dailies-view', 'dailies-table', 'cred', 'worlds', 'worlds-hint']) clear($(id));
   $('sync-info').textContent = '尚未采集，请先连接账号并刷新数据';
   $('cred-show').disabled = false;
   renderAccountSelect();
@@ -712,8 +713,33 @@ function renderFishing(data, readFailed = false) {
   } else box.appendChild(el('p', 'dim', collection?.complete === true ? '当前配置中的图鉴档位已领完。' : '下一档奖励资格未知。'));
   box.appendChild(el('p', 'dim', '待捕鱼、收线剩余时间和续接状态：未知。此页只读。'));
 }
+
+function renderActivityAlliance(data){
+ const box=clear($('overview-activity-alliance')),scope=viewGuard.capture(),view=data?.activityAlliance,known=v=>v===null||v===undefined?'未知':String(v);
+ const valid=()=>Boolean(data?.account?.id===scope.account&&view?.accountId===scope.account&&view?.context?.accountId===scope.account&&['accountId','generation','connectionId','playerId','worldId'].every(k=>view.context[k]!==undefined&&view.context[k]===data?.dataContext?.[k])&&view.readOnly===true&&view.executable===false&&view.complete===false&&view.coverage==='CURRENT_CACHE_ONLY'&&Array.isArray(view.sources));
+ if(!valid()){box.appendChild(el('p','dim','活动与联盟来源未知；请读取本账号缓存。'));return;}
+ const labels={AVAILABLE:'已观察',OBSERVED:'已观察',PARTIAL:'部分未知',UNKNOWN:'未知',STALE:'缓存过期',FAILED:'读取失败',NOT_COLLECTED:'未采集',CONTEXT_UNKNOWN:'身份已变化'};
+ box.appendChild(el('p','dim','范围：本次缓存 · '+(labels[view.status]||'未知')+' · 最近采集：'+(view.updatedAt?when(view.updatedAt):'未知')+'。来源各自独立，过期值仅为旧观察。'));
+ const draw=(title,headers,rows)=>{box.appendChild(el('h3','',title));box.appendChild(table(headers,rows));};
+ const daily=view.checklist,counts=daily?.tasks?.counts,source=daily?.sources?.daily;
+ draw('日常与活跃度',['每日任务完成','已领取','达到门槛','日活跃原值','周活跃原值','每日来源','来源更新'],[[known(counts?.completed)+'/'+known(counts?.total),known(counts?.claimed),known(counts?.eligible),known(daily?.activity?.daily?.activity),known(daily?.activity?.weekly?.activity),labels[source?.status]||'未知',source?.observedAt?when(source.observedAt):'未知']]);
+ box.appendChild(el('p','dim','达到门槛不等于可领取；日界、周期与实际奖励仍由原业务合同核验。'));
+ const festival=daily?.festival;draw('活动推送片段',['活动ID','观察状态','开始原值','开放原值','关闭原值','结束原值','签到记录'],(festival?.rows||[]).map(row=>[known(row.activityId),labels[row.status]||'未知',known(row.startTime),known(row.openTime),known(row.closeTime),known(row.endTime),row.checkInRecord?.status==='OBSERVED'?row.checkInRecord.checkInId.join('、'):'未知']));
+ box.appendChild(el('p','dim','推送来源：'+(labels[festival?.source?.status]||'未知')+' · '+(festival?.source?.observedAt?when(festival.source.observedAt):'未知')+'。未出现不证明不存在，窗口不证明当前开放或签到资格。'));
+ draw('周活动窗口原值',['类型','周期','开始原值','结束原值'],(view.weekly?.rows||[]).map(row=>[known(row.type),known(row.period),known(row.startTime),known(row.endTime)]));
+ if(!view.weekly?.rows?.length)box.appendChild(el('p','dim',view.weekly?.listObserved?'本次窗口列表为空；不代表完整活动目录。':'周活动窗口未知。'));
+ draw('公会摘要观察',['摘要ID','观察等级'],(view.alliance?.rows||[]).map(row=>[known(row.id),known(row.level)]));
+ box.appendChild(el('p','dim',view.alliance?.listObserved?(view.alliance.rows.length?'摘要列表不代表本人联盟；本人归属、成员与操作资格请到原联盟页核查。':'本次摘要列表为空；不能认定未加入联盟。'):'公会摘要未知；不能推定本人联盟。'));
+ draw('活动与联盟来源',['查询','状态','更新时间','缓存','精度'],view.sources.map(row=>[row.name||row.request,labels[row.status]||'未知',row.updatedAt?when(row.updatedAt):'未知',row.stale?'过期':'本次缓存',row.precision==='DECODED_EXACT'?'精确解码':'旧归一化']));
+ box.appendChild(el('p','dim',view.note||'观察不构成授权；需在原专业页重新调查与预览。'));
+ for(const [label,tab,section] of [['打开日常清单','dailies','dailies-table'],['打开任务奖励','idle','gp-task-rewards-section'],['打开联盟专业页','alliance','tab-alliance'],['打开活动数据目录','explorer','explorer-list']]){
+  const button=el('button','',label);button.type='button';button.dataset.overviewDomain=tab;button.onclick=()=>{if(!viewGuard.current(scope)||!valid()||!Array.from(box.children).includes(button))return;document.querySelector?.('#tabs button[data-tab="'+tab+'"]')?.click();$(section)?.scrollIntoView?.({block:'start'});};box.appendChild(button);
+ }
+}
+
 function renderOverview(data) {
   renderFishing(data);
+  renderActivityAlliance(data);
   const role = data.player || {};
   const status = data.status || {};
   const states = { IDLE: '未连接', CONNECTING: '连接中', READY: '已连接', FAILED: '连接失败', REJECTED: '登录失效或被拒绝', CLOSED: '连接已断开', STOPPED: '已停止' };
@@ -754,7 +780,7 @@ async function refreshOverview(base = viewGuard.capture()) {
     $('hint').textContent = '';
     $('busy').textContent = data.status.busy ? '执行中: ' + data.status.busy : '';
   } catch (error) {
-    if (viewGuard.current(scope)) { $('hint').textContent = error.message; renderFishing(null, true); }
+    if (viewGuard.current(scope)) { $('hint').textContent = error.message; renderFishing(null, true); renderActivityAlliance(null); }
   }
 }
 $('fishing-read').onclick = () => refreshOverview();

@@ -20,6 +20,7 @@ class Element {
   click() { this.clicked = true; }
   remove() { this.parent?.removeChild(this); }
   select() { this.selected = true; }
+  setAttribute(key, value) { this.attrs ??= {}; this.attrs[key] = String(value); }
   get firstChild() { return this.children[0]; }
   get childElementCount() { return this.children.length; }
 }

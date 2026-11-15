@@ -1,4 +1,6 @@
 import { ENTRY_QUERIES, summarize } from './game.mjs';
+import { dailyChecklist } from './daily-checklist.mjs';
+import { allianceId } from './alliance.mjs';
 
 // One catalog for the Explorer: collection stays in ENTRY_QUERIES and business
 // parsing stays in summarize/survey modules. Related domains share a query.
@@ -130,6 +132,37 @@ export function exploreSnapshot(snapshot, { domain = null, config = null, update
     domains: DATA_DOMAINS.map((entry) => ({ ...entry, count: DATA_CATALOG.filter(({ domains }) => domains.includes(entry.id)).length })),
     total: DATA_CATALOG.length, entries: result,
   };
+}
+
+
+const overviewOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value');
+const overviewValue=(v,k)=>overviewOwn(v,k)?v[k]:undefined;
+const overviewObject=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+const overviewList=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>overviewOwn(v,i)).every(Boolean);
+const overviewCount=v=>Number.isInteger(v)&&v>=0&&v<=2147483647?v:null;
+function overviewContext(value){
+ if(!overviewObject(value)||!['accountId','generation','connectionId','playerId','worldId'].every(k=>overviewOwn(value,k))||typeof value.accountId!=='string'||!value.accountId||typeof value.connectionId!=='string'||!value.connectionId||!Number.isSafeInteger(value.generation)||value.generation<0)return null;
+ const playerId=allianceId(value.playerId),worldId=allianceId(value.worldId);return playerId&&worldId?{accountId:value.accountId,generation:value.generation,connectionId:value.connectionId,playerId,worldId}:null;
+}
+// P1-5: compose existing cache projections only. Source lists never establish
+// personal guild membership, an exhaustive activity directory or write eligibility.
+export function activityAllianceOverview(snapshot,{config=null,context=null,observedContext=null,updatedAt=null,stale=false,dailyInvalid=false}={}){
+ const current=overviewContext(context),observed=overviewContext(observedContext),matches=Boolean(current&&observed&&JSON.stringify(current)===JSON.stringify(observed)),state=snapshot??{ok:{},failed:{},outcomes:{}},date=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))?v:null;
+ const dailyState=dailyInvalid?{...state,failed:{...state.failed,DailyTaskInfoRequest:'每日来源已变化，须重新采集'}}:state;
+ const checklist=dailyChecklist(matches?dailyState:null,{config,context:current}),catalog=[...exploreSnapshot(matches?state:null,{domain:'activities',config,updatedAt}).entries,...exploreSnapshot(matches?state:null,{domain:'guild',config,updatedAt}).entries],unique=[...new Map(catalog.map(entry=>[entry.request,entry])).values()];
+ const bodies=new Map(),sources=unique.map(entry=>{
+  const exact=overviewOwn(state,'raw'),body=overviewValue(overviewValue(state,exact?'raw':'ok'),entry.request),failed=overviewOwn(state.failed,entry.request),outcome=overviewValue(state.outcomes,entry.request),confirmed=overviewValue(outcome,'status')==='SUCCESS'||!overviewOwn(state,'outcomes')&&!exact&&overviewObject(body);
+  const status=!matches?'CONTEXT_UNKNOWN':failed?'FAILED':entry.status==='SUCCESS'&&confirmed&&overviewObject(body)?'AVAILABLE':entry.status==='NOT_EXECUTED'?'NOT_COLLECTED':'UNKNOWN';
+  if(status==='AVAILABLE')bodies.set(entry.request,body);
+  return {request:entry.request,name:entry.name,domain:entry.domain,domains:entry.domains,status,stale:stale===true,updatedAt:date(overviewValue(outcome,'updatedAt')),precision:exact?'DECODED_EXACT':'LEGACY_NORMALIZED',reason:!matches?'CACHE_CONTEXT_MISMATCH':failed?'SOURCE_FAILED':status==='AVAILABLE'?null:'SOURCE_NOT_CONFIRMED'};
+ });
+ const guildBody=bodies.get('AllGuildAbstractionRequest'),guilds=overviewValue(guildBody,'guilds'),guildList=overviewList(guilds),rows=guildList?guilds.map(row=>({id:allianceId(overviewValue(row,'id')),level:overviewCount(overviewValue(row,'level'))})):[];
+ const counts=new Map();for(const row of rows)if(row.id)counts.set(row.id,(counts.get(row.id)??0)+1);for(const row of rows)if(counts.get(row.id)>1)row.id=null;
+ const weekBody=bodies.get('WeekInfoRequest'),times=overviewValue(weekBody,'activityTime'),weekList=overviewList(times),weeklyRows=weekList?times.map(row=>({type:overviewCount(overviewValue(row,'type')),period:overviewCount(overviewValue(row,'period')),startTime:overviewCount(overviewValue(row,'startTime')),endTime:overviewCount(overviewValue(row,'endTime'))})):[];
+ return {accountId:current?.accountId??null,context:current,observedContext:observed,readOnly:true,executable:false,complete:false,coverage:'CURRENT_CACHE_ONLY',status:!matches?'UNKNOWN':stale?'STALE':'OBSERVED',updatedAt:date(updatedAt),stale:stale===true,sources,checklist,
+  alliance:{status:!guildList?'UNKNOWN':rows.some(row=>row.id===null||row.level===null)?'PARTIAL':'OBSERVED',rows,listObserved:guildList,membershipKnown:false,complete:false,source:'AllGuildAbstractionRequest'},
+  weekly:{status:!weekList?'UNKNOWN':weeklyRows.some(row=>Object.values(row).some(v=>v===null))?'PARTIAL':'OBSERVED',rows:weeklyRows,listObserved:weekList,complete:false,source:'WeekInfoRequest'},
+  note:'本账号本次缓存观察；过期值只代表原观察。摘要列表不代表本人联盟或完整目录，窗口原值不证明当前活动、日界或领奖资格；操作须到原专业页重新调查、计划和授权。'};
 }
 
 // Domain-only read metadata. This does not add queries to ENTRY_QUERIES, start

@@ -19,7 +19,8 @@ import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState, ENTRY_QUERIES, toSnapshotJson } from './game.mjs';
-import { exploreSnapshot } from './data-catalog.mjs';
+import { exploreSnapshot, activityAllianceOverview } from './data-catalog.mjs';
+import { allianceId } from './alliance.mjs';
 import { getConfig, APPID, RESOURCE } from './config.mjs';
 import { defaultOrderRules, validateOrderRules, ORDER_RULE_TYPES, evaluateOrders } from './order-rules.mjs';
 import { loadOrderRules, saveOrderRules } from './order-rules-store.mjs';
@@ -105,7 +106,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       player: null,
       state: 'IDLE', generation: 0, abort: new AbortController(),
       connectionPromise: null, collectionPromise: null, loginResponse: null,
-      snapshot: null, snapshotAt: null, snapshotStale: false, snapshotDailyReset: null,
+      snapshot: null, snapshotAt: null, snapshotStale: false, snapshotDailyReset: null, snapshotContext: null,
       busy: null,
       stageRunner: null, stageClient: null,
       log: [],
@@ -349,11 +350,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const instance = await ensureConnected(session);
       assertCurrent(session, generation, instance);
       session.busy = '采集只读状态';
-      const resetBefore=currentDailyReset(session);
+      const snapshotContext=overviewCacheContext(session),resetBefore=currentDailyReset(session);
       const trackReset=instance instanceof GameClient || session.snapshotDailyReset!==null && session.snapshotDailyReset!==undefined || resetBefore!==null;
       const result = await activeTask(signal, collect(instance, protocol, { timeout: 15000 }));
       assertCurrent(session, generation, instance);
       session.snapshot = result;
+      session.snapshotContext = snapshotContext;
       session.snapshotAt = new Date().toISOString();
       session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null,cacheRevision:resetBefore?.cacheRevision??null} : null;
       session.snapshotStale = dailySnapshotInvalid(session);
@@ -391,6 +393,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
 
   // ---- 只读汇总 -------------------------------------------------------------
 
+  function overviewCacheContext(session){return toSnapshotJson({accountId:session.id,generation:session.generation,connectionId:session.connectionId,playerId:allianceId(session.player?.playerId),worldId:allianceId(session.player?.worldId)});}
   function overview(session, account) {
     const state = session.snapshot ?? { ok: {}, failed: {} };
     const { ok, failed } = state;
@@ -402,7 +405,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       status: accountStatus(session),
       player: describeRole(session.player),
       accountId: account.id, updatedAt: session.snapshotAt, snapshotStale: session.snapshotStale,
-      dataContext: { generation: session.generation, clock: session.client?.clockDiagnostics?.() ?? null },
+      dataContext: { ...overviewCacheContext(session), clock: session.client?.clockDiagnostics?.() ?? null },
       snapshotStatus: !session.snapshot ? 'NOT_COLLECTED' : Object.keys(failed).length ? (Object.keys(ok).length ? 'PARTIAL' : 'FAILED') : 'SUCCESS',
       failed, outcomes: state.outcomes ?? {}, availability: view.availability ?? {},
       resources: (view.resources ?? []).map((entry) => ({ ...entry, icon: resourceIcon(entry.res) })),
@@ -425,6 +428,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       },
       water: view.water,
       fishing: view.fishing,
+      activityAlliance: activityAllianceOverview(session.snapshot,{config,context:overviewCacheContext(session),observedContext:session.snapshotContext,updatedAt:session.snapshotAt,stale:session.snapshotStale===true,dailyInvalid:dailySnapshotInvalid(session)}),
       resFields: view.resFields,
       monthCard: view.monthCard,
       unreadable: Object.keys(failed),

@@ -286,3 +286,40 @@ test('worlds PAGE displays exact recorded identities as readonly facts and clear
  let work=h.node('load-worlds').onclick();h.respond('/api/worlds','A',data);await work;assert.match(h.node('worlds').textContent,/列表区服键 9007199254740995.*角色 9007199254740993.*出生服 9007199254740995.*当前世界 9007199254740997/);assert.match(h.node('worlds').textContent,/不授予切服或创建角色权限/);assert.equal(h.node('enter-world').disabled,true);assert.equal(h.node('world-input').disabled,true);
  work=h.node('load-worlds').onclick();assert.equal(h.node('worlds').textContent,'');h.respond('/api/worlds','A',{accountId:'B',recentWorlds:data.recentWorlds});await work;assert.match(h.node('worlds-hint').textContent,/账号不匹配/);assert.doesNotMatch(h.node('worlds').textContent,/9007199254740993/);assert.equal(h.requests.filter(row=>(row.options.method||'GET')==='POST').length,0);
 });
+
+function activityOverviewReply(account='A'){
+ const stamp='2026-11-15T08:00:00.000Z',context={accountId:account,generation:2,connectionId:'synthetic',playerId:'17',worldId:'9'};
+ return {...overview(account),dataContext:{...context},activityAlliance:{accountId:account,context,observedContext:{...context},readOnly:true,executable:false,complete:false,coverage:'CURRENT_CACHE_ONLY',status:'OBSERVED',updatedAt:stamp,stale:false,sources:[{request:'AllGuildAbstractionRequest',name:'公会摘要',status:'AVAILABLE',updatedAt:stamp,precision:'DECODED_EXACT'},{request:'WeekInfoRequest',name:'周活动',status:'FAILED',updatedAt:null,precision:'DECODED_EXACT'}],checklist:{tasks:{counts:{total:0,completed:0,claimed:0,eligible:0}},activity:{daily:{activity:0},weekly:{activity:null}},sources:{daily:{status:'AVAILABLE',observedAt:stamp}},festival:{rows:[],source:{status:'UNKNOWN'}}},weekly:{rows:[],listObserved:false},alliance:{rows:[{id:'9007199254740995',level:0}],listObserved:true,membershipKnown:false},note:'只读合成；没有完整目录或写授权'}};
+}
+async function loadActivityOverview(h,reply=activityOverviewReply()){
+ const task=h.run('refreshOverview()');h.respond('/api/overview','A',reply);await task;return h.node('overview-activity-alliance');
+}
+function activityButtons(box){return box.children.filter(child=>child.dataset.overviewDomain);}
+test('activity alliance overview PAGE renders observed zero, unknown fields, precise IDs and separate source failures without writes',async()=>{
+ const h=await boot(),count=h.requests.length,box=await loadActivityOverview(h);assert.match(box.textContent,/9007199254740995/);const taskTable=box.children.find(row=>row.tagName==='table');assert.equal(taskTable.children[0].children[0].textContent,'每日任务完成');assert.equal(taskTable.children[1].children[0].textContent,'0/0');assert.equal(taskTable.children[1].children[1].textContent,'0');assert.match(box.textContent,/未知/);assert.match(box.textContent,/读取失败/);assert.match(box.textContent,/摘要列表不代表本人联盟/);assert.match(box.textContent,/不等于可领取/);assert.equal(activityButtons(box).length,4);assert.equal(h.requests.length,count+1);assert.ok(h.requests.every(row=>(row.options.method||'GET')==='GET'));
+});
+test('activity alliance overview PAGE navigation only opens original professional surfaces and never prepares or authorizes actions',async()=>{
+ const h=await boot(),box=await loadActivityOverview(h);h.run("globalThis.overviewLinks=[];document.querySelector=selector=>({click(){overviewLinks.push(selector);}})");const count=h.requests.length;for(const button of activityButtons(box))button.onclick();assert.equal(h.requests.length,count);assert.deepEqual(Array.from(h.run('overviewLinks')),['#tabs button[data-tab="dailies"]','#tabs button[data-tab="idle"]','#tabs button[data-tab="alliance"]','#tabs button[data-tab="explorer"]']);
+});
+test('activity alliance overview PAGE account switch clears old cards and old buttons cannot navigate',async()=>{
+ const h=await boot(),box=await loadActivityOverview(h),old=activityButtons(box)[0];h.run("globalThis.overviewLinks=[];document.querySelector=selector=>({click(){overviewLinks.push(selector);}});selectAccount('B')");assert.equal(box.textContent,'');old.onclick();assert.equal(h.run('overviewLinks.length'),0);
+});
+test('activity alliance overview PAGE late A response cannot replace current B observations',async()=>{
+ const h=await boot(),old=h.run('refreshOverview()');h.run("selectAccount('B')");const next=h.run('refreshOverview()');h.respond('/api/overview','B',activityOverviewReply('B'));await next;const box=h.node('overview-activity-alliance'),before=box.textContent;h.respond('/api/overview','A',activityOverviewReply());await old;assert.equal(box.textContent,before);assert.ok(before.includes('9007199254740995'));
+});
+test('activity alliance overview PAGE failed current read clears old card and superseded buttons cannot navigate',async()=>{
+ const h=await boot(),box=await loadActivityOverview(h),old=activityButtons(box)[0];h.run("globalThis.overviewLinks=[];document.querySelector=selector=>({click(){overviewLinks.push(selector);}})");const next=h.run('refreshOverview()');h.respond('/api/overview','A',{error:'synthetic failed'},false);await next;assert.doesNotMatch(box.textContent,/9007199254740995/);assert.match(box.textContent,/来源未知/);old.onclick();assert.equal(h.run('overviewLinks.length'),0);
+});
+for(const fault of ['account','context','generation','connection','player','world','readOnly','executable','complete','coverage'])test('activity alliance overview PAGE '+fault+' mismatch refuses borrowed summary',async()=>{
+ const h=await boot(),reply=activityOverviewReply(),value=reply.activityAlliance;if(fault==='account')value.accountId='B';if(fault==='context')value.context.accountId='B';if(fault==='generation')value.context.generation=3;if(fault==='connection')value.context.connectionId='other';if(fault==='player')value.context.playerId='18';if(fault==='world')value.context.worldId='10';if(fault==='readOnly')value.readOnly=false;if(fault==='executable')value.executable=true;if(fault==='complete')value.complete=true;if(fault==='coverage')value.coverage='ALL_ACTIVITIES';const box=await loadActivityOverview(h,reply);assert.match(box.textContent,/来源未知/);assert.doesNotMatch(box.textContent,/9007199254740995/);assert.equal(activityButtons(box).length,0);
+});
+test('activity alliance overview PAGE marks stale observations and does not treat empty guild or activity lists as complete',async()=>{
+ const h=await boot(),reply=activityOverviewReply();reply.activityAlliance.status='STALE';reply.activityAlliance.stale=true;reply.activityAlliance.alliance.rows=[];reply.activityAlliance.weekly.listObserved=true;const box=await loadActivityOverview(h,reply);assert.match(box.textContent,/缓存过期/);assert.match(box.textContent,/不能认定未加入联盟/);assert.match(box.textContent,/不代表完整活动目录/);
+});
+test('activity alliance overview PAGE observed strings are text rather than injected HTML',async()=>{
+ const h=await boot(),reply=activityOverviewReply(),value='<img src=x onerror=alert(1)>';reply.activityAlliance.alliance.rows[0].id=value;reply.activityAlliance.sources[0].name=value;const box=await loadActivityOverview(h,reply);assert.ok(box.textContent.includes(value));const all=el=>el.children.flatMap(child=>[child,...all(child)]);assert.equal(all(box).some(child=>String(child.tagName).toLowerCase()==='img'),false);assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
+});
+
+test('activity alliance overview PAGE shows observed festival window and check-in records with unknown claim eligibility',async()=>{
+ const h=await boot(),reply=activityOverviewReply();reply.activityAlliance.checklist.festival={rows:[{activityId:'9007199254740995',status:'OBSERVED',startTime:100,openTime:110,closeTime:190,endTime:200,checkInRecord:{status:'OBSERVED',checkInId:[0,2]},eligible:null,executable:false}],source:{status:'OBSERVED',observedAt:'2026-11-15T08:00:00.000Z'}};const box=await loadActivityOverview(h,reply);assert.ok(box.textContent.includes('0、2'));assert.match(box.textContent,/窗口不证明当前开放或签到资格/);assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
+});

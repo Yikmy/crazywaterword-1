@@ -512,3 +512,30 @@ test('worlds HTTP shares the original busy lock and cancellation cannot release 
   const oldClient=app.clients[0];assert.equal((await app.call('/api/disconnect',{method:'POST'})).status,200);assert.equal((await pending).status,409);await app.connect();const current=app.sessions.get('account-A');current.busy='successor-owner';gate.resolve(rawWorldList());await flush();assert.equal(current.busy,'successor-owner');assert.equal(current.client,app.clients[1]);assert.equal(app.reads.length,1);assert.equal(oldClient.connected,false);
  }finally{await app.close();}
 });
+
+function activityRuntimeSnapshot(){
+ const state=dailyRuntimeSnapshot(),bodies={AllGuildAbstractionRequest:{guilds:[{id:'9007199254740995',level:0}]},WeekInfoRequest:{activityTime:[{type:1,period:0,startTime:100,endTime:200}]}};
+ Object.assign(state.ok,structuredClone(bodies));Object.assign(state.raw,structuredClone(bodies));for(const name of Object.keys(state.ok))state.outcomes[name]={status:'SUCCESS',updatedAt:'2026-11-15T08:00:00.000Z'};return state;
+}
+async function activityRuntimeHarness(options={}){
+ const app=await harness({collect:async()=>activityRuntimeSnapshot(),...options});await app.connect();Object.assign(app.sessions.get('account-A').player,{playerId:'17',worldId:'9'});return app;
+}
+test('activity alliance cached overview HTTP has no implicit collection, exact account isolation and no executable authority',async()=>{
+ const app=await activityRuntimeHarness();try{
+  const before=await app.call('/api/overview');assert.equal(before.data.activityAlliance.status,'UNKNOWN');assert.equal(app.collects,0);
+  await app.refresh();const response=(await app.call('/api/overview')).data,result=response.activityAlliance;assert.equal(response.dataContext.playerId,'17');assert.equal(response.dataContext.worldId,'9');for(const key of ['accountId','generation','connectionId','playerId','worldId'])assert.equal(response.dataContext[key],result.context[key]);assert.equal(result.accountId,'account-A');assert.equal(result.status,'OBSERVED');assert.equal(result.alliance.rows[0].id,'9007199254740995');assert.equal(result.alliance.rows[0].level,0);assert.equal(result.alliance.membershipKnown,false);assert.equal(result.weekly.rows[0].period,0);assert.equal(result.readOnly,true);assert.equal(result.executable,false);assert.equal(result.complete,false);assert.equal(result.checklist.tasks.counts.total,1);assert.equal(app.collects,1);
+  const b=(await app.call('/api/overview',{account:'account-B'})).data.activityAlliance;assert.equal(b.status,'UNKNOWN');assert.deepEqual(b.alliance.rows,[]);assert.deepEqual(b.weekly.rows,[]);for(let i=0;i<3;i++)await app.call('/api/overview');assert.equal(app.collects,1);assert.equal(app.clients.length,1);
+ }finally{await app.close();}
+});
+for(const key of ['generation','connectionId','playerId','worldId'])test('activity alliance cached overview HTTP '+key+' change invalidates prior observed identity',async()=>{
+ const app=await activityRuntimeHarness();try{await app.refresh();const session=app.sessions.get('account-A'),original=JSON.stringify(session.snapshot);if(key==='generation')session.generation++;else if(key==='connectionId')session.connectionId='new-synthetic-connection';else session.player[key]=key==='playerId'?'18':'10';const result=(await app.call('/api/overview')).data.activityAlliance;assert.equal(result.status,'UNKNOWN');assert.deepEqual(result.alliance.rows,[]);assert.equal(result.checklist.tasks.counts.total,null);assert.equal(app.collects,1);assert.equal(JSON.stringify(session.snapshot),original);}finally{await app.close();}
+});
+test('activity alliance cached overview HTTP failed source does not hide independent weekly or task observations',async()=>{
+ const app=await activityRuntimeHarness({collect:async()=>{const state=activityRuntimeSnapshot();state.failed.AllGuildAbstractionRequest='synthetic failure';state.outcomes.AllGuildAbstractionRequest.status='FAILED';return state;}});try{await app.refresh();const result=(await app.call('/api/overview')).data.activityAlliance;assert.equal(result.alliance.status,'UNKNOWN');assert.equal(result.weekly.status,'OBSERVED');assert.equal(result.checklist.tasks.counts.total,1);assert.equal(result.sources.find(row=>row.request==='AllGuildAbstractionRequest').status,'FAILED');assert.equal(app.collects,1);}finally{await app.close();}
+});
+test('activity alliance cached overview HTTP source identity captured before collection prevents late role migration',async()=>{
+ const gate=deferred(),app=await activityRuntimeHarness({collect:()=>gate.promise});try{const reading=app.refresh();await until(()=>app.collects===1);app.sessions.get('account-A').player.worldId='10';gate.resolve(activityRuntimeSnapshot());const result=await reading;assert.equal(result.status,200);assert.equal(result.data.activityAlliance.status,'UNKNOWN');assert.deepEqual(result.data.activityAlliance.alliance.rows,[]);assert.equal(app.collects,1);}finally{await app.close();}
+});
+test('activity alliance cached overview HTTP reuses accepted daily reset invalidation without sending or replaying',async()=>{
+ const app=await dailyRuntimeHarness();try{const socket=await app.login();await app.refresh();const before=(await app.call('/api/overview')).data.activityAlliance;assert.equal(before.checklist.tasks.counts.eligible,1);const sent=app.sent.length;socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},1);const after=(await app.call('/api/overview')).data.activityAlliance;assert.equal(after.stale,true);assert.equal(after.checklist.sources.daily.status,'UNKNOWN');assert.equal(after.checklist.tasks.counts.total,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);}finally{await app.close();}
+});
