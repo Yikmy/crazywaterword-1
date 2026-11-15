@@ -191,8 +191,8 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);
   if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return surveyResourceFields(client,protocol,{config,player,signal,parameters});
   const fieldObservation=opts.giveUpResourceField?await surveyResourceFields(client,protocol,{config,player,signal}):null;
-  const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'];
-  const values = await Promise.all(names.map(request => readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? { screenCenter: { x: 0, y: 0 } } : {}, { signal })));
+  const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'],sourceAt={},worldQuery={screenCenter:{x:0,y:0}};
+  const values = await Promise.all(names.map(async request => { const value=await readNavalFact(client,protocol,request,request==='WorldInfoRequest'?worldQuery:{},{signal});if(value.available)sourceAt[request]=Date.now();return value; }));
   const sources = Object.fromEntries(names.map((name, index) => [name, values[index]]));
   let formationFacts = null;
   if (opts.formation === true) {
@@ -221,7 +221,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   const citiesReliable = sources.WorldInfoRequest.available && Array.isArray(cities) && cities.every(city => Number.isSafeInteger(city.id) && city.id > 0) && new Set(cities.map(city => city.id)).size === cities.length;
   const guildId = quantity(sources.GuildInfoRequest.body?.guild?.guildId), playerGuild = quantity(player?.guildId);
   const guildIdx = sources.GuildInfoRequest.available && guildId > 0 && (playerGuild === null || playerGuild === guildId) ? guildId % 1000 : null;
-  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, ...fleets, formationFacts, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
+  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, sourceAt, worldQuery, ...fleets, formationFacts, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
     resourceFields:fieldObservation&&fieldCurrent(fieldObservation)?fieldObservation.resourceFields:null, cargoReliable, ships: cargoReliable ? structuredClone(ships) : [], citiesReliable, cities: citiesReliable ? cities.map(city => ({ id: city.id, state: quantity(city.state), guildIdx: quantity(city.guildIdx) })) : [], guildIdx,
     map: opts.move === true ? loadMapAsset(opts.scenarioId) : null,
     protocolReady: Object.fromEntries(['RepairFleetRequest', 'StopRepairingRequest', 'SetFleetAutoFightRequest', 'FleetSaveFormationRequest', 'MoveFleetsToCityRequest', 'FillCargoShipRequest', 'DrawShipRewardRequest'].map(name => [name, Boolean(protocol?.[name] && (!['FillCargoShipRequest', 'DrawShipRewardRequest'].includes(name) || protocol?.[name.replace('Request', 'Response')]))])),
@@ -401,3 +401,22 @@ function fleetDependencyVersions({config,moduleConfig={}}={}) {
   return {moduleConfig:opts,config:Object.fromEntries(names.map(name=>[name,structuredClone(config?.tables?.[name]??null)])),mapAsset:map?{scenarioId:map.scenarioId,width:map.width,height:map.height,tileWidth:map.tileWidth??null,tileHeight:map.tileHeight??null,cityInfo:structuredClone(map.cityInfo??null)}:null};
 }
 export const fleetModule = Object.freeze({ dependencyVersions:fleetDependencyVersions, id: 'fleet', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf, defaultConfig: FLEET_DEFAULT_CONFIG, validateConfig: validateFleetConfig, survey: surveyFleet, view: fleetView, plan: planFleet, verify: verifyFleet });
+
+/** Bounded historical observations from the original explicit Fleet survey. */
+export function fleetCacheOverview(facts,view,{context=null,observedContext=null}={}) {
+ const keys=['accountId','generation','connectionId','playerId','worldId'];
+ const identity=c=>c&&nonempty(c.accountId)&&Number.isSafeInteger(c.generation)&&c.generation>=0&&nonempty(c.connectionId)&&['playerId','worldId'].every(k=>typeof c[k]==='string'&&/^[1-9][0-9]{0,18}$/.test(c[k])&&BigInt(c[k])<(1n<<63n));
+ const stamp=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?value:Number.isSafeInteger(value)&&value>0&&value<=8640000000000000?new Date(value).toISOString():null;
+ const section=request=>({request,status:'UNKNOWN',listObserved:false,observedAt:null,rows:[]});
+ const result={accountId:context?.accountId??null,context:context?Object.fromEntries(keys.map(k=>[k,context[k]??null])):null,readOnly:true,executable:false,complete:false,coverage:'LATEST_EXPLICIT_SURVEY_ONLY',status:'UNKNOWN',surveyedAt:null,fleets:section('MyFleetsRequest'),world:{...section('WorldInfoRequest'),coverage:'CURRENT_RESPONSE_ONLY',query:null,mapComplete:false},note:'仅最近显式舰队调查的历史观察；海面仅本次响应范围，不表示完整地图、实时位置或移动/攻击资格。请在原舰队页重新调查并单独授权。'};
+ if(!identity(context)||!identity(observedContext)||!keys.every(k=>context[k]===observedContext[k])||!facts||!view)return result;
+ result.surveyedAt=stamp(view.surveyedAt);
+ if(facts.fleetReliable===true&&facts.sources?.MyFleetsRequest?.available===true&&Array.isArray(facts.fleets)&&stamp(facts.sourceAt?.MyFleetsRequest)){
+  result.fleets={...result.fleets,status:'OBSERVED',listObserved:true,observedAt:stamp(facts.sourceAt.MyFleetsRequest),rows:facts.fleets.map(row=>({buildingId:nonempty(row.buildingId)?row.buildingId:null,state:quantity(row.state),cityId:quantity(row.cityId),targetCityId:quantity(row.targetCityId),durability:quantity(row.durability),maxDura:quantity(row.maxDura),moveEndTs:quantity(row.moveEndTs)}))};
+ }
+ const center=facts.worldQuery?.screenCenter;
+ if(facts.citiesReliable===true&&facts.sources?.WorldInfoRequest?.available===true&&Array.isArray(facts.cities)&&stamp(facts.sourceAt?.WorldInfoRequest)&&Number.isFinite(center?.x)&&Number.isFinite(center?.y)){
+  result.world={...result.world,status:'OBSERVED',listObserved:true,observedAt:stamp(facts.sourceAt.WorldInfoRequest),query:{screenCenter:{x:center.x,y:center.y}},rows:facts.cities.map(row=>({id:quantity(row.id),state:quantity(row.state),guildIdx:quantity(row.guildIdx)}))};
+ }
+ const observed=[result.fleets,result.world].filter(row=>row.listObserved).length;result.status=observed===2?'OBSERVED':observed===1?'PARTIAL':'UNKNOWN';return result;
+}

@@ -1,3 +1,4 @@
+import { fleetCacheOverview } from './fleet.mjs';
 import { allianceId, allianceCacheOverview } from './alliance.mjs';
 import {prepareFarmHarvestWorkflow,validateFarmHarvestPreparation,prepareFarmPlantWorkflow,validateFarmPlantPreparation} from './farm-operations.mjs';
 import {prepareAfkUpgradeWorkflow,validateAfkUpgradePreparation} from './afk-level-rewards.mjs';
@@ -224,7 +225,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id]?.view ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
   function cacheModule(session, id, facts, options) {
     const accountId=session.id;
-    const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')));
+    // Fleet embeds the live config API; its historical projection only needs observed facts.
+    const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([key,value])=>typeof value!=='function'&&!(id==='fleet'&&key==='config'))));
     const raw = adapterFor(id).view(facts, options);
     const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     const observation={context:executionContext(session),identity:observationIdentity(session),client:session.client};
@@ -711,16 +713,19 @@ function authorizeWorkflowPlan(session,payload){
     } finally { release(); }
   }
 
-  function allianceOverview(session) {
-  const entry=moduleCache.get(session.id)?.alliance,observation=entry?.observation;
+  function cachedOverviewObservation(session,id) {
+  const entry=moduleCache.get(session.id)?.[id],observation=entry?.observation;
   const context=toSnapshotJson({accountId:session.id,generation:session.generation,connectionId:session.connectionId??(session.client?connectionIds.get(session.client)??null:null),playerId:allianceId(session.player?.playerId),worldId:allianceId(session.player?.worldId)});
   const aligned=['accountId','generation','connectionId','playerId','worldId'].every(key=>!Object.hasOwn(session.client?.factContext??{},key)||(key==='playerId'||key==='worldId'?allianceId(session.client.factContext[key]):session.client.factContext[key])===context[key]);
   const valid=Boolean(aligned&&observation&&session.state==='READY'&&session.client?.connected===true&&!session.abort?.signal.aborted&&session.client===observation.client&&observation.identity===observationIdentity(session));
-  return allianceCacheOverview(valid?moduleFacts.get(session.id)?.alliance:null,valid?entry.view:null,{context,observedContext:observation?{...observation.context,playerId:allianceId(observation.context.playerId),worldId:allianceId(observation.context.worldId)}:null});
-}
+  return {facts:valid?moduleFacts.get(session.id)?.[id]:null,view:valid?entry.view:null,context,observedContext:observation?{...observation.context,playerId:allianceId(observation.context.playerId),worldId:allianceId(observation.context.worldId)}:null};
+
+  }
+  function allianceOverview(session) { const {facts,view,...scope}=cachedOverviewObservation(session,'alliance');return allianceCacheOverview(facts,view,scope); }
+  function fleetOverview(session) { const {facts,view,...scope}=cachedOverviewObservation(session,'fleet');return fleetCacheOverview(facts,view,scope); }
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, stop, status,
+  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, fleetOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);

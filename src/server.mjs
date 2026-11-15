@@ -429,6 +429,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       water: view.water,
       fishing: view.fishing,
       ownAlliance: operations.allianceOverview(session),
+      fleetWorld: operations.fleetOverview(session),
       activityAlliance: activityAllianceOverview(session.snapshot,{config,context:overviewCacheContext(session),observedContext:session.snapshotContext,updatedAt:session.snapshotAt,stale:session.snapshotStale===true,dailyInvalid:dailySnapshotInvalid(session)}),
       resFields: view.resFields,
       monthCard: view.monthCard,

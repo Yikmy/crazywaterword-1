@@ -288,3 +288,17 @@ test('Service failed alliance view cannot pair old cache provenance with new sur
   await assert.rejects(f.service.surveyModule(f.session,'alliance'),/synthetic projection failure/);assert.deepEqual(f.service.allianceOverview(f.session),before);assert.equal(f.reads(),2);
  }finally{f.cleanup();}
 });
+
+const {fleetModule:cachedFleetModule}=await import('../src/fleet.mjs');
+function fleetCacheFixture({gate=null}={}){
+ const f=fixture(),session=f.session('A');let reads=0;Object.assign(session,{connectionId:'synthetic-fleet-cache',player:{playerId:'9007199254740993',worldId:1000001}});session.client.factContext={accountId:'A',generation:1,connectionId:session.connectionId,playerId:session.player.playerId,worldId:1000001};
+ const facts={parameters:{},fleetReliable:true,fleets:[{buildingId:'synthetic-fleet-cache',state:0,cityId:1,durability:0}],citiesReliable:true,cities:[{id:1,state:0,guildIdx:0}],sourceAt:{MyFleetsRequest:1800000000000,WorldInfoRequest:1800000000001},sources:{MyFleetsRequest:{available:true},WorldInfoRequest:{available:true}},worldQuery:{screenCenter:{x:0,y:0}}};
+ const service=createOperationService({protocol:{},history:f.history,loadRules:()=>({config:{}}),modules:{fleet:{...cachedFleetModule,view:()=>({candidates:[]}),async survey(){reads++;if(gate)await gate.promise;return {...structuredClone(facts),config:{tables:{},resourceName(){return 'synthetic-config-method';}}};}}},moduleSettings:{get:()=>({config:{enabled:false}})}});return {...f,session,service,reads:()=>reads};
+}
+test('Service Fleet summary reuses explicit scoped cache and starts UNKNOWN after restart',async()=>{
+ const f=fleetCacheFixture();try{assert.equal(f.service.fleetOverview(f.session).status,'UNKNOWN');assert.equal(f.reads(),0);await f.service.surveyModule(f.session,'fleet');const r=f.service.fleetOverview(f.session);assert.equal(r.status,'OBSERVED');assert.equal(r.fleets.rows[0].buildingId,'synthetic-fleet-cache');assert.equal(r.world.rows[0].guildIdx,0);for(let i=0;i<3;i++)f.service.fleetOverview(f.session);assert.equal(f.reads(),1);assert.deepEqual(f.service.history('A').runs,[]);const next=createOperationService({protocol:{},loadRules:()=>({config:{}})});assert.equal(next.fleetOverview(f.session).status,'UNKNOWN');}finally{f.cleanup();}
+});
+for(const key of ['account','generation','connection','player','world','client','client-world','disconnect','abort'])test('Service Fleet summary isolates '+key,async()=>{
+ const f=fleetCacheFixture();try{await f.service.surveyModule(f.session,'fleet');const s=f.session;if(key==='account')s.id='B';if(key==='generation')s.generation++;if(key==='connection')s.connectionId='other';if(key==='player')s.player.playerId='2';if(key==='world')s.player.worldId=2000001;if(key==='client')s.client={...s.client};if(key==='client-world')s.client.factContext.worldId=2000001;if(key==='disconnect')s.client.connected=false;if(key==='abort')s.abort.abort();assert.equal(f.service.fleetOverview(s).status,'UNKNOWN');assert.equal(f.reads(),1);}finally{f.cleanup();}
+});
+test('Service late Fleet survey cannot seed cache for successor role',async()=>{let resolve;const gate={promise:new Promise(r=>resolve=r)},f=fleetCacheFixture({gate});try{const pending=f.service.surveyModule(f.session,'fleet');f.session.player.worldId=2000001;f.session.busy='successor';resolve();await assert.rejects(pending,{code:'CANCELLED'});assert.equal(f.service.fleetOverview(f.session).status,'UNKNOWN');assert.equal(f.session.busy,'successor');assert.equal(f.reads(),1);}finally{f.cleanup();}});

@@ -728,6 +728,18 @@ function renderOwnAlliance(box,data,scope,draw,known,labels){
   box.appendChild(el('p','dim',own.note||'原联盟页显式调查；缓存观察不构成操作资格或授权。'));
 }
 
+function renderFleetWorld(box,data,scope,draw,known,labels){
+ const own=data?.fleetWorld,valid=own?.accountId===scope.account&&own.readOnly===true&&own.executable===false&&own.complete===false&&own.coverage==='LATEST_EXPLICIT_SURVEY_ONLY'&&['accountId','generation','connectionId','playerId','worldId'].every(k=>own.context?.[k]!==undefined&&own.context[k]===data?.dataContext?.[k]);
+ if(!valid){box.appendChild(el('p','dim','舰队与海面来源未知；请在原舰队页显式调查。'));return;}
+ box.appendChild(el('h3','','舰队与海面调查摘要'));
+ draw('本人舰队历史观察',['舰队建筑','状态原值','城市原值','目标城市原值','耐久原值','上限原值','移动截止原值'],(own.fleets?.rows||[]).map(row=>[known(row.buildingId),known(row.state),known(row.cityId),known(row.targetCityId),known(row.durability),known(row.maxDura),known(row.moveEndTs)]));
+ const bounded=own.world?.coverage==='CURRENT_RESPONSE_ONLY'&&own.world?.mapComplete===false;
+ draw('海面响应范围',['城市ID','状态原值','派系原值'],bounded?(own.world.rows||[]).map(row=>[known(row.id),known(row.state),known(row.guildIdx)]):[]);
+ const center=bounded?own.world.query?.screenCenter:null;box.appendChild(el('p','dim','查询中心原值：'+known(center?.x)+' / '+known(center?.y)+'；本次响应不代表完整地图。'));
+ draw('舰队与海面来源',['查询','状态','来源更新'],[own.fleets,own.world].map(row=>[row?.request||'未知',labels[row?.status]||'未知',row?.observedAt?when(row.observedAt):'未知']));
+ box.appendChild(el('p','dim',own.note||'缓存不证明实时位置或移动/攻击资格。'));
+}
+
 function renderActivityAlliance(data){
  const box=clear($('overview-activity-alliance')),scope=viewGuard.capture(),view=data?.activityAlliance,known=v=>v===null||v===undefined?'未知':String(v);
  const valid=()=>Boolean(data?.account?.id===scope.account&&view?.accountId===scope.account&&view?.context?.accountId===scope.account&&['accountId','generation','connectionId','playerId','worldId'].every(k=>view.context[k]!==undefined&&view.context[k]===data?.dataContext?.[k])&&view.readOnly===true&&view.executable===false&&view.complete===false&&view.coverage==='CURRENT_CACHE_ONLY'&&Array.isArray(view.sources));
@@ -745,9 +757,10 @@ function renderActivityAlliance(data){
  draw('公会摘要观察',['摘要ID','观察等级'],(view.alliance?.rows||[]).map(row=>[known(row.id),known(row.level)]));
  box.appendChild(el('p','dim',view.alliance?.listObserved?(view.alliance.rows.length?'摘要列表不代表本人联盟；本人归属、成员与操作资格请到原联盟页核查。':'本次摘要列表为空；不能认定未加入联盟。'):'公会摘要未知；不能推定本人联盟。'));
  renderOwnAlliance(box,data,scope,draw,known,labels);
+ renderFleetWorld(box,data,scope,draw,known,labels);
  draw('活动与联盟来源',['查询','状态','更新时间','缓存','精度'],view.sources.map(row=>[row.name||row.request,labels[row.status]||'未知',row.updatedAt?when(row.updatedAt):'未知',row.stale?'过期':'本次缓存',row.precision==='DECODED_EXACT'?'精确解码':'旧归一化']));
  box.appendChild(el('p','dim',view.note||'观察不构成授权；需在原专业页重新调查与预览。'));
- for(const [label,tab,section] of [['打开日常清单','dailies','dailies-table'],['打开任务奖励','idle','gp-task-rewards-section'],['打开联盟专业页','alliance','tab-alliance'],['打开活动数据目录','explorer','explorer-list']]){
+ for(const [label,tab,section] of [['打开日常清单','dailies','dailies-table'],['打开任务奖励','idle','gp-task-rewards-section'],['打开联盟专业页','alliance','tab-alliance'],['打开舰队专业页','fleet','tab-fleet'],['打开活动数据目录','explorer','explorer-list']]){
   const button=el('button','',label);button.type='button';button.dataset.overviewDomain=tab;button.onclick=()=>{if(!viewGuard.current(scope)||!valid()||!Array.from(box.children).includes(button))return;document.querySelector?.('#tabs button[data-tab="'+tab+'"]')?.click();$(section)?.scrollIntoView?.({block:'start'});};box.appendChild(button);
  }
 }

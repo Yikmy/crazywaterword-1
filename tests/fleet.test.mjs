@@ -1,3 +1,4 @@
+import { fleetCacheOverview } from '../src/fleet.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -156,3 +157,19 @@ test('resource field complete empty list stays observed and never supplies a rel
 test('resource field ordinary Fleet observation preserves existing maintenance candidates without selecting a release',async t=>{
  const f=await fieldFixture(t);f.state.overrides.MyFleetsRequest={fleets:[{buildingId:'f1',state:4,autoFight:{isOn:false,todayTimes:0},repairing:{startTs:100,endTs:200,endDura:2000}}]};const options={...f.options,parameters:{},moduleConfig:{...f.moduleConfig,stopRepair:true}},facts=await surveyFleet(f.client,f.protocol,options),view=fleetView(facts,options);assert.deepEqual(view.resourceFields,{maxNum:3,fields:[{gridIdx:0,cityId:1,type:0},{gridIdx:9,cityId:2,type:1}]});assert.equal(view.candidates.some(r=>r.actionType==='giveUpField'),false);assert.equal(view.candidates.find(r=>r.actionType==='fleetStopRepair')?.decision,'READY');assert.equal(f.state.writes.length,0);
 });
+
+const fleetOverviewContext={accountId:'synthetic-A',generation:3,connectionId:'offline-fleet',playerId:'9007199254740993',worldId:'1000001'};
+function fleetOverviewFacts(){return {fleetReliable:true,fleets:[{buildingId:'<synthetic-fleet>',state:0,cityId:1,targetCityId:null,durability:0,maxDura:100,moveEndTs:0,owner:{private:true}}],citiesReliable:true,cities:[{id:1,state:0,guildIdx:0}],worldQuery:{screenCenter:{x:0,y:0}},sourceAt:{MyFleetsRequest:1800000000000,WorldInfoRequest:1800000000001},sources:{MyFleetsRequest:{available:true},WorldInfoRequest:{available:true}},stock:new Map([['private-material',99]])};}
+const fleetOverviewProject=facts=>fleetCacheOverview(facts,{surveyedAt:'2026-11-16T00:00:00Z',candidates:[{private:true}]},{context:fleetOverviewContext,observedContext:{...fleetOverviewContext}});
+test('bounded Fleet cache preserves explicit zero and source times without exposing execution data or full map claims',()=>{
+ const f=fleetOverviewFacts(),r=fleetOverviewProject(f);assert.equal(r.status,'OBSERVED');assert.equal(r.executable,false);assert.equal(r.readOnly,true);assert.equal(r.complete,false);assert.equal(r.world.mapComplete,false);assert.equal(r.world.coverage,'CURRENT_RESPONSE_ONLY');assert.deepEqual(r.world.query,{screenCenter:{x:0,y:0}});
+ assert.equal(r.fleets.rows[0].durability,0);assert.equal(r.fleets.rows[0].targetCityId,null);assert.equal(r.world.rows[0].guildIdx,0);assert.equal(r.fleets.observedAt,new Date(1800000000000).toISOString());assert.equal(r.world.observedAt,new Date(1800000000001).toISOString());
+ for(const key of ['owner','candidates','stock','private-material'])assert.equal(JSON.stringify(r).includes(key),false);r.fleets.rows[0].buildingId='changed';assert.equal(f.fleets[0].buildingId,'<synthetic-fleet>');
+});
+test('bounded Fleet cache distinguishes empty observations, failed sources and narrow field-only surveys',()=>{
+ const empty=fleetOverviewFacts();empty.fleets=[];empty.cities=[];assert.equal(fleetOverviewProject(empty).fleets.listObserved,true);assert.equal(fleetOverviewProject(empty).world.listObserved,true);
+ for(const change of [f=>f.fleetReliable=false,f=>f.sources.MyFleetsRequest.available=false,f=>delete f.sourceAt.MyFleetsRequest]){const f=fleetOverviewFacts();change(f);const r=fleetOverviewProject(f);assert.equal(r.status,'PARTIAL');assert.equal(r.fleets.listObserved,false);assert.deepEqual(r.fleets.rows,[]);assert.equal(r.world.listObserved,true);}
+ for(const change of [f=>f.citiesReliable=false,f=>f.sources.WorldInfoRequest.available=false,f=>delete f.worldQuery]){const f=fleetOverviewFacts();change(f);const r=fleetOverviewProject(f);assert.equal(r.world.listObserved,false);assert.deepEqual(r.world.rows,[]);assert.equal(r.fleets.listObserved,true);}
+ const narrow=fleetOverviewProject({resourceFields:{fields:[]}});assert.equal(narrow.status,'UNKNOWN');assert.equal(narrow.fleets.listObserved,false);assert.equal(narrow.world.listObserved,false);
+});
+for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('bounded Fleet cache rejects mismatched '+key,()=>{const context={...fleetOverviewContext,[key]:key==='generation'?4:'other'};const r=fleetCacheOverview(fleetOverviewFacts(),{},{context,observedContext:fleetOverviewContext});assert.equal(r.status,'UNKNOWN');assert.deepEqual(r.fleets.rows,[]);assert.deepEqual(r.world.rows,[]);});
