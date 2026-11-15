@@ -129,10 +129,10 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyEquipmentForge','src/equipment-forge.mjs#verifyEquipmentForge','Exact original batch, queue, typed pick equipId, one new owned UID and full inventory net change'),
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.BuildingEquipMakeCfg','config.EquipMakeLibCfg','config.EquipCfg']),
   }),
-  farm: contract('farm', [], ['P2-2'], ['src/farm-operations.mjs#farmModule','src/farm-operations.mjs#planFarmOperations'], {buildingId:string,action:{type:'string',enum:['plant','harvest']},productId:string}, {
+  farm: contract('farm', [], ['P2-2'], ['src/farm-operations.mjs#farmModule','src/farm-operations.mjs#planFarmOperations'], {buildingId:string,action:{type:'string',enum:['plant','harvest']},productId:string,pendingHarvests:array(object({buildingId:string,productId:string,plantTime:integer,ripeTime:integer,identity:string},['buildingId','productId','plantTime','ripeTime','identity']))}, {
     inventoryRequirementIds:['BIZ-R16a','BIZ-R16b','BIZ-R16c'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['PLANT','HARVEST'],blockedCapabilities:[blocked('BATCH_HARVEST','One exact crop batch per request; multi-plot wire settlement is not yet integrated'),blocked('IMPLICIT_EMPTY_PLOT','Missing farm is not proven empty'),blocked('AUTO_FARMING','Server automatic farming is outside a single-plot permit')]},
-    verification:verification('verifyFarmOperation','src/farm-operations.mjs#verifyFarmOperation','Fresh exact OnWater crop/empty plot, strict live server seconds, typed harvest quantity and exact full inventory net change'),
+    verification:verification('verifyFarmOperation','src/farm-operations.mjs#verifyFarmOperation','Fresh exact OnWater crop/empty plot, strict live server seconds, typed harvest quantity and exact full inventory net change; finite preparation fixes every remaining plot source and UID, sequential single-plot receipts only'),
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.FarmlandPlantCfg']),
   }),
   formation: contract('formation', ['C211', 'C212', 'C213', 'C214', 'C215'], ['P1-3', 'P3-5'], ['src/formation.mjs#formationModule', 'src/formation.mjs#validateFormationParameters'], {...formationParameters,mode:{type:'string',enum:['expedition']},raidId:integer}, {
