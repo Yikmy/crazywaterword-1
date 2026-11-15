@@ -28,7 +28,7 @@ function fake({codec=true,apply=true,afk={},overrides={}}={}) {
    await state.onWrite?.();const result=state.receipt??{rewardedLevel:b.level,reward:{asset:[{type:0,id,num}]}};return codec?wire(r,result):copy(result);
   }
   assert.equal(options?.mutate,undefined);state.reads.push(n);await state.onRead?.(n);
-  let value=n==='AfkInfoRequest'?{afkInfo:state.afk}:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;
+  let value=n==='AfkInfoRequest'?{afkInfo:state.afk,...(Object.hasOwn(state,'clickGoldInfo')?{clickGoldInfo:state.clickGoldInfo}:{})}:n==='AllItemRequest'?{items:[...state.stock].map(([itemId,num])=>({itemId,num}))}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(overrides,n))value=overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected read '+n);return codec?wire(r,value):copy(value);
  },async sendWatch(){throw Error('no untyped AFK write');}};
  return {client,state};
@@ -73,13 +73,13 @@ test('D6 permits exact zero cost and rejects extra fields, implicit costs, inval
  assert.doesNotThrow(()=>assertPaymentAllowed({request:'DrawAfkLevelRewardRequest',body:{level:2},costs:[]}));
  for(const v of[{body:{level:2}},{body:{level:2,buy:false},costs:[]},{body:{level:0},costs:[]},{body:{level:'2'},costs:[]},{body:{level:2},costs:[{id:'GOLD',num:1}]},{body:{level:2},costs:[{id:'RUBY',num:1}]}])assert.throws(()=>assertPaymentAllowed({request:'DrawAfkLevelRewardRequest',...v}));
 });
-function serviceFixture(t,{apply=true,file=null,income=false}={}) {
- const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-afk-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(copy(row));return durable.put(row);}},config=income?incomeCfg():cfg(),f=income?incomeFake({apply}):fake({apply}),activeParameters=income?incomeParameters(f.state):parameters;
- const session={id:'synthetic-A',client:f.client,player:{playerId:'9007199254740993',worldId:'17'},generation:3,connectionId:'offline-afk',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
+function serviceFixture(t,{apply=true,file=null,income=false,upgrade=false}={}) {
+ const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-afk-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(copy(row));return durable.put(row);}},config=income||upgrade?incomeCfg():cfg(),f=upgrade?upgradeFake({apply}):income?incomeFake({apply}):fake({apply}),activeParameters=income?incomeParameters(f.state):parameters;
+ const session={id:'synthetic-A',client:f.client,player:{playerId:'9007199254740993',worldId:'17',...(upgrade?{mainlineStage:1000}:{})},generation:3,connectionId:'offline-afk',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:enabled})},getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
- const send=f.client.request.bind(f.client);f.client.request=async(n,...args)=>{if(n==='DrawAfkLevelRewardRequest'||n==='DrawAfkRewardRequest')f.state.durableBeforeWrite=copy(journal.at(-1));return send(n,...args);};
+ const send=f.client.request.bind(f.client);f.client.request=async(n,...args)=>{if(n==='DrawAfkLevelRewardRequest'||n==='DrawAfkRewardRequest'||n==='UpgradeAfkLevelRequest')f.state.durableBeforeWrite=copy(journal.at(-1));return send(n,...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
- async function makePlan(){const read=await service.surveyModule(session,'afk-level-rewards',activeParameters),row=read.view.candidates[0];assert.ok(row.executable,row.blockedReason);return service.plan(session,{module:'afk-level-rewards',mode:'Manual',parameters:activeParameters,selections:[row.actionId]});}
+ async function makePlan(p=activeParameters){const read=await service.surveyModule(session,'afk-level-rewards',p),row=read.view.candidates[0];assert.ok(row.executable,row.blockedReason);return service.plan(session,{module:'afk-level-rewards',mode:'Manual',parameters:p,selections:[row.actionId]});}
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true});
  async function run(p){const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};}
  return {...f,session,service,config,durable,history,journal,file,makePlan,authorize,run,parameters:activeParameters};
@@ -270,4 +270,106 @@ for(const entry of ['tasks','dailies','loop'])for(const outcome of ['success','u
  const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{income:true,apply:outcome==='success'});if(outcome==='refused')refuseAfk(f);
  const intent={entry,budget:{resources:[],quotas:[],uids:[{type:'afk-income-interval',id:'2:100:500'}]},...(entry==='dailies'?{dailies:[{taskId:1004,action:'perform',parameters:f.parameters}]}:{tasks:[{kind:'afk-income',level:2,afkStartTime:100,afkFinishTime:500}]} )},graph=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES}).graph,runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,o)=>f.service.claimWorkflow(f.session,runId,o),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());const pending=await runner.start(f.session.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const {record}=await f.run(pending.plan),done=await runner.resume();assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED');assert.equal(done.status,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].workflowId,done.runId);assert.equal(f.state.afk.level,2);assert.equal(f.state.afk.rewardedLevel,0);assert.deepEqual(f.durable.list('synthetic-B'),[]);
  if(outcome==='unknown'){const next=serviceFixture(t,{income:true,file:f.file});await assert.rejects(next.makePlan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+
+// Upgrade remains in the existing AFK Function and requires its durable income predecessor.
+function upgradeFake({apply=true,codec=true}={}) {
+ const f=incomeFake({apply:true,codec}),{state,client}=f,base=client.request.bind(client);state.stock.set('挂机徽章',1000);state.upgradeApply=apply;state.upgradeReceipt=null;state.onUpgrade=null;
+ client.request=async(n,b,r,timeout,options)=>{
+  if(n!=='UpgradeAfkLevelRequest')return base(n,b,r,timeout,options);
+  if(codec)wire(n,b);assert.equal(options?.mutate,true);options?.beforeDispatch?.();state.writes.push({name:n,body:copy(b)});
+  let cost=0;for(let level=state.afk.level+1;level<=state.afk.level+b.level;level++)cost+=actual.tables.OfflineCfg.data.find(row=>row.level===level).consume[1];
+  const result={level:state.afk.level+b.level,afkStartTime:Math.floor(state.serverMs/1000),afkFinishTime:Math.floor(state.serverMs/1000)+450};
+  if(state.upgradeApply){state.stock.set('挂机徽章',state.stock.get('挂机徽章')-cost);Object.assign(state.afk,result);}
+  await state.onUpgrade?.();return codec?wire(r,state.upgradeReceipt??result):copy(state.upgradeReceipt??result);
+ };return f;
+}
+const upgradeParameters=(f,levels=1)=>({action:'upgrade',level:f.state.afk.level,levels});
+async function upgradeService(t,input={}){const f=serviceFixture(t,{income:true,upgrade:true,...input});const settled=await f.run(await f.makePlan());assert.equal(settled.record.finalStatus,'SUCCESS');return {...f,incomeRecord:settled.record};}
+async function upgradeReady(levels=1){const f=upgradeFake(),config=incomeCfg(),player={playerId:'9007199254740993',worldId:'17',mainlineStage:1000},context={...f.client.factContext,playerId:player.playerId,worldId:player.worldId};
+ const income=incomeParameters(f.state),io={config,player,parameters:income,moduleConfig:enabled},before=await survey(f.client,protocol,io),op=plan(before,{...io,selections:[view(before,io).candidates[0].actionId]}).actions[0],result=await f.client.request(op.action.request,op.action.body,op.action.response,1,{mutate:true}),after=await survey(f.client,protocol,io),verified=verify(op,before,after,result);assert.equal(verified.confirmed,true);
+ const record={accountId:context.accountId,runId:'offline-verified-income',executionContext:context,finalStatus:'SUCCESS',planSummary:{batchId:'offline-batch'},actions:[{...copy(op),result:'SUCCESS',requestStatus:'SUCCESS',verification:{status:'CONFIRMED'},dispatched:true,unresolvedWrite:false,beforeInventoryReliable:true,afterInventoryReliable:true,afterState:verified.afterState,responseEvidence:verified.responseEvidence}]},records=[record];
+ const parameters=upgradeParameters(f,levels),options={config,player,parameters,moduleConfig:enabled,readIncomeHistory:()=>records},facts=await survey(f.client,protocol,options),candidate=view(facts,options).candidates[0],operation=plan(facts,{...options,selections:[candidate.actionId]}).actions[0];return {...f,config,records,parameters,options,facts,candidate,operation};
+}
+test('AFK upgrade strict parameters do not accept target-as-increment, implicit amounts or supplied income proof',()=>{
+ for(const levels of [1,5,10])assert.deepEqual(validateParameters({action:'upgrade',level:2,levels}),{action:'upgrade',level:2,levels});
+ for(const p of [{action:'upgrade',level:2},{action:'upgrade',level:2,levels:2},{action:'upgrade',level:2,levels:'5'},{action:'upgrade',level:2147483647,levels:1},{action:'upgrade',level:2,levels:1,incomeSettlement:{}},{action:'upgrade',level:2,levels:1,afkStartTime:200}])assert.throws(()=>validateParameters(p),{code:'INVALID_PARAMETERS'});
+});
+for(const levels of [1,5,10])test('AFK upgrade exact real codec increment '+levels+' sums target costs and verifies independent debit and server interval',async()=>{
+ const f=await upgradeReady(levels);assert.ok(f.operation,JSON.stringify(f.candidate));assert.deepEqual(f.operation.action,{request:'UpgradeAfkLevelRequest',response:'UpgradeAfkLevelResponse',body:{level:levels}});
+ const amount=actual.tables.OfflineCfg.data.filter(r=>r.level>2&&r.level<=2+levels).reduce((n,r)=>n+r.consume[1],0);assert.deepEqual(f.operation.costs,[{id:'挂机徽章',num:amount}]);assert.deepEqual(f.operation.budgetClaims.resources,f.operation.costs);assert.equal(f.operation.target.incomeSettlement.runId,'offline-verified-income');assert.equal(f.operation.expectedState.level,2+levels);
+ const a=await after(f),v=verify(f.operation,f.facts,a.facts,a.result);assert.equal(v.confirmed,true,JSON.stringify(v));assert.equal(f.state.afk.level,2+levels);assert.equal(f.state.afk.afkFinishTime-f.state.afk.afkStartTime,450);assert.equal(f.state.writes.filter(r=>r.name==='UpgradeAfkLevelRequest').length,1);
+});
+for(const [name,change,reason]of[
+ ['no history',f=>f.options.readIncomeHistory=undefined,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['history read failure',f=>f.options.readIncomeHistory=()=>{throw Error('private disk failure');},'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['unconfirmed receipt',f=>f.records[0].actions[0].verification.status='UNCONFIRMED','AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['UNKNOWN income',f=>f.records[0].finalStatus='UNKNOWN','AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['missing dispatch evidence',f=>delete f.records[0].actions[0].dispatched,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['missing receipt interval',f=>delete f.records[0].actions[0].responseEvidence.interval,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['wrong reward beforeState',f=>f.records[0].actions[0].beforeState.afk.level++,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['old connection',f=>f.records[0].executionContext.connectionId='old','AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['other account',f=>f.records[0].accountId='B','AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['other world',f=>f.records[0].executionContext.worldId='18','AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['old generation',f=>f.records[0].executionContext.generation--,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['changed period',f=>f.state.afk.afkStartTime++,'AFK_CONFIRMED_INCOME_REQUIRED'],
+ ['mainline gate',f=>f.options.player.mainlineStage=1,'AFK_MAINLINE_LOCKED'],
+ ['missing mainline',f=>delete f.options.player.mainlineStage,'AFK_AUTHORITY_UNKNOWN'],
+ ['no materials',f=>f.state.stock.set('挂机徽章',0),'AFK_UPGRADE_MATERIAL_SHORTAGE'],
+ ['clock missing',f=>f.state.clockStatus='UNKNOWN','AFK_TRUSTED_CLOCK_UNKNOWN'],
+ ['income is due again',f=>f.state.serverMs+=61000,'AFK_INCOME_REQUIRED_AGAIN'],
+ ['uncertain clock reaches due boundary',f=>{f.state.serverMs+=60000;f.state.uncertaintyMs=1000;},'AFK_INCOME_REQUIRED_AGAIN'],
+ ['cost missing',f=>delete f.config.tables.OfflineCfg.data.find(r=>r.level===3).consume,'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN'],
+ ['cost guessed as currency',f=>f.config.tables.OfflineCfg.data.find(r=>r.level===3).consume=['GOLD',1],'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN'],
+ ['skipped intermediate row',f=>f.config.tables.OfflineCfg.data=f.config.tables.OfflineCfg.data.filter(r=>r.level!==3),'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN'],
+ ['duplicate level',f=>f.config.tables.OfflineCfg.data.push(copy(f.config.tables.OfflineCfg.data[2])),'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN']
+])test('AFK upgrade blocks '+name,async()=>{const f=await upgradeReady();change(f);const facts=await survey(f.client,protocol,f.options),row=view(facts,f.options).candidates[0];assert.equal(row.blockedReason,reason);assert.equal(plan(facts,{...f.options,selections:[row.actionId]}).actions.length,0);assert.equal(f.state.writes.length,1);assert.doesNotMatch(JSON.stringify(row),/private disk/);});
+for(const [name,change]of[
+ ['history lost',f=>f.records.length=0],['mainline changed',f=>f.options.player.mainlineStage++],['mutated proof',f=>f.facts.incomeHistory[0].runId='forged'],['new role',f=>f.options.player.playerId='9007199254740994'],['reconnected',f=>f.client.factContext.connectionId='new']
+])test('AFK upgrade private authority invalidates '+name,async()=>{const f=await upgradeReady();change(f);assert.equal(view(f.facts,f.options).candidates[0].executable,false);assert.equal(plan(f.facts,{...f.options,selections:[f.candidate.actionId]}).actions.length,0);});
+for(const [name,mutate]of[
+ ['wrong cost',s=>s.stock.set('挂机徽章',1000)],['extra debit',s=>s.stock.set('挂机徽章',900)],['unrelated stock',s=>s.stock.set('unrelated',99)],['currency changed',s=>s.resources[0].amount++],['wrong level',s=>s.afk.level++],['reward marker changed',s=>s.afk.rewardedLevel++],['interval mismatch',s=>s.afk.afkFinishTime++],['click gold changed',s=>s.clickGoldInfo={}]
+])test('AFK upgrade rejects independent '+name,async()=>{const f=await upgradeReady();const a=await after(f,mutate);assert.equal(verify(f.operation,f.facts,a.facts,a.result).confirmed,false);});
+for(const body of [{},{level:3},{level:1,afkStartTime:200,afkFinishTime:650},{level:3,afkStartTime:0,afkFinishTime:650},{level:3,afkStartTime:200,afkFinishTime:199}])test('AFK upgrade rejects incomplete or contradictory typed receipt '+JSON.stringify(body),async()=>{const f=await upgradeReady(),a=await after(f);assert.equal(verify(f.operation,f.facts,a.facts,wire('UpgradeAfkLevelResponse',body)).confirmed,false);});
+test('AFK upgrade D6 requires exact owned badge debit and bounded increment',()=>{
+ assert.doesNotThrow(()=>assertPaymentAllowed({request:'UpgradeAfkLevelRequest',body:{level:5},costs:[{id:'挂机徽章',num:10}]}));
+ for(const row of [{body:{level:1}},{body:{level:1},costs:[]},{body:{level:2},costs:[{id:'挂机徽章',num:1}]},{body:{level:1,useAdvCard:false},costs:[{id:'挂机徽章',num:1}]},{body:{level:1},costs:[{id:'GOLD',num:1}]},{body:{level:1},costs:[{id:'挂机徽章',num:0}]},{body:{level:1},costs:[{id:'RUBY',num:1}]}])assert.throws(()=>assertPaymentAllowed({request:'UpgradeAfkLevelRequest',...row}));
+});
+test('AFK upgrade Service uses real durable predecessor and reserves exact cost and entity before write',async t=>{
+ const f=await upgradeService(t),p=await f.makePlan(upgradeParameters(f,5));assert.equal(p.actions[0].actionType,'UPGRADE');assert.equal(p.actions[0].action,undefined);assert.equal(p.actions[0].target.incomeSettlement.runId,f.incomeRecord.runId);assert.deepEqual(p.resourceBudget,[{id:'挂机徽章',num:5}]);
+ const {record}=await f.run(p);assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(f.state.writes.length,2);assert.equal(f.state.durableBeforeWrite.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.durableBeforeWrite.runBudget.reserved.resources,[{id:'挂机徽章',num:5}]);assert.equal(f.state.durableBeforeWrite.runBudget.reserved.uids[0].type,'afk-upgrade');assert.equal(record.actions[0].responseEvidence.level,7);assert.equal(createExecutionHistory({file:f.file}).list(f.session.id)[0].finalStatus,'SUCCESS');assert.equal(Object.hasOwn(p,'readIncomeHistory'),false);
+});
+for(const mode of ['missing-effect','bad-receipt','late-cancel'])test('AFK upgrade '+mode+' remains UNKNOWN and restart forbids replay',async t=>{
+ const f=await upgradeService(t);if(mode==='missing-effect')f.state.upgradeApply=false;if(mode==='bad-receipt')f.state.upgradeReceipt={level:99,afkStartTime:200,afkFinishTime:650};if(mode==='late-cancel')f.state.onUpgrade=()=>f.session.abort.abort();const {record}=await f.run(await f.makePlan(upgradeParameters(f)));assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].unresolvedWrite,true);assert.equal(record.runBudget.reserved.uids[0].type,'afk-upgrade');const next=serviceFixture(t,{income:true,upgrade:true,file:f.file});await assert.rejects(next.makePlan(upgradeParameters(next)),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);
+});
+for(const mode of ['disk','history','clock','mainline','account','generation','connection','role','world'])test('AFK upgrade zero dispatch after '+mode+' changes at authorization or durable intent',async t=>{
+ const f=await upgradeService(t),p=await f.makePlan(upgradeParameters(f)),permit=f.authorize(p),put=f.history.put;
+ f.history.put=row=>{const isUpgrade=row.actions?.some(a=>a.actionType==='UPGRADE'&&a.stages?.at(-1)?.stage==='DISPATCH_INTENT');if(isUpgrade){if(mode==='disk')throw Error('synthetic disk unavailable');if(mode==='history')f.history.list=()=>[];if(mode==='clock')f.state.serverMs+=61000;if(mode==='mainline')f.session.player.mainlineStage++;if(mode==='account')f.session.id='B';if(mode==='generation')f.session.generation++;if(mode==='connection')f.client.factContext.connectionId='new';if(mode==='role')f.session.player.playerId='9007199254740994';if(mode==='world')f.session.player.worldId='18';}return put(row);};
+ try{f.service.execute(f.session,permit);await f.service.settle('synthetic-A');}catch{}assert.equal(f.state.writes.length,1);assert.notEqual(f.durable.list('synthetic-A')[0].finalStatus,'SUCCESS');
+});
+test('AFK upgrade rejection is shared persistent memory rather than permission to repeat',async t=>{
+ const f=await upgradeService(t),base=f.client.request.bind(f.client);f.client.request=async(n,b,r,...args)=>{if(n!=='UpgradeAfkLevelRequest')return base(n,b,r,...args);args.at(-1)?.beforeDispatch?.();f.state.writes.push({name:n,body:copy(b)});throw Object.assign(Error('synthetic rejected'),{code:'REJECTED'});};const p=await f.makePlan(upgradeParameters(f));const {record}=await f.run(p);assert.equal(record.finalStatus,'REJECTED');await assert.rejects(f.makePlan(upgradeParameters(f)),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(f.state.writes.length,2);
+});
+
+for(const mode of ['success','short-budget','missing-entity'])test('AFK upgrade original finite Workflow respects '+mode+' without income expanding parent authorization',async t=>{
+ const f=await upgradeService(t),parameters=upgradeParameters(f,5),read=await f.service.surveyModule(f.session,'afk-level-rewards',parameters),row=read.view.candidates[0];assert.equal(row.executable,true);
+ const budget={resources:mode==='short-budget'?[]:[{id:'挂机徽章',num:5}],quotas:[],uids:mode==='missing-entity'?[]:[{type:'afk-upgrade',id:'2:200:600:5'}]},graph={version:1,id:'explicit-afk-upgrade',name:'Explicit upgrade',budget,nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'afk-level-rewards',parameters},{id:'a',type:'ACTION',module:'afk-level-rewards',parameters,selection:row.actionId},{id:'v',type:'VERIFY',module:'afk-level-rewards'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,o)=>f.service.claimWorkflow(f.session,runId,o),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());let r=await runner.start(f.session.id,graph);assert.equal(r.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,1);if(mode==='success'){await f.run(r.plan);r=await runner.resume();assert.equal(r.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowId,r.runId);}else{await assert.rejects(f.run(r.plan),{code:'RUN_BUDGET_INVALID'});assert.equal(f.service.status(f.session.id).running,false);const denied=f.durable.list(f.session.id)[0];assert.equal(denied.finalStatus,'NOT_EXECUTED');assert.equal(denied.actions[0].requestStatus,'NOT_DISPATCHED');assert.equal(denied.actions[0].dispatchEvidence.state,'NOT_DISPATCHED');assert.equal(denied.workflowId,r.runId);}assert.equal(f.state.writes.length,mode==='success'?2:1);
+});
+test('AFK upgrade after-dispatch history failure preserves UNKNOWN and blocks future execution',async t=>{
+ const f=await upgradeService(t),list=f.history.list;f.state.onUpgrade=()=>{f.history.list=()=>{throw Error('synthetic history unavailable');};};const p=await f.makePlan(upgradeParameters(f)),{record}=await f.run(p);assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].dispatched,true);assert.equal(record.actions[0].unresolvedWrite,true);f.history.list=list;assert.equal(f.service.status(f.session.id).blocked,true);assert.equal(f.state.writes.length,2);const next=serviceFixture(t,{income:true,upgrade:true,file:f.file});await assert.rejects(next.makePlan(upgradeParameters(next)),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);
+});
+test('AFK upgrade authoritative receipt may preserve interval without assuming a reset duration formula',async()=>{
+ const f=await upgradeReady(),old=copy(f.state.afk),r=await f.client.request(f.operation.action.request,f.operation.action.body,f.operation.action.response,1,{mutate:true});f.state.afk.afkStartTime=old.afkStartTime;f.state.afk.afkFinishTime=old.afkFinishTime;r.afkStartTime=old.afkStartTime;r.afkFinishTime=old.afkFinishTime;const a=await survey(f.client,protocol,f.options);assert.equal(verify(f.operation,f.facts,a,r).confirmed,true);
+});
+for(const field of ['costs','target','expectedState','action','budgetClaims'])test('AFK upgrade verification rejects forged '+field,async()=>{const f=await upgradeReady(),a=await after(f),forged=copy(f.operation);forged[field]=field==='costs'?[]:null;assert.equal(verify(forged,f.facts,a.facts,a.result).confirmed,false);});
+test('AFK upgrade cannot use cloned authority or renew source age from durable income',async()=>{
+ const f=await upgradeReady();assert.equal(view(copy(f.facts),f.options).candidates[0].executable,false);const old=Date.now;try{const time=old();Date.now=()=>time+31000;assert.equal(view(f.facts,f.options).candidates[0].executable,false);}finally{Date.now=old;}
+});
+
+test('AFK upgrade sums different intermediate costs rather than multiplying the first or last cost',async()=>{
+ const f=await upgradeReady(5);for(let i=0;i<5;i++)f.config.tables.OfflineCfg.data.find(r=>r.level===3+i).consume=['挂机徽章',2+i];f.facts=await survey(f.client,protocol,f.options);f.candidate=view(f.facts,f.options).candidates[0];f.operation=plan(f.facts,{...f.options,selections:[f.candidate.actionId]}).actions[0];assert.ok(f.operation);assert.deepEqual(f.operation.costs,[{id:'挂机徽章',num:20}]);const result=await f.client.request(f.operation.action.request,f.operation.action.body,f.operation.action.response,1,{mutate:true});f.state.stock.set('挂机徽章',980);const a=await survey(f.client,protocol,f.options);assert.equal(verify(f.operation,f.facts,a,result).confirmed,true);
+});
+test('AFK upgrade mainline boundary uses completed stage mainlineStage minus one',async()=>{
+ const f=await upgradeReady(),required=f.config.tables.OfflineCfg.data.find(r=>r.level===3).stage;assert.equal(required,10);f.options.player.mainlineStage=required;let facts=await survey(f.client,protocol,f.options);assert.equal(view(facts,f.options).candidates[0].blockedReason,'AFK_MAINLINE_LOCKED');f.options.player.mainlineStage=required+1;facts=await survey(f.client,protocol,f.options);assert.equal(view(facts,f.options).candidates[0].executable,true);
 });

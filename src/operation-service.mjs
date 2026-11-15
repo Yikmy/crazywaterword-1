@@ -213,6 +213,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     } finally { release(); }
   }
   function adapterFor(id) { if (!Object.hasOwn(modules, id)) throw error('未注册玩法', 'INVALID_INPUT', 400); return modules[id]; }
+  function executionAdapter(session,id) { const adapter=adapterFor(id),accountId=session.id;return id==='afk-level-rewards'?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,readIncomeHistory:()=>history.list(accountId)});}}:adapter; }
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id] ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
   function cacheModule(accountId, id, facts, options) {
     moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});
@@ -221,7 +222,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: safe });
   }
   async function surveyModule(session, id, parameters = {}, { workflowId = null, signal = null } = {}) {
-    const adapter = adapterFor(id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
+    const adapter = executionAdapter(session,id); if(adapter.contractVersion===1) parameters=validateFunctionParameters(id,adapter,parameters)??{};
     const release = acquire(session, 'operations:SURVEY:' + id, workflowId), generation = session.generation, client = session.client;
     try {
       const identity=observationIdentity(session,client);
@@ -395,7 +396,7 @@ function authorizeWorkflowPlan(session,payload){
     if(workflowContext!==null){exact(workflowContext,['workflowId','nodeId','round']);if(!workflowId||['workflowId','nodeId'].some(key=>typeof workflowContext[key]!=='string'||!workflowContext[key]||workflowContext[key].length>100))throw error('工作流关联上下文无效','INVALID_INPUT',400);}
     exact(payload, ['module', 'mode', 'selections', 'parameters']);
     const { module, mode, selections, parameters = {} } = payload;
-    const adapter = Object.hasOwn(modules, module) && (!coreModules.has(module) || module === 'production' || Object.hasOwn(payload,'parameters') || workflowId !== null) ? modules[module] : null;
+    const adapter = Object.hasOwn(modules, module) && (!coreModules.has(module) || module === 'production' || Object.hasOwn(payload,'parameters') || workflowId !== null) ? executionAdapter(session,module) : null;
     const normalizedParameters = adapter?.contractVersion===1 ? validateFunctionParameters(module,adapter,parameters) ?? {} : parameters;
     if ((!adapter && !['orders', 'city', 'combined'].includes(module)) || (!adapter && Object.hasOwn(payload,'parameters')) || !['Manual', 'Hybrid', 'Automatic'].includes(mode)
       || !Array.isArray(selections) || !selections.length || selections.length > 100 || selections.some(id => typeof id !== 'string' || !id || id.length > 300)
@@ -524,7 +525,7 @@ function authorizeWorkflowPlan(session,payload){
         const operation = entry.operations[index], row = record.actions[index]; activeMemoryOperation=operation;
         if(operation.module==='formation'){formationProofs.delete(session.id);pendingFormationProof=null;}
         row.requestStatus = 'DISPATCHING'; row.timestamp = now(); history.put(record);
-        const originalAdapter = entry.adapter ? modules[operation.module] : null;
+        const originalAdapter = entry.adapter ? executionAdapter(session,operation.module) : null;
         // Observe the original fresh planner; transport and verification stay shared.
         let freshMemorySourceAt=clock();
         let freshMemoryObserved=false;

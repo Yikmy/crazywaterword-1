@@ -304,6 +304,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const identifier=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
   const exactCosts=list=>Array.isArray(list)&&Object.getPrototypeOf(list)===Array.prototype&&Reflect.ownKeys(list).length===list.length+1&&Array.from({length:list.length},(_,index)=>Object.getOwnPropertyDescriptor(list,index)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))&&list.every(v=>fields(v,['id','num'])&&identifier(v.id)&&Number.isSafeInteger(v.num)&&v.num>0)&&new Set(list.map(v=>v.id)).size===list.length;
   if(request==='DrawAfkRewardRequest'&&(!fields(body,[])||!Object.hasOwn(action,'costs')||!exactCosts(action.costs)||action.costs.length))fail('COST_UNKNOWN','普通挂机收益仅允许明确空请求及零支出；广告或额外字段不获许可');
+  if(request==='UpgradeAfkLevelRequest'&&(!fields(body,['level'])||![1,5,10].includes(body.level)||!Object.hasOwn(action,'costs')||!exactCosts(action.costs)||action.costs.length!==1||action.costs[0].id!=='挂机徽章'))fail('COST_UNKNOWN','挂机升级仅允许明确增量1、5、10与精确自有挂机徽章成本');
   // Exact seed-only or owned-material branches. No fallback purchase, exchange,
   // harvest or automatic-farming branch is admitted by a request-family label.
   const selectMaterialPack=request==='SelectPackRequest';
