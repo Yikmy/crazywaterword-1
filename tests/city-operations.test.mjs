@@ -164,13 +164,18 @@ for (const kind of ['speedUpUpgrade', 'speedUpProduce']) test(`${kind} uses only
   const building = kind === 'speedUpUpgrade' ? rawBuilding('1民居', { buildStartTime: future - 200, buildFinishTime: future })
     : rawFactory({ factory: { autoProductId: '', factoryQ: [{ idx: 2, productId: '布匹', finishTime: future }], finishedProducts: [] } });
   const client = fake([building], undefined, { write(name, body, c) {
+    c.stock.set('加速器', c.stock.get('加速器') - body.speedUp.useNum);
     if (kind === 'speedUpUpgrade') c.buildings[0].buildFinishTime -= 60;
     else c.buildings[0].factory.factoryQ[0].finishTime -= 60;
   } });
   const planned = await select(client, kind);
   assert.deepEqual(planned.costs, [{ id: '加速器', num: 3 }]);
   assert.deepEqual(planned.action.body.speedUp, { type: 2, useNum: 3 });
-  assert.equal((await execute(client, planned)).status, 'SUCCESS');
+  const result = await execute(client, planned);
+  assert.equal(result.status, 'SUCCESS');
+  assert.deepEqual(result.resourceReservation, planned.costs);
+  assert.equal(result.beforeInventory.find(row => row.id === '加速器').num - result.afterInventory.find(row => row.id === '加速器').num, 3);
+  assert.equal(result.beforeInventoryReliable, true); assert.equal(result.afterInventoryReliable, true);
 });
 
 test('world collection plan preserves the exact response ID list and does not write', async () => {
@@ -355,3 +360,56 @@ for(const debit of [0,2,3,4])test('production exact mixed recipe confirms only f
  const facts=await read(client,{config:cfg}),candidate=cityView(facts,{config:cfg}).candidates.find(row=>row.actionType==='startProduce'&&row.target.productId==='布匹');assert.deepEqual(candidate.costs,[{id:'木材',num:2},{id:'GOLD',num:3}]);
  const result=await execute(client,candidate,{config:cfg});assert.equal(result.status,debit===3?'SUCCESS':'UNKNOWN');assert.equal(result.unresolvedWrite,debit!==3);assert.equal(client.confirmations.length,debit===3?1:0);assert.equal(client.writes.length,1);
 });
+for (const kind of ['speedUpUpgrade', 'speedUpProduce']) for (const fault of [
+  'no-debit', 'under-debit', 'over-debit', 'incoming', 'new-item', 'ruby',
+  'missing-items', 'missing-num', 'duplicate-item', 'missing-resources',
+]) test('accelerator settlement ' + kind + ' rejects ' + fault, async () => {
+  const future = Math.floor(Date.now() / 1000) + 175;
+  const building = kind === 'speedUpUpgrade' ? rawBuilding('1民居', { buildStartTime: future - 200, buildFinishTime: future })
+    : rawFactory({ factory: { autoProductId: '', factoryQ: [{ idx: 2, productId: '布匹', finishTime: future }], finishedProducts: [] } });
+  const client = fake([building], new Map([['木材', 4], ['加速器', 6]]), {
+    write(_name, body, c) {
+      c.stock.set('加速器', 6 - body.speedUp.useNum);
+      if (kind === 'speedUpUpgrade') c.buildings[0].buildFinishTime -= 60;
+      else c.buildings[0].factory.factoryQ[0].finishTime -= 60;
+      if (fault === 'no-debit') c.stock.set('加速器', 6);
+      if (fault === 'under-debit') c.stock.set('加速器', 7 - body.speedUp.useNum);
+      if (fault === 'over-debit') c.stock.set('加速器', 5 - body.speedUp.useNum);
+      if (fault === 'incoming') c.stock.set('木材', 5);
+      if (fault === 'new-item') c.stock.set('unexpected', 1);
+    },
+    read(name, c) {
+      if (name === 'AllResourceRequest' && fault === 'ruby') return { list: [{ res: 4, amount: c.writes.length ? 49 : 50 }] };
+      if (!c.writes.length) return;
+      if (name === 'AllItemRequest' && ['missing-items', 'missing-num', 'duplicate-item'].includes(fault)) {
+        if (fault === 'missing-items') return {};
+        const items = [...c.stock].map(([itemId, num]) => ({ itemId, num }));
+        if (fault === 'missing-num') delete items[0].num; else items.push({ ...items[0] });
+        return { items };
+      }
+      if (name === 'AllResourceRequest' && fault === 'missing-resources') return {};
+    },
+  });
+  const planned = await select(client, kind), budget = { ledger: null }, result = await execute(client, planned, { budget });
+  assert.equal(result.status, 'UNKNOWN', JSON.stringify(result)); assert.equal(result.unresolvedWrite, true);
+  assert.equal(result.verification.status, 'UNCONFIRMED'); assert.equal(client.writes.length, 1);
+  assert.equal(client.confirmations.length, 0); assert.equal(client.pending.length, 1);
+  assert.deepEqual(result.resourceReservation, planned.costs); assert.equal(budget.ledger.available('加速器'), 6 - planned.costs[0].num);
+});
+
+for (const kind of ['speedUpUpgrade', 'speedUpProduce']) for (const fault of ['duplicate-item', 'missing-num', 'resource-collision'])
+  test('accelerator qualification ' + kind + ' rejects incomplete inventory ' + fault, async () => {
+    const future = Math.floor(Date.now() / 1000) + 175;
+    const building = kind === 'speedUpUpgrade' ? rawBuilding('1民居', { buildStartTime: 1, buildFinishTime: future })
+      : rawFactory({ factory: { autoProductId: '', factoryQ: [{ idx: 0, productId: '布匹', finishTime: future }], finishedProducts: [] } });
+    const client = fake([building], undefined, { read(name) {
+      if (name === 'AllItemRequest') {
+        if (fault === 'duplicate-item') return { items: [{ itemId: '加速器', num: 3 }, { itemId: '加速器', num: 3 }] };
+        if (fault === 'missing-num') return { items: [{ itemId: '加速器', num: 3 }, { itemId: '木材' }] };
+        return { items: [{ itemId: '加速器', num: 3 }, { itemId: 'GOLD', num: 1 }] };
+      }
+      if (name === 'AllResourceRequest' && fault === 'resource-collision') return { list: [{ res: 3, amount: 1 }] };
+    } });
+    const view = cityView(await read(client), { config });
+    assert.equal(view.candidates.some(row => row.actionType === kind), false); assert.deepEqual(client.writes, []);
+  });

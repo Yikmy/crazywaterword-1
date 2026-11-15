@@ -21,6 +21,7 @@ const config = { tables: {
 const wire = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFields', 'MyFleets', 'FinishWorkerOrder']
   .flatMap(name => [[name + 'Request', {}], [name + 'Response', {}]]));
 wire.BuildBuildingRequest = {}; wire.StartFactoryProduceRequest = {};
+wire.SpeedUpUpgradeBuildingRequest = {}; wire.SpeedUpFactoryProduceRequest = {};
 function fixture(stock = 4, outcome = 'SUCCESS', options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-adapters-integration-'));
   const history = createExecutionHistory({ file: path.join(dir, 'history.json') });
@@ -299,4 +300,83 @@ test('production exact settlement UNKNOWN stops original finite Workflow before 
   const graph={version:1,id:'production-settlement-flow',name:'Synthetic production exact debit',budget:{resources:[{id:'wood',num:2}],quotas:[],uids:[]},runPolicy:{maxDurationMs:60000,maxActions:2,modules:['production','city']},nodes:[{id:'s',type:'START'},{id:'p',type:'ACTION',module:'production',parameters:{},selection:produce.actionId},{id:'pv',type:'VERIFY',module:'production'},{id:'b',type:'ACTION',module:'city',parameters:{},selection:build.actionId},{id:'bv',type:'VERIFY',module:'city'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'p'},{from:'p',to:'pv'},{from:'pv',to:'b'},{from:'b',to:'bv'},{from:'bv',to:'z'}]};
   runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});let r=await runner.start(f.session.id,graph);assert.equal(r.status,'AWAITING_AUTHORIZATION');const permit=f.service.authorize(f.session,{batchId:r.plan.batchId,planHash:r.plan.planHash,approvedActionIds:r.plan.actions.map(row=>row.actionId),resourceBudget:r.plan.resourceBudget,confirm:true});f.service.execute(f.session,permit);await f.service.settle(f.session.id);r=await runner.resume();assert.equal(r.status,'UNKNOWN');assert.deepEqual(f.writes.map(row=>row.name),['StartFactoryProduceRequest']);assert.equal(f.raw.building[0].level,0);assert.equal(f.history.list(f.session.id).length,1);assert.equal(f.history.list(f.session.id)[0].workflowNodeId,'p');
  }finally{await runner?.stop();await f.service.settle(f.session.id);f.cleanup();}
+});
+function acceleratorFixture(kind, debit) {
+  const f = fixture();
+  f.session.player.playerId = '1'; f.session.player.worldId = 17; f.session.connectionId = 'accelerator-settlement';
+  for (const module of ['city', 'production']) f.service.saveModuleConfig(f.session.id, { module, config: { enabled: true } });
+  const future = Math.floor(Date.now() / 1000) + 175;
+  if (kind === 'speedUpUpgrade') Object.assign(f.raw.building[0], { level: 1, buildStartTime: future - 200, buildFinishTime: future });
+  else f.raw.building[1].factory.factoryQ.push({ idx: 2, productId: 'bread', finishTime: future });
+  let accelerators = 6;
+  const request = f.client.request.bind(f.client);
+  f.client.request = async (...args) => {
+    const value = await request(...args);
+    if (args[0] === 'AllItemRequest') value.items.push({ itemId: '加速器', num: accelerators });
+    return value;
+  };
+  f.client.sendWatch = async (name, body) => {
+    assert.equal(f.history.list(f.session.id)[0].actions[0].requestStatus, 'DISPATCHING');
+    assert.equal(body.speedUp.type, 2); assert.equal(body.speedUp.useNum, 3);
+    f.writes.push({ name, body });
+    if (debit) accelerators -= body.speedUp.useNum;
+    if (kind === 'speedUpUpgrade') f.raw.building[0].buildFinishTime -= 60;
+    else f.raw.building[1].factory.factoryQ[0].finishTime -= 60;
+    f.client.uncertainWrites.add(JSON.stringify({ name, body }));
+    return { status: 'UNKNOWN', sent: true };
+  };
+  return f;
+}
+
+for (const kind of ['speedUpUpgrade', 'speedUpProduce']) for (const entry of
+  kind === 'speedUpUpgrade' ? ['city', 'combined'] : ['city', 'production', 'combined']) for (const debit of [false, true])
+  test('accelerator shared settlement ' + kind + ' ' + entry + ' exact-debit=' + debit, async () => {
+    const f = acceleratorFixture(kind, debit);
+    try {
+      const row = (await f.service.survey(f.session)).view.city.candidates.find(r => r.actionType === kind);
+      assert.ok(row);
+      const plan = await f.start(entry, 'Manual', [row.actionId]), record = f.history.list(f.session.id)[0];
+      assert.deepEqual(plan.resourceBudget, [{ id: '加速器', num: 3 }]);
+      assert.equal(record.finalStatus, debit ? 'SUCCESS' : 'UNKNOWN');
+      assert.equal(record.actions[0].result, debit ? 'SUCCESS' : 'UNKNOWN');
+      assert.equal(record.actions[0].verification.status, debit ? 'CONFIRMED' : 'UNCONFIRMED');
+      assert.equal(record.actions[0].unresolvedWrite, !debit);
+      assert.deepEqual(record.runBudget.reserved.resources, [{ id: '加速器', num: 3 }]);
+      assert.equal(f.writes.length, 1); assert.equal(f.client.uncertainWrites.size, debit ? 0 : 1);
+      if (!debit) {
+        const durable = createExecutionHistory({ file: f.history.storagePath });
+        const restarted = createOperationService({ history: durable, protocol: wire, getConfig: () => config,
+          moduleSettings: { get: () => ({ config: { enabled: true } }) }, loadRules: () => ({ config: policy }) });
+        const next = { ...f.session, client: { ...f.client, connected: true, pending: [], watchers: [], lateResponses: new Map(),
+          uncertainWrites: new Set(), factContext: { accountId: f.session.id, generation: 2, connectionId: 'restart', playerId: '1', worldId: 17 } },
+          generation: 2, connectionId: 'restart', busy: null, workflowOwner: null, abort: new AbortController() };
+        assert.equal(restarted.blocked(next.id), true);
+        await assert.rejects(restarted.surveyModule(next, kind === 'speedUpUpgrade' ? 'city' : 'production'), { code: 'RECOVERY_UNCERTAIN' });
+        assert.equal(durable.list(next.id)[0].finalStatus, 'UNKNOWN'); assert.equal(f.writes.length, 1);
+      }
+    } finally { await f.service.settle(f.session.id); f.cleanup(); }
+  });
+
+test('accelerator settlement UNKNOWN stops original finite Workflow before successor', async () => {
+  const { createWorkflowRunner } = await import('../src/workflow.mjs'), f = acceleratorFixture('speedUpProduce', false);
+  let runner;
+  try {
+    const candidates = (await f.service.survey(f.session)).view.city.candidates;
+    const speed = candidates.find(r => r.actionType === 'speedUpProduce'), build = candidates.find(r => r.actionType === 'build');
+    const graph = { version: 1, id: 'accelerator-settlement-flow', name: 'Synthetic accelerator exact debit',
+      budget: { resources: [{ id: '加速器', num: 3 }, { id: 'wood', num: 1 }], quotas: [], uids: [] },
+      runPolicy: { maxDurationMs: 60000, maxActions: 2, modules: ['production', 'city'] }, nodes: [
+        { id: 's', type: 'START' }, { id: 'p', type: 'ACTION', module: 'production', parameters: {}, selection: speed.actionId },
+        { id: 'pv', type: 'VERIFY', module: 'production' }, { id: 'b', type: 'ACTION', module: 'city', parameters: {}, selection: build.actionId },
+        { id: 'bv', type: 'VERIFY', module: 'city' }, { id: 'z', type: 'STOP' }],
+      edges: [{ from: 's', to: 'p' }, { from: 'p', to: 'pv' }, { from: 'pv', to: 'b' }, { from: 'b', to: 'bv' }, { from: 'bv', to: 'z' }] };
+    runner = createWorkflowRunner({ modules: GAMEPLAY_MODULES, operations: f.service,
+      claim: (_id, runId, options) => f.service.claimWorkflow(f.session, runId, options), getSession: id => id === f.session.id ? f.session : null });
+    let result = await runner.start(f.session.id, graph); assert.equal(result.status, 'AWAITING_AUTHORIZATION');
+    const permit = f.service.authorize(f.session, { batchId: result.plan.batchId, planHash: result.plan.planHash,
+      approvedActionIds: result.plan.actions.map(row => row.actionId), resourceBudget: result.plan.resourceBudget, confirm: true });
+    f.service.execute(f.session, permit); await f.service.settle(f.session.id); result = await runner.resume();
+    assert.equal(result.status, 'UNKNOWN'); assert.deepEqual(f.writes.map(row => row.name), ['SpeedUpFactoryProduceRequest']);
+    assert.equal(f.raw.building[0].level, 0); assert.equal(f.history.list(f.session.id)[0].workflowNodeId, 'p');
+  } finally { await runner?.stop(); await f.service.settle(f.session.id); f.cleanup(); }
 });

@@ -6,6 +6,7 @@ import { surveyWorld, planWorld, runWorld, upgradeRow } from './world.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, operationResult } from './execution.mjs';
 import { selectProductionCandidates } from './production-policy.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantity = (value) => safeResourceQuantity(value) !== null;
@@ -110,7 +111,8 @@ function candidatesFor(survey, config, ledger) {
     for (const [kind, detail] of choices) {
       if (!isReliable(survey, building, kind)) continue;
       if (['gainFactory', 'collectProduct'].includes(kind) && survey.stockReliable !== true) continue;
-      if (kind === 'startProduce' && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
+      if (['startProduce', 'speedUpUpgrade', 'speedUpProduce'].includes(kind)
+        && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
       const action = plannedAction(survey, config, building, kind, detail, ledger);
       if (!action) continue;
       const costs = costsOf(action.costs ?? []);
@@ -195,6 +197,12 @@ function assetTotals(list) {
 function verified(operation, before, after, beforeSurvey, afterSurvey) {
   const kind = operation.actionType;
   if (!after || after.type !== before.type || after.buildingId !== before.buildingId) return false;
+  if (['startProduce', 'speedUpUpgrade', 'speedUpProduce'].includes(kind)) {
+    const costs = costsOf(operation.costs);
+    if (beforeSurvey.stockReliable !== true || afterSurvey.stockReliable !== true
+      || beforeSurvey.productionInventoryReliable !== true || afterSurvey.productionInventoryReliable !== true
+      || costs === null || !stockMatchesDelta(beforeSurvey.stock, afterSurvey.stock, costs, [])) return false;
+  }
   if (kind === 'build' || kind === 'upgrade') return after.level > before.level
     || after.level === before.level && after.buildStartTime >= beforeSurvey.now
       && after.buildFinishTime > before.buildFinishTime && after.buildFinishTime > afterSurvey.now;
@@ -202,15 +210,7 @@ function verified(operation, before, after, beforeSurvey, afterSurvey) {
   if (kind === 'speedUpUpgrade') return after.level > before.level
     || after.buildFinishTime < before.buildFinishTime && after.buildFinishTime > 0;
   if (kind === 'startProduce') {
-    const productId = operation.target.productId, costs = costsOf(operation.costs);
-    if (beforeSurvey.stockReliable !== true || afterSurvey.stockReliable !== true
-      || beforeSurvey.productionInventoryReliable !== true || afterSurvey.productionInventoryReliable !== true || costs === null
-      || !(beforeSurvey.stock instanceof Map) || !(afterSurvey.stock instanceof Map)) return false;
-    const spent = new Map(costs.map(row => [row.id, row.num]));
-    for (const id of new Set([...beforeSurvey.stock.keys(), ...afterSurvey.stock.keys(), ...spent.keys()])) {
-      const previous = beforeSurvey.have(id), current = afterSurvey.have(id), expected = previous - (spent.get(id) ?? 0);
-      if (!quantity(previous) || !quantity(current) || !Number.isSafeInteger(expected) || expected < 0 || current !== expected) return false;
-    }
+    const productId = operation.target.productId;
     if (['level', 'buildStartTime', 'buildFinishTime', 'product'].some(key => stable(before[key]) !== stable(after[key]))
       || before.factory.autoProductId !== after.factory.autoProductId) return false;
     const oldQueue = before.factory.factoryQ, newQueue = after.factory.factoryQ;
@@ -287,7 +287,7 @@ export async function executeCityAction(client, protocol, planned, {
       : candidate.actionType === 'collectProduct' ? candidate.beforeState.product : [];
     const evidenceIds = new Set([...beforeSurvey.stock.keys(), ...output.map((a) => a.id)]);
     detail.beforeInventory = [...evidenceIds].map((id) => ({ id, num: beforeSurvey.have(id) }));
-    detail.beforeInventoryReliable = beforeSurvey.stockReliable === true;
+    detail.beforeInventoryReliable = beforeSurvey.stockReliable === true && beforeSurvey.productionInventoryReliable === true;
     onStage('RESOURCE_PREFLIGHT'); active();
     onStage('EXECUTING');
     sentAction = candidate.action;
@@ -308,11 +308,11 @@ export async function executeCityAction(client, protocol, planned, {
     for (const id of afterSurvey.stock.keys()) evidenceIds.add(id);
     detail.beforeInventory = [...evidenceIds].map((id) => ({ id, num: beforeSurvey.have(id) }));
     detail.afterInventory = [...evidenceIds].map((id) => ({ id, num: afterSurvey.have(id) }));
-    detail.afterInventoryReliable = afterSurvey.stockReliable === true;
+    detail.afterInventoryReliable = afterSurvey.stockReliable === true && afterSurvey.productionInventoryReliable === true;
     if (!after || !isReliable(afterSurvey, after, candidate.actionType)
       || !verified(candidate, candidate.beforeState, detail.afterState, beforeSurvey, afterSurvey)) return finish('UNKNOWN', { error: '权威复读尚未确认预期状态变化，保留预算及未决指纹' });
     active(); client.confirmWatchedWrite?.(candidate.action.request, candidate.action.body);
-    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : '权威复读确认预期城市状态变化' };
+    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : ['speedUpUpgrade', 'speedUpProduce'].includes(candidate.actionType) ? '权威复读确认原加速状态变化、完整库存精确道具净扣及其他余额不变' : '权威复读确认预期城市状态变化' };
     if (['gainFactory', 'collectProduct'].includes(candidate.actionType)) {
       const remaining = assetTotals(candidate.actionType === 'gainFactory' ? detail.afterState.factory.finishedProducts : detail.afterState.product);
       detail.collectedProducts = [...assetTotals(output)].map(([id, num]) => ({ id, num: num - (remaining.get(id) ?? 0) }))
