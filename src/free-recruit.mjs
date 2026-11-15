@@ -1,4 +1,4 @@
-// W16: one explicitly free or owned-ticket hero recruit, bound to observed facts.
+// W16: explicit free, single-ticket or fixed owned-ticket batch hero recruit.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
 import { buildDailyDriverBody } from './actions.mjs';
@@ -21,12 +21,14 @@ const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETER
 const configNames=['ModuleOpenCfg','HeroCfg','ItemCfg'];
 const sources={recruit:'RecruitInfoResponse',heroes:'AllHeroResponse',city:'OnWaterResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
 const liveFacts=new WeakMap(),costSource='Fixed v76 HeroRecruitItem and RecruitUtil; exactly way=RECRUIT_FREE(1), zero ticket or resource debit';
-const ticketCostSource='Fixed v76 HeroRecruitItem._recruit and RecruitUtil.needRecruitItemNum; RECRUIT_SINGLE(2) consumes exactly one owned 抽卡券';
+const ticketCostSource='Fixed v76 HeroRecruitItem._recruit and RecruitUtil.needRecruitItemNum; ways 2/3/4 consume exactly 1/10/50 owned 抽卡券';
 export const FREE_RECRUIT_EVIDENCE=Object.freeze({
  source:'Fixed v76 main/game.js HeroRecruitItem/RecruitModel/RecruitUtil',
  freeDispatchByteOffset:3614740,cooldownByteOffset:3613603,rewardVoByteOffset:5533993,openCheckByteOffset:5534744,
  semantics:'Explicit freeEndTimeSeconds=0 or <= trusted server seconds; way1 costs zero; frag.asset gives item reward, otherwise heroId names the new hero; future cooldown from typed receipt must match independent RecruitInfo',
  ticketSemantics:'Explicit RECRUIT_SINGLE(2): one owned ticket, only while free marker remains future; independent receipt/state and exact net inventory required',
+ batchSemantics:'Explicit RECRUIT_BATCH_10(3)/RECRUIT_BATCH_50(4), exactly 10/50 owned tickets; independent batch branch, no free substitution; exact typed reward count and net state required',
+ batchDispatchModuleByteOffset:3609201,batchCostModuleByteOffset:5533184,
  realGame:'REAL_UNVERIFIED'
 });
 export const FREE_RECRUIT_DEFAULT_CONFIG=Object.freeze({enabled:false});
@@ -36,12 +38,12 @@ export function validateFreeRecruitConfig(v={}) {
 }
 // Shared with the legacy read-only driver; never grants execution authority.
 export function heroRecruitCosts(way) {
- if(![1,2].includes(way))throw invalid('仅明确免费或自有单券招募有成本合同');
- return way===1?[]:[{id:'抽卡券',num:1}];
+ if(![1,2,3,4].includes(way))throw invalid('仅明确免费、单券、十连或五十连招募有成本合同');
+ return way===1?[]:[{id:'抽卡券',num:({2:1,3:10,4:50})[way]}];
 }
 export function validateFreeRecruitParameters(v={}) {
- if(!fields(v,['payment'])||own(v,'payment')&&!['free','ticket'].includes(v.payment))throw invalid('英雄招募只接受明确 free 或 ticket 单次模式，默认免费');
- return v.payment==='ticket'?{payment:'ticket'}:{};
+ if(!fields(v,['payment','count'])||own(v,'payment')&&!['free','ticket'].includes(v.payment)||own(v,'count')&&(v.payment!=='ticket'||![1,10,50].includes(v.count)))throw invalid('默认免费单次；自有券仅接受明确 payment=ticket 与 count=1、10或50');
+ return v.payment==='ticket'?{payment:'ticket',...(v.count>1?{count:v.count}:{})}:{};
 }
 function roleId(v) {
  if(typeof v==='number'&&(!Number.isSafeInteger(v)||v<=0))return null;
@@ -120,16 +122,16 @@ function catalog(config) {
 }
 function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}) {
  parameters=validateFreeRecruitParameters(parameters);
- const ticket=parameters.payment==='ticket',way=ticket?2:1,costs=heroRecruitCosts(way);
+ const ticket=parameters.payment==='ticket',count=ticket?(parameters.count??1):1,way=ticket?({1:2,10:3,50:4})[count]:1,costs=heroRecruitCosts(way);
  const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
  const valid=authority(f)&&same(parameters,f.parameters),clock=valid?currentClock(f):null,beforeState=copy(f?.state??null),marker=f?.state?.recruit?.hero?.freeEndTimeSeconds??null;
  const readiness=freeRecruitReadiness(marker,clock);
- const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs||ticket&&!defs.itemIds.includes('抽卡券')?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':ticket&&readiness!=='COOLDOWN'?'RECRUIT_TICKET_REQUIRES_KNOWN_COOLDOWN':!ticket&&readiness!=='READY_BY_CLOCK'?'FREE_RECRUIT_COOLDOWN':ticket&&(f.stock.get('抽卡券')??0)<1?'RECRUIT_TICKET_INSUFFICIENT':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs||ticket&&!defs.itemIds.includes('抽卡券')?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':ticket&&count===1&&readiness!=='COOLDOWN'?'RECRUIT_TICKET_REQUIRES_KNOWN_COOLDOWN':!ticket&&readiness!=='READY_BY_CLOCK'?'FREE_RECRUIT_COOLDOWN':ticket&&(f.stock.get('抽卡券')??0)<count?'RECRUIT_TICKET_INSUFFICIENT':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  // Stable across reconnects for the original rejection memory; no invented day limit.
  const ticketUid=hash({recruit:beforeState?.recruit,heroes:beforeState?.heroes,broadcast:beforeState?.broadcast,inventory:beforeState?.inventory,defs});
  const identity=hash({beforeState,defs,...(ticket?{parameters}:{})}),budgetClaims=ticket?{resources:copy(costs),quotas:[],uids:[{type:moduleId,id:'ticket:'+ticketUid}]}:{resources:[],quotas:[{id:moduleId+':cooldown:'+marker,num:1}],uids:[{type:moduleId,id:String(marker)}]};
- const expectedState=beforeState?{context:copy(beforeState.context),broadcast:copy(beforeState.broadcast),rule:'EXACT_SINGLE_TYPED_RECRUIT',cooldown:ticket?'UNCHANGED_FUTURE_AND_MATCHES_REREAD':'FUTURE_EXPLICIT_AND_MATCHES_REREAD',reward:'EXACT_TYPED_FRAGMENT_NET_OR_ONE_NEW_HERO_ID',otherBalances:'UNCHANGED'}:null;
- return {module:moduleId,actionId:moduleId+':'+(ticket?'ticket:':'')+marker+':'+identity,actionType:ticket?'RECRUIT':'CLAIM',target:{freeEndTimeSeconds:marker,way},parameters,identity,beforeState,expectedState,costs,costSource:ticket?ticketCostSource:costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:ticket?'自有抽卡券招募 ×1':'免费英雄招募 ×1',requiredLevel:defs?.requiredLevel??null,
+ const expectedState=beforeState?{context:copy(beforeState.context),broadcast:copy(beforeState.broadcast),rule:count===1?'EXACT_SINGLE_TYPED_RECRUIT':'EXACT_BATCH_TYPED_RECRUIT',cooldown:ticket?(count===1?'UNCHANGED_FUTURE_AND_MATCHES_REREAD':'UNCHANGED_AND_MATCHES_REREAD'):'FUTURE_EXPLICIT_AND_MATCHES_REREAD',reward:count===1?'EXACT_TYPED_FRAGMENT_NET_OR_ONE_NEW_HERO_ID':'EXACT_TYPED_REWARD_COUNT_AND_AGGREGATE_NET',otherBalances:'UNCHANGED'}:null;
+ return {module:moduleId,actionId:moduleId+':'+(ticket?'ticket:':'')+marker+':'+identity,actionType:ticket?'RECRUIT':'CLAIM',target:{freeEndTimeSeconds:marker,way},parameters,identity,beforeState,expectedState,costs,costSource:ticket?ticketCostSource:costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:ticket?'自有抽卡券招募 ×'+count:'免费英雄招募 ×1',requiredLevel:defs?.requiredLevel??null,
  ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('RecruitStartRequest',{way})}}:{})};
 }
 const cooldownSource='RecruitInfoResponse.hero.freeEndTimeSeconds';
@@ -159,7 +161,7 @@ function recruitCooldownObservation(f) {
 
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??f?.parameters??{});
- return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。两种模式复用同一回执与独立完整英雄/库存验证，批量、高级和购买仍关闭，未知结果不重放。']};
+ return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，高级、古董和购买仍关闭，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);
@@ -172,24 +174,25 @@ export function verifyFreeRecruit(operation,before,after,result) {
  if(!authority(before)||!authority(after)||!same(before.context,after.context)||!currentClock(before)||!currentClock(after)||!same(before.configEvidence,after.configEvidence))return no('招募前后账号、可信时钟、配置或库存不可靠');
  const canonical=candidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(operation?.[k],canonical[k])))return no('招募合同与写前事实不一致');
- const ticket=canonical.parameters.payment==='ticket';
+ const ticket=canonical.parameters.payment==='ticket',count=canonical.parameters.count??1;
  const data=own(result,'recruitData')?parseRecruitData(result.recruitData):null;
  const markerMatches=data&&(ticket?data.freeEndTimeSeconds===before.state.recruit.hero.freeEndTimeSeconds:data.freeEndTimeSeconds>before.state.recruit.hero.freeEndTimeSeconds);
- if(!data||!own(result,'reward')||!dense(result.reward)||result.reward.length!==1||data.freeEndTimeSeconds*1000<=currentClock(after).latestMs||!markerMatches||!same(data,after.state.recruit.hero)||!same(before.state.recruit.antique,after.state.recruit.antique)||!same(before.state.broadcast,after.state.broadcast))return no('缺少同一次明确回执与独立新冷却，或无关招募/广播站状态变化');
- const reward=result.reward[0],defs=catalog(before.configEvidence),stock=new Map(before.stock),heroes=copy(before.state.heroes);
- if(ticket)stock.set('抽卡券',stock.get('抽卡券')-1);
- let received;
+ if(!data||!own(result,'reward')||!dense(result.reward)||result.reward.length!==count||count===1&&data.freeEndTimeSeconds*1000<=currentClock(after).latestMs||!markerMatches||!same(data,after.state.recruit.hero)||!same(before.state.recruit.antique,after.state.recruit.antique)||!same(before.state.broadcast,after.state.broadcast))return no('缺少同一次明确回执与独立新冷却，或无关招募/广播站状态变化');
+ const defs=catalog(before.configEvidence),stock=new Map(before.stock),heroes=copy(before.state.heroes),received=[];
+ if(ticket)stock.set('抽卡券',stock.get('抽卡券')-count);
+ for(const reward of result.reward){
  if(own(reward,'frag')&&reward.frag!==null) {
   if(!own(reward.frag,'asset')||!dense(reward.frag.asset)||reward.frag.asset.length!==1)return no('碎片奖励包不完整或多义');
   const item=reward.frag.asset[0],num=own(item,'num')?safeResourceQuantity(item.num):null;
   if(!own(item,'type')||item.type!==0||!own(item,'id')||!defs.itemIds.includes(item.id)||num===null||num<=0)return no('碎片奖励身份/数量不明确');
-  const n=(stock.get(item.id)??0)+num;if(!Number.isSafeInteger(n))return no('碎片库存溢出');stock.set(item.id,n);received={kind:'ITEM',id:item.id,num};
+  const n=(stock.get(item.id)??0)+num;if(!Number.isSafeInteger(n))return no('碎片库存溢出');stock.set(item.id,n);received.push({kind:'ITEM',id:item.id,num});
  } else {
-  if(!own(reward,'heroId')||!defs.heroIds.includes(reward.heroId)||before.state.heroes.some(h=>h.heroId===reward.heroId)||own(reward,'trans')&&reward.trans!==false)return no('未确认明确且此前未拥有的新英雄');
-  const added=after.state.heroes.find(h=>h.heroId===reward.heroId);if(!added)return no('新英雄未复读确认');heroes.push(copy(added));heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId));received={kind:'HERO',heroId:reward.heroId};
+  if(!own(reward,'heroId')||!defs.heroIds.includes(reward.heroId)||heroes.some(h=>h.heroId===reward.heroId)||own(reward,'trans')&&reward.trans!==false)return no('未确认明确且此前未拥有的新英雄');
+  const added=after.state.heroes.find(h=>h.heroId===reward.heroId);if(!added)return no('新英雄未复读确认');heroes.push(copy(added));heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId));received.push({kind:'HERO',heroId:reward.heroId});
+ }
  }
  if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state.heroes,heroes)||!same(after.state.inventory,stockState(stock)))return no('英雄/完整库存未确认本次精确奖励，或存在无关变化');
- return {confirmed:true,afterState:copy(after.state),reason:ticket?'单券回执、冷却保持及完整库存精确扣券与奖励净入共同确认':'单次免费回执与独立新冷却、英雄/完整库存净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received}};
+ return {confirmed:true,afterState:copy(after.state),reason:ticket?'明确'+count+'次回执、冷却保持及完整库存精确扣券与奖励净入共同确认':'单次免费回执与独立新冷却、英雄/完整库存净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received:count===1?received[0]:received}};
 }
 export function freeRecruitDependencyVersions({config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeRecruitConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const freeRecruitModule=Object.freeze({id:moduleId,label:'英雄免费或单券招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});
+export const freeRecruitModule=Object.freeze({id:moduleId,label:'英雄免费或自有券招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});
