@@ -1,6 +1,7 @@
 // W16: one free hero recruit, bound to its observed cooldown marker.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
 import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -113,15 +114,15 @@ function catalog(config) {
 function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG}={}) {
  const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
  const valid=authority(f),clock=valid?currentClock(f):null,beforeState=copy(f?.state??null),marker=f?.state?.recruit?.hero?.freeEndTimeSeconds??null;
- const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':marker!==0&&clock.earliestMs<marker*1000?'FREE_RECRUIT_COOLDOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':freeRecruitReadiness(marker,clock)!=='READY_BY_CLOCK'?'FREE_RECRUIT_COOLDOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const identity=hash({beforeState,defs}),budgetClaims={resources:[],quotas:[{id:moduleId+':cooldown:'+marker,num:1}],uids:[{type:moduleId,id:String(marker)}]};
  const expectedState=beforeState?{context:copy(beforeState.context),broadcast:copy(beforeState.broadcast),rule:'EXACT_SINGLE_TYPED_RECRUIT',cooldown:'FUTURE_EXPLICIT_AND_MATCHES_REREAD',reward:'EXACT_TYPED_FRAGMENT_NET_OR_ONE_NEW_HERO_ID',otherBalances:'UNCHANGED'}:null;
  return {module:moduleId,actionId:moduleId+':'+marker+':'+identity,actionType:'CLAIM',target:{freeEndTimeSeconds:marker,way:1},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'免费英雄招募 ×1',requiredLevel:defs?.requiredLevel??null,
- ...(blockedReason===null?{action:{request,response,body:{way:1}}}:{})};
+ ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('RecruitStartRequest',{way:1})}}:{})};
 }
 const cooldownSource='RecruitInfoResponse.hero.freeEndTimeSeconds';
-function cooldownReadiness(marker,bounds) {
- return !bounds?'UNKNOWN':marker===0||bounds.earliestMs>=marker*1000?'READY_BY_CLOCK':bounds.latestMs<marker*1000?'COOLDOWN':'UNKNOWN';
+export function freeRecruitReadiness(marker,bounds) {
+ return !uint(marker)||!bounds||!['earliestMs','latestMs'].every(k=>typeof bounds[k]==='number'&&Number.isFinite(bounds[k])&&bounds[k]>=0)||bounds.earliestMs>bounds.latestMs?'UNKNOWN':marker===0||bounds.earliestMs>=marker*1000?'READY_BY_CLOCK':bounds.latestMs<marker*1000?'COOLDOWN':'UNKNOWN';
 }
 // Historical observation only: never recompute readiness against local time on
 // restart, clear refusal/UNKNOWN memory, or recover a runnable permit.
@@ -134,14 +135,14 @@ export function validateFreeRecruitCooldownObservation(v) {
     (v.status==='UNKNOWN'?(v.freeEndTimeSeconds!==null||v.sourceAt!==null||bounds!==null||v.readiness!=='UNKNOWN'):
      !uint(v.freeEndTimeSeconds)||!Number.isSafeInteger(v.sourceAt)||v.sourceAt<0||
      bounds!==null&&(!fields(bounds,['earliestMs','latestMs'])||Reflect.ownKeys(bounds).length!==2||!finite(bounds.earliestMs)||!finite(bounds.latestMs)||bounds.earliestMs>bounds.latestMs)||
-     v.readiness!==cooldownReadiness(v.freeEndTimeSeconds,bounds)))throw invalid('免费招募冷却历史必须为精确的只读来源与原观察时钟区间');
+     v.readiness!==freeRecruitReadiness(v.freeEndTimeSeconds,bounds)))throw invalid('免费招募冷却历史必须为精确的只读来源与原观察时钟区间');
  return copy(v);
 }
 function recruitCooldownObservation(f) {
  const valid=authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit.hero.freeEndTimeSeconds:null;
  const bounds=clock?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
  return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:cooldownSource,freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
-  serverBounds:bounds,readiness:valid?cooldownReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
+  serverBounds:bounds,readiness:valid?freeRecruitReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
 }
 
 export function viewFreeRecruit(f,options={}) {

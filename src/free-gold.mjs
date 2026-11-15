@@ -1,6 +1,7 @@
 // W16/BIZ-D06: one ordinary free click, bound to the observed server reset marker.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -86,11 +87,14 @@ function currentPeriod(f) {
  const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null,expiry=f?.gold?.resetTime*1000;
  return clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs&&[f.startClock,f.endClock,clock].every(c=>c.latestMs<expiry)?clock:null;
 }
-function limit(config) {
+export function freeGoldLimit(config) {
  const rows=config?.tables?.OfflineParamCfg?.data;
  if(!dense(rows))return null;
  const matched=rows.filter(r=>own(r,'paramName')&&r.paramName==='免费点金次数');
  return matched.length===1&&own(matched[0],'paramValue')&&positive(matched[0].paramValue)?matched[0].paramValue:null;
+}
+export function freeGoldRemaining(used,cap) {
+ return uint(used)&&positive(cap)&&used<=cap?cap-used:null;
 }
 function gate(config) {
  const rows=config?.tables?.ModuleOpenCfg?.data;if(!dense(rows))return null;
@@ -99,15 +103,15 @@ function gate(config) {
 }
 function candidate(f,{config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {
  const configMatches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null));
- const cap=configMatches?limit(f?.configEvidence):null,requiredLevel=configMatches?gate(f?.configEvidence):null;
+ const cap=configMatches?freeGoldLimit(f?.configEvidence):null,requiredLevel=configMatches?gate(f?.configEvidence):null;
  const valid=authority(f),period=valid?currentPeriod(f):null,beforeState=copy(f?.state??null);
- const blockedReason=!validateFreeGoldConfig(moduleConfig).enabled?'FREE_GOLD_DISABLED':!valid?'FREE_GOLD_AUTHORITY_UNKNOWN':cap===null?'FREE_GOLD_LIMIT_UNKNOWN':requiredLevel===null||!positive(f.context.playerLevel)?'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN':f.context.playerLevel<requiredLevel?'FREE_GOLD_LEVEL_LOCKED':!period?'FREE_GOLD_PERIOD_UNKNOWN':f.gold.freeTimes>=cap?'FREE_GOLD_EXHAUSTED':!f.stock.has('GOLD')?'GOLD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=!validateFreeGoldConfig(moduleConfig).enabled?'FREE_GOLD_DISABLED':!valid?'FREE_GOLD_AUTHORITY_UNKNOWN':cap===null?'FREE_GOLD_LIMIT_UNKNOWN':requiredLevel===null||!positive(f.context.playerLevel)?'FREE_GOLD_OPEN_AUTHORITY_UNKNOWN':f.context.playerLevel<requiredLevel?'FREE_GOLD_LEVEL_LOCKED':!period?'FREE_GOLD_PERIOD_UNKNOWN':!(freeGoldRemaining(f.gold.freeTimes,cap)>0)?'FREE_GOLD_EXHAUSTED':!f.stock.has('GOLD')?'GOLD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const reset=f?.gold?.resetTime??null,slot=f?.gold?f.gold.freeTimes+1:null,identity=hash({beforeState,cap,requiredLevel});
  const budgetClaims={resources:[],quotas:[{id:moduleId+':reset:'+reset,num:1}],uids:[{type:moduleId,id:reset+':'+slot}]};
  // The random amount is authorized as an exact typed-receipt rule, never guessed.
  const expectedState=beforeState?{context:copy(beforeState.context),gold:{...beforeState.gold,freeTimes:slot},inventoryRule:{kind:'EXACT_GOLD_RECEIPT',before:copy(beforeState.inventory),source:'ClickGoldResponse.result[0].gold',otherBalances:'UNCHANGED'}}:null;
- return {module:moduleId,actionId:moduleId+':'+reset+':'+slot+':'+identity,actionType:'CLAIM',target:{resetTime:reset,usedBefore:f?.gold?.freeTimes??null},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'普通免费点金 ×1',requiredLevel,limit:cap,remaining:cap!==null&&f?.gold&&f.gold.freeTimes<=cap?cap-f.gold.freeTimes:null,
-  ...(blockedReason===null?{action:{request,response,body:{times:1,free:true}}}:{})};
+ return {module:moduleId,actionId:moduleId+':'+reset+':'+slot+':'+identity,actionType:'CLAIM',target:{resetTime:reset,usedBefore:f?.gold?.freeTimes??null},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'普通免费点金 ×1',requiredLevel,limit:cap,remaining:freeGoldRemaining(f?.gold?.freeTimes,cap),
+  ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('ClickGoldRequest',{times:1,free:true})}}:{})};
 }
 export function viewFreeGold(f,options={}) {
  validateFreeGoldParameters(options.parameters??{});

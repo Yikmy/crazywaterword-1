@@ -48,6 +48,17 @@ function stringList(value, { required = false } = {}) {
   return strings;
 }
 
+// Pure shared bodies for legacy observations and registered adapters.
+// Eligibility, debit and transport remain with their existing domain contracts.
+export function buildDailyDriverBody(request,params={}) {
+ const fields=request==='RecruitStartRequest'?['way']:request==='ClickGoldRequest'?['times','free']:request==='TrialRaidChallengeRequest'?['raidId','stageId']:null;
+ if(!fields)throw new Error('unsupported daily driver request');
+ for(const key of fields)if(params[key]===undefined||params[key]==='')throw new Error('missing parameter: '+key);
+ if(request==='RecruitStartRequest')return {way:Number(params.way)};
+ if(request==='ClickGoldRequest')return {times:Number(params.times),free:params.free===true};
+ return {raidId:Number(params.raidId),stageId:Number(params.stageId)};
+}
+
 export const ACTIONS = {
   afkDraw: {
     request: 'DrawAfkRewardRequest',

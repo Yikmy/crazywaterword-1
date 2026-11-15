@@ -1,3 +1,4 @@
+import { runDailies } from '../src/dailies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -163,4 +164,21 @@ for(const change of ['connection','generation'])test('definite refusal remains a
  }
  await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);
  assert.equal(fs.readFileSync(next.file+'.memory.json','utf8'),memoryBefore);assert.equal(fs.readFileSync(next.file,'utf8'),historyBefore);
+});
+for(const apply of [true,false])test('legacy Daily Driver delegates one authorized native operation '+apply,async t=>{
+ const f=serviceFixture(t,{apply}),permit=f.authorize(await f.plan());
+ const invoke=()=>runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});
+ const result=await invoke();assert.equal(result.length,1);assert.equal(result[0].status,apply?'SUCCESS':'UNKNOWN');assert.equal(result[0].ok,apply?true:null);assert.equal(f.state.writes.length,1);
+ assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.equal(f.durable.list(f.session.id)[0].finalStatus,apply?'SUCCESS':'UNKNOWN');
+ assert.notEqual((await invoke())[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
+ if(!apply){const restarted=serviceFixture(t,{file:f.file});await assert.rejects(restarted.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restarted.state.writes.length,0);}
+});
+for(const code of ['TIMEOUT','REJECTED'])test('legacy Daily Driver uses native persistent stop for '+code,async t=>{
+ const f=serviceFixture(t,{apply:false}),permit=f.authorize(await f.plan());f.state.onWrite=()=>{throw Object.assign(Error('synthetic '+code),{code});};
+ const invoke=()=>runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});
+ const result=await invoke();assert.equal(result[0].status,code==='REJECTED'?'REJECTED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].finalStatus,result[0].status);await invoke();assert.equal(f.state.writes.length,1);
+});
+test('legacy Daily Driver cannot dispatch after cancellation or identity change',async t=>{
+ for(const cancel of [true,false]){const f=serviceFixture(t),permit=f.authorize(await f.plan());if(cancel)f.session.abort.abort();else f.session.player.worldId='18';
+ const result=await runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.notEqual(result[0].status,'SUCCESS');assert.equal(f.state.writes.length,0);}
 });

@@ -14,10 +14,13 @@
 //   两张表、两套门槛：DailyActivityRewardCfg 20/40/60/80/100，
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
+import { freeGoldLimit, freeGoldRemaining } from './free-gold.mjs';
+import { freeRecruitReadiness } from './free-recruit.mjs';
+import { nextTrialStage } from './trial-challenge.mjs';
 import { normalize } from './worlds.mjs';
-import { ACTIONS, buildBody, FREE_DAILY_PACK_ID, assertPaymentAllowed } from './actions.mjs';
+import { ACTIONS, buildBody, buildDailyDriverBody, FREE_DAILY_PACK_ID } from './actions.mjs';
 import { RESOURCE_NAMES, safeResourceQuantity, stockFromResponses } from './resource-ledger.mjs';
-import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution, executionDelay } from './execution.mjs';
+import { assertExecutionActive, awaitExecution, executionOutcome, operationResult } from './execution.mjs';
 
 export const TASK_TITLES = {
   1001: '登录游戏',
@@ -229,13 +232,13 @@ export const DAILY_DRIVERS = {
       if (freeEnd === null || !Number.isFinite(now) || now < 0) return { status: 'unknown', reason: '免费招募状态缺失或不可靠' };
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
-      if (freeEnd <= now) {
-        actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', costs: [], cost: '免费次数', note: '免费招募' });
+      if (freeRecruitReadiness(freeEnd,{earliestMs:now*1000,latestMs:now*1000}) === 'READY_BY_CLOCK') {
+        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:1}), response: 'RecruitStartResponse', costs: [], cost: '免费次数', note: '免费招募' });
       }
       const tickets = items instanceof Map ? safeResourceQuantity(items.has(RECRUIT_ITEM) ? items.get(RECRUIT_ITEM) : 0) : null;
       const singles = tickets === null ? 0 : Math.min(remaining - actions.length, tickets);
       for (let i = 0; i < singles; i += 1) {
-        actions.push({ request: 'RecruitStartRequest', body: { way: 2 }, response: 'RecruitStartResponse', cost: `${RECRUIT_ITEM} x1`, note: '单抽' });
+        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:2}), response: 'RecruitStartResponse', cost: `${RECRUIT_ITEM} x1`, note: '单抽' });
       }
       if (actions.length === 0) {
         if (tickets === null) return { status: 'unknown', reason: '招募券库存缺失或不可靠' };
@@ -309,17 +312,17 @@ export const DAILY_DRIVERS = {
       if (task.progress >= task.targetProgress) return { status: 'done' };
       const info = probe('ClickGoldInfoRequest')?.info;
       const freeTimes = explicitCount(info, 'freeTimes');
-      const freeMax = configuredCount(config, '免费点金次数');
+      const freeMax = freeGoldLimit(config);
       if (freeTimes === null || freeMax === null || freeTimes > freeMax) return { status: 'unknown', reason: '免费点金次数或配置缺失、无效' };
       const remaining = task.targetProgress - task.progress;
       // 免费次数上限来自 OfflineParamCfg.免费点金次数，付费单价来自 点金价格（单位钻石）。
-      const freeLeft = freeMax - freeTimes;
+      const freeLeft = freeGoldRemaining(freeTimes,freeMax);
       if (freeLeft > 0) {
         // 免费点金客户端永远是 times:1 一次一发，服务端不接受免费模式下的多连。
         const count = Math.min(freeLeft, remaining);
         const actions = [];
         for (let i = 0; i < count; i += 1) {
-          actions.push({ request: 'ClickGoldRequest', body: { times: 1, free: true }, response: 'ClickGoldResponse', costs: [], cost: '免费次数', note: '免费点金 x1' });
+          actions.push({ request: 'ClickGoldRequest', body: buildDailyDriverBody('ClickGoldRequest',{times:1,free:true}), response: 'ClickGoldResponse', costs: [], cost: '免费次数', note: '免费点金 x1' });
         }
         return { status: 'ready', actions };
       }
@@ -337,7 +340,7 @@ export const DAILY_DRIVERS = {
       return {
         status: 'paid',
         reason: `免费次数已用完，付费 ${price} 钻石一次`,
-        actions: [{ request: 'ClickGoldRequest', body: { times: remaining, free: false }, response: 'ClickGoldResponse', cost: `${RESOURCE_RUBY} x${price * remaining}`, note: '付费点金' }],
+        actions: [{ request: 'ClickGoldRequest', body: buildDailyDriverBody('ClickGoldRequest',{times:remaining,free:false}), response: 'ClickGoldResponse', cost: `${RESOURCE_RUBY} x${price * remaining}`, note: '付费点金' }],
       };
     },
   },
@@ -390,11 +393,13 @@ export const DAILY_DRIVERS = {
       if (task.progress >= task.targetProgress) return { status: 'done' };
       const raid = probe('TrialRaidInfoRequest')?.raid;
       if (!raid) return { status: 'blocked', reason: '拿不到试炼副本信息' };
-      // passedStage 是已通关的 stageLevel，stageId 是 1001 这种编号，两者不是一回事。
+      // passedStage 是已通过的 stageId；复用原首通合同，不能将关卡ID当作stageLevel。
       const stages = (config?.tables?.TrialRaidStageCfg?.data ?? [])
         .filter((row) => row.raidId === raid.raidId)
         .sort((a, b) => a.stageLevel - b.stageLevel);
-      const next = stages.find((row) => row.stageLevel > (raid.passedStage ?? 0));
+      const progression = nextTrialStage(stages, explicitCount(raid, 'passedStage'));
+      if (!progression.known) return { status: 'unknown', reason: '试炼已通关ID或配置不可靠' };
+      const next = progression.stage;
       if (!next) return { status: 'blocked', reason: '这个试炼副本已经全通' };
       const level = player?.level ?? 1;
       if ((next.openLevel ?? 0) > level) {
@@ -402,7 +407,7 @@ export const DAILY_DRIVERS = {
       }
       return {
         status: 'ready',
-        actions: [{ request: 'TrialRaidChallengeRequest', body: { raidId: raid.raidId, stageId: next.stageId }, response: 'TrialRaidChallengeResponse', costs: [], cost: '挑战次数', note: `英雄经验副本第 ${next.stageLevel} 关` }],
+        actions: [{ request: 'TrialRaidChallengeRequest', body: buildDailyDriverBody('TrialRaidChallengeRequest',{raidId:raid.raidId,stageId:next.stageId}), response: 'TrialRaidChallengeResponse', costs: [], cost: '挑战次数', note: `英雄经验副本第 ${next.stageLevel} 关` }],
       };
     },
   },
@@ -531,26 +536,6 @@ async function dailyQuery(client, name, body, response, options, mutate = false)
   return awaitExecution(client.request(name, body, response, options.timeout ?? 15000, { mutate, signal: options.signal }), client, options);
 }
 
-// A quiet watch window proves only that no rejection arrived in that window.
-async function sendAction(client, protocol, action, options, verify) {
-  assertPaymentAllowed(action, options);
-  assertExecutionActive(client, options);
-  if (!protocol[action.request] || (action.response && !protocol[action.response])) {
-    return operationResult('NOT_EXECUTED', { skipped: true, reason: '缺少已声明的协议类型' });
-  }
-  if (action.response) {
-    const body = await dailyQuery(client, action.request, action.body, action.response, options, true);
-    return operationResult(body == null ? 'UNKNOWN' : 'SUCCESS', { body });
-  }
-  await awaitExecution(client.sendWatch(action.request, action.body, { window: 400, signal: options.signal }), client, options);
-  if (verify && await verify()) {
-    client.confirmWatchedWrite?.(action.request, action.body);
-    return operationResult('SUCCESS');
-  }
-  return operationResult('UNKNOWN');
-}
-
-const actionKey = (id, action) => `${id}:${action.request}:${JSON.stringify(action.body)}`;
 function paymentFailure(error) {
   return ['D6_FORBIDDEN', 'PAID_NOT_ALLOWED', 'COST_UNKNOWN'].includes(error.code);
 }
@@ -561,68 +546,26 @@ function failedOutcome(error) {
 }
 
 export async function runDailies(client, protocol, survey, options = {}) {
-  const { allowMutate = false, claimRewards = true, onStep, rejected = new Set() } = options;
-  if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
-  const settings = { ...options, config: options.config ?? survey.config, player: options.player ?? survey.player };
-  const results = [];
-  const report = (outcome) => { results.push(outcome); onStep?.(outcome); };
-  for (const entry of survey.tasks) {
-    for (const action of entry.actions ?? []) {
-      const key = actionKey(entry.task.id, action);
-      if (rejected.has(key)) continue;
-      let outcome;
-      try {
-        assertExecutionActive(client, settings);
-        if (action.request === 'PirateSweepRequest') {
-          report({ id: entry.task.id, title: entry.task.title, request: action.request,
-            ...operationResult('NOT_EXECUTED', { skipped: true, reason: '海面扫荡需要受控单项授权' }) });
-          break;
-        }
-        // Enforce D6 before doing even a refresh for a forbidden planned action.
-        const zeroCostAction = entry.task.id === 1006 && action.request === 'ClickGoldRequest' && action.body?.free === true && action.body?.times === 1 || entry.task.id === 1002 && action.request === 'RecruitStartRequest' && action.body?.way === 1 || entry.task.id === 1009 && action.request === 'TrialRaidChallengeRequest' && action.body?.raidId === 1 && Number.isInteger(action.body?.stageId) && action.body.stageId > 0;
-        const planned = zeroCostAction && !Object.hasOwn(action,'costs') ? { ...action, costs: [] } : action;
-        assertPaymentAllowed({ ...planned, paid: action.paid || entry.status === 'paid' }, settings);
-        // Reuse the same survey/driver to check current server state and config before each write.
-        const fresh = await surveyDailies(client, protocol, settings);
-        const current = fresh.tasks.find((item) => item.task.id === entry.task.id);
-        const next = current?.actions?.find((item) => item.request === action.request && JSON.stringify(item.body) === JSON.stringify(action.body));
-        if (!next || !['ready', 'partial'].includes(current.status)) {
-          outcome = operationResult('NOT_EXECUTED', { skipped: true, reason: current?.reason ?? '计划已失效，执行前复核未通过' });
-        } else {
-          outcome = await sendAction(client, protocol, next, settings);
-        }
-      } catch (error) {
-        outcome = failedOutcome(error);
-      }
-      report({ id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ...outcome });
-      if (outcome.status === 'REJECTED') { rejected.add(key); break; }
-      if (stopsExecution(outcome)) return results;
-      if (outcome.skipped) break;
-      try { await executionDelay(400, settings); }
-      catch (error) { report(failedOutcome(error)); return results; }
-    }
-  }
-  if (claimRewards) {
-    try {
-      await executionDelay(1000, settings);
-      results.push(...await claimDailies(client, protocol, { ...settings, rejected }));
-    } catch (error) { report(failedOutcome(error)); }
-  }
-  return results;
+  if (!options.allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
+  return executeAuthorizedDailyBatch(client, options, 'executeDailyDriver');
 }
 
 // Compatibility entry: execution and final verification belong to the existing Service.
 // A legacy --yes flag or a preview is never a replacement for its exact single-use permit.
 export async function claimDailies(client, protocol, options = {}) {
   if (!options.allowMutate) throw new Error('领取日常奖励会改变账号状态，需要 --yes');
+  return executeAuthorizedDailyBatch(client, options, 'executeDailyRewards');
+}
+async function executeAuthorizedDailyBatch(client, options, method) {
   const { operationService: service, session, authorization, onStep } = options;
   const report = outcome => { onStep?.(outcome); return [outcome]; };
-  if (!service?.executeDailyRewards || !session || session.client !== client || !authorization) return report(operationResult('NOT_EXECUTED', {
-    skipped: true, code: 'AUTHORIZATION_REQUIRED', reason: '日常领奖须使用原 task-rewards Function 的当前批次授权；预览不会派发',
+  try { assertExecutionActive(client, options); } catch (error) { return report(failedOutcome(error)); }
+  if (typeof service?.[method] !== 'function' || !session || session.client !== client || !authorization) return report(operationResult('NOT_EXECUTED', {
+    skipped: true, code: 'AUTHORIZATION_REQUIRED', reason: '日常操作须使用原注册Function的当前批次授权；预览不会派发',
   }));
   try {
     assertExecutionActive(client, options);
-    const run = service.executeDailyRewards(session, authorization);
+    const run = service[method](session, authorization);
     await service.settle(session.id);
     const records = service.history(session.id, run.runId).runs;
     if (records.length !== 1) return report(operationResult('UNKNOWN', { runId: run.runId, reason: '持久执行结果缺失或不唯一，禁止重放' }));

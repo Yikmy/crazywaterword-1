@@ -1,3 +1,4 @@
+import { runDailies } from '../src/dailies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -38,7 +39,7 @@ function fixture({codec=true,apply=true,fragment=false,receipt=null}={}) {
   let value=n==='RecruitInfoRequest'?state.recruit:n==='AllHeroRequest'?{heroes:state.heroes}:n==='OnWaterRequest'?state.city:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  }};
- const options={config:config(),moduleConfig:{enabled:true},parameters:{},player:{playerId:'9007199254740993',worldId:'17',level:10}};
+ const options={config:config(),moduleConfig:{enabled:true},parameters:{},player:{playerId:'9007199254740995',worldId:'17',level:10}};
  return {state,client,options};
 }
 async function ready(extra={}){const f=fixture(extra),facts=await surveyFreeRecruit(f.client,protocol,f.options),row=viewFreeRecruit(facts,f.options).candidates[0],operation=planFreeRecruit(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,operation};}
@@ -218,7 +219,7 @@ test('original finite Loop persists cooldown observation, reloads read only and 
  const file=f.file+'.workflow.json',store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),compiled=compileUnifiedExecution({entry:'loop',world:[{type:'SURVEY',module:'free-recruit',parameters:{}}],rounds:1,budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});
  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null,onUpdate:s=>store.record(f.session.id,s)});t.after(()=>runner.stop());
  const result=await runner.start(f.session.id,compiled.graph);assert.equal(result.status,'COMPLETED');const trace=result.trace.find(row=>row.type==='SURVEY'),c=trace.recruitCooldown;assert.equal(c.readiness,'COOLDOWN');assert.equal(c.freeEndTimeSeconds,1001);assert.equal(f.state.writes.length,0);
- const original=fs.readFileSync(file,'utf8');assert.equal(original.includes('9007199254740993'),false);assert.equal(original.includes('skillLevels'),false);
+ const original=fs.readFileSync(file,'utf8');assert.equal(original.includes('9007199254740995'),true);assert.equal(original.includes('9007199254740993'),false);assert.equal(original.includes('skillLevels'),false);
  f.state.wall+=100000;f.state.mono+=100000;f.client.connected=false;
  const restored=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),[row]=restored.history(f.session.id,{runId:result.runId}),projection=projectWorkflowExecutionHistory(f.session.id,row,[]);
  assert.deepEqual(projection.surveys[0].recruitCooldown,c);assert.equal(projection.readOnly,true);assert.equal(projection.resumable,false);assert.equal(f.state.writes.length,0);assert.equal(fs.readFileSync(file,'utf8'),original);assert.deepEqual(restored.history('other'),[]);
@@ -269,4 +270,22 @@ test('named cooldown paired history rejects missing duplicate or mismatched inde
 for(const entry of ['tasks','dailies','loop'])test('unified named cooldown reaches original native Service and persists read-only '+entry,async t=>{
  const f=serviceFixture(t);f.state.recruit.hero.freeEndTimeSeconds=1001;f.state.wall+=990;f.state.mono+=990;let reads=0;f.state.onRead=n=>{if(n==='RecruitInfoRequest'&&++reads===2){f.state.wall+=20;f.state.mono+=20;}};
  const phase=entry==='loop'?'world':entry,input={entry,[phase]:[{type:'WAIT',cooldown:{kind:'FREE_RECRUIT',maxWaitMs:1000}}],budget:{resources:[],quotas:[],uids:[]}},compiled=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES}),file=f.file+'.workflow.json',store=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),runner=cooldownWaitRunner(f,{onUpdate:s=>store.record(f.session.id,s)});t.after(()=>runner.stop());const done=await runner.start(f.session.id,compiled.graph);assert.equal(done.status,'COMPLETED',JSON.stringify(done));assert.equal(done.plan,null);assert.equal(reads,2);assert.equal(f.state.writes.length,0);assert.equal(done.trace.filter(r=>r.cooldownWait).length,2);assert.equal(done.trace.find(r=>r.result==='WAITED').cooldownWait.observation.readiness,'READY_BY_CLOCK');const bytes=fs.readFileSync(file,'utf8'),reopened=createWorkflowStore({file,modules:GAMEPLAY_MODULES}),detail=projectWorkflowExecutionHistory(f.session.id,reopened.history(f.session.id)[0],[]);assert.equal(detail.readOnly,true);assert.equal(detail.resumable,false);assert.equal(detail.waits.length,2);assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.deepEqual(reopened.history('other'),[]);assert.equal(f.service.workflowBudget(f.session.id).state,'CLOSED');
+});
+
+for(const apply of [true,false])test('legacy Daily Driver delegates one authorized native operation '+apply,async t=>{
+ const f=serviceFixture(t,{apply}),permit=f.authorize(await f.plan());
+ const invoke=()=>runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});
+ const result=await invoke();assert.equal(result.length,1);assert.equal(result[0].status,apply?'SUCCESS':'UNKNOWN');assert.equal(result[0].ok,apply?true:null);assert.equal(f.state.writes.length,1);
+ assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.equal(f.durable.list(f.session.id)[0].finalStatus,apply?'SUCCESS':'UNKNOWN');
+ assert.notEqual((await invoke())[0].status,'SUCCESS');assert.equal(f.state.writes.length,1);
+ if(!apply){const restarted=serviceFixture(t,{file:f.file});await assert.rejects(restarted.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restarted.state.writes.length,0);}
+});
+for(const code of ['TIMEOUT','REJECTED'])test('legacy Daily Driver uses native persistent stop for '+code,async t=>{
+ const f=serviceFixture(t,{apply:false}),permit=f.authorize(await f.plan());f.state.onWrite=()=>{throw Object.assign(Error('synthetic '+code),{code});};
+ const invoke=()=>runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});
+ const result=await invoke();assert.equal(result[0].status,code==='REJECTED'?'REJECTED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].finalStatus,result[0].status);await invoke();assert.equal(f.state.writes.length,1);
+});
+test('legacy Daily Driver cannot dispatch after cancellation or identity change',async t=>{
+ for(const cancel of [true,false]){const f=serviceFixture(t),permit=f.authorize(await f.plan());if(cancel)f.session.abort.abort();else f.session.player.worldId='18';
+ const result=await runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.notEqual(result[0].status,'SUCCESS');assert.equal(f.state.writes.length,0);}
 });

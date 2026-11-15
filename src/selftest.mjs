@@ -198,7 +198,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 // survive normalisation as plain numbers rather than int64 objects.
 {
   const { normalize, describeRole, describeWorld } = await import('./worlds.mjs');
-  const long = (value) => ({ low: value >>> 0, high: Math.floor(value / 4294967296), unsigned: false });
+  const long = (value) => ({ low: value | 0, high: Math.floor(value / 4294967296), unsigned: false });
 
   assert.deepEqual(normalize({ a: long(2001001001), b: [long(7)], c: null }), { a: 2001001001, b: [7], c: null }, 'normalize: nested long forms');
 
@@ -754,6 +754,12 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     }
     if (!action.mutate) continue;
     sent.length = 0;
+    if (id === 'afkUpgrade') {
+      // The generic catalog has no authoritative badge quote; only the native adapter may supply it.
+      await assert.rejects(runAction(client, protocol, id, { level: 1 }, { allowMutate: true }), { code: 'COST_UNKNOWN' });
+      assert.equal(sent.length, 0, 'unquoted AFK upgrade must never dispatch');
+      continue;
+    }
     await runAction(client, protocol, id, { buildingId: 'x', productId: 'y', taskId: 1, index: 1, gridIdx: 1, useNum: 1, level: 1, isOn: true, id: 1 }, { allowMutate: true });
     assert.equal(sent.length, 1, `${id} sends exactly one message`);
     assert.equal(sent[0].via, action.response ? 'request' : 'watch', `${id} must go through ${action.response ? 'request' : 'watch'}`);

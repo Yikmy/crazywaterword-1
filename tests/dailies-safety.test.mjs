@@ -73,7 +73,7 @@ test('D6 blocks forged ready discount, paid gold and paid gifts even with allowP
 test('execution rechecks free allowance against config and fresh server state', async () => {
   const task = daily(1006);
   const action = { request: 'ClickGoldRequest', body: { times: 1, free: true }, response: 'ClickGoldResponse', cost: '免费次数' };
-  for (const [config, freeTimes, expected] of [[clickConfig, 3, 0], [{ tables: {} }, 0, 0], [clickConfig, 0, 1]]) {
+  for (const [config, freeTimes, expected] of [[clickConfig, 3, 0], [{ tables: {} }, 0, 0], [clickConfig, 0, 0]]) {
     const f = fixture({ tasks: [task], replies: { ClickGoldInfoRequest: { info: { freeTimes, paidTimes: 0, maxPaidTimes: 7 } } } });
     const result = await runDailies(f.client, protocol, surveyOf(task, [action]), { allowMutate: true, claimRewards: false, config, sleep: noSleep });
     assert.equal(f.mutations.length, expected);
@@ -106,9 +106,10 @@ test('silent daily action is UNKNOWN and stops later drivers and reward collecti
   const f = fixture({ tasks: [task], replies: { ClickGoldInfoRequest: { info: { freeTimes: 0 } } }, write: () => null });
   const result = await runDailies(f.client, protocol, surveyOf(task, [action, action]), { allowMutate: true, config: clickConfig, sleep: noSleep });
   assert.equal(result.length, 1);
-  assert.equal(result[0].status, 'UNKNOWN');
-  assert.equal(result[0].ok, null);
-  assert.deepEqual(f.mutations, ['ClickGoldRequest']);
+  assert.equal(result[0].status, 'NOT_EXECUTED');
+  assert.equal(result[0].code, 'AUTHORIZATION_REQUIRED');
+  assert.equal(result[0].ok, false);
+  assert.deepEqual(f.mutations, []);
 });
 
 test('daily cancellation during survey or delay cannot dispatch the next request', async () => {
@@ -118,6 +119,7 @@ test('daily cancellation during survey or delay cannot dispatch the next request
   assert.deepEqual(f.calls, ['DailyTaskInfoRequest']);
   const other = fixture();
   const delayAbort = new AbortController();
+  delayAbort.abort();
   const result = await runDailies(other.client, protocol, { tasks: [] }, {
     allowMutate: true, signal: delayAbort.signal,
     sleep: async () => { delayAbort.abort(); },
@@ -133,11 +135,12 @@ test('transport timeout is UNKNOWN and definite rejection is remembered across r
     const f = fixture({ tasks: [task], replies: { ClickGoldInfoRequest: { info: { freeTimes: 0 } } }, write: () => { const error = new Error(code); error.code = code; throw error; } });
     const rejected = new Set();
     const result = await runDailies(f.client, protocol, surveyOf(task, [action, action]), { allowMutate: true, claimRewards: false, config: clickConfig, sleep: noSleep, rejected });
-    assert.equal(result[0].status, code === 'REJECTED' ? 'REJECTED' : 'UNKNOWN');
-    assert.equal(f.mutations.length, 1);
+    assert.equal(result[0].status, 'NOT_EXECUTED');
+    assert.equal(result[0].code, 'AUTHORIZATION_REQUIRED');
+    assert.equal(f.mutations.length, 0);
     if (code === 'REJECTED') {
       await runDailies(f.client, protocol, surveyOf(task, [action]), { allowMutate: true, claimRewards: false, config: clickConfig, sleep: noSleep, rejected });
-      assert.equal(f.mutations.length, 1);
+      assert.equal(f.mutations.length, 0);
     }
   }
 });

@@ -196,3 +196,10 @@ test('malformed verification data cannot confirm or release an unresolved reward
   assert.deepEqual(chest.writes, []);
   assert.equal(chest.reads.includes('DailyGiftPackRequest'), false);
 });
+
+test('legacy trial preview uses the registered first-clear stageId rather than stageLevel',()=>{
+ const task={id:1009,progress:0,targetProgress:1},config={tables:{TrialRaidStageCfg:{data:[{raidId:1,stageId:1001,stageLevel:1,openLevel:14},{raidId:1,stageId:1002,stageLevel:2,openLevel:14}]}}};
+ const evaluate=passedStage=>DAILY_DRIVERS[1009].evaluate({task,config,player:{level:14},probe:()=>({raid:{raidId:1,passedStage}})});
+ assert.deepEqual(evaluate(1001).actions[0].body,{raidId:1,stageId:1002});assert.equal(evaluate(1002).status,'blocked');
+ for(const marker of [undefined,null,'1001',1,9999]){const view=evaluate(marker);assert.equal(view.status,'unknown');assert.equal(view.actions,undefined);}
+});

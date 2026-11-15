@@ -1,6 +1,7 @@
 // W16/BIZ-D09: one explicit next first-clear stage of the hero experience trial.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
 import { ResourceLedger, safeResourceQuantity, resourceCosts } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -97,18 +98,23 @@ function catalog(config) {
  }
  return {requiredLevel:gates[0].playerLevel,rows};
 }
+export function nextTrialStage(rows,passedStage) {
+ if(!dense(rows)||!rows.length||!uint(passedStage)||rows.some((row,index)=>!own(row,'stageId')||!positive(row.stageId)||!own(row,'stageLevel')||row.stageLevel!==index+1)||new Set(rows.map(row=>row.stageId)).size!==rows.length)return {known:false,stage:null};
+ const index=passedStage===0?-1:rows.findIndex(row=>row.stageId===passedStage);
+ return passedStage!==0&&index===-1?{known:false,stage:null}:{known:true,stage:rows[index+1]??null};
+}
 function candidate(f,{config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {
  const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
  const valid=authority(f),beforeState=copy(f?.state??null),passed=f?.state?.raid?.passedStage??null;
- const index=passed===0?-1:defs?.rows.findIndex(r=>r.stageId===passed),row=defs&&(passed===0||index>=0)?defs.rows[index+1]??null:null;
- let blockedReason=!validateTrialChallengeConfig(moduleConfig).enabled?'TRIAL_CHALLENGE_DISABLED':!valid?'TRIAL_CHALLENGE_AUTHORITY_UNKNOWN':!defs?'TRIAL_CHALLENGE_CONFIG_UNKNOWN':passed!==0&&index===-1?'TRIAL_CHALLENGE_PROGRESS_UNKNOWN':!row?'TRIAL_CHALLENGE_COMPLETE':!positive(f.context.playerLevel)?'TRIAL_CHALLENGE_LEVEL_UNKNOWN':f.context.playerLevel<Math.max(defs.requiredLevel,row.openLevel)?'TRIAL_CHALLENGE_LEVEL_LOCKED':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const next=nextTrialStage(defs?.rows,passed),row=next.stage;
+ let blockedReason=!validateTrialChallengeConfig(moduleConfig).enabled?'TRIAL_CHALLENGE_DISABLED':!valid?'TRIAL_CHALLENGE_AUTHORITY_UNKNOWN':!defs?'TRIAL_CHALLENGE_CONFIG_UNKNOWN':!next.known?'TRIAL_CHALLENGE_PROGRESS_UNKNOWN':!row?'TRIAL_CHALLENGE_COMPLETE':!positive(f.context.playerLevel)?'TRIAL_CHALLENGE_LEVEL_UNKNOWN':f.context.playerLevel<Math.max(defs.requiredLevel,row.openLevel)?'TRIAL_CHALLENGE_LEVEL_LOCKED':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const identity=hash({beforeState,defs}),stageId=row?.stageId??null;
  const budgetClaims={resources:[],quotas:[{id:moduleId+':first-clear:1:'+stageId,num:1}],uids:[{type:moduleId,id:'1:'+stageId}]};
  const stock=new Map(f?.stock??[]);let expectedState=null;
  if(beforeState&&row){for(const r of row.rewards){const n=(stock.get(r.id)??0)+r.num;if(!Number.isSafeInteger(n)){blockedReason='TRIAL_CHALLENGE_REWARD_OVERFLOW';break;}stock.set(r.id,n);}
  expectedState={...copy(beforeState),raid:{...beforeState.raid,passedStage:stageId},inventory:stockState(stock)};}
  return {module:moduleId,actionId:moduleId+':1:'+stageId+':'+identity,actionType:'CHALLENGE',target:{raidId:1,stageId,passedStage:passed},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'英雄经验试炼首通 '+stageId,requiredLevel:row?Math.max(defs.requiredLevel,row.openLevel):null,rewards:copy(row?.rewards??[]),
- ...(blockedReason===null?{action:{request,response,body:{raidId:1,stageId}}}:{})};
+ ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('TrialRaidChallengeRequest',{raidId:1,stageId})}}:{})};
 }
 export function viewTrialChallenge(f,options={}) {
  validateTrialChallengeParameters(options.parameters??{});
