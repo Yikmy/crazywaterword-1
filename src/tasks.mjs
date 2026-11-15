@@ -19,13 +19,6 @@ const TARGET_FROM_PARAM1 = new Set([
   '英雄升星', '英雄万能升星', '藏品万能升星', '强化装备', '分解装备', '分解海兽',
 ]);
 
-// 按 taskId/字段建一张表的索引；配置表缺失时返回空表，调用方会退化成「算不出目标值」。
-function indexBy(config, name, key) {
-  const out = new Map();
-  for (const row of config?.tables?.[name]?.data ?? []) out.set(row[key], row);
-  return out;
-}
-
 function formatDesc(row) {
   if (!row?.desc) return '';
   const params = row.descParams ?? [];
@@ -46,6 +39,48 @@ export function taskTarget(row) {
   const raw = TARGET_FROM_PARAM1.has(row.type) ? params[1] : params[0];
   const n = typeof raw === 'number' ? raw : parseInt(raw, 10);
   return Number.isFinite(n) ? n : null;
+}
+
+const own = (v,k) => v !== null && typeof v === 'object' && Object.hasOwn(v,k);
+const taskIdKnown = n => Number.isInteger(n) && n > 0 && n <= 2147483647;
+const denseTaskList = v => Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && v.length <= 10000 && Reflect.ownKeys(v).length === v.length+1 && Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&own(d,'value'));
+
+// Original achievement parser: signed int64 counts stay exact; protobuf defaults are not facts.
+export function achievementProgressCount(value) {
+  let n;
+  if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;n=BigInt(value);}
+  else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)n=BigInt(value);
+  else if(value&&typeof value==='object'&&own(value,'low')&&own(value,'high')&&own(value,'unsigned')&&value.unsigned===false&&[value.low,value.high].every(v=>Number.isInteger(v)&&v>=-2147483648&&v<=2147483647))n=(BigInt(value.high)<<32n)+BigInt(value.low>>>0);
+  else return null;
+  return n>=0n&&n<(1n<<63n)?String(n):null;
+}
+
+// Only the three original Tasks protocols share these semantics. No daily/season identity inference.
+export function taskObservation(row, kind) {
+  if(!['main','branch','achievement'].includes(kind))return null;
+  const key=kind==='achievement'?'id':'taskId', count=kind==='achievement'?achievementProgressCount:safeResourceQuantity;
+  return {taskId:own(row,key)&&taskIdKnown(row[key])?row[key]:null,progress:own(row,'progress')?count(row.progress):null,
+    ...(kind==='achievement'?{targetProgress:own(row,'targetProgress')?count(row.targetProgress):null}:{}),
+    ...(kind!=='branch'?{rewardClaimed:own(row,'rewardClaimed')&&typeof row.rewardClaimed==='boolean'?row.rewardClaimed:null}:{})};
+}
+export function parseTaskObservation(row, kind) {
+  const value=taskObservation(row,kind);
+  return value&&value.taskId!==null&&value.progress!==null&&(kind==='branch'||value.rewardClaimed!==null)&&(kind!=='achievement'||value.targetProgress!==null&&BigInt(value.targetProgress)>0n)?value:null;
+}
+export function taskConfigurationRow(config, kind, taskId) {
+  const name={main:'MainTaskCfg',branch:'BranchTaskCfg',achievement:'AchievementTaskCfg'}[kind],rows=config?.tables?.[name]?.data;
+  if(!name||!taskIdKnown(taskId)||!denseTaskList(rows)||rows.some(row=>!own(row,'taskId')||!taskIdKnown(row.taskId))||new Set(rows.map(row=>row.taskId)).size!==rows.length)return null;
+  return rows.find(row=>row.taskId===taskId)??null;
+}
+
+// Progress eligibility only. Inventory, context, period, reward mapping and settlement remain separate.
+export function taskQualification(task, target, kind) {
+  const known=['main','branch','achievement'].includes(kind)&&own(task,'taskId')&&taskIdKnown(task.taskId);
+  const progress=!own(task,'progress')?null:kind==='achievement'?achievementProgressCount(task.progress):safeResourceQuantity(task.progress);
+  const required=kind==='achievement'?achievementProgressCount(target):Number.isSafeInteger(target)&&target>0?target:null;
+  const completion=known&&progress!==null&&required!==null&&BigInt(required)>0n?(BigInt(progress)>=BigInt(required)?'COMPLETE':'INCOMPLETE'):'UNKNOWN';
+  const rewardState=!known?'UNKNOWN':kind==='branch'?'UNCLAIMED':!own(task,'rewardClaimed')?'UNKNOWN':task.rewardClaimed===true?'CLAIMED':task?.rewardClaimed===false?'UNCLAIMED':'UNKNOWN';
+  return {completion,rewardState,claimable:completion==='UNKNOWN'||rewardState==='UNKNOWN'?null:completion==='COMPLETE'&&rewardState==='UNCLAIMED'};
 }
 
 // A threshold calculation requires explicit counts and one applicable config
@@ -73,100 +108,35 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
     assertExecutionActive(client, options);
     return awaitExecution(client.request(...args), client, options);
   };
-  const main = normalize(await request('MainTaskInfoRequest', {}, 'MainTaskInfoResponse', timeout));
-  const achievement = normalize(await request('AchievementInfoRequest', {}, 'AchievementInfoResponse', timeout));
+  const main = await request('MainTaskInfoRequest', {}, 'MainTaskInfoResponse', timeout);
+  const achievement = await request('AchievementInfoRequest', {}, 'AchievementInfoResponse', timeout);
   // 每日订单档位要 OnWaterResponse；调用方手里已经有了就传进来，省一次往返。
   const waterBody = normalize(water ?? (await request('OnWaterRequest', {}, 'OnWaterResponse', timeout)));
 
-  const mainCfg = indexBy(config, 'MainTaskCfg', 'taskId');
-  const branchCfg = indexBy(config, 'BranchTaskCfg', 'taskId');
-
-  const plan = [];
-  const notes = [];
-
-  // 主线：响应里只有一条，自带 rewardClaimed。
-  let mainView = null;
-  if (main.task) {
-    const row = mainCfg.get(main.task.taskId) ?? null;
-    const target = taskTarget(row);
-    mainView = {
-      taskId: main.task.taskId,
-      type: row?.type ?? null,
-      desc: formatDesc(row),
-      progress: safeResourceQuantity(main.task.progress),
-      target,
-      claimed: main.task.rewardClaimed === true,
-    };
-    if (mainView.progress === null || !Number.isSafeInteger(target) || target <= 0 || !Object.hasOwn(main.task, 'rewardClaimed') || typeof main.task.rewardClaimed !== 'boolean') notes.push(`主线 ${mainView.taskId} 状态未知，跳过`);
-    else if (mainView.claimed) notes.push(`主线 ${mainView.taskId} 已领过`);
-    else if (target === null) notes.push(`主线 ${mainView.taskId} 目标值算不出（type=${mainView.type}），跳过`);
-    else if (mainView.progress < target) notes.push(`主线 ${mainView.taskId} 进度 ${mainView.progress}/${target}，还不能领`);
+  const plan = [], notes = [];
+  const observe = (raw,kind,listKnown=true) => {
+    const task=taskObservation(raw,kind),row=taskConfigurationRow(config,kind,task?.taskId);
+    const target=kind==='achievement'?task?.targetProgress:taskTarget(row);
+    const qualification=taskQualification(listKnown?task:null,target,kind);
+    const displayCount=value=>typeof value==='string'&&BigInt(value)<=BigInt(Number.MAX_SAFE_INTEGER)?Number(value):value;
+    const view=kind==='achievement'?{id:task?.taskId,progress:displayCount(task?.progress),target:displayCount(target),claimed:task?.rewardClaimed,qualification}:{taskId:task?.taskId,type:row?.type??null,desc:formatDesc(row),progress:task?.progress,target,...(kind==='main'?{claimed:task?.rewardClaimed}:{}),qualification};
+    const label=kind==='achievement'?'成就':kind==='main'?'主线':'支线',id=task?.taskId??'未知';
+    if(qualification.claimable===null)notes.push(label+' '+id+' 状态未知，跳过');
+    else if(qualification.rewardState==='CLAIMED')notes.push(label+' '+id+' 已领过');
+    else if(qualification.completion==='INCOMPLETE')notes.push(label+' '+id+' 进度 '+view.progress+'/'+view.target+'，还不能领');
     else {
-      plan.push({
-        kind: 'main',
-        id: mainView.taskId,
-        request: ACTIONS.taskDrawMain.request,
-        body: buildBody(ACTIONS.taskDrawMain,{taskId:mainView.taskId}),
-        label: `主线 ${mainView.taskId} ${mainView.desc}`,
-        reward: row?.reward ?? null,
-      });
+      const action=kind==='achievement'?ACTIONS.achievementDraw:kind==='main'?ACTIONS.taskDrawMain:ACTIONS.taskDrawBranch;
+      plan.push({kind,id:task.taskId,request:action.request,body:buildBody(action,kind==='achievement'?{id:task.taskId}:{taskId:task.taskId}),label:label+' '+task.taskId+(kind==='achievement'?'':' '+view.desc),reward:kind==='achievement'?null:row?.reward??null});
     }
-  }
-
-  // 支线：DispBranchTask 没有 rewardClaimed 字段。客户端的支线 map 在领取后本地删掉，
-  // 而支线数据只在 MainTaskInfoResponse 里下发，所以 [branch] 本身就是「还没领的」。
-  const branchView = [];
-  for (const task of main.branch ?? []) {
-    const row = branchCfg.get(task.taskId) ?? null;
-    const target = taskTarget(row);
-    const view = {
-      taskId: task.taskId,
-      type: row?.type ?? null,
-      desc: formatDesc(row),
-      progress: safeResourceQuantity(task.progress),
-      target,
-    };
-    if (view.progress === null || !Number.isSafeInteger(target) || target <= 0) notes.push(`支线 ${task.taskId} 状态未知，跳过`);
-    else if (target === null) notes.push(`支线 ${task.taskId} 目标值算不出（type=${view.type}），跳过`);
-    else if (view.progress < target) notes.push(`支线 ${task.taskId} 进度 ${view.progress}/${target}，还不能领`);
-    else {
-      plan.push({
-        kind: 'branch',
-        id: task.taskId,
-        request: ACTIONS.taskDrawBranch.request,
-        body: buildBody(ACTIONS.taskDrawBranch,{taskId:task.taskId}),
-        label: `支线 ${task.taskId} ${view.desc}`,
-        reward: row?.reward ?? null,
-      });
-    }
-    branchView.push(view);
-  }
-
-  // 成就：响应自带 targetProgress，比配置表可靠。
-  const achievementView = [];
-  for (const task of achievement.task ?? []) {
-    const view = {
-      id: task.id,
-      progress: safeResourceQuantity(task.progress),
-      target: safeResourceQuantity(task.targetProgress),
-      claimed: task.rewardClaimed === true,
-    };
-    if (view.progress === null || !Number.isSafeInteger(view.target) || view.target <= 0 || !Object.hasOwn(task, 'rewardClaimed') || typeof task.rewardClaimed !== 'boolean') notes.push(`成就 ${task.id} 状态未知，跳过`);
-    else if (view.claimed) notes.push(`成就 ${task.id} 已领过`);
-    else if (view.target === null) notes.push(`成就 ${task.id} 没有 targetProgress，跳过`);
-    else if (view.progress < view.target) notes.push(`成就 ${task.id} 进度 ${view.progress}/${view.target}，还不能领`);
-    else {
-      plan.push({
-        kind: 'achievement',
-        id: task.id,
-        request: ACTIONS.achievementDraw.request,
-        body: buildBody(ACTIONS.achievementDraw,{id:task.id}),
-        label: `成就 ${task.id}`,
-        reward: null,
-      });
-    }
-    achievementView.push(view);
-  }
+    return view;
+  };
+  const mainView=own(main,'task')&&main.task!==null?observe(main.task,'main'):null;
+  const observeList=(raw,key,kind)=>{
+    if(!own(raw,key)||!denseTaskList(raw[key])){notes.push((kind==='branch'?'支线':'成就')+'列表未知，跳过');return [];}
+    const ids=raw[key].map(row=>taskObservation(row,kind)?.taskId),known=ids.every(id=>id!==null)&&new Set(ids).size===ids.length;
+    return raw[key].map(row=>observe(row,kind,known));
+  };
+  const branchView=observeList(main,'branch','branch'),achievementView=observeList(achievement,'task','achievement');
 
   // 每日订单档位奖励：空体请求，服务端按 reqNum 发下一档。
   const progress = observeOrderProgress(config, { orderOfTheDay: waterBody.orderOfTheDay });
@@ -181,7 +151,7 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       label: '每日订单 ' + tier.tier + ' 单档位奖励', reward: null });
   }
 
-  return { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
+  return { readOnly:true, executable:false, qualificationScope:'TASK_PROGRESS_ONLY', main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
 }
 
 // Compatibility entry: a legacy plan/--yes never authorizes a second write path.

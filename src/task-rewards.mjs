@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { ACTIONS, buildBody } from './actions.mjs';
 import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions } from './daily-task-rewards.mjs';
-import { taskTarget } from './tasks.mjs';
+import { taskTarget, achievementProgressCount, parseTaskObservation, taskConfigurationRow, taskQualification } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -30,21 +30,9 @@ export const ACHIEVEMENT_REWARD_EVIDENCE = Object.freeze({
   functionPreviewItemByte:2823786, achievementModelByte:24520,
   semantics:'DispAchievementTask.id -> AchievementTaskCfg.taskId; flat reward; exact {id}; observed progress/targetProgress and explicit rewardClaimed'
 });
-// Preserve signed int64 precision and reject inherited/default scalar values.
-function decimalCount(value) {
-  let n;
-  if(typeof value==='number') {if(!Number.isSafeInteger(value)||value<0)return null;n=BigInt(value);}
-  else if(typeof value==='string'&&/^(0|[1-9][0-9]*)$/.test(value)&&value.length<=19)n=BigInt(value);
-  else if(value&&typeof value==='object'&&own(value,'low')&&own(value,'high')&&own(value,'unsigned')&&value.unsigned===false&&[value.low,value.high].every(v=>Number.isInteger(v)&&v>=-2147483648&&v<=2147483647))n=(BigInt(value.high)<<32n)+BigInt(value.low>>>0);
-  else return null;
-  return n>=0n&&n<(1n<<63n)?String(n):null;
-}
 function parseAchievements(raw) {
   if(!own(raw,'task')||!dense(raw.task))return null;
-  const rows=raw.task.map(row=>{
-    const progress=own(row,'progress')?decimalCount(row.progress):null,targetProgress=own(row,'targetProgress')?decimalCount(row.targetProgress):null;
-    return own(row,'id')&&positive(row.id)&&progress!==null&&targetProgress!==null&&BigInt(targetProgress)>0n&&own(row,'rewardClaimed')&&typeof row.rewardClaimed==='boolean'?{taskId:row.id,progress,targetProgress,rewardClaimed:row.rewardClaimed}:null;
-  });
+  const rows=raw.task.map(row=>parseTaskObservation(row,'achievement'));
   return rows.some(row=>row===null)||new Set(rows.map(row=>row.taskId)).size!==rows.length?null:{achievements:rows.sort((a,b)=>a.taskId-b.taskId)};
 }
 const parseFor = (raw,parameters) => parameters?.kind==='achievement'?parseAchievements(raw):parseTasks(raw);
@@ -81,11 +69,7 @@ function contextOf(client,player) {
 }
 function parseTasks(raw) {
   if (!raw || !own(raw,'branch') || !dense(raw.branch)) return null;
-  const parse = (row,main) => {
-    const progress=own(row,'progress')?safeResourceQuantity(row.progress):null;
-    if (!own(row,'taskId') || !positive(row.taskId) || progress===null || main&&(!own(row,'rewardClaimed')||typeof row.rewardClaimed!=='boolean')) return null;
-    return {taskId:row.taskId,progress,...(main?{rewardClaimed:row.rewardClaimed}:{})};
-  };
+  const parse = (row,main) => parseTaskObservation(row,main?'main':'branch');
   const main=own(raw,'task')&&raw.task!==null?parse(raw.task,true):null;
   if (own(raw,'task')&&raw.task!==null&&!main) return null;
   const branch=raw.branch.map(row=>parse(row,false));
@@ -129,12 +113,10 @@ function authority(f) {
   return Object.entries(sourcesFor(f.parameters)).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 function definition(config,kind,taskId,task) {
-  const rows=config?.tables?.[kind==='achievement'?'AchievementTaskCfg':kind==='main'?'MainTaskCfg':'BranchTaskCfg']?.data;
-  if(!dense(rows)||rows.some(row=>!own(row,'taskId')||!positive(row.taskId))||new Set(rows.map(row=>row.taskId)).size!==rows.length)return null;
-  const row=rows.find(row=>row.taskId===taskId),target=kind==='achievement'?task?.targetProgress:taskTarget(row),rewards=kind==='achievement'?(dense(row?.reward)&&row.reward.length===2?[row.reward]:null):row?.reward;
+  const row=taskConfigurationRow(config,kind,taskId),target=kind==='achievement'?task?.targetProgress:taskTarget(row),rewards=kind==='achievement'?(dense(row?.reward)&&row.reward.length===2?[row.reward]:null):row?.reward;
   const itemRows=config?.tables?.ItemCfg?.data,known=new Set(Object.values(RESOURCE_NAMES));
   if(dense(itemRows))for(const item of itemRows)if(own(item,'id')&&identifier(item.id))known.add(item.id);
-  if((kind==='achievement'?(decimalCount(target)===null||BigInt(target)<=0n):!Number.isSafeInteger(target)||target<=0)||!dense(rewards)||!rewards.length)return null;
+  if((kind==='achievement'?(achievementProgressCount(target)===null||BigInt(target)<=0n):!Number.isSafeInteger(target)||target<=0)||!dense(rewards)||!rewards.length)return null;
   const seen=new Set(),parsed=[];
   for(const pair of rewards) {
     if(!dense(pair)||pair.length!==2||!known.has(pair[0])||seen.has(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0)return null;
@@ -158,10 +140,11 @@ function expected(f,p,def) {
 function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
   const task=p.kind==='achievement'?f?.tasks?.achievements?.find(row=>row.taskId===p.taskId):p.kind==='main'?f?.tasks?.main:f?.tasks?.branch?.find(row=>row.taskId===p.taskId),def=same(configNames.map(name=>config?.tables?.[name]??null),configNames.map(name=>f?.configEvidence?.tables?.[name]??null))?definition(f.configEvidence,p.kind,p.taskId,task):null;
   const after=authority(f)&&task?.taskId===p.taskId?expected(f,p,def):null;
-  let blockedReason=!validateTaskRewardsConfig(moduleConfig).enabled?'TASK_REWARDS_DISABLED':!authority(f)?'TASK_AUTHORITY_UNKNOWN':!def?'TASK_CONFIG_OR_REWARD_UNKNOWN':task?.taskId!==p.taskId?'TASK_NOT_PRESENT':['main','achievement'].includes(p.kind)&&task.rewardClaimed?'TASK_ALREADY_CLAIMED':BigInt(task.progress)<BigInt(def.target)?'TASK_INCOMPLETE':!after?'REWARD_BALANCE_UNKNOWN':!f.available?.includes(requestOf(p.kind))?'PROTOCOL_UNAVAILABLE':null;
+  const qualification=taskQualification(task,def?.target,p.kind);
+  let blockedReason=!validateTaskRewardsConfig(moduleConfig).enabled?'TASK_REWARDS_DISABLED':!authority(f)?'TASK_AUTHORITY_UNKNOWN':!def?'TASK_CONFIG_OR_REWARD_UNKNOWN':task?.taskId!==p.taskId?'TASK_NOT_PRESENT':qualification.rewardState==='CLAIMED'?'TASK_ALREADY_CLAIMED':qualification.completion==='INCOMPLETE'?'TASK_INCOMPLETE':qualification.claimable!==true?'TASK_STATE_UNKNOWN':!after?'REWARD_BALANCE_UNKNOWN':!f.available?.includes(requestOf(p.kind))?'PROTOCOL_UNAVAILABLE':null;
   const beforeState=copy(f?.state??null),identity=hash({p,beforeState,def}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:p.kind+':'+p.taskId}]};
   return {module:moduleId,capabilityId:'C503',actionId:moduleId+':'+p.kind+':'+p.taskId+':'+identity,actionType:'CLAIM',target:copy(p),parameters:copy(p),identity,beforeState,expectedState:after,
-    costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,
+    costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,qualification,
     ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:buildBody(rewardActionFor(p.kind),p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId})}}:{})};
 }
 export function viewTaskRewards(f,options={}) {

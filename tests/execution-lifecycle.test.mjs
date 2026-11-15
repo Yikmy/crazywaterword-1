@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getEventListeners } from 'node:events';
-import { runTasks, surveyTasks, nextOrderTier, formatTaskPlan } from '../src/tasks.mjs';
+import { runTasks, surveyTasks, nextOrderTier, formatTaskPlan, taskObservation, parseTaskObservation, taskQualification, achievementProgressCount, taskConfigurationRow } from '../src/tasks.mjs';
 import { runLoop, formatLoopRound } from '../src/loop.mjs';
 import { awaitExecution, executionDelay } from '../src/execution.mjs';
 
@@ -180,4 +180,55 @@ for(const mode of ['missing','duplicate','wrong-account','wrong-run','empty-acti
  const client={connected:true},session={id:'synthetic-A',client},record={accountId:session.id,runId:'synthetic-run',finalStatus:'SUCCESS',actions:[{actionId:'synthetic-action',result:'SUCCESS'}]};let executed=0;
  const service={executeTaskRewards(){executed++;return {runId:record.runId};},async settle(){if(mode==='account-switch')session.id='synthetic-B';if(mode==='client-switch')session.client={connected:true};},history(){if(mode==='wrong-account')record.accountId='synthetic-B';if(mode==='wrong-run')record.runId='other-run';if(mode==='empty-actions')record.actions=[];return {runs:mode==='missing'?[]:mode==='duplicate'?[record,record]:[record]};}};
  const result=await runTasks(client,{}, {plan:[]},{allowMutate:true,operationService:service,session,authorization:{}});assert.equal(result.length,1);assert.equal(result[0].status,'UNKNOWN');assert.equal(result[0].ok,null);assert.equal(executed,1);
+});
+
+
+test('shared Tasks observations distinguish completion, unclaimed eligibility and settlement',()=>{
+ const row={taskId:1,progress:5,rewardClaimed:false,unknownField:'retained by caller'};
+ assert.deepEqual(taskQualification(parseTaskObservation(row,'main'),5,'main'),{completion:'COMPLETE',rewardState:'UNCLAIMED',claimable:true});
+ assert.deepEqual(taskQualification(parseTaskObservation({...row,progress:4},'main'),5,'main'),{completion:'INCOMPLETE',rewardState:'UNCLAIMED',claimable:false});
+ assert.deepEqual(taskQualification(parseTaskObservation({...row,rewardClaimed:true},'main'),5,'main'),{completion:'COMPLETE',rewardState:'CLAIMED',claimable:false});
+ const missing=taskObservation({taskId:1,progress:5},'main');
+ assert.deepEqual(taskQualification(missing,5,'main'),{completion:'COMPLETE',rewardState:'UNKNOWN',claimable:null});
+ for(const value of [Object.create(row),{taskId:1,rewardClaimed:false},{taskId:0,progress:5,rewardClaimed:false},{...row,progress:-1}])assert.equal(taskQualification(value,5,'main').claimable,null);
+ assert.equal(row.unknownField,'retained by caller');
+ for(const kind of ['daily','weekly-chip-task','season','event',undefined]){assert.equal(taskObservation(row,kind),null);assert.equal(taskQualification(row,5,kind).claimable,null);}
+ assert.equal(parseTaskObservation({taskId:1,progress:1,targetProgress:1,rewardClaimed:false},'achievement'),null);
+ assert.equal(parseTaskObservation({id:1,progress:1},'branch'),null);
+ assert.equal(parseTaskObservation(Object.assign(Object.create({rewardClaimed:false}),{taskId:1,progress:5}),'main'),null);
+});
+
+test('shared achievement counts preserve signed int64 and explicit protobuf fields',()=>{
+ for(const value of ['9007199254740993','9223372036854775807',{low:-1,high:2147483647,unsigned:false}])assert.equal(achievementProgressCount(value),typeof value==='string'?value:'9223372036854775807');
+ for(const value of [9223372036854775807,'9223372036854775808','-1','01',{low:-1,high:2147483647,unsigned:true},Object.create({low:0,high:0,unsigned:false})])assert.equal(achievementProgressCount(value),null);
+ const observed=parseTaskObservation({id:7,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:false},'achievement');
+ assert.equal(taskQualification(observed,observed.targetProgress,'achievement').completion,'INCOMPLETE');
+});
+
+async function legacyQualificationSurvey({main,branch=[],achievement=[],cfg=config}={}){
+ const reads=[],writes=[];
+ const client={async request(name){reads.push(name);if(name==='MainTaskInfoRequest')return {task:main,branch};if(name==='AchievementInfoRequest')return {task:achievement};throw Error('unexpected read');},async sendWatch(){writes.push(true);}};
+ return {survey:await surveyTasks(client,{}, {config:cfg,water:{}}),reads,writes};
+}
+test('legacy valid Tasks output keeps original types, targets and request previews with no writes',async()=>{
+ const cfg={tables:{MainTaskCfg:{data:[{taskId:1,type:'升级建筑',params:[0,'2|3'],desc:'建造{0}',descParams:[2],reward:[['EXP',1]]}]},BranchTaskCfg:{data:[{taskId:1,type:'获取资源',params:['GOLD',3],desc:'收集',reward:[['EXP',2]]}]}}};
+ const {survey,reads,writes}=await legacyQualificationSurvey({main:{taskId:1,progress:2,rewardClaimed:false},branch:[{taskId:1,progress:3}],achievement:[{id:1,progress:4,targetProgress:4,rewardClaimed:false}],cfg});
+ const {qualification,...main}=survey.main;assert.deepEqual(main,{taskId:1,type:'升级建筑',desc:'建造2',progress:2,target:2,claimed:false});
+ const {qualification:bq,...branch}=survey.branch[0];assert.deepEqual(branch,{taskId:1,type:'获取资源',desc:'收集',progress:3,target:3});
+ const {qualification:aq,...achievement}=survey.achievement[0];assert.deepEqual(achievement,{id:1,progress:4,target:4,claimed:false});
+ assert.deepEqual(survey.plan,[{kind:'main',id:1,request:'DrawMainTaskRewardRequest',body:{taskId:1},label:'主线 1 建造2',reward:[['EXP',1]]},{kind:'branch',id:1,request:'GotBranchTaskRewardRequest',body:{taskId:1},label:'支线 1 收集',reward:[['EXP',2]]},{kind:'achievement',id:1,request:'GotAchievementRewardRequest',body:{id:1},label:'成就 1',reward:null}]);
+ assert.deepEqual(qualification,bq);assert.deepEqual(qualification,aq);assert.equal(survey.executable,false);assert.equal(survey.readOnly,true);assert.equal(survey.qualificationScope,'TASK_PROGRESS_ONLY');assert.deepEqual(reads,['MainTaskInfoRequest','AchievementInfoRequest']);assert.deepEqual(writes,[]);
+});
+
+test('legacy unknown or ambiguous identities only freeze their own task list',async()=>{
+ const row={taskId:1,progress:1},cfg={tables:{...config.tables,BranchTaskCfg:config.tables.MainTaskCfg}};
+ for(const branch of [[row,row],Array(1),[Object.create(row)],[{taskId:0,progress:1}]]){
+  const {survey,writes}=await legacyQualificationSurvey({main:{...row,rewardClaimed:false},branch,cfg});
+  assert.equal(survey.plan.some(x=>x.kind==='branch'),false);assert.equal(survey.plan.some(x=>x.kind==='main'),true);assert.deepEqual(writes,[]);
+ }
+ const duplicate=structuredClone(cfg);duplicate.tables.MainTaskCfg.data.push(structuredClone(duplicate.tables.MainTaskCfg.data[0]));
+ assert.equal(taskConfigurationRow(duplicate,'main',1),null);
+ assert.equal((await legacyQualificationSurvey({main:{...row,rewardClaimed:false},cfg:duplicate})).survey.plan.some(x=>x.kind==='main'),false);
+ const {survey}=await legacyQualificationSurvey({main:{taskId:1,progress:1},achievement:[{id:1,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:false}]});
+ assert.equal(survey.main.qualification.completion,'COMPLETE');assert.equal(survey.main.qualification.claimable,null);assert.equal(survey.main.claimed,null);assert.equal(survey.achievement[0].progress,'9007199254740993');assert.equal(survey.achievement[0].qualification.claimable,false);
 });

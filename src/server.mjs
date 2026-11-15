@@ -438,7 +438,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     };
   }
 
-  function cachedClient(session, dependencies) {
+  function cachedClient(session, dependencies, { preserveSource = false } = {}) {
     if (!session.snapshot) throw new Error('尚无快照，请先连接并手动刷新');
     for (const request of dependencies) {
       if (!Object.hasOwn(session.snapshot.ok, request)) throw new Error(request + ' 未获取成功：' + (session.snapshot.failed[request] ?? '未采集'));
@@ -451,7 +451,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       if (!Object.hasOwn(snapshot.ok, name)) error = name + ' 未获取成功：' + (snapshot.failed[name] ?? '未采集');
       else if (!query || JSON.stringify(body) !== JSON.stringify(query.body ?? {})) error = name + ' 快照请求参数不匹配，未执行新请求';
       if (error) { errors.set(name, error); throw new Error(error); }
-      return snapshot.ok[name];
+      return preserveSource && Object.hasOwn(snapshot, 'raw') ? snapshot.raw?.[name] : snapshot.ok[name];
     } };
   }
 
@@ -569,7 +569,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   async function tasks(session, account) {
-    const instance = cachedClient(session, ["MainTaskInfoRequest","AchievementInfoRequest","OnWaterRequest"]);
+    const instance = cachedClient(session, ["MainTaskInfoRequest","AchievementInfoRequest","OnWaterRequest"], { preserveSource: true });
     const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe() });
     return { ...survey, text: formatTaskPlan(survey) };
   }

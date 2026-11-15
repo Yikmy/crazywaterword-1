@@ -1,4 +1,4 @@
-import { runTasks } from '../src/tasks.mjs';
+import { runTasks, surveyTasks } from '../src/tasks.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -287,4 +287,28 @@ test('Tasks compatibility late cancellation keeps durable UNKNOWN and never repl
 });
 test('Tasks compatibility requires both mutation confirmation and exact Service permit',async t=>{
  const f=serviceFixture(t);assert.equal((await invokeLegacyTasks(f,null))[0].code,'AUTHORIZATION_REQUIRED');assert.equal(f.state.writes.length,0);await assert.rejects(invokeLegacyTasks(f,null,{allowMutate:false}));
+});
+
+
+test('legacy preview and unified Function consume identical progress qualification without writes',async()=>{
+ for(const [kind,id]of [['main',1],['branch',8001],['achievement',1001]])for(const mode of ['complete','incomplete','claimed']){
+  const f=fake(),config=cfg(),p={kind,taskId:id},row=kind==='main'?f.state.tasks.task:kind==='branch'?f.state.tasks.branch[0]:f.state.achievements.task[0];
+  if(mode==='incomplete')row.progress=0;
+  if(mode==='claimed'&&kind!=='branch')row.rewardClaimed=true;
+  const options=opts(config,{parameters:p}),facts=await surveyTaskRewards(f.client,protocol,options),candidate=viewTaskRewards(facts,options).candidates[0];
+  const legacy=await surveyTasks(f.client,protocol,{config,water:{}}),observed=kind==='main'?legacy.main:kind==='branch'?legacy.branch.find(x=>x.taskId===id):legacy.achievement.find(x=>x.id===id);
+  assert.deepEqual(candidate.qualification,observed.qualification);assert.equal(legacy.plan.some(x=>x.kind===kind&&x.id===id),candidate.qualification.claimable===true);
+  assert.equal(f.state.writes.length,0);
+ }
+});
+
+test('same task ID observations stay local to each account and do not authorize a daily or season task',async()=>{
+ const a=fake(),b=fake({context:{accountId:'synthetic-B'}}),config=cfg();b.state.tasks.task.rewardClaimed=true;
+ for(const [f,claimable]of [[a,true],[b,false]]){
+  const options=opts(config),facts=await surveyTaskRewards(f.client,protocol,options),view=viewTaskRewards(facts,options).candidates[0],legacy=await surveyTasks(f.client,protocol,{config,water:{}});
+  assert.equal(view.qualification.claimable,claimable);assert.equal(legacy.main.qualification.claimable,claimable);assert.equal(facts.context.accountId,f.client.factContext.accountId);assert.equal(f.state.writes.length,0);
+ }
+ const options=opts(config),facts=await surveyTaskRewards(a.client,protocol,options);facts.context.accountId='synthetic-B';
+ assert.equal(planTaskRewards(facts,{...options,selections:viewTaskRewards(facts,options).candidates.map(x=>x.actionId)}).actions.length,0);
+ for(const p of [{kind:'main',taskId:1,round:2},{kind:'achievement',taskId:1,season:3}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
 });

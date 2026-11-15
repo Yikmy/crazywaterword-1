@@ -577,3 +577,23 @@ async function fleetOverviewRuntime({failed=null,gate=null}={}){
 test('bounded Fleet HTTP overview only reads original explicit six-request cache',async()=>{const app=await fleetOverviewRuntime();try{assert.equal((await app.call('/api/overview')).data.fleetWorld.status,'UNKNOWN');assert.equal(app.reads.length,0);const surveyed=await app.survey();assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));assert.equal(app.reads.length,6);const r=(await app.call('/api/overview')).data;assert.equal(r.fleetWorld.status,'OBSERVED');assert.equal(r.fleetWorld.fleets.rows[0].durability,0);assert.equal(r.fleetWorld.world.rows[0].guildIdx,0);assert.equal(r.fleetWorld.world.mapComplete,false);assert.deepEqual(app.bodies[app.reads.indexOf('WorldInfoRequest')],{screenCenter:{x:0,y:0}});for(const key of ['accountId','generation','connectionId','playerId','worldId'])assert.equal(r.fleetWorld.context[key],r.dataContext[key]);for(let i=0;i<3;i++)await app.call('/api/overview');assert.equal(app.reads.length,6);assert.equal(app.collects,0);assert.equal((await app.call('/api/overview',{account:'account-B'})).data.fleetWorld.status,'UNKNOWN');}finally{await app.close();}});
 test('bounded Fleet HTTP failed source stays unknown independently of city response',async()=>{const app=await fleetOverviewRuntime({failed:'MyFleetsRequest'});try{const surveyed=await app.survey();assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));const r=(await app.call('/api/overview')).data.fleetWorld;assert.equal(r.status,'PARTIAL');assert.equal(r.fleets.status,'UNKNOWN');assert.deepEqual(r.fleets.rows,[]);assert.equal(r.world.status,'OBSERVED');assert.equal(app.reads.length,6);}finally{await app.close();}});
 test('bounded Fleet HTTP delayed response cannot publish across role switch',async()=>{const gate=deferred(),app=await fleetOverviewRuntime({gate});try{const pending=app.survey();await until(()=>app.reads.includes('WorldInfoRequest'));app.sessions.get('account-A').player.worldId=2000001;gate.resolve();assert.equal((await pending).status,409);assert.equal((await app.call('/api/overview')).data.fleetWorld.status,'UNKNOWN');assert.equal(app.reads.length,6);}finally{gate.resolve();await app.close();}});
+
+
+test('Tasks HTTP reads exact source cache per account and never calls the game transport',async()=>{
+ const app=await harness();
+ try{
+  for(const account of ['account-A','account-B']){
+   await app.connect(account);
+   const session=app.sessions.get(account),claimed=account==='account-B';
+   const raw={MainTaskInfoRequest:{task:{taskId:1,progress:15,rewardClaimed:claimed},branch:[]},AchievementInfoRequest:{task:[{id:1001,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:claimed}]},OnWaterRequest:{}};
+   session.snapshot={ok:{...raw,AchievementInfoRequest:{task:[{id:1001,progress:9007199254740992,targetProgress:9007199254740992,rewardClaimed:false}]}},raw,failed:{}};
+  }
+  for(const account of ['account-A','account-B']){
+   const response=await app.call('/api/tasks',{account});assert.equal(response.status,200);assert.equal(response.data.readOnly,true);assert.equal(response.data.executable,false);
+   const row=response.data.achievement[0];assert.equal(row.progress,'9007199254740993');assert.equal(row.target,'9007199254740994');assert.equal(row.qualification.completion,'INCOMPLETE');assert.equal(row.qualification.claimable,false);assert.equal(row.claimed,account==='account-B');
+  }
+  delete app.sessions.get('account-A').snapshot.raw.AchievementInfoRequest;
+  const missing=await app.call('/api/tasks');assert.equal(missing.status,200);assert.deepEqual(missing.data.achievement,[]);assert.equal(missing.data.plan.some(x=>x.kind==='achievement'),false);
+  assert.equal(app.collects,0);assert.equal(app.clients.length,2);assert.ok(app.clients.every(c=>c.connectCalls===1));
+ }finally{await app.close();}
+});
