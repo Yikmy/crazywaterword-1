@@ -1,6 +1,7 @@
 // W16/BIZ-R10: exact next configured AFK milestone; the shared executor owns writes.
 import { createHash } from 'node:crypto';
 import { parseOperationInventory } from './hero-operations.mjs';
+import { parseBadgeOwnership } from './badge-growth.mjs';
 import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
@@ -19,6 +20,10 @@ const dense = v => Array.isArray(v) && Object.getPrototypeOf(v) === Array.protot
 const invalid = message => Object.assign(new Error(message), {code:'INVALID_PARAMETERS',statusCode:400});
 const sources = { afk:'AfkInfoResponse', items:'AllItemResponse', resources:'AllResourceResponse' };
 const configNames = ['OfflineLvRewardCfg','ItemCfg'];
+const isIncome=p=>p?.action==='income';
+const configNamesFor=p=>isIncome(p)?['OfflineCfg','ItemCfg','HeroBadgeCfg']:configNames;
+const sourcesFor=p=>isIncome(p)?{...sources,badges:'BadgesResponse',heroes:'AllHeroResponse'}:sources;
+export const AFK_INCOME_EVIDENCE=Object.freeze({source:'Fixed v76 OfflineRewardView.ts/AfkModel.ts',ordinaryRequestByte:5033814,modelByte:137123,semantics:'Explicit normal claim without useAdvCard; floor(server seconds)-start-1 >=60. Receipt supplies new interval and DispRewardPackage; independently reread interval, full inventory and badge ownership. Never predict amount or auto-upgrade.',realGame:'REAL_UNVERIFIED'});
 const request='DrawAfkLevelRewardRequest', response='DrawAfkLevelRewardResponse';
 const liveFacts=new WeakMap();
 const costSource='Existing ACTIONS.afkLevelDraw and OfflineLvRewardCfg.reward; exact next milestone, zero debit; unlockReward is not immediate income';
@@ -28,6 +33,7 @@ export function validateAfkLevelRewardsConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateAfkLevelRewardsParameters(v={}) {
+  if(isIncome(v)){if(!fields(v,['action','level','afkStartTime','afkFinishTime'])||!['action','level','afkStartTime','afkFinishTime'].every(k=>own(v,k))||!positive(v.level)||!positive(v.afkStartTime)||!positive(v.afkFinishTime)||v.afkFinishTime<=v.afkStartTime)throw invalid('普通挂机收益必须明确 action=income、当前等级及完整起止秒数');return {action:'income',level:v.level,afkStartTime:v.afkStartTime,afkFinishTime:v.afkFinishTime};}
   if(!fields(v,['level'])||own(v,'level')&&!positive(v.level))throw invalid('挂机等级奖励仅接受正 int32 level 或空参数');
   return own(v,'level')?{level:v.level}:{};
 }
@@ -48,37 +54,46 @@ function parseAfk(raw) {
   return Object.fromEntries(['level','rewardedLevel','afkStartTime','afkFinishTime'].map(k=>[k,afk[k]]));
 }
 const stockState = stock => [...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
-function snapshot(inputs,context) {
+function snapshot(inputs,context,parameters={}) {
   const afk=parseAfk(inputs?.afk),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
-  return afk&&inventory.stockReliable?{context,afk,clickGoldInfo:own(inputs.afk,'clickGoldInfo')?copy(inputs.afk.clickGoldInfo):null,inventory:stockState(inventory.stock)}:null;
+  const ownership=isIncome(parameters)?parseBadgeOwnership(inputs?.badges,inputs?.heroes):null;
+  return afk&&inventory.stockReliable&&(!isIncome(parameters)||ownership)?{context,afk,clickGoldInfo:own(inputs.afk,'clickGoldInfo')?copy(inputs.afk.clickGoldInfo):null,inventory:stockState(inventory.stock),...(isIncome(parameters)?{ownership}:{})}:null;
 }
 export async function surveyAfkLevelRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateAfkLevelRewardsParameters(parameters);
-  const options={signal,stop},context=contextOf(client,player),notes=[];
+  const options={signal,stop},context=contextOf(client,player),notes=[],startClock=isIncome(parameters)?readIncomeClock(client,context):null;
   const active=()=>assertExecutionActive(client,options); active();
-  const observations=await Promise.all(Object.entries(sources).map(async([key,response])=>{
+  const observations=await Promise.all(Object.entries(sourcesFor(parameters)).map(async([key,response])=>{
     const request=response.replace(/Response$/,'Request'); active();
     if (!protocol?.[request] || !protocol?.[response]) {notes.push(request+': PROTOCOL_UNAVAILABLE');return [key,null,null];}
     try { const value=await awaitExecution(client.request(request,{},response,timeout,{signal}),client,options);return [key,value,Date.now()]; }
     catch(error) {if(executionOutcome(error)==='CANCELLED')throw error;notes.push(request+': STATE_UNKNOWN');return [key,null,null];}
   }));
+  // Fence the interval around the independently read credits; do not renew the first fact's age.
+  if(isIncome(parameters)){
+    const first=observations.find(([key])=>key==='afk');
+    if(first?.[1])try{
+      const last=await awaitExecution(client.request('AfkInfoRequest',{},'AfkInfoResponse',timeout,{signal}),client,options);
+      if(!same(toSnapshotJson(first[1]),toSnapshotJson(last))){first[1]=null;notes.push('AFK_INTERVAL_CHANGED_DURING_SURVEY');}
+    }catch(error){if(executionOutcome(error)==='CANCELLED')throw error;first[1]=null;notes.push('AFK_INTERVAL_FENCE_UNKNOWN');}
+  }
   active(); if(!same(context,contextOf(client,player)))throw Object.assign(new Error('挂机采集期间账号或连接改变'),{code:'CANCELLED'});
   const raw=Object.fromEntries(observations.map(([key,value])=>[key,value])),inputs=toSnapshotJson(raw);
   const afk=parseAfk(raw.afk),inventory=parseOperationInventory(raw.items,raw.resources);
-  const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:sources[key],sourceAt,scope,reliable:key==='afk'?afk!==null:inventory.stockReliable})]));
-  const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,afk,...inventory,state:afk&&inventory.stockReliable?snapshot(inputs,context):null,available:Object.keys(protocol??{}),notes};
+  const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:sourcesFor(parameters)[key],sourceAt,scope,reliable:key==='afk'?afk!==null:inventory.stockReliable})]));
+  const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNamesFor(parameters).map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,afk,...inventory,state:afk&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes,...(isIncome(parameters)?{startClock,endClock:readIncomeClock(client,context)}:{})};
   liveFacts.set(f,{digest:digest(f),client,player});return f;
 }
-const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,afk:f.afk,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available});
+const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,afk:f.afk,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,...(isIncome(f.parameters)?{startClock:f.startClock,endClock:f.endClock}:{})});
 function authority(f) {
   const bound=liveFacts.get(f);
   if(!bound||bound.digest!==digest(f)||!same(f.context,contextOf(bound.client,bound.player)))return false;
   const c=f?.context;
   if(!identifier(c?.accountId)||!identifier(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
-  const state=snapshot(f.inputs,c);
+  const state=snapshot(f.inputs,c,f.parameters);
   const parsed=parseOperationInventory(f.inputs?.items,f.inputs?.resources);
   if(!same(state,f.state)||!same(f.afk,state?.afk)||!same([...f.stock].sort(),[...parsed.stock].sort()))return false;
-  return Object.entries(sources).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
+  return Object.entries(sourcesFor(f.parameters)).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 function milestones(config) {
  const rows=config?.tables?.OfflineLvRewardCfg?.data,items=config?.tables?.ItemCfg?.data;
@@ -100,7 +115,7 @@ function candidate(f,p,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}
  return {module:moduleId,actionId:moduleId+':'+p.level+':'+identity,actionType:'CLAIM',target:copy(p),parameters:copy(p),identity,beforeState,expectedState:after,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'挂机等级 '+p.level+' 奖励',rewards:copy(def?.rewards??null),...(blockedReason===null?{action:{request,response,body:{level:p.level}}}:{})};
 }
 export function viewAfkLevelRewards(f,options={}) {
- const p=validateAfkLevelRewardsParameters(options.parameters??{}),next=milestones(f?.configEvidence)?.find(row=>row.level>f?.afk?.rewardedLevel),selected=own(p,'level')?p:next?{level:next.level}:null;
+ const p=validateAfkLevelRewardsParameters(options.parameters??{});if(isIncome(p))return incomeView(f,p,options);const next=milestones(f?.configEvidence)?.find(row=>row.level>f?.afk?.rewardedLevel),selected=own(p,'level')?p:next?{level:next.level}:null;
  return {module:moduleId,afk:copy(f?.afk??null),candidates:selected?[candidate(f,selected,options)]:[],notes:[...(f?.notes??[]),'仅领取下一档配置等级奖励；时段收益与升级保持独立。缺失已领奖等级不能按零处理。']};
 }
 export function planAfkLevelRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
@@ -116,7 +131,7 @@ function receipt(raw,def) {
 export function verifyAfkLevelReward(operation,before,after,result) {
  const no=reason=>({confirmed:false,reason});
  if(!authority(before)||!authority(after)||!same(before.context,after.context))return no('挂机前后账号、状态或库存权威不可靠');
- const p=operation?.parameters;try{validateAfkLevelRewardsParameters(p);}catch{return no('领取目标不完整');}if(!p?.level)return no('缺少精确领奖等级');
+ const p=operation?.parameters;if(isIncome(p))return verifyIncome(operation,before,after,result);try{validateAfkLevelRewardsParameters(p);}catch{return no('领取目标不完整');}if(!p?.level)return no('缺少精确领奖等级');
  if(!same(before.configEvidence,after.configEvidence))return no('挂机奖励配置发生变化');
  const canonical=candidate(before,p,{config:before.configEvidence,moduleConfig:{enabled:true}});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards'].some(k=>!same(operation[k],canonical[k])))return no('挂机领取合同与写前事实或配置不一致');
@@ -124,5 +139,54 @@ export function verifyAfkLevelReward(operation,before,after,result) {
  if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('独立复读未确认精确等级与奖励净入，或无关状态变化');
  return {confirmed:true,afterState:copy(after.state),reason:'专用回执与独立复读同时确认单档等级奖励及完整库存净入'};
 }
-export function afkLevelRewardsDependencyVersions({config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {return {moduleConfig:validateAfkLevelRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
+export function afkLevelRewardsDependencyVersions({config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {return {moduleConfig:validateAfkLevelRewardsConfig(moduleConfig),tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)])),...(isIncome(parameters)?{incomeEvidence:AFK_INCOME_EVIDENCE}:{})};}
+function incomeClock(f) {const bound=liveFacts.get(f);return bound?readIncomeClock(bound.client,f.context):null;}
+function readIncomeClock(client,context) {
+ let c;try{c=client.gameClock?.read(context);}catch{return null;}
+ if(c?.status!=='TRUSTED'||c.reliable!==true||c.source!=='PingResponse.serverTimestamp'||c.accountId!==context.accountId||c.generation!==context.generation||!['earliestMs','nowMs','latestMs'].every(k=>own(c,k)&&Number.isFinite(c[k])&&c[k]>=0&&c[k]<=Number.MAX_SAFE_INTEGER)||c.earliestMs>c.nowMs||c.nowMs>c.latestMs)return null;
+ return {earliestMs:c.earliestMs,nowMs:c.nowMs,latestMs:c.latestMs};
+}
+function incomeDefinitions(f,config) {
+ const names=configNamesFor(f?.parameters);if(!same(names.map(n=>config?.tables?.[n]??null),names.map(n=>f?.configEvidence?.tables?.[n]??null)))return null;
+ const {OfflineCfg,ItemCfg,HeroBadgeCfg}=f?.configEvidence?.tables??{},rows=OfflineCfg?.data,items=ItemCfg?.data,badges=HeroBadgeCfg?.data;
+ if(!dense(rows)||!rows.length||rows.some(r=>!own(r,'level')||!positive(r.level))||new Set(rows.map(r=>r.level)).size!==rows.length||!dense(items)||!items.length||items.some(r=>!own(r,'id')||!identifier(r.id))||new Set(items.map(r=>r.id)).size!==items.length||!dense(badges)||!badges.length||badges.some(r=>!own(r,'id')||!identifier(r.id))||new Set(badges.map(r=>r.id)).size!==badges.length)return null;
+ const row=rows.find(r=>r.level===f?.afk?.level);if(!row||!own(row,'goldSpeed')||!Number.isFinite(row.goldSpeed)||row.goldSpeed<=0||!own(row,'reward')||!dense(row.reward)||row.reward.some(a=>!dense(a)||a.length!==2||!items.some(r=>r.id===a[0])||!Number.isFinite(a[1])||a[1]<=0))return null;
+ return {row:copy(row),items:items.map(r=>r.id).sort(),badges:badges.map(r=>r.id).sort()};
+}
+function incomeCandidate(f,p,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {
+ const valid=authority(f),clock=valid?incomeClock(f):null,defs=incomeDefinitions(f,config),a=f?.afk;
+ const target=copy(p),beforeState=copy(f?.state??null),expectedState=beforeState?{context:copy(beforeState.context),rule:'NORMAL_AFK_INTERVAL_SETTLEMENT',interval:'EXPLICIT_NEW_START_AND_SAME_DURATION_MATCH_REREAD',reward:'TYPED_ITEM_RESOURCE_AND_BADGE_NET_CREDITS',otherState:'UNCHANGED',amount:'SERVER_RECEIPT_ONLY'}:null;
+ const identity=hash({target,beforeState,defs}),budgetClaims={resources:[],quotas:[],uids:[{type:'afk-income-interval',id:p.level+':'+p.afkStartTime+':'+p.afkFinishTime}]};
+ const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_INCOME_CONFIG_UNKNOWN':!same({level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},{level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime})?'AFK_INTERVAL_CHANGED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':Math.floor(clock.earliestMs/1000)-a.afkStartTime-1<60?'AFK_INCOME_TOO_EARLY':!['DrawAfkRewardRequest','DrawAfkRewardResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ return {module:moduleId,actionId:moduleId+':income:'+identity,actionType:'INCOME',target,parameters:copy(p),identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 ordinary DrawAfkRewardRequest has no useAdvCard; zero debit, receipt-only income',budgetClaims,executable:blockedReason===null,blockedReason,label:'普通挂机本段收益',rewards:null,...(blockedReason===null?{action:{request:'DrawAfkRewardRequest',response:'DrawAfkRewardResponse',body:{}}}:{})};
+}
+function incomeView(f,p,options) {
+ const clock=authority(f)?incomeClock(f):null;
+ return {module:moduleId,afk:copy(f?.afk??null),income:{serverBounds:clock,minimumElapsedSeconds:61,amount:null},candidates:[incomeCandidate(f,p,options)],notes:[...(f?.notes??[]),'普通时段收益与等级奖励分开；资格依可信服务器时间，金额仅以专用回执及独立库存净入确认。无广告、无升级、无自动重放。']};
+}
+function incomeRewards(result,defs,before) {
+ if(!own(result,'reward')||result.reward===null)return null;const packet=toSnapshotJson(result.reward);
+ if(!fields(packet,['assetPackage','heroes','equips','badge','antiques','supplies']))return null;
+ for(const k of ['heroes','equips','antiques','supplies'])if(own(packet,k)&&(!dense(packet[k])||packet[k].length))return null;
+ const asset=own(packet,'assetPackage')?packet.assetPackage:null;if(asset!==null&&(!fields(asset,['asset'])||!own(asset,'asset')||!dense(asset.asset)))return null;
+ const credits=[];for(const row of asset?.asset??[]){const num=own(row,'num')?safeResourceQuantity(row.num):null;if(!fields(row,['type','id','num'])||row.type!==0||!identifier(row.id)||!['GOLD',...defs.items].includes(row.id)||num===null||num<=0||credits.some(r=>r.id===row.id))return null;credits.push({id:row.id,num});}
+ const badges=own(packet,'badge')?packet.badge:[];if(!dense(badges))return null;const receipts=[];
+ for(const row of badges){const uid=own(row,'uid')?roleId(row.uid):null;if(!fields(row,['uid','badgeId','star','attr'])||!uid||!own(row,'badgeId')||!defs.badges.includes(row.badgeId)||!own(row,'star')||!Number.isInteger(row.star)||row.star<0||row.star>2147483647||receipts.some(r=>r.uid===uid)||before.state.ownership.pool.some(r=>r.uid===uid))return null;receipts.push({...row,uid});}
+ return credits.length||receipts.length?{credits,badges:receipts}:null;
+}
+function verifyIncome(operation,before,after,result) {
+ const no=reason=>({confirmed:false,reason});let p;try{p=validateAfkLevelRewardsParameters(operation?.parameters);}catch{return no('普通挂机目标不完整');}
+ if(!isIncome(p)||!same(before.parameters,p)||!same(after.parameters,p)||!same(before.configEvidence,after.configEvidence))return no('普通挂机区间或配置已变化');
+ const canonical=incomeCandidate(before,p,{config:before.configEvidence,moduleConfig:{enabled:true}}),defs=incomeDefinitions(before,before.configEvidence),clock=incomeClock(after);
+ if(!canonical.executable||!clock||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards'].some(k=>!same(operation[k],canonical[k])))return no('普通挂机合同与写前事实不一致');
+ if(!['afkStartTime','afkFinishTime'].every(k=>own(result,k)&&positive(result[k])))return no('缺少明确的新挂机区间回执');
+ const a=before.afk,b=after.afk,start=result.afkStartTime,finish=result.afkFinishTime;
+ if(start<=a.afkStartTime||finish-start!==a.afkFinishTime-a.afkStartTime||!before.endClock||!after.startClock||start<Math.floor(before.endClock.earliestMs/1000)-1||start>Math.floor(after.startClock.latestMs/1000)||finish<=Math.ceil(clock.latestMs/1000)||b.level!==a.level||b.rewardedLevel!==a.rewardedLevel||b.afkStartTime!==start||b.afkFinishTime!==finish)return no('专用区间重置未由独立AFK复读确认');
+ const received=incomeRewards(result,defs,before);if(!received)return no('奖励包不完整或含未闭合实例类型');
+ const expected=copy(before.state),stock=new Map(before.stock);expected.afk={...a,afkStartTime:start,afkFinishTime:finish};
+ for(const r of received.credits){const num=(stock.get(r.id)??0)+r.num;if(!Number.isSafeInteger(num))return no('奖励净入超出精确范围');stock.set(r.id,num);}expected.inventory=stockState(stock);
+ for(const r of received.badges){const found=after.state.ownership.pool.find(row=>row.uid===r.uid);if(!found||found.badgeId!==r.badgeId||found.star!==r.star||!same(found.attr??null,r.attr??null))return no('徽章回执未由独立完整池确认');expected.ownership.pool.push(copy(found));}expected.ownership.pool.sort((a,b)=>a.uid.localeCompare(b.uid));
+ if(Object.keys(sourcesFor(p)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,expected))return no('奖励净入、完整徽章/英雄或无关挂机状态未匹配');
+ return {confirmed:true,afterState:copy(after.state),reason:'普通挂机专用新区间与独立AFK、完整库存及徽章所有权净入确认',responseEvidence:{interval:{afkStartTime:start,afkFinishTime:finish},received}};
+}
 export const afkLevelRewardsModule=Object.freeze({id:moduleId,label:'挂机等级奖励',capabilities:Object.freeze(['BIZ-R10']),defaultConfig:AFK_LEVEL_REWARDS_DEFAULT_CONFIG,validateConfig:validateAfkLevelRewardsConfig,validateParameters:validateAfkLevelRewardsParameters,survey:surveyAfkLevelRewards,view:viewAfkLevelRewards,plan:planAfkLevelRewards,verify:verifyAfkLevelReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:afkLevelRewardsDependencyVersions});

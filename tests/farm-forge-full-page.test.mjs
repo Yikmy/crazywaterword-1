@@ -2829,3 +2829,13 @@ test('forge preparation PAGE keeps missing queue or counts blocked without inven
 test('museum PAGE keeps elapsed exploration separate from settlement, pending identity and independent revenue',async()=>{
  const h=await numberConfigPage('museum');assert.match(h.node('gp-museum-facts').textContent,/同次结算身份.*待领奖.*到账凭证/);assert.match(h.node('gp-museum-facts').textContent,/到期只表示等待结算.*不证明奖励已生成或到账/);assert.equal(writes(h).length,0);
 });
+
+
+test('ordinary AFK PAGE fixes exact observed interval without sending or replacing milestone parameters implicitly',async()=>{
+ const d=numberConfigData('afk-level-rewards');d.view.afk={level:2,rewardedLevel:0,afkStartTime:100,afkFinishTime:500};const h=await numberConfigPage('afk-level-rewards',d),button=descendants(h.node('gp-afk-level-rewards-facts')).find(n=>n.dataset.afkIncomePrepare);assert.ok(button);assert.equal(button.disabled,false);const before=h.requests.length;button.click();assert.deepEqual(JSON.parse(h.node('gp-afk-level-rewards-parameters').value),{action:'income',level:2,afkStartTime:100,afkFinishTime:500});assert.equal(h.requests.length,before);assert.equal(writes(h).length,0);assert.match(h.node('gp-afk-level-rewards-facts').textContent,/至少经过61秒/);assert.match(h.node('gp-afk-level-rewards-hint').textContent,/重新探测/);
+});
+
+test('ordinary AFK PAGE missing interval and stale rendered view cannot prepare a replacement target',async()=>{
+ const empty=await numberConfigPage('afk-level-rewards'),blocked=descendants(empty.node('gp-afk-level-rewards-facts')).find(n=>n.dataset.afkIncomePrepare);assert.equal(blocked.disabled,true);blocked.click();assert.equal(writes(empty).length,0);
+ const d=numberConfigData('afk-level-rewards');d.view.afk={level:2,afkStartTime:100,afkFinishTime:500};const h=await numberConfigPage('afk-level-rewards',d),old=descendants(h.node('gp-afk-level-rewards-facts')).find(n=>n.dataset.afkIncomePrepare),reading=h.node('gp-afk-level-rewards-load').click(),next=structuredClone(d);next.view.afk.afkStartTime=200;next.view.afk.afkFinishTime=600;h.respond('/api/gameplay',next,{module:'afk-level-rewards'});await reading;const before=h.node('gp-afk-level-rewards-parameters').value;old.click();assert.equal(h.node('gp-afk-level-rewards-parameters').value,before);assert.equal(writes(h).length,0);
+});

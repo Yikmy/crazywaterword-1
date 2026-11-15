@@ -73,16 +73,16 @@ test('D6 permits exact zero cost and rejects extra fields, implicit costs, inval
  assert.doesNotThrow(()=>assertPaymentAllowed({request:'DrawAfkLevelRewardRequest',body:{level:2},costs:[]}));
  for(const v of[{body:{level:2}},{body:{level:2,buy:false},costs:[]},{body:{level:0},costs:[]},{body:{level:'2'},costs:[]},{body:{level:2},costs:[{id:'GOLD',num:1}]},{body:{level:2},costs:[{id:'RUBY',num:1}]}])assert.throws(()=>assertPaymentAllowed({request:'DrawAfkLevelRewardRequest',...v}));
 });
-function serviceFixture(t,{apply=true,file=null}={}) {
- const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-afk-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(copy(row));return durable.put(row);}},config=cfg(),f=fake({apply});
+function serviceFixture(t,{apply=true,file=null,income=false}={}) {
+ const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-afk-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(copy(row));return durable.put(row);}},config=income?incomeCfg():cfg(),f=income?incomeFake({apply}):fake({apply}),activeParameters=income?incomeParameters(f.state):parameters;
  const session={id:'synthetic-A',client:f.client,player:{playerId:'9007199254740993',worldId:'17'},generation:3,connectionId:'offline-afk',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:enabled})},getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
- const send=f.client.request.bind(f.client);f.client.request=async(n,...args)=>{if(n==='DrawAfkLevelRewardRequest')f.state.durableBeforeWrite=copy(journal.at(-1));return send(n,...args);};
+ const send=f.client.request.bind(f.client);f.client.request=async(n,...args)=>{if(n==='DrawAfkLevelRewardRequest'||n==='DrawAfkRewardRequest')f.state.durableBeforeWrite=copy(journal.at(-1));return send(n,...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
- async function makePlan(){const read=await service.surveyModule(session,'afk-level-rewards',parameters),row=read.view.candidates[0];assert.ok(row.executable,row.blockedReason);return service.plan(session,{module:'afk-level-rewards',mode:'Manual',parameters,selections:[row.actionId]});}
+ async function makePlan(){const read=await service.surveyModule(session,'afk-level-rewards',activeParameters),row=read.view.candidates[0];assert.ok(row.executable,row.blockedReason);return service.plan(session,{module:'afk-level-rewards',mode:'Manual',parameters:activeParameters,selections:[row.actionId]});}
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true});
  async function run(p){const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};}
- return {...f,session,service,config,durable,history,journal,file,makePlan,authorize,run};
+ return {...f,session,service,config,durable,history,journal,file,makePlan,authorize,run,parameters:activeParameters};
 }
 test('shared Service persists exact entity and intent before typed send and verifies durable success',async t=>{
  const f=serviceFixture(t),p=await f.makePlan();assert.equal(p.actions[0].action,undefined);assert.deepEqual(p.resourceBudget,[]);const {record,permit}=await f.run(p);assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(f.state.writes.length,1);assert.equal(f.state.durableBeforeWrite.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.durableBeforeWrite.runBudget.reserved.uids,[{type:'afk-level-reward',id:'2'}]);assert.equal(createExecutionHistory({file:f.file}).list(f.session.id)[0].finalStatus,'SUCCESS');assert.throws(()=>f.service.execute(f.session,permit));
@@ -176,4 +176,92 @@ test('unified Tasks AFK refusal survives native reconnect and restart without re
 });
 test('unified Tasks AFK cancellation ignores a late receipt and keeps the following milestone unexecuted',async t=>{
  const f=serviceFixture(t),runner=afkRunner(t,f),paused=await runner.start(f.session.id,afkTasksGraph([2,5]));let release;f.state.onWrite=()=>new Promise(resolve=>release=resolve);f.service.execute(f.session,f.authorize(paused.plan));for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.service.stop(f.session.id);release();await f.service.settle(f.session.id);assert.equal((await runner.resume()).status,'UNKNOWN');assert.equal(f.state.writes.length,1);assert.deepEqual(f.durable.list(f.session.id)[0].runBudget.reserved,afkBudget([2]));
+});
+
+// Ordinary period income reuses this file's shared Service/Workflow fixtures.
+function incomeCfg(){return {tables:Object.fromEntries(['OfflineCfg','ItemCfg','HeroBadgeCfg'].map(n=>[n,copy(actual.tables[n])]))};}
+const incomeParameters=state=>({action:'income',level:state.afk.level,afkStartTime:state.afk.afkStartTime,afkFinishTime:state.afk.afkFinishTime});
+function incomeFake({apply=true,codec=true}={}) {
+ const f=fake({codec,apply:false,afk:{level:2,rewardedLevel:0,afkStartTime:100,afkFinishTime:500}}),{client,state}=f,request=client.request.bind(client);
+ Object.assign(state,{serverMs:200000,uncertaintyMs:0,clockStatus:'TRUSTED',badges:[],heroes:[{heroId:'A',level:1,star:0,power:1,skillLevels:[1],badges:[]}],replyChange:null});
+ client.gameClock={read:()=>({status:state.clockStatus,reliable:state.clockStatus==='TRUSTED',source:'PingResponse.serverTimestamp',accountId:client.factContext.accountId,generation:client.factContext.generation,nowMs:state.serverMs,earliestMs:state.serverMs-state.uncertaintyMs,latestMs:state.serverMs+state.uncertaintyMs})};
+ client.request=async(n,b,r,timeout,options)=>{
+  if(n==='BadgesRequest'||n==='AllHeroRequest'){state.reads.push(n);await state.onRead?.(n);const value=n==='BadgesRequest'?{badge:copy(state.badges)}:{heroes:copy(state.heroes)};return codec?wire(r,value):value;}
+  if(n!=='DrawAfkRewardRequest')return request(n,b,r,timeout,options);
+  if(codec)wire(n,b);assert.equal(options?.mutate,true);options?.beforeDispatch?.();state.writes.push({name:n,body:copy(b)});
+  const start=Math.floor(state.serverMs/1000),finish=start+state.afk.afkFinishTime-state.afk.afkStartTime;
+  const badge={uid:'9007199254741011',badgeId:'绿法师徽章',star:0,attr:{attr:1,value:1.5,rating:2}};
+  const result={afkStartTime:start,afkFinishTime:finish,reward:{assetPackage:{asset:[{type:0,id:'GOLD',num:25},{type:0,id:'英雄经验',num:12}]},badge:[badge]}};
+  if(apply){state.afk.afkStartTime=start;state.afk.afkFinishTime=finish;state.resources.find(r=>r.res===3).amount+=25;state.stock.set('英雄经验',(state.stock.get('英雄经验')??0)+12);state.badges.push({...copy(badge),level:1,exp:0});}
+  await state.onWrite?.();state.replyChange?.(result);return codec?wire(r,result):result;
+ };
+ return f;
+}
+async function incomeReady(input={}){const f=incomeFake(input),config=incomeCfg(),parameters=incomeParameters(f.state),options={config,player:{playerId:'9007199254740993',worldId:'17'},parameters,moduleConfig:enabled},facts=await survey(f.client,protocol,options),candidate=view(facts,options).candidates[0],operation=plan(facts,{...options,selections:[candidate.actionId]}).actions[0];return {...f,config,parameters,options,facts,candidate,operation};}
+
+test('ordinary AFK income uses explicit period, real codec, trusted time and interval-fenced independent reads',async()=>{
+ const f=await incomeReady();assert.ok(f.operation,JSON.stringify(f.candidate));assert.deepEqual(f.operation.action,{request:'DrawAfkRewardRequest',response:'DrawAfkRewardResponse',body:{}});assert.deepEqual(f.operation.costs,[]);assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'afk-income-interval',id:'2:100:500'}]});assert.equal(f.operation.rewards,null);assert.equal(view(f.facts,f.options).income.amount,null);assert.deepEqual(f.state.reads.sort(),['AfkInfoRequest','AfkInfoRequest','AllHeroRequest','AllItemRequest','AllResourceRequest','BadgesRequest']);assert.equal(f.state.writes.length,0);const a=await after(f),v=verify(f.operation,f.facts,a.facts,a.result);assert.equal(v.confirmed,true,JSON.stringify(v));assert.equal(v.responseEvidence.received.badges[0].uid,'9007199254741011');assert.equal(f.state.afk.level,2);assert.equal(f.state.afk.rewardedLevel,0);
+});
+
+for(const [ms,uncertainty,eligible]of [[160000,0,false],[160999,0,false],[161000,0,true],[161000,1,false],[499000,0,true],[700000,0,true]])test('ordinary AFK native 61-second threshold '+ms+'/'+uncertainty,async()=>{
+ const f=await incomeReady();f.state.serverMs=ms;f.state.uncertaintyMs=uncertainty;const facts=await survey(f.client,protocol,f.options),row=view(facts,f.options).candidates[0];assert.equal(row.executable,eligible,row.blockedReason);assert.equal(f.state.writes.length,0);
+});
+
+for(const change of [s=>s.afk.afkStartTime++,s=>s.afk.afkFinishTime++,s=>s.afk.level++,s=>s.clockStatus='UNKNOWN'])test('ordinary AFK changed interval or untrusted clock never prepares a write '+change,async()=>{
+ const f=await incomeReady();change(f.state);const facts=await survey(f.client,protocol,f.options);assert.equal(view(facts,f.options).candidates[0].executable,false);assert.equal(f.state.writes.length,0);
+});
+
+test('ordinary AFK rejects incomplete target, forged authority, missing ownership and changed config',async()=>{
+ for(const p of[{action:'income'},{action:'income',level:2,afkStartTime:0,afkFinishTime:500},{action:'income',level:2,afkStartTime:100,afkFinishTime:100},{action:'income',level:2,afkStartTime:100,afkFinishTime:500,useAdvCard:false}])assert.throws(()=>validateParameters(p));
+ const f=await incomeReady();assert.equal(view(copy(f.facts),f.options).candidates[0].executable,false);f.state.badges=[{uid:'7',badgeId:'绿法师徽章',star:0}];const facts=await survey(f.client,protocol,f.options);assert.equal(view(facts,f.options).candidates[0].executable,false);f.config.tables.OfflineCfg.revision=2;assert.equal(view(f.facts,f.options).candidates[0].blockedReason,'AFK_INCOME_CONFIG_UNKNOWN');
+});
+
+for(const [label,change]of [
+ ['missing interval',r=>delete r.afkStartTime],['wrong start',r=>r.afkStartTime--],['wrong duration',r=>r.afkFinishTime++],['wrong credit',r=>r.reward.assetPackage.asset[0].num++],['missing badge',r=>r.reward.badge=[]],['wrong uid',r=>r.reward.badge[0].uid='9007199254741012'],['wrong attr',r=>r.reward.badge[0].attr.value=99],['unread instance',r=>r.reward.equips=['unknown']],['duplicate credit',r=>r.reward.assetPackage.asset.push({...r.reward.assetPackage.asset[0]})]
+])test('ordinary AFK cannot confirm '+label,async()=>{
+ const f=await incomeReady();f.state.replyChange=change;const a=await after(f);assert.equal(verify(f.operation,f.facts,a.facts,a.result).confirmed,false);assert.equal(f.state.writes.length,1);
+});
+
+for(const [label,change]of [['level',s=>s.afk.level++],['milestone marker',s=>s.afk.rewardedLevel=2],['unrelated stock',s=>s.stock.set('unrelated',99)],['hero',s=>s.heroes[0].level++],['extra badge',s=>s.badges.push({...copy(s.badges[0]),uid:'9007199254741012'})]])test('ordinary AFK full reread excludes unrelated changes '+label,async()=>{
+ const f=await incomeReady(),a=await after(f,change);assert.equal(verify(f.operation,f.facts,a.facts,a.result).confirmed,false);
+});
+
+test('ordinary AFK D6 permits only explicit empty normal request and zero costs',()=>{
+ assert.doesNotThrow(()=>assertPaymentAllowed({request:'DrawAfkRewardRequest',body:{},costs:[]}));for(const a of [{body:{}},{body:{useAdvCard:false},costs:[]},{body:{useAdvCard:true},costs:[]},{body:{},costs:[{id:'GOLD',num:1}]},{body:{stageId:1},costs:[]}])assert.throws(()=>assertPaymentAllowed({request:'DrawAfkRewardRequest',...a}));
+});
+
+test('ordinary AFK shared Service records interval reservation and durable intent before exact normal write',async t=>{
+ const f=serviceFixture(t,{income:true}),p=await f.makePlan(),{record}=await f.run(p);assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(f.state.writes.length,1);assert.equal(f.state.durableBeforeWrite.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.deepEqual(f.state.durableBeforeWrite.runBudget.reserved.uids,[{type:'afk-income-interval',id:'2:100:500'}]);assert.equal(f.state.afk.level,2);
+});
+
+test('ordinary AFK missing effect stays UNKNOWN across disk restart and cannot replay',async t=>{
+ const f=serviceFixture(t,{income:true,apply:false}),{record}=await f.run(await f.makePlan());assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].unresolvedWrite,true);const restarted=serviceFixture(t,{income:true,file:f.file});assert.equal(restarted.service.status(restarted.session.id).blocked,true);await assert.rejects(restarted.makePlan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restarted.state.writes.length,0);
+});
+
+for(const mode of ['disk','cancel','after'])test('ordinary AFK '+mode+' cancellation or durability preserves original send boundary',async t=>{
+ const f=serviceFixture(t,{income:true}),p=await f.makePlan(),permit=f.authorize(p);if(mode==='cancel')f.session.abort.abort();else if(mode==='disk'){const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('disk');return put(row);};}else f.state.onWrite=()=>f.session.abort.abort();try{f.service.execute(f.session,permit);await f.service.settle(f.session.id);}catch{}assert.equal(f.state.writes.length,mode==='after'?1:0);if(mode==='after')assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),true);
+});
+
+for(const [label,change]of [['account',f=>f.session.id='B'],['generation',f=>f.session.generation++],['connection',f=>f.session.connectionId='other'],['player',f=>f.session.player.playerId='2'],['world',f=>f.session.player.worldId='2'],['config',f=>f.config.tables.OfflineCfg.revision=2]])test('ordinary AFK plan/approval excludes changed '+label,async t=>{
+ const f=serviceFixture(t,{income:true}),p=await f.makePlan();change(f);assert.throws(()=>f.authorize(p));assert.equal(f.state.writes.length,0);
+});
+
+
+test('ordinary AFK original Workflow awaits exact interval authorization then independently verifies one settlement',async t=>{
+ const f=serviceFixture(t,{income:true}),read=await f.service.surveyModule(f.session,'afk-level-rewards',f.parameters),selection=read.view.candidates[0].actionId;
+ const graph={version:1,id:'ordinary-afk-workflow',name:'Ordinary AFK',budget:{resources:[],quotas:[],uids:[{type:'afk-income-interval',id:'2:100:500'}]},nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'afk-level-rewards',parameters:f.parameters},{id:'a',type:'ACTION',module:'afk-level-rewards',parameters:f.parameters,selection},{id:'v',type:'VERIFY',module:'afk-level-rewards'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'v'},{from:'v',to:'z'}]};
+ assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,o)=>f.service.claimWorkflow(f.session,runId,o),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());let result=await runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(result.plan);result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].workflowId,result.runId);
+});
+
+test('ordinary AFK refusal survives reconnect and disk restart and time does not clear it',async t=>{
+ const f=serviceFixture(t,{income:true,apply:false});refuseAfk(f);assert.equal((await f.run(await f.makePlan())).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');reconnectAfk(f);f.state.serverMs+=100000;await assert.rejects(f.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});const next=serviceFixture(t,{income:true,file:f.file});reconnectAfk(next);await assert.rejects(next.makePlan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+
+test('ordinary AFK late survey cannot cross account generation connection player or world',async()=>{
+ for(const change of [f=>f.client.factContext.accountId='B',f=>f.client.factContext.generation++,f=>f.client.factContext.connectionId='other',f=>f.options.player.playerId='2',f=>f.options.player.worldId='2']){const f=await incomeReady();f.state.onRead=async n=>{if(n==='AfkInfoRequest')change(f);};await assert.rejects(survey(f.client,protocol,f.options),{code:'CANCELLED'});assert.equal(f.state.writes.length,0);}
+});
+
+for(const mode of ['reset','read-failure'])test('ordinary AFK interval fence rejects '+mode+' during inventory reads',async()=>{
+ const f=await incomeReady();f.state.onRead=async n=>{if(n==='AllItemRequest'){await new Promise(setImmediate);if(mode==='reset'){f.state.afk.afkStartTime=150;f.state.afk.afkFinishTime=550;}else{const read=f.client.request.bind(f.client);f.client.request=(name,...args)=>{if(name==='AfkInfoRequest')throw Error('synthetic fence failure');return read(name,...args);};}}};
+ const facts=await survey(f.client,protocol,f.options);assert.ok(facts.notes.includes(mode==='reset'?'AFK_INTERVAL_CHANGED_DURING_SURVEY':'AFK_INTERVAL_FENCE_UNKNOWN'));assert.equal(view(facts,f.options).candidates[0].executable,false);assert.equal(plan(facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);
 });

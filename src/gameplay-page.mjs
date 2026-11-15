@@ -349,6 +349,10 @@ function gpRenderDomain(id,view){
   table('普通免费点金',['已用','上限','剩余','服务器重置标记','当前状态'],(view?.candidates||[]).map(row=>[view.gold?.freeTimes,row.limit,row.remaining,view.gold?.resetTime,row.executable?'可预览免费单次':row.blockedReason]));
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='afk-level-rewards'){
+  const scope=viewGuard.capture(),revision=gpRevision,afk=view?.afk,prepare=gpEl('button','准备普通时段收益');prepare.dataset.afkIncomePrepare='true';prepare._blocked=!afk||!['level','afkStartTime','afkFinishTime'].every(k=>Number.isInteger(afk[k])&&afk[k]>0)||afk.afkFinishTime<=afk.afkStartTime;prepare.disabled=prepare._blocked||!gpDomainSelectable(id);
+  prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;$('gp-'+id+'-parameters').value=gpJson({action:'income',level:afk.level,afkStartTime:afk.afkStartTime,afkFinishTime:afk.afkFinishTime});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已固定本段挂机等级及起止时间；重新探测可信服务器时钟、完整库存和徽章，预览后单独授权。';};box.appendChild(prepare);s.actionControls.push(prepare);
+  table('普通挂机时段',['当前等级','起始秒','上限秒','最小经过秒','奖励金额'],[[afk?.level,afk?.afkStartTime,afk?.afkFinishTime,view?.income?.minimumElapsedSeconds??61,'以服务端回执和独立净入确认']]);
+  box.appendChild(gpEl('p','普通收益不要求整段到期；资格使用可信服务器时间，边界至少经过61秒。准备不派发，不使用广告、不升级；结果未知或重启不重放。'));
   table('挂机等级与奖励',['当前等级','已领奖等级','下一档','配置奖励','当前状态'],(view?.candidates||[]).map(row=>[view.afk?.level,view.afk?.rewardedLevel,row.target?.level,(row.rewards||[]).map(reward=>reward.id+' × '+reward.num).join('、')||'未知',row.executable?'可预览领取':row.blockedReason]));
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='task-rewards'){

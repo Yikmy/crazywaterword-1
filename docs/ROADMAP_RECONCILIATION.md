@@ -1,6 +1,6 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-当前核对日期：2026-11-15（Asia/Shanghai）；源码为本C144合同纠正提交树（父a93acb8；功能基线4046f04）。a93acb8原范围对账、eaa9bf9资源田放弃、1861eca占领缺证、8c52423服役海兽LEVEL及4046f04装备厂有限准备均保留。其后只收口既有Museum合同/文案/负例与PAGE夹具，不开放结算或领奖。PHASE1–4及D.1–D.28仍为历史证据，本页当前M/C/P/S/Inventory与W表为唯一进度基线。
+当前核对日期：2026-11-15（Asia/Shanghai）；源码为本次普通挂机收益提交树（父dacd718；对账a93acb8）。原范围对账及既有Museum合同纠正保留；本批只扩展原afk-level-rewards的明确普通收益，升级及完整依赖仍未交付。PHASE1–4及D.1–D.28为历史证据，本页当前M/C/P/S/Inventory与W表为唯一进度基线。
 
 > 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
@@ -16,7 +16,7 @@
 | W22 PARTIAL | 按4046f04重核原M0–M15、95C、42P、8S、273Inventory及W/R/E/X精确集合；§6逐模块对照源码、API/UI、Workflow与测试，README及PHASE4统一指向本表，不新增玩法或实现 | a93acb8三文档对齐及本批既有Museum纠正均已收口；按§12.4推进W16原业务合同，不重做统一入口 | 全范围仍未齐；缺证只冻结具体操作。C144仍PROTOCOL_ONLY/BLOCKED_EVIDENCE，R7/R8 NOT_RUN | 对账a93acb8；本批C144纠正提交（父a93acb8）；9994514/1536835历史保留 | a93acb8文档批静态重算M16/C95/P42/S8/Inventory273、W22/R8/E24/X18精确一致；C53/38/4、P10/31/1、Inventory188/75/10；26模块/27合同、48查询（28解析/20原始），127个源码/测试索引存在。原ID/能力名、PHASE4历史正文及附录B/C/D未变，5份原输入字节保留。本批Museum定向125/125加PAGE6/6见W11，不重复累计或当全平台PASS；全套/R7/R8未跑 |
 | W03 PARTIAL | 保留原资产archive/verify/restore及普通凭证显式导入。本批修复原worlds.listWorlds/listGroup/describeRole/describeWorld：真实Codec的角色ID、列表区服键、出生服和当前世界均按精确signed int64保留，安全值仍数值、大值十进制字符串；不改原通用normalize。缺失/继承默认/非法/冲突身份为未知，列表缺失不补空。原GET /api/worlds复用busy锁及activeTask，响应复核账号/角色/世界/连接/代次与client事实，旧读取不释放后继锁。原区服页面分别展示各身份，读取中清空、错账号拒绝；enter/输入继续禁用 | 原剩余范围及具体缺证保留；本轮统一下一项见§12.4，已交子集不重复施工 | 原LoginRequest仅worldId目标，没有角色ID/出生服条件或existingRoleOnly；列表观察不保证未来登录不会隐式新建，故切服写产品链未闭合，不能以本次只读修复标写完成。map-1/上游来源哈希缺证，归档complete=false；扫码/捕获未开放。R7/R8未执行 | c87947b；凭证导入b78878e及原资产成果保留 | 2026-11-15：server-runtime/account-view/cli-safety三文件106/106 PASS，0 fail/cancel/skip/todo，12.81秒。含真实本地Codec大int64、合服键分离、坏/缺失/冲突/原型默认、只读/零隐式连接、账号隔离、九种迟到身份变化、互斥/断开/后继锁、原POST enter403及CLI读凭证前写拒绝；3源语法/diff检查通过。全为合成凭证/回环HTTP/离线Codec，REAL_UNVERIFIED |
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
-| W16 PARTIAL | 原任务/日活跃/赠礼、单封邮件及有界枚举、挂机等级、三类周礼包/周芯片任务及可信每日缓存失效保留。本批原Tasks每日订单复用13fef97计数观察，缺字段不补零；OrderDailyRewardCfg缺失/坏值/重复/含season或worldOpenDays但未有适用上下文时档位UNKNOWN，不合并成全赛季阈值、不生成该领取计划。主支线/成就独立观察继续；原Tasks API和页面显示观察值及周期未知 | W19原Tasks/Loop每日订单显式只读调查已接原Orders Function SURVEY（本批W19行）；继续其余有据奖励/周期合同，领奖写合同缺证保留 | 每日订单适用赛季/开服日、空请求实际领取目标与奖励归属及周期缺证；单一无上下文配置只保留原纯阈值算术，不证明真实领取。邮件实例附件归属、VIP礼包复读、日周周期/签到/挂机时段原缺证保留；UNKNOWN零重放，W16仍PARTIAL，R7/R8未执行 | eb045b1；每日缓存56ea228/2da3e5e、成就c0a6f24及原成果保留 | 2026-11-15：原生命周期/Tasks领域、缓存HTTP、账号页面和统一Workflow4文件333/333 PASS，0 fail/cancel/skip/todo；真实Codec区分缺省/明确零、跨赛季45档不混入、坏配置/重复/倒置阈值、独立主线保留、复用已有water零额外查询、原HTTP写入口403及Workflow禁写回归。与本轮W04测试存在重叠，不累计为平台总数；仅离线合成，REAL_UNVERIFIED |
+| W16 PARTIAL | 原任务/邮件/等级奖励/周礼包及每日订单观察保留。本批原afk-level-rewards新增action=income，明确等级/起止区间；固定v76普通请求为空、真实零支出，可信Ping下至少经过61秒。完整库存及徽章/英雄独立读取后再次核区间，首次事实不续期；原Service/UID父预算/History、HTTP及专业页共用，专用新区间与完整净入匹配才确认，金额不预估 | 普通收益限定切片已交；下一核独立升级的增量level、主线门槛、逐档真实成本及复读，再接原W19收益→升级；日常1004/Loop具名入口可继续 | 其他实例奖励包保持UNKNOWN；普通收益断线没有旧区间恢复回执，UNKNOWN保留且零重放。升级/完整依赖、VIP、实例附件、日周及每日订单档原缺证保留；W16/BIZ-R10仍PARTIAL，R7/R8 NOT_RUN | 本行所在提交（父dacd718）；eb045b1及原成果保留 | 2026-11-15：领域/Contract/Registry/D6四文件220/220；共享Service/History/Memory/Workflow/父预算/HTTP/完整PAGE及旧日常11文件1689/1689（98.55秒）；补区间围栏后领域100/100（39.80秒），最终ordinary AFK三文件过滤46/46（18.30秒），均0 fail/cancel/skip/todo，重叠不累计。覆盖真实本地Codec/固定配置、61秒边界、完整净入/大UID、围栏变化/失败、拒绝/UNKNOWN重启、磁盘失败零写、迟到/五维身份、原逐批Workflow及HTTP/安全DOM。首轮新用例暴露sourceFacts新源映射及按钮重算，已修复；HTTP合成会话按原模块设置/五维身份及精确execute体补齐；REAL_UNVERIFIED |
 | W17 PARTIAL | 保留原周活动成果；本批BIZ-R17h签到前置观察接入原Client私有来源、48项Collector、日常API及专业页：仅采纳当前连接连续序列SCAllActivity.festivalActivities，精确活动ID/窗口和dailyActive签到记录，独立于VIP/角色等级是否存在；重复/缺口/断线/迟到及五维身份隔离 | 继续原签到资格/成本、游戏日界和独立领取复读合同；随后推进其他依赖已满足分支 | 推送仅为已观察片段，不证明完整活动目录、当前可领或到账；签到仍缺权威日界/资格及独立结算复读，保持具体写操作BLOCKED_EVIDENCE；R7/R8未执行 | a96ee6c；周芯片任务1c0d196保留 | 2026-11-14：日常领域/API/完整PAGE/Client来源及生命周期/月卡/时钟/UNKNOWN/数据目录9文件806/806 PASS（22.337秒），0 fail/cancel/skip/todo；覆盖精确int64、合法0与缺失区分、重复活动仅局部未知、安全DOM、当前上下文隔离、采集仍48请求和零新增派发。全部离线Codec/固定配置/合成传输，REAL_UNVERIFIED |
 | W12 PARTIAL | 保留原C151单目标扫荡、权威配额/新鲜度和独立复读；本批日常1010及Loop原表单补齐精确城市与int32 UID，实际注册Function复用原Service/Workflow授权、配额/UID父预算及双持久历史 | 原剩余范围及具体缺证保留；本轮统一下一项见§12.4，已交子集不重复施工 | 已确认计次不证明奖励归属；跨日、目标变化或无法确认结算仍UNKNOWN，禁止自动重放。W12仍PARTIAL，R7/R8未执行 | 8afb70b；原C151成果保留 | 与本批W19共用七文件1147/1147，不重复计数；仅离线，REAL_UNVERIFIED |
 | W18 PARTIAL | 保留原观察、非亏损卖出、买入7ec3216、每日时段ff18df9及单航段38597d4。本批C524自有商会指针加速复用原Adapter/Service/Executor/资源配额UID预算/History：明确当前cityId/mvToCityId/num，固定TradeSpeedPop自有路径及ItemCfg/ActivityTradeCfg核验道具与时长；仅缩短后仍为可信未来终点，专用终点回执与独立完整Info/库存确认精确道具净扣、相同航段和其他状态不变；购买路径保持独立 | 原剩余范围及具体缺证保留；本轮统一下一项见§12.4，已交子集不重复施工 | 固定v76的TradeCity仅请求当前cargo.cityId；Radar仅城市/商品/报告者，无目的港价格/时点。旧tradeKing历史表及sellRatio不能证明当前目的港报价；加速至到达边界、补购、多段策略、到达/收益与亏损公式仍未闭合；UNKNOWN持久零重放。W18仍PARTIAL，R7/R8未执行 | 104755d；原买卖/时段/单航段提交保留 | 2026-11-14：贸易领域236/236（131.75秒）及随后新增六项6/6（4.91秒）；D6/Contract/Registry/HTTP/两页面/派发新鲜度七文件1061/1061（82.16秒），合计本批8文件1303/1303 PASS，0 fail/cancel/skip/todo。覆盖缺道具/成本/配置/边界、独立精确净扣、UNKNOWN/重启/迟到/五维隔离、意图后失效及跨入口记忆。HTTP拒绝回归先复现1失败：固定本地时钟与真实心跳时基不一致导致权威时钟失效，改为真实本地时钟校验与合成服务器时间；原拒绝记忆断言、1秒心跳及运行时门槛未放宽。前批1777/1777独立保留不累计，REAL_UNVERIFIED |
@@ -321,7 +321,7 @@ CrazyWater Platform
 | M9 | Mainline Automation | PARTIAL | W08/W19 | Stage门控/逐场持久历史、有限Function及确认战败候选分支已离线实现；真实间隔和战败分支未验 | 原Stage API/专业页/Runner及有限Stage Function；逐场History和确认战败分支 | tests/stage-history.test.mjs；历史真实仅§4.4限定，当前未验 |
 | M10 | Alliance | PARTIAL | W09/W10 | 订单/福利/科技单升/Fort/商船补货与船长已有；帮助/求助/科技重置缺 | 原Alliance/Tech/Fort Function、API与成员/科技/商船页，允许子集接原有限图 | tests/alliance.test.mjs、tests/alliance-tech.test.mjs；当前真实未验 |
 | M11 | Fleet & City War | PARTIAL | W14/W15 | 编队/维修/移动/港口、有界响应比较及明确自有资源田放弃已有；攻击/加速/跟随/资源田占领合同缺 | 原Fleet/Naval Function、API及舰队/有界观察页；有限Loop SURVEY，放弃目标单独授权 | tests/fleet.test.mjs；当前真实未验 |
-| M12 | Activities & Dailies | PARTIAL | W16/W17 | 具名任务、邮件、免费招募点金/试炼及部分周奖励已有；VIP/周期/订单档/挂机时段等缺 | 原task-rewards/mail/afk-level-rewards等Function；Tasks/Dailies页转原Workflow，资格与执行分开 | tests/task-rewards.test.mjs、tests/mail-claim.test.mjs、tests/afk-level-rewards.test.mjs；当前真实未验 |
+| M12 | Activities & Dailies | PARTIAL | W16/W17 | 具名任务、邮件、免费招募点金/试炼、部分周奖励及明确普通挂机物品/徽章收益已有；VIP/周期/订单档/升级依赖及其他实例收益仍缺 | 原task-rewards/mail/afk-level-rewards等Function；Tasks/Dailies页转原Workflow，资格与执行分开 | tests/task-rewards.test.mjs、tests/mail-claim.test.mjs、tests/afk-level-rewards.test.mjs；当前真实未验 |
 | M13 | Trade King | PARTIAL | W18 | 当前港报价/精确买卖移动/自有加速及时钟等待已有；目的地报价、策略、到达收益缺 | 原Trade Function/API/专业页与同航段WAIT；目的港报价及多段策略未接 | tests/trade.test.mjs；当前真实未验 |
 | M14 | Workflow & Scheduler | PARTIAL | W19/W20 | 统一Tasks/Dailies/有限Loop、原生图、父预算/持久历史/有限日周事件已有；全入口覆盖与权威策略未全 | 原workflows/prepare→Registry/Service；Tasks/Dailies/有限Loop、原生图及历史/记忆页已有 | tests/workflow.test.mjs、tests/execution-memory-service.test.mjs；当前真实未验 |
 | M15 | Shared Execution Services | PARTIAL | W01/W02/W19/W22 | 原Service/Executor/Ledger/History/Registry复用；恢复仅原连接零成本阵容或未派发证明，不是通用恢复 | 原Service/Executor/Ledger/History/Registry/Contract共用；授权/预算/UNKNOWN不另建 | tests/operation-service.test.mjs、tests/gameplay-api.test.mjs；当前真实未验 |
@@ -402,7 +402,7 @@ CrazyWater Platform
 | operation-recovery → Service → API/UI | 证据预览、独立复读与追加确认 | APPLIED仅同原连接代次零成本Formation；NOT_APPLIED仅持久未派发证明，其余STILL_UNKNOWN |
 | city-operations / order-execution / production-planning / farm-operations | 原城市/订单/生产/单田种收与纯投影 | 最终金币、免费刷新、全天量、批量农田按原X冻结 |
 | hero-operations / growth / forge / pet / antique | 原养成、锻造、投喂及古董受控子集 | 替换/激活/培育和结算身份不凭邻近功能推定 |
-| task-rewards / mail / afk-level-rewards / free-* / trial-challenge | 具名奖励、单封读领、等级奖励、免费招募点金及经验试炼 | 周期、VIP、实例附件、时段收益、订单档仍冻结 |
+| task-rewards / mail / afk-level-rewards / free-* / trial-challenge | 具名奖励、单封读领、等级奖励、明确普通挂机物品/徽章收益、免费招募点金及经验试炼 | 周期、VIP、实例附件、升级/完整收益依赖及订单档仍冻结；UNKNOWN不恢复重发 |
 | alliance / fleet / museum / treasure / trade | 原专业Adapter和API/UI/Workflow子集 | 帮助求助、攻击跟随、探索完成领奖、到达收益缺证局部冻结 |
 | compileUnifiedExecution → 原Registry/Workflow/Service | Tasks/Dailies/有限Loop；8类明确日常动作子集，Loop可显式引用原模块 | 继续W19已有Function入口与历史接线，不重开旧写handler |
 | workflow / gameplay-page / page | 原生拖拽、父预算、有限日周/可信事件、数值及三类具名WAIT | 缺冷却/日界保持未知；WAIT不清拒绝/UNKNOWN，不新建调度器 |
@@ -433,7 +433,7 @@ D6始终排除钻石支付、购买付费礼包、testAccount/superToken等开�
 | BIZ-R07 装备厂制造/收取 | W07；W04工厂状态/W19历史 | 参考surveyEquip/planEquip，目标city survey/Ledger/Operation | MakeEquip与PickMadeEquip独立适配；部位/配方/队列/材料/装备实例权威复读；收取未确认不得继续制造 | 普通配方材料可做；universal参数的真实语义须核验，不能默许用钻石补料 | 英雄高级E09增加制造/收取和UNKNOWN分支 |
 | BIZ-R08 海兽培育/投喂/成熟收取 | W07独立子边界；W02/W19 | 参考surveyPet/planPet；现有AllPet读取、原共享executor | 补海兽领域survey/plan/verify，不挤进英雄大函数；PetBreed/PetFeed/GetMaturePet分开确认，队列/品质上限/素材/实例UID共享 | 普通材料/金币来源有据；付费补料或未知universal成本阻塞；不得因无C号删掉此能力 | 英雄高级E09增加海兽三种原子动作及重启恢复分支 |
 | BIZ-R09 除C225–230外的装备/徽章精炼、升星、穿戴等参考分项 | W07；W02/W19 | 参考heroGrow实际已定义的plan分支；目标planHeroes及Ledger | 按原Inventory消息列逐项拆明PutOnBadge/BadgeStar/EnhanceBadge/PutOnEquip/EquipRefine/EquipStarUp等；共用同一Hero adapter，不另造执行器；实例转移和不可逆消耗精确授权 | 仅纳原清单实际描述的分项，分解等未列新需求不得顺手扩域；付费补齐排除；缺成本/归属阻塞 | E09内按原子分支列检查清单，不以六C通过代替其余分支 |
-| BIZ-R10 挂机/邮件完整依赖计划 | W16；W19 | 原ACTIONS、planLoot、参考surveyIdle/planIdle/runIdle；目标runTasks | 补邮件分页/已读附件资格和权威领取；挂机收益先确认再允许升级，挂机等级奖励/升级分别复读，失败隔离但UNKNOWN不续写 | 普通挂机徽章成本纳预算；广告/付费替代有成本未知则不派；邮件登录信息不进入历史 | 基础日常E15增加分页、收益→升级依赖、无资格/已领分支 |
+| BIZ-R10 挂机/邮件完整依赖计划 | W16；W19 | 原ACTIONS、planLoot、参考surveyIdle/planIdle/runIdle；目标runTasks | 补邮件分页/已读附件资格和权威领取；挂机收益先确认再允许升级，挂机等级奖励/升级分别复读，失败隔离但UNKNOWN不续写 | 本批普通收益零支出、绑定区间UID且金额不预估；独立徽章领奖成本另核，广告/付费替代有成本未知则不派；邮件登录信息不进入历史 | 基础日常E15增加分页、收益→升级依赖、无资格/已领分支 |
 | BIZ-R11、PRO-009 世界宝藏货轮完整业务 | W14独立TreasureLoot子边界；W15观察/W19历史 | 现有surveyTreasure/planTreasure/verifyTreasure与fleet事实 | 保留已做无争夺派舰；补按原世界宝藏语义所需争夺结果/目标归属/次数/奖励闭环，分别确认派遣、服务器结果、目标状态和奖励；不能用派遣分配成功替代抢占成功 | 赛季/次数/战斗模式、返回身份和权威战果/奖励来源先证实；不复用主线LEFT；钻石购买次数排除 | 世界宝藏E24内拆无争夺、争夺、有/无奖励、同目标竞争与UNKNOWN |
 | BIZ-R12、BIZ-R12a 城战在线免费奖 | W14；W19 | 原fleet维修/移动；参考claimWarOnlineReward | 补在线奖励资格/服务器时间窗、GotWorldOnlineRwdRequest→GotRewardResponse正确关联、空奖/已领停止；与攻城/移动合同分开，非普遍任意领奖接口 | 在线资格和权威领取标志缺失先证据闸门；免费在线奖不属于D6排除 | E18增加在线免费奖资格/空奖/重复/超时分支 |
 | BIZ-R14 工厂独立视图、自选材料包覆盖 | W04；W02/W19 | 当前cityView/productionShortages/production policy；参考packCoverPlan/exchangePacks | 补包内候选覆盖算法、白名单包资格/持有量、SelectPack参数/消耗/新库存双证据；独立工厂视图共用原city链；不能自动打开全部包 | 包本体与目标材料成本需可靠；免费持有包使用不自动排除，购买缺包/付费替代排除 | 城市生产E05/E06增加有限自选包→排产依赖和UNKNOWN不排产 |
@@ -1528,7 +1528,7 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 | X14 农田/包/委任 | 单田种收、委任减时水位/种子作物投影和明确自选包已有；批量农田结算/全天覆盖缺，预测不入库存 | BIZ-R14/R16a–h/W04；水位是用户策略，非服务器事实；包不明不自动打开 |
 | X15 其他阵容/藏品 | 普通图纸解锁、整队预设、极限复制、远征阵容和古董成长子集已有；其他模式、科技重置及完整范围未全 | FRM005/PRO010/PRO007/PRO001/W08/W10/W11；具名队伍是可设计本地合同，非猜游戏专用请求 |
 | X16 世界宝藏/资源田 | 派舰后争夺/占有/战果/结算奖励、赛季/次数、资源田占领/放弃权威身份 | BIZ-R11/PRO009及原资源田/W14；派遣成功只确认派遣 |
-| X17 免费日常增强 | 邮件有界枚举/单封普通附件、挂机等级奖励、免费招募点金/试炼已有；实例附件/时段收益/VIP/订单档/拾荒码/在线奖缺 | BIZ-R10/R12a/R15及原子Action/W14/W16；不创建任意领取接口，不自动转付费 |
+| X17 免费日常增强 | 邮件有界枚举/单封普通附件、挂机等级奖励、明确普通挂机物品/徽章收益及免费招募点金/试炼已有；其他实例收益/升级依赖、实例附件/VIP/订单档/拾荒码/在线奖缺 | BIZ-R10/R12a/R15及原子Action/W14/W16；不创建任意领取接口，不自动转付费 |
 | X18 季节活动局身份 | 可信签到前置观察已有；完整目录、日界资格成本/领取复读及幽都敕令等局身份仍缺 | BIZ-R17a–h/W17；缺答案不随机作答，未知开局不重复开，未遇真实活动不标已验 |
 
 不沿用旧快照14项BLOCKED_EVIDENCE汇总数，冻结按当前需求行和具体操作判断。X01–X18是一组或多组需求共享的证据任务，不能相加计算新需求。缺证据不删除原ID，不把NOT_EXERCISED改通过。只有外证阻塞的子分支停止，已有合法依赖与独立模块继续施工。
@@ -1561,8 +1561,8 @@ a93acb8文档批对照4046f04，只更新三份既有文档；随后本批收口
 下一批按价值及现有依赖推进；只是原工作项顺序，不新增阶段或审批：
 
 - W11 / C144：a93acb8后已收口4个既有在途文件。PAGE改用原numberConfigPage的museum夹具，原断言保留；museum/Contract/Registry 125/125与PAGE过滤6/6通过，证据见W11。请求带stageId仅指定关卡，Complete/Reward仍缺独立可恢复结算与pending身份，保持冻结；无新来源不反复调查该缺证项。
-- W16 / BIZ-R10：下一独立业务候选是原挂机时段收益→升级依赖。沿现有afk-level-rewards Adapter/Service/History/API/专业页，先定点核固定客户端普通DrawAfkReward的资格、零/实际成本、区间重置及DispRewardPackage独立库存归属，再接明确普通领取；等级奖励与升级保持不同操作。旧本地时钟到期逻辑和事后奖励不能充当事前资格。尚未证明写合同，本项不是承诺已可写；若缺证仅冻结对应步骤，继续原独立项。
-- W19 / BIZ-R10、C604/C606：在上项具体普通收益能独立确认后，复用原有限图接收益→升级的前置关系、父预算和持久历史；UNKNOWN/拒绝停止后继。Loop/Tasks/Dailies通用入口已接，不再将“统一入口从零开发”列为待办。通用cooldown/gameDay仍缺拒绝专属权威来源，policyCoverage保持false，不能用WAIT或本地时间解除拒绝。
+- W16 / BIZ-R10：本批已交原Adapter普通收益，明确等级/区间、可信61秒门槛、零成本/区间UID、专用回执与独立完整库存/徽章净入，见W16行。下一先补日常1004/Loop原具名入口，再核原UpgradeAfkLevelRequest：客户端level为升级增量，不是最终等级；按目标各档OfflineCfg.consume累加并核主线门槛。未交升级，其他实例收益未知不冒充完整结算。
+- W19 / BIZ-R10、C604/C606：本批普通收益已用原逐批Workflow证明授权、区间UID与持久结果；收益→升级仍待独立升级合同后接原有限图。拒绝/UNKNOWN停止后继；Loop/Tasks/Dailies通用入口已接，不重造。通用cooldown/gameDay仍缺拒绝专属权威来源，policyCoverage保持false，不能用WAIT或本地时间解除拒绝。
 
 W14/BIZ-W15占领（map-1/目标归属）、W07/C227/C230替换和BIZ-R07通用扣取、W18/C522目的港报价、W11/C144可恢复结算等已核缺证项不重复静态审计；只有出现新业务来源才重开具体合同。W03切服/地图、W04全天量/最终金币/免费刷新、W09互助、W12奖励/日界、W13捕鱼及W16/W17周期等原范围仍全部保留。没有具体新来源时继续其他依赖已满足的原工作，不为填PASS造事实。全部范围完成冻结后统一R7，再形成E01–E24具体R8授权清单。
 
@@ -1781,7 +1781,7 @@ profile中的测试是继承的相关测试族索引，不能把整个族通过�
 | BIZ-R07 | 装备厂制造/收取（当前只有装备DATA） | 非C:装备厂 | PARTIAL | src/equipment-forge.mjs；tests/equipment-forge.test.mjs | G | 自有配方MAKE和到期单批PICK已有；本批明确允许配方内按闲置＋在产部位数量及品质准备一份，固定队列/数量护栏，经同Service/API/专业页/Workflow和父预算，收取确认后才制造；普通材料切片OFFLINE_VERIFIED，通用实际扣取顺序/混用成本仍缺证，缺队列不当空闲 |
 | BIZ-R08 | 海兽培育/成熟收取/材料投喂（当前DATA_ONLY） | 非C:海兽培育 | PARTIAL | src/pet-operations.mjs；tests/pet-operations.test.mjs | G | 明确Pet FEED及服役单级LEVEL已有；后者绑定建筑/UID、私有玩家等级与推送修订，独立确认下级属性及精确经验扣减；培育、成熟领取仍缺可恢复目标身份 |
 | BIZ-R09 | 徽章/装备/专武完整养成（当前DATA_ONLY） | C225 C226 C227 C228 C229 C230 | PARTIAL | src/hero-operations.mjs；src/equipment-growth.mjs；src/badge-growth.mjs；tests/equipment-growth.test.mjs | G | 已激活专武升等星、空槽穿戴、装备明确零费首次/正等级升级红精炼星及徽章升级红星已有；完整成长未全 |
-| BIZ-R10 | 挂机、邮件及升级依赖计划（当前底层Action已在） | C511 非C:挂机依赖计划 | PARTIAL | src/mail.mjs；tests/mail-claim.test.mjs | G | 单封读领及挂机等级奖励已有；时段收益、升级和批量依赖链缺 |
+| BIZ-R10 | 挂机、邮件及升级依赖计划（当前底层Action已在） | C511 非C:挂机依赖计划 | PARTIAL | src/mail.mjs；src/afk-level-rewards.mjs；tests/mail-claim.test.mjs；tests/afk-level-rewards.test.mjs | G | 单封读领、等级奖励及明确普通物品/徽章收益已有；其他实例收益、升级和完整依赖链未齐；UNKNOWN零重放 |
 | BIZ-R11 | 世界宝藏货轮抢占（当前未接） | 非C:世界宝藏 | PARTIAL | surveyTreasure/planTreasure/verifyTreasure; src/treasure.mjs | G | 只证无争夺派舰分配；非抢占胜利/奖励闭环 |
 | BIZ-R12 | 城战读状态、修理、调遣、在线奖（当前只有占位） | C403 C406 C407 非C:城战在线奖 | PARTIAL | src/naval-rules.mjs；tests/naval-rules.test.mjs | G | WorldInfo当前视野、精确ID及资源田读取，不宣称全图完整 |
 | BIZ-R13 | 海商王买卖/移动/奖励/免费战令（当前未接） | C521 C522 C523 C524 | PARTIAL | src/trade.mjs；tests/trade.test.mjs | G | 当前港价容量及单BUY、SELL、MOVE、自有SPEED已有；目的地策略、到达收益、奖励战令缺 |

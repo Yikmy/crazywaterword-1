@@ -239,7 +239,7 @@ export const DAILY_DRIVERS = {
       if (!(afk.afkFinishTime > 0 && afk.afkFinishTime <= now)) {
         return { status: 'waiting', reason: `本段挂机还有 ${Math.ceil(afk.afkFinishTime - now)} 秒` };
       }
-      return { status: 'ready', actions: [{ request: 'DrawAfkRewardRequest', body: {}, response: 'DrawAfkRewardResponse', cost: '无', note: '领取挂机本段收益' }] };
+      return { status: 'ready', actions: [{ request: 'DrawAfkRewardRequest', body: {}, response: 'DrawAfkRewardResponse', costs: [], cost: '无', note: '领取挂机本段收益' }] };
     },
   },
 

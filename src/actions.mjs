@@ -51,6 +51,7 @@ function stringList(value, { required = false } = {}) {
 export const ACTIONS = {
   afkDraw: {
     request: 'DrawAfkRewardRequest',
+    costs: [],
     response: 'DrawAfkRewardResponse',
     mutate: true,
     desc: '领取挂机时段收益，服务端据此把挂机时间段重置',
@@ -302,6 +303,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   const fields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable===true&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value'));
   const identifier=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
   const exactCosts=list=>Array.isArray(list)&&Object.getPrototypeOf(list)===Array.prototype&&Reflect.ownKeys(list).length===list.length+1&&Array.from({length:list.length},(_,index)=>Object.getOwnPropertyDescriptor(list,index)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))&&list.every(v=>fields(v,['id','num'])&&identifier(v.id)&&Number.isSafeInteger(v.num)&&v.num>0)&&new Set(list.map(v=>v.id)).size===list.length;
+  if(request==='DrawAfkRewardRequest'&&(!fields(body,[])||!Object.hasOwn(action,'costs')||!exactCosts(action.costs)||action.costs.length))fail('COST_UNKNOWN','普通挂机收益仅允许明确空请求及零支出；广告或额外字段不获许可');
   // Exact seed-only or owned-material branches. No fallback purchase, exchange,
   // harvest or automatic-farming branch is admitted by a request-family label.
   const selectMaterialPack=request==='SelectPackRequest';

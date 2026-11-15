@@ -79,11 +79,11 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyFreeGold','src/free-gold.mjs#verifyFreeGold','Single typed gold receipt plus independent complete inventory and freeTimes +1 under the same unexpired server resetTime; all other balances and paid counters unchanged'),
     dependencyVersions:dependencies(['moduleConfig','config.OfflineParamCfg','config.ModuleOpenCfg']),
   }),
-  'afk-level-rewards': contract('afk-level-rewards',[],['P6-2'],['src/afk-level-rewards.mjs#afkLevelRewardsModule','src/actions.mjs#ACTIONS'],{level:integer},{
+  'afk-level-rewards': contract('afk-level-rewards',[],['P6-2'],['src/afk-level-rewards.mjs#afkLevelRewardsModule','src/actions.mjs#ACTIONS'],{action:{type:'string',enum:['income']},level:integer,afkStartTime:integer,afkFinishTime:integer},{
     inventoryRequirementIds:['BIZ-R10'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('PERIOD_INCOME_AND_UPGRADE','Time-dependent income and income-before-upgrade require separate authoritative contracts')]},
-    verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone receipt plus independent AFK and complete inventory reads; unchanged level, interval and unrelated stock'),
-    dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg']),
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','INCOME'],blockedCapabilities:[blocked('INCOME_BEFORE_UPGRADE','AFK upgrade and income-before-upgrade still require a separate exact growth contract'),blocked('UNSUPPORTED_INCOME_INSTANCE_RECEIPT','Normal income verifies item/resource and exact new badge credits; other instance families remain UNKNOWN without their own settlement contract')]},
+    verification:verification('verifyAfkLevelReward','src/afk-level-rewards.mjs#verifyAfkLevelReward','Exact configured next milestone or explicit ordinary interval; trusted server-time qualification, typed new interval and full AFK/inventory/badge ownership reread; receipt-only amounts, preserve unrelated state, no auto-upgrade'),
+    dependencyVersions:dependencies(['moduleConfig','config.OfflineLvRewardCfg','config.ItemCfg','config.OfflineCfg','config.HeroBadgeCfg']),
   }),
   mail: contract('mail',['C511'],['P6-1'],['src/mail.mjs#mailModule','src/mail.mjs#mailPage'],{pageNo:integer,action:{type:'string',enum:['claim','read','enumerate']},emailId:string,maxPages:integer},{
     implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','READ'],blockedCapabilities:[blocked('BULK_AND_INSTANCE_ATTACHMENTS','Bulk actions and hero/equipment/antique attachments need distinct contracts'),blocked('ATOMIC_MAILBOX_SNAPSHOT','Explicit bounded traversal confirms observed page coverage only; no mailbox revision proves an atomic snapshot')]},
