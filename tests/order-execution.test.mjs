@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeOrderProgress, validateOrderProgressSummary, observeOrderProgress, observeOrderRefreshTiming, decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
+import { summarizeOrderProgress, validateOrderProgressSummary, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView, decorateOrderSurvey, executeOrderOperation, planOrderExecution, surveyOrderExecution } from '../src/order-execution.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { surveyWorld } from '../src/world.mjs';
 
@@ -15,25 +15,36 @@ protocol.DenyOrderRequest = {};
 const refreshRules = { version: 1, enabled: true, rules: [{ id: 'exp', priority: 1, type: 'MIN_EXPERIENCE',
   enabled: true, params: { value: 500, operator: 'GTE' }, onFail: 'REFRESH' }] };
 const eligibility = () => ({ source: 'offline-authoritative-fixture', allowed: true, free: true, remaining: 1 });
-function makeClient({ waters = [water(), water([], 4)], stock = 2, items, resources = { list: [] }, writeError, onRead, beforeWrite } = {}) {
+function makeClient({ waters = [water(), water([], 4)], stock = 2, items, resources = { list: [] }, afterItems, afterResources, responseBody = {}, writeError, onRead, beforeWrite } = {}) {
   let stage = 0;
+  let currentStock = stock;
   const writes = [], reads = [], uncertain = new Set(), confirmed = [];
   const client = { connected: true, writes, reads, uncertain, confirmed,
     async request(name, body, response, timeout, options) {
       if (options?.mutate) {
-        beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body }); stage++;
+        beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body });
+        if (name === 'FinishWorkerOrderRequest' && items === undefined) {
+          const source = waters[Math.min(stage, waters.length - 1)]?.workerOrder?.find(row => row.index === body.index);
+          for (const requirement of source?.requirements ?? []) currentStock -= Number(requirement.num);
+        }
+        stage++;
         if (writeError) throw writeError;
-        return {};
+        return structuredClone(responseBody);
       }
       reads.push(name); onRead?.(name, client);
       if (name === 'OnWaterRequest') return structuredClone(waters[Math.min(stage, waters.length - 1)]);
-      if (name === 'AllItemRequest') return structuredClone(items ?? { items: [{ itemId: 'wood', num: stock }] });
-      if (name === 'AllResourceRequest') return structuredClone(resources);
+      if (name === 'AllItemRequest') return structuredClone(stage > 0 && afterItems !== undefined ? afterItems : items ?? { items: [{ itemId: 'wood', num: currentStock }] });
+      if (name === 'AllResourceRequest') return structuredClone(stage > 0 && afterResources !== undefined ? afterResources : resources);
       if (name === 'MyResFieldsRequest') return { info: { fields: [] } };
       if (name === 'MyFleetsRequest') return { fleets: [] };
       throw new Error('unexpected request ' + name);
     },
-    async sendWatch(name, body, options = {}) { beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body }); stage++; uncertain.add(JSON.stringify({ name, body })); return { status: 'UNKNOWN' }; },
+    async sendWatch(name, body, options = {}) { beforeWrite?.(); options.beforeDispatch?.(); writes.push({ name, body });
+      if (name === 'FinishWorkerOrderRequest' && items === undefined) {
+        const source = waters[Math.min(stage, waters.length - 1)]?.workerOrder?.find(row => row.index === body.index);
+        for (const requirement of source?.requirements ?? []) currentStock -= Number(requirement.num);
+      }
+      stage++; uncertain.add(JSON.stringify({ name, body })); return { status: 'UNKNOWN' }; },
     markUnverifiedWrite(name, body) { uncertain.add(JSON.stringify({ name, body })); },
     confirmWatchedWrite(name, body) { confirmed.push({ name, body }); uncertain.delete(JSON.stringify({ name, body })); },
   };
@@ -401,3 +412,84 @@ for(const change of ['none','queue-missing','countdown-below-limit','source-drif
  const base=client.request.bind(client);client.request=async(...args)=>{const v=await base(...args);if(args[0]==='OnWaterRequest'){if(change==='queue-missing')delete v.building[0].factory.factoryQ;if(change==='countdown-below-limit')v.building[0].factory.finishedProducts=[{id:'wood',num:2}];if(change==='source-drift')client.factContext.connectionId='stale';}return v;};
  const result=await executeOrderOperation(client,wire,plan.actions[0],{rules,config:cfg,refreshEligibility:eligibility,survey:surveyOrdersOperations});assert.equal(client.writes.length,change==='none'?1:0);assert.equal(result.status,change==='none'?'UNKNOWN':change==='source-drift'?'CANCELLED':'NOT_EXECUTED');assert.equal(result.dispatched,change==='none');
 });
+
+for (const fault of ['no-debit', 'under-debit', 'over-debit', 'missing-items', 'missing-num', 'duplicate-item', 'resource-collision', 'missing-resources'])
+  test('order input net settlement rejects ' + fault + ' despite order replacement and one completion', async () => {
+    const items = [{ itemId: 'wood', num: fault === 'no-debit' ? 4 : fault === 'under-debit' ? 3 : fault === 'over-debit' ? 1 : 2 }];
+    if (fault === 'missing-num') delete items[0].num;
+    if (fault === 'duplicate-item') items.push({ ...items[0] });
+    if (fault === 'resource-collision') items.push({ itemId: 'GOLD', num: 1 });
+    const client = makeClient({ stock: 4, afterItems: fault === 'missing-items' ? {} : { items },
+      afterResources: fault === 'missing-resources' ? {} : { list: fault === 'resource-collision' ? [{ res: 3, amount: 1 }] : [] } });
+    const plan = await makePlan(client), budget = { ledger: null }, result = await execute(client, plan.actions[0], { budget });
+    assert.equal(result.status, 'UNKNOWN'); assert.equal(result.verification.materialSettlement.status, 'UNCONFIRMED');
+    assert.equal(result.verification.materialSettlement.scope, 'ORDER_INPUT_NET_BALANCES'); assert.equal(result.unresolvedWrite, true);
+    assert.equal(result.reservation.held, true); assert.equal(budget.ledger.available('wood'), 2);
+    assert.equal(client.writes.length, 1); assert.equal(client.uncertain.size, 1); assert.equal(client.confirmed.length, 0);
+  });
+
+for (const fault of ['duplicate-item', 'missing-num', 'resource-collision']) test('order input inventory ' + fault + ' blocks before dispatch', async () => {
+  const items = [{ itemId: 'wood', num: 4 }];
+  if (fault === 'duplicate-item') items.push({ ...items[0] });
+  if (fault === 'missing-num') items.push({ itemId: 'cloth' });
+  if (fault === 'resource-collision') items.push({ itemId: 'GOLD', num: 1 });
+  const client = makeClient({ items: { items }, resources: { list: fault === 'resource-collision' ? [{ res: 3, amount: 1 }] : [] } });
+  const plan = await makePlan(client); assert.equal(plan.actions.length, 0); assert.equal(client.writes.length, 0);
+  const original = (await makePlan(makeClient())).actions[0];
+  const result = await execute(client, original); assert.equal(result.status, 'NOT_EXECUTED'); assert.equal(client.writes.length, 0);
+});
+
+for (const special of [false, true]) for (const received of [0, 1, 3]) test('order repeated input and typed same-item return remain exact special=' + special + ' received=' + received, async () => {
+  const client = makeClient({ waters: [water([rawOrder({ isSpecial: special, requirements: [{ id: 'wood', num: 1 }, { id: 'wood', num: 1 }] })]), water([], 4)],
+    items: { items: [{ itemId: 'wood', num: 4 }] }, afterItems: { items: [{ itemId: 'wood', num: 2 + received }] },
+    responseBody: { reward: { asset: [{ type: 0, id: 'wood', num: received }] } } });
+  const plan = await makePlan(client), result = await execute(client, plan.actions[0]);
+  assert.equal(result.status, 'SUCCESS'); assert.equal(result.verification.materialSettlement.status, 'MATCHED');
+  assert.deepEqual(result.resourceBefore, [{ id: 'wood', num: 4 }]); assert.deepEqual(result.resourceAfter, [{ id: 'wood', num: 2 + received }]);
+  assert.equal(result.receivedReward.reliable, true); assert.equal(result.rewardEvidence.minGoldEligible, false); assert.equal(client.writes.length, 1);
+});
+
+for (const fault of ['wrong-type', 'wrong-quantity', 'missing-response', 'missing-balance']) test('order resource input return rejects ' + fault, async () => {
+  const client = makeClient({ waters: [water([rawOrder({ requirements: [{ id: 'GOLD', num: 2 }] })]), water([], 4)],
+    items: { items: [] }, resources: { list: [{ res: 3, amount: 10 }] },
+    afterResources: { list: fault === 'missing-balance' ? [] : [{ res: 3, amount: fault === 'wrong-quantity' ? 10 : 11 }] },
+    responseBody: fault === 'missing-response' ? {} : { reward: { asset: [{ type: fault === 'wrong-type' ? 0 : 1, id: 'GOLD', num: 3 }] } } });
+  const plan = await makePlan(client), result = await execute(client, plan.actions[0]);
+  assert.equal(result.status, 'UNKNOWN'); assert.equal(result.verification.materialSettlement.status, 'UNCONFIRMED');
+  assert.equal(result.unresolvedWrite, true); assert.equal(client.confirmed.length, 0); assert.equal(client.writes.length, 1);
+});
+
+test('order input net debit does not claim independent GOLD reward is settled', async () => {
+  const client = makeClient({ stock: 4, resources: { list: [{ res: 3, amount: 10 }] }, afterResources: { list: [{ res: 3, amount: 999 }] },
+    responseBody: { reward: { asset: [{ type: 1, id: 'GOLD', num: 3 }] } } });
+  const result = await execute(client, (await makePlan(client)).actions[0]);
+  assert.equal(result.status, 'SUCCESS'); assert.equal(result.verification.materialSettlement.status, 'MATCHED');
+  assert.equal(result.verification.materialSettlement.rewardEvidenceIndependent, true); assert.equal(result.rewardEvidence.verification.status, 'UNKNOWN');
+  assert.equal(result.rewardEvidence.minGoldEligible, false);
+});
+
+for (const format of ['legacy', 'matching', 'conflict-id', 'conflict-count']) test('order input inventory aliases ' + format, async () => {
+  const row = num => format === 'legacy' ? { id: 'wood', count: num }
+    : { itemId: 'wood', num, id: format === 'conflict-id' ? 'cloth' : 'wood', count: format === 'conflict-count' ? num + 1 : num };
+  const client = makeClient({ items: { items: [row(4)] }, afterItems: { items: [row(2)] } });
+  const plan = await makePlan(client);
+  if (format.startsWith('conflict')) { assert.equal(plan.actions.length, 0); assert.equal(client.writes.length, 0); }
+  else {
+    assert.equal(plan.actions.length, 1); const result = await execute(client, plan.actions[0]);
+    assert.equal(result.status, 'SUCCESS'); assert.equal(result.verification.materialSettlement.status, 'MATCHED'); assert.equal(client.writes.length, 1);
+  }
+});
+
+for (const format of ['canonical', 'legacy', 'matching', 'conflict-id', 'conflict-count', 'resource-collision', 'prototype-default'])
+  test('order production explanation uses the same strict inventory parser ' + format, () => {
+    const row = format === 'legacy' ? { id: 'wood', count: 4 } : format === 'prototype-default' ? Object.create({ itemId: 'wood', num: 4 })
+      : { itemId: 'wood', num: 4, ...(format === 'canonical' ? {} : { id: format === 'conflict-id' ? 'cloth' : 'wood', count: format === 'conflict-count' ? 5 : 4 }) };
+    const facts = { stockReliable: true, rawOnWater: { building: [] }, rawAllItem: { items: [row] },
+      rawAllResource: { list: format === 'resource-collision' ? [{ res: 3, amount: 1 }] : [] } };
+    if (format === 'resource-collision') facts.rawAllItem.items.push({ itemId: 'GOLD', num: 1 });
+    const view = ordersProductionView(facts, config, [{ id: 'wood', num: 2 }]);
+    const known = ['canonical', 'legacy', 'matching'].includes(format);
+    assert.equal(view.status, known ? 'IN_STOCK' : 'UNKNOWN'); assert.equal(view.executable, false);
+    assert.equal(view.leadSeconds, known ? 0 : null);
+    if (!known) assert.equal(view.reason, 'ORDER_OR_STOCK_UNKNOWN');
+  });

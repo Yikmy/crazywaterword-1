@@ -93,7 +93,15 @@ function heroList(response) {
   if (parsed.some(value => value === null) || new Set(parsed.map(value => value.heroId)).size !== parsed.length) return null;
   return parsed.sort((a, b) => a.heroId.localeCompare(b.heroId));
 }
-export function parseOperationInventory(items, resources) {
+export function parseOperationInventory(items, resources, { allowLegacyAliases = false } = {}) {
+  // Existing world/order item inputs also accept id/count. Canonical fields and
+  // explicit conflicts still pass through the same strict completeness checks.
+  if (allowLegacyAliases && own(items, 'items') && dense(items.items)) {
+    items = { items: items.items.map(row => ({ ...row,
+      itemId: own(row, 'itemId') ? row.itemId : own(row, 'id') ? row.id : undefined,
+      num: own(row, 'num') ? row.num : own(row, 'count') ? row.count : undefined,
+    })) };
+  }
   const itemValid = own(items, 'items') && dense(items.items) && items.items.every(row => own(row, 'itemId') && id(row.itemId)
     && own(row, 'num') && safeResourceQuantity(row.num) !== null
     && (!own(row, 'id') || row.id === row.itemId) && (!own(row, 'count') || equal(row.count, row.num)))

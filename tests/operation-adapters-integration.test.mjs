@@ -475,3 +475,58 @@ for (const kind of ['build', 'upgrade']) for (const entry of ['city', 'combined'
       }
     } finally { await f.service.settle(f.session.id); f.cleanup(); }
   });
+
+for (const entry of ['orders', 'combined']) for (const fault of ['no-debit', 'under-debit', 'over-debit', 'missing-num'])
+  test('order input net settlement shared ' + entry + ' ' + fault + ' persists UNKNOWN', async () => {
+    const f = fixture();
+    try {
+      f.session.player.playerId = '1'; f.session.player.worldId = 17; f.session.connectionId = 'order-input-settlement';
+      f.service.saveModuleConfig(f.session.id, { module: 'orders', config: { enabled: true } });
+      const request = f.client.request.bind(f.client);
+      f.client.request = async (...args) => {
+        if (args[0] === 'FinishWorkerOrderRequest') assert.equal(f.history.list(f.session.id)[0].actions[0].requestStatus, 'DISPATCHING');
+        const value = await request(...args);
+        if (args[0] === 'AllItemRequest' && f.writes.length) {
+          const row = value.items.find(r => r.itemId === 'wood');
+          if (fault === 'missing-num') delete row.num; else row.num = fault === 'no-debit' ? 4 : fault === 'under-debit' ? 3 : 1;
+        }
+        return value;
+      };
+      const row = (await f.service.survey(f.session)).view.orders[0];
+      const plan = await f.start(entry, 'Manual', [row.actionId]), record = f.history.list(f.session.id)[0];
+      assert.deepEqual(plan.resourceBudget, [{ id: 'wood', num: 2 }]);
+      assert.equal(record.finalStatus, 'UNKNOWN'); assert.equal(record.actions[0].verification.materialSettlement.status, 'UNCONFIRMED');
+      assert.equal(record.actions[0].unresolvedWrite, true); assert.deepEqual(record.runBudget.reserved.resources, [{ id: 'wood', num: 2 }]);
+      assert.equal(f.writes.length, 1); assert.equal(f.client.uncertainWrites.size, 1);
+    } finally { await f.service.settle(f.session.id); f.cleanup(); }
+  });
+
+test('order input net mismatch stops original finite Workflow before independent construction', async () => {
+  const { createWorkflowRunner } = await import('../src/workflow.mjs'), f = fixture(); let runner;
+  try {
+    f.session.player.playerId = '1'; f.session.player.worldId = 17; f.session.connectionId = 'order-input-workflow';
+    for (const module of ['orders', 'city']) f.service.saveModuleConfig(f.session.id, { module, config: { enabled: true } });
+    const view = (await f.service.survey(f.session)).view, order = view.orders[0], build = view.city.candidates.find(row => row.actionType === 'build');
+    const request = f.client.request.bind(f.client);
+    f.client.request = async (...args) => { const value = await request(...args);
+      if (args[0] === 'AllItemRequest' && f.writes.length) value.items.find(row => row.itemId === 'wood').num = 4;
+      return value;
+    };
+    const graph = { version: 1, id: 'order-input-settlement-flow', name: 'Synthetic original order input debit',
+      budget: { resources: [{ id: 'wood', num: 3 }], quotas: [], uids: [] },
+      runPolicy: { maxDurationMs: 60000, maxActions: 2, modules: ['orders', 'city'] }, nodes: [
+        { id: 's', type: 'START' }, { id: 'o', type: 'ACTION', module: 'orders', parameters: {}, selection: order.actionId },
+        { id: 'ov', type: 'VERIFY', module: 'orders' }, { id: 'b', type: 'ACTION', module: 'city', parameters: {}, selection: build.actionId },
+        { id: 'bv', type: 'VERIFY', module: 'city' }, { id: 'z', type: 'STOP' }],
+      edges: [{ from: 's', to: 'o' }, { from: 'o', to: 'ov' }, { from: 'ov', to: 'b' }, { from: 'b', to: 'bv' }, { from: 'bv', to: 'z' }] };
+    runner = createWorkflowRunner({ modules: GAMEPLAY_MODULES, operations: f.service,
+      claim: (_id, runId, options) => f.service.claimWorkflow(f.session, runId, options), getSession: id => id === f.session.id ? f.session : null });
+    let result = await runner.start(f.session.id, graph); assert.equal(result.status, 'AWAITING_AUTHORIZATION');
+    const permit = f.service.authorize(f.session, { batchId: result.plan.batchId, planHash: result.plan.planHash,
+      approvedActionIds: result.plan.actions.map(row => row.actionId), resourceBudget: result.plan.resourceBudget, confirm: true });
+    f.service.execute(f.session, permit); await f.service.settle(f.session.id); result = await runner.resume();
+    assert.equal(result.status, 'UNKNOWN'); assert.deepEqual(f.writes.map(row => row.name), ['FinishWorkerOrderRequest']);
+    assert.equal(f.raw.building[0].level, 0); assert.equal(f.history.list(f.session.id)[0].workflowNodeId, 'o');
+    assert.equal(f.history.list(f.session.id)[0].actions[0].verification.materialSettlement.status, 'UNCONFIRMED');
+  } finally { await runner?.stop(); await f.service.settle(f.session.id); f.cleanup(); }
+});

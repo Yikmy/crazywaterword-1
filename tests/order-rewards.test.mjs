@@ -22,7 +22,9 @@ const response = (num = 60, type = 1) => round('FinishWorkerOrderResponse', { re
 const resources = amount => round('AllResourceResponse', { list: [{ res: 3, amount }] });
 function fixture({ costs = [{ id: 'wood', num: 2 }], received = 60, before = 100, after = 160, result = 'UNKNOWN' } = {}) {
   const raw = order({ requirements: costs.map(cost => ({ ...cost })) });
-  const facts = decorateOrderSurvey({ orders: [{ ...raw, rewardExp: 100 }], stockReliable: true, stock: new Map(costs.map(cost => [cost.id, cost.num])) }, { workerOrder: [raw], orderOfTheDay: { orderNum: 2 } });
+  const facts = decorateOrderSurvey({ orders: [{ ...raw, rewardExp: 100 }], stockReliable: true, stock: new Map(costs.map(cost => [cost.id, cost.num])) }, new Map([['OnWaterRequest', { workerOrder: [raw], orderOfTheDay: { orderNum: 2 } }],
+    ['AllItemRequest', { items: costs.filter(row => row.id !== 'GOLD').map(({ id: itemId, num }) => ({ itemId, num })) }],
+    ['AllResourceRequest', { list: costs.filter(row => row.id === 'GOLD').map(row => ({ res: 3, amount: row.num })) }]]));
   const planned = planOrderExecution(facts, { rules: { version: 1, enabled: true, rules: [] } });
   const operation = { ...planned.actions[0], result, verification: { status: 'UNCONFIRMED' } };
   assert.ok(operation.identity, 'use original planner identity without copying its hash');

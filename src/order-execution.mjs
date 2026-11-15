@@ -9,8 +9,10 @@ import { evaluateOrder, validateOrderRules } from './order-rules.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, operationResult } from './execution.mjs';
 import { runWorld, surveyWorld, makeTypeResolver } from './world.mjs';
-import { stockFromResponses } from './resource-ledger.mjs';
+import { RESOURCE_NAMES } from './resource-ledger.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 import { orderProductionWait } from './production-planning.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const own = (value, key) => value != null && Object.hasOwn(value, key);
@@ -153,7 +155,10 @@ export function decorateOrderSurvey(survey, responses, config = null) {
   if (orders) for (let i = 0; i < orders.length; i++) {
     if (water.workerOrder[i]?.refreshTime == null) orders[i].refreshTime = 0;
   }
-  return { ...survey, orderReliability: { orders: orders !== null, counter: orderNum !== null },
+  const orderInventory = responses instanceof Map
+    ? parseOperationInventory(responses.get('AllItemRequest'), responses.get('AllResourceRequest'), { allowLegacyAliases: true })
+    : { stock: new Map(), stockReliable: false };
+  return { ...survey, orderInventory, orderReliability: { orders: orders !== null, counter: orderNum !== null },
     rawOrderMetadata: { orders, orderNum },
     orderProgress: summarizeOrderProgress({ progress: observeOrderProgress(config, { orderOfTheDay: water?.orderOfTheDay }) }),
     orderRewardSources: Array.isArray(water?.workerOrder) ? water.workerOrder.map(raw => ({index:indexOf(raw?.index),evidence:configuredBaseOrderReward(config,raw)})) : [] };
@@ -174,13 +179,8 @@ export async function surveyOrderExecution(client, protocol, { survey = surveyWo
 export function ordersProductionView(facts, config, requirements) {
   const resolve = makeTypeResolver(config);
   const buildings = Array.isArray(facts.rawOnWater?.building) ? facts.rawOnWater.building.map(row => ({ ...row, type: typeof row?.buildingId === 'string' ? resolve(row.buildingId) : null })) : null;
-  let stock = null;
-  const items = facts.rawAllItem?.items, resources = facts.rawAllResource?.list;
-  if (facts.stockReliable === true && Array.isArray(items) && Array.isArray(resources)
-    && items.every(row => typeof (row?.itemId ?? row?.id) === 'string' && (row.itemId ?? row.id).trim() && safeResourceQuantity(row.num ?? row.count) !== null)
-    && resources.every(row => Number.isSafeInteger(row?.res) && safeResourceQuantity(row.amount) !== null)
-    && new Set(items.map(row => row.itemId ?? row.id)).size === items.length
-    && new Set(resources.map(row => row.res)).size === resources.length) stock = stockFromResponses(facts.rawAllItem, facts.rawAllResource);
+  const parsed = parseOperationInventory(facts.rawAllItem, facts.rawAllResource, { allowLegacyAliases: true });
+  const stock = facts.stockReliable === true && parsed.stockReliable === true ? parsed.stock : null;
   return orderProductionWait(config, { requirements, stock, buildings,
     effects: facts.orderProductionObservation?.effects ?? null, serverTimeMs: facts.orderProductionObservation?.serverTimeMs ?? null });
 }
@@ -206,6 +206,7 @@ export function planOrderExecution(survey, { rules, ledger = new ResourceLedger(
     else if (survey.stockReliable !== true) blockedReason = '库存来源不可靠';
     else if (actionType === 'REFRESH' && !eligible) blockedReason = '缺少可靠的免费刷新配额和允许刷新条件证据';
     else if (selected && actionType === 'REFRESH' && refreshAvailable(refreshQuotas, eligible) < 1) blockedReason = '本批次免费刷新配额已预留，不能重复使用';
+    else if (actionType === 'SUBMIT' && survey.orderInventory?.stockReliable !== true) blockedReason = '订单材料完整库存来源不可靠';
     else if (actionType === 'SUBMIT' && survey.orderReliability?.counter !== true) blockedReason = '缺少可用于提交后确认的权威订单完成计数';
     else if (selected && actionType === 'SUBMIT' && !ledger.canReserve(costs)) blockedReason = '共享资源预算不足或成本未知';
     const executable = blockedReason === null;
@@ -266,6 +267,7 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     const expectedDecision = operation.actionType === 'SUBMIT' ? 'RECOMMEND_SUBMIT' : 'RECOMMEND_REFRESH';
     if (ruleResult.decision !== expectedDecision) throw notExecuted('当前订单不再符合已规划的规则动作');
     if (beforeSurvey.stockReliable !== true) throw notExecuted('当前库存来源不可靠');
+    if (operation.actionType === 'SUBMIT' && beforeSurvey.orderInventory?.stockReliable !== true) throw notExecuted('订单材料完整库存来源不可靠');
     if (operation.actionType === 'SUBMIT' && beforeSurvey.orderReliability?.counter !== true) throw notExecuted('权威订单完成计数缺失');
     const refreshProof = operation.actionType === 'REFRESH' ? proofFor(current, beforeSurvey, refreshEligibility) : null;
     if (operation.actionType === 'REFRESH' && !refreshProof) throw notExecuted('缺少可靠的免费刷新配额和允许刷新条件证据');
@@ -315,7 +317,27 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     const listReliable = rawIndices.every((index) => index !== null) && new Set(rawIndices).size === rawIndices.length;
     const nextReliable = listReliable && (afterIndexRows.length === 0 || (afterIndexRows.length === 1 && afterState !== null));
     const counterBefore = beforeSurvey.rawOrderMetadata.orderNum, counterAfter = afterSurvey.rawOrderMetadata.orderNum;
-    const confirmed = changed && nextReliable && (operation.actionType === 'SUBMIT'
+    const parsedReward = operation.actionType === 'SUBMIT' ? parseReceivedOrderReward(responseObservation?.value) : null;
+    let materialSettlement = null;
+    if (operation.actionType === 'SUBMIT') {
+      const inputIds = new Set(beforeState.requirements.map(({ id }) => id));
+      const resourceIds = new Set(Object.values(RESOURCE_NAMES));
+      // Only input balances are checked here. The original reward diagnostics
+      // retain their own provenance and do not become final reward authority.
+      const overlap = parsedReward?.reliable === true ? parsedReward.assets.filter(row => inputIds.has(row.id)) : null;
+      const typedInputs = overlap !== null
+        ? overlap.every(row => row.type === (resourceIds.has(row.id) ? 1 : 0))
+        : [...inputIds].every(id => !resourceIds.has(id));
+      const inputStock = facts => new Map([...inputIds].map(id => [id, facts.orderInventory?.stock?.get(id) ?? 0]));
+      const matched = beforeSurvey.orderInventory?.stockReliable === true && afterSurvey.orderInventory?.stockReliable === true
+        && typedInputs && stockMatchesDelta(inputStock(beforeSurvey), inputStock(afterSurvey), beforeState.requirements,
+          overlap === null ? [] : overlap.map(({ id, num }) => ({ id, num })));
+      materialSettlement = { scope: 'ORDER_INPUT_NET_BALANCES', status: matched ? 'MATCHED' : 'UNCONFIRMED',
+        rewardStatus: parsedReward?.status ?? 'UNKNOWN', rewardEvidenceIndependent: true,
+        beforeReliable: beforeSurvey.orderInventory?.stockReliable === true, afterReliable: afterSurvey.orderInventory?.stockReliable === true };
+    }
+    const inventoryConfirmed = materialSettlement === null || materialSettlement.status === 'MATCHED';
+    const confirmed = changed && nextReliable && inventoryConfirmed && (operation.actionType === 'SUBMIT'
       ? afterSurvey.orderReliability.counter === true && counterAfter === counterBefore + 1
       : afterState !== null);
     if(operation.actionType==='SUBMIT'){
@@ -324,7 +346,8 @@ export async function executeOrderOperation(client, protocol, operation, { rules
     }
     const nextDecision = next ? evaluateOrder(next, afterSurvey.stockReliable === true ? afterSurvey.stock : null, policy) : null;
     const verification = { status: confirmed ? 'CONFIRMED' : 'UNCONFIRMED', changed, counterBefore, counterAfter,
-      reason: confirmed ? '权威复读确认目标订单已变化且动作条件成立' : '权威复读未能确认目标订单动作，停止本批次' };
+      ...(materialSettlement ? { materialSettlement } : {}),
+      reason: confirmed ? operation.actionType === 'SUBMIT' ? '权威复读确认订单变化、一次完成及需求材料净扣；奖励仍为独立诊断' : '权威复读确认目标订单已变化且动作条件成立' : '权威复读未能确认目标订单动作，停止本批次' };
     if (confirmed) client.confirmWatchedWrite?.(action.request, action.body);
     return finish(confirmed ? 'SUCCESS' : 'UNKNOWN', { ruleResult, verification, nextDecision,
       ...(!confirmed ? { error: verification.reason } : {}) });

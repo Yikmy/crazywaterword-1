@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions, prepareHeroStarWorkflow, validateHeroStarPreparation } from '../src/hero-operations.mjs';
+import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, parseOperationInventory, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions, prepareHeroStarWorkflow, validateHeroStarPreparation } from '../src/hero-operations.mjs';
 import { planHeroes, buildHeroBody, buildHeroAction } from '../src/heroes.mjs';
 import { ResourceLedger, createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -551,4 +551,16 @@ test('multi-hero mixed qualities keep independent owned source pools and cannot 
  const {c}=await multiHeroFacts({source:3});c.config.tables.HeroCfg.data[1].quality='ORANGE';c.config.tables.HeroCfg.data[1].universalItemId='橙卡万能碎片';c.config.tables.ItemCfg.data.find(row=>row.id==='B碎片').quality='ORANGE';c.config.tables.ItemCfg.data.push({id:'橙卡万能碎片',type:'英雄万能碎片',quality:'ORANGE'});c.stock.set('橙卡万能碎片',3);
  const facts=await exchangeSurvey(c),prepared=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput});assert.deepEqual(prepared.graph.budget.resources,[{id:'蓝卡万能碎片',num:3},{id:'A碎片',num:5},{id:'橙卡万能碎片',num:3},{id:'B碎片',num:5}]);
  c.stock.set('橙卡万能碎片',2);c.stock.set('蓝卡万能碎片',1000);const missing=await exchangeSurvey(c);assert.throws(()=>prepareHeroStarWorkflow(missing,{config:c.config,moduleConfig:enabled,...multiHeroInput}));assert.deepEqual(c.writes,[]);
+});
+
+test('optional legacy inventory aliases use the original strict parser without relaxing default hero inputs', () => {
+  const items = { items: [{ id: 'wood', count: 2 }] }, resources = { list: [] };
+  assert.equal(parseOperationInventory(items, resources).stockReliable, false);
+  const parsed = parseOperationInventory(items, resources, { allowLegacyAliases: true });
+  assert.equal(parsed.stockReliable, true); assert.deepEqual([...parsed.stock], [['wood', 2]]);
+  assert.deepEqual(items, { items: [{ id: 'wood', count: 2 }] });
+  for (const row of [{ id: 'wood' }, { count: 2 }, { itemId: 'wood', id: 'other', num: 2 },
+    { id: 'wood', num: 2, count: 3 }, { id: 'wood', count: null }, Object.create({ id: 'wood', count: 2 })]) {
+    assert.equal(parseOperationInventory({ items: [row] }, resources, { allowLegacyAliases: true }).stockReliable, false);
+  }
 });

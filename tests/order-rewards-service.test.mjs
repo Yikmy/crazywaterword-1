@@ -229,3 +229,26 @@ test('order permits and reward history remain isolated across account, player an
     assert.equal(restarted.list(other.id)[0].actions[0].receivedReward.receivedGold, 7); assert.equal(f.writes.length, 2);
   } finally { await f.cleanup(); }
 });
+
+for (const fault of ['no-debit', 'under-debit', 'over-debit']) test('registered order material ' + fault + ' stays UNKNOWN despite matching independent reward after restart', async () => {
+  const f = fixture();
+  try {
+    const planned = await f.plan();
+    f.target.synthetic.onWrite = account => account.synthetic.items.set('wood', fault === 'no-debit' ? 20 : fault === 'under-debit' ? 19 : 17);
+    const run = await f.execute(planned), row = run.actions[0];
+    assert.equal(run.finalStatus, 'UNKNOWN'); assert.equal(row.verification.status, 'UNCONFIRMED');
+    assert.equal(row.verification.materialSettlement.status, 'UNCONFIRMED'); assert.equal(row.rewardEvidence.verification.status, 'MATCHED');
+    assert.equal(row.unresolvedWrite, true); assert.equal(row.reservation.held, true);
+    assert.deepEqual(run.runBudget.reserved.resources, [{ id: 'wood', num: 2 }]);
+    assert.equal(f.target.client.uncertainWrites.size, 1); assert.equal(f.writes.length, 1); unchangedPreview(row);
+    const durable = createExecutionHistory({ file: f.file });
+    assert.equal(durable.list(f.target.id)[0].actions[0].verification.materialSettlement.status, 'UNCONFIRMED');
+    const restarted = createOperationService({ history: durable, protocol, modules: GAMEPLAY_MODULES });
+    assert.equal(restarted.blocked(f.target.id), true);
+    const next = { ...f.target, generation: 4, connectionId: 'restarted', busy: null, client: { connected: true,
+      pending: [], watchers: [], lateResponses: new Map(), uncertainWrites: new Set(),
+      factContext: { accountId: f.target.id, generation: 4, connectionId: 'restarted', playerId: f.target.player.playerId, worldId: 12 } } };
+    await assert.rejects(restarted.surveyModule(next, 'orders'), { code: 'RECOVERY_UNCERTAIN' });
+    assert.equal(f.writes.length, 1); assert.equal(durable.list(f.target.id)[0].finalStatus, 'UNKNOWN');
+  } finally { await f.cleanup(); }
+});
