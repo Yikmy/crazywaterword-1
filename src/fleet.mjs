@@ -5,10 +5,17 @@ import { loadMapAsset } from './world.mjs';
 import { parseFormation, validateFormationParameters, planFormation, catalogFrom } from './formation.mjs';
 import { strictParameters, invalid, readNavalFact, stockFacts, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, moduleConfiguration } from './naval-facts.mjs';
 import { readGameTime } from './state-facts.mjs';
+import { readResourceFieldRevision } from './client.mjs';
+import { toSnapshotJson } from './game.mjs';
 
-export const FLEET_DEFAULT_CONFIG = Object.freeze({ enabled: false, repair: false, repairBelowDurabilityRatio: 0.8, repairMode: 'IMMEDIATE', maximumRepairPetrolPerPlan: 0, repairPriorityBuildingIds: [], stopRepair: false, move: false, cargoFill: false, cargoClaim: false, formation: false, autoFight: false, speedUp: false, minimumDurabilityRatio: 0.8, petrolReserve: 0, scenarioId: 1 });
+export const FLEET_DEFAULT_CONFIG = Object.freeze({ enabled: false, repair: false, repairBelowDurabilityRatio: 0.8, repairMode: 'IMMEDIATE', maximumRepairPetrolPerPlan: 0, repairPriorityBuildingIds: [], stopRepair: false, move: false, cargoFill: false, cargoClaim: false, giveUpResourceField: false, formation: false, autoFight: false, speedUp: false, minimumDurabilityRatio: 0.8, petrolReserve: 0, scenarioId: 1 });
 function parametersOf(parameters = {}) {
-  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions']);
+  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx']);
+  if(Object.hasOwn(parameters,'resourceFieldGridIdx')){
+    const keys=Reflect.ownKeys(parameters),d=Object.getOwnPropertyDescriptor(parameters,'resourceFieldGridIdx');
+    if(keys.length!==1||!d?.enumerable||!Object.hasOwn(d,'value')||!Number.isInteger(d.value)||d.value<0||d.value>2147483647)throw invalid('放弃资源田须仅声明明确的非负int32 resourceFieldGridIdx');
+    return {resourceFieldGridIdx:d.value};
+  }
   if (parameters.buildingId !== undefined && !nonempty(parameters.buildingId)) throw invalid('舰队 ID 无效');
   for (const key of ['cityId', 'shipIndex', 'cargoIndex']) if (parameters[key] !== undefined && (!Number.isSafeInteger(parameters[key]) || parameters[key] <= 0 || parameters[key] > 2147483647)) throw invalid('目标编号必须是明确的正 int32');
   const formation = Object.fromEntries(['presetId', 'heroIds', 'heroPositions'].filter(key => Object.hasOwn(parameters, key)).map(key => [key, parameters[key]]));
@@ -134,8 +141,55 @@ export function cargoShortageView(facts, options = {}) {
 
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
 export function validateFleetConfig(value = {}) { const result = moduleConfiguration(value, FLEET_DEFAULT_CONFIG); if (!Number.isFinite(result.minimumDurabilityRatio) || result.minimumDurabilityRatio <= 0 || result.minimumDurabilityRatio > 1 || quantity(result.petrolReserve) === null || !Number.isSafeInteger(result.scenarioId) || result.scenarioId < 1) throw invalid('舰队规则无效'); if (!Number.isFinite(result.repairBelowDurabilityRatio) || result.repairBelowDurabilityRatio <= 0 || result.repairBelowDurabilityRatio > 1 || !['IMMEDIATE','WAIT_NATURAL'].includes(result.repairMode) || !Number.isSafeInteger(result.maximumRepairPetrolPerPlan) || result.maximumRepairPetrolPerPlan < 0 || result.maximumRepairPetrolPerPlan > 1e9 || result.repairPriorityBuildingIds.some(id => !nonempty(id) || id.trim() !== id || id.length > 300) || new Set(result.repairPriorityBuildingIds).size !== result.repairPriorityBuildingIds.length) throw invalid('维修阈值、模式、计划预算或优先级无效'); return result; }
+const fieldOwners=new WeakMap();
+const fieldDense=value=>Array.isArray(value)&&Object.getPrototypeOf(value)===Array.prototype&&value.length<=10000&&Reflect.ownKeys(value).length===value.length+1&&Array.from({length:value.length},(_,i)=>Object.getOwnPropertyDescriptor(value,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
+const fieldUint=value=>Number.isInteger(value)&&value>=0&&value<=2147483647;
+function resourceFields(raw){
+ if(!ownCargo(raw,'info')||!ownCargo(raw.info,'maxNum')||!fieldUint(raw.info.maxNum)||!ownCargo(raw.info,'fields')||!fieldDense(raw.info.fields)||raw.info.fields.length>raw.info.maxNum)return null;
+ const fields=[];
+ for(const row of raw.info.fields){if(!['gridIdx','cityId','type'].every(k=>ownCargo(row,k)&&fieldUint(row[k]))||row.cityId<1||fields.some(r=>r.gridIdx===row.gridIdx))return null;fields.push({gridIdx:row.gridIdx,cityId:row.cityId,type:row.type});}
+ return {maxNum:raw.info.maxNum,fields:fields.sort((a,b)=>a.gridIdx-b.gridIdx)};
+}
+function fieldContext(client,player){
+ const role=toSnapshotJson(player??{}),identity=Object.fromEntries(['playerId','worldId'].map(k=>[k,typeof role[k]==='string'&&/^[1-9][0-9]{0,18}$/.test(role[k])&&BigInt(role[k])<(1n<<63n)?role[k]:Number.isSafeInteger(role[k])&&role[k]>0?String(role[k]):null]));
+ const context=client.factContext;return context&&{accountId:context.accountId,connectionId:context.connectionId,generation:context.generation,...identity};
+}
+function fieldDigest(f){return stable({parameters:f.parameters,resourceFields:f.resourceFields,sourceRevision:f.sourceRevision,sourceAt:f.sourceAt,stock:[...f.stock],stockReliable:f.stockReliable,protocolReady:f.protocolReady,config:f.config});}
+function fieldCurrent(f){
+ const owner=fieldOwners.get(f);return Boolean(owner&&owner.client.connected===true&&owner.digest===fieldDigest(f)&&Date.now()>=f.sourceAt&&Date.now()-f.sourceAt<=30000&&stable(owner.context)===stable(fieldContext(owner.client,owner.player))&&stable(f.sourceRevision)===stable(readResourceFieldRevision(owner.client,owner.context)));
+}
+async function surveyResourceFields(client,protocol,{config=null,player=null,signal,parameters={}}={}){
+ const context=fieldContext(client,player),revision=readResourceFieldRevision(client,context),sourceAt=Date.now();
+ const first=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal}),items=await readNavalFact(client,protocol,'AllItemRequest',{}, {signal}),resources=await readNavalFact(client,protocol,'AllResourceRequest',{}, {signal}),last=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal});
+ const before=resourceFields(first.body),after=resourceFields(last.body),inventory={AllItemRequest:items,AllResourceRequest:resources};
+ const stock=stockFacts(items,resources),f={config,player:structuredClone(player),parameters:structuredClone(parameters),sources:inventory,...stock,sourceRevision:revision,sourceAt,resourceFields:before&&after&&stable(before)===stable(after)?before:null,protocolReady:{GiveUpResFieldRequest:Boolean(protocol?.GiveUpResFieldRequest)}};
+ // Reuse the complete inventory parser; duplicate or missing quantities stay unknown.
+ f.stockReliable=f.stockReliable&&cargoInventory(f)!==null;
+ if(revision&&context&&stable(context)===stable(fieldContext(client,player))&&stable(revision)===stable(readResourceFieldRevision(client,context)))fieldOwners.set(f,{client,player,context,digest:fieldDigest(f)});
+ return f;
+}
+function resourceFieldCandidate(f,parameters,opts,settlement=false){
+ const field=f.resourceFields?.fields.find(row=>row.gridIdx===parameters.resourceFieldGridIdx),owner=fieldOwners.get(f),context=owner?.context;
+ const valid=settlement?owner&&owner.digest===fieldDigest(f)&&stable(owner.context)===stable(fieldContext(owner.client,owner.player)):fieldCurrent(f);
+ const reason=!opts.enabled||!opts.giveUpResourceField?'MODULE_DISABLED':!valid||!f.resourceFields||!f.stockReliable?'RESOURCE_FIELD_FACTS_UNKNOWN':!field?'RESOURCE_FIELD_NOT_OWNED':!f.protocolReady?.GiveUpResFieldRequest?'PROTOCOL_UNAVAILABLE':null;
+ const beforeState={context:context??null,resourceFields:f.resourceFields??null,inventory:[...(cargoInventory(f)??[])].sort(([a],[b])=>a.localeCompare(b))},expectedState=f.resourceFields?{...beforeState,resourceFields:{maxNum:f.resourceFields.maxNum,fields:f.resourceFields.fields.filter(row=>row.gridIdx!==parameters.resourceFieldGridIdx)}}:null;
+ const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,'GiveUpResFieldRequest',null,{resFieldGridIdx:parameters.resourceFieldGridIdx},parameters,reason);
+ row.executable=reason===null;row.budgetClaims={resources:[],quotas:[],uids:context?[{type:'resource-field',id:context.worldId+':'+parameters.resourceFieldGridIdx}]:[]};return row;
+}
+function verifyResourceField(operation,before,after){
+ const no=reason=>({confirmed:false,reason}),owner=fieldOwners.get(before),other=fieldOwners.get(after);
+ // Pre-write revision may change because of the write itself; identity and the
+ // independently bracketed post-read must remain current.
+ if(!owner||owner.client!==other?.client||owner.digest!==fieldDigest(before)||!fieldCurrent(after)||stable(owner.context)!==stable(other.context)||!before.resourceFields||!after.resourceFields)return no('资源田归属、完整前后读或连接身份未确认');
+ const canonical=resourceFieldCandidate(before,before.parameters,{enabled:true,giveUpResourceField:true},true);
+ if(!before.resourceFields.fields.some(row=>row.gridIdx===operation.target?.gridIdx)||!before.stockReliable||!after.stockReliable||['target','beforeState','expectedState','action','parameters','costs','budgetClaims'].some(k=>stable(operation[k])!==stable(canonical[k])))return no('资源田请求、原目标或预算不一致');
+ const observed={context:other.context,resourceFields:after.resourceFields,inventory:[...(cargoInventory(after)??[])].sort(([a],[b])=>a.localeCompare(b))};
+ return {confirmed:stable(observed)===stable(canonical.expectedState),reason:stable(observed)===stable(canonical.expectedState)?'独立完整MyResFields确认仅指定资源田移除、上限及其他田不变，完整库存不变；不领取收益':'目标移除、非目标田、上限或库存未精确确认，保持UNKNOWN'};
+}
 export async function surveyFleet(client, protocol, { config = null, player = null, signal, parameters = {}, moduleConfig = {} } = {}) {
-  parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);
+  parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);
+  if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return surveyResourceFields(client,protocol,{config,player,signal,parameters});
+  const fieldObservation=opts.giveUpResourceField?await surveyResourceFields(client,protocol,{config,player,signal}):null;
   const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'];
   const values = await Promise.all(names.map(request => readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? { screenCenter: { x: 0, y: 0 } } : {}, { signal })));
   const sources = Object.fromEntries(names.map((name, index) => [name, values[index]]));
@@ -167,7 +221,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   const guildId = quantity(sources.GuildInfoRequest.body?.guild?.guildId), playerGuild = quantity(player?.guildId);
   const guildIdx = sources.GuildInfoRequest.available && guildId > 0 && (playerGuild === null || playerGuild === guildId) ? guildId % 1000 : null;
   return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, ...fleets, formationFacts, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
-    cargoReliable, ships: cargoReliable ? structuredClone(ships) : [], citiesReliable, cities: citiesReliable ? cities.map(city => ({ id: city.id, state: quantity(city.state), guildIdx: quantity(city.guildIdx) })) : [], guildIdx,
+    resourceFields:fieldObservation&&fieldCurrent(fieldObservation)?fieldObservation.resourceFields:null, cargoReliable, ships: cargoReliable ? structuredClone(ships) : [], citiesReliable, cities: citiesReliable ? cities.map(city => ({ id: city.id, state: quantity(city.state), guildIdx: quantity(city.guildIdx) })) : [], guildIdx,
     map: opts.move === true ? loadMapAsset(opts.scenarioId) : null,
     protocolReady: Object.fromEntries(['RepairFleetRequest', 'StopRepairingRequest', 'SetFleetAutoFightRequest', 'FleetSaveFormationRequest', 'MoveFleetsToCityRequest', 'FillCargoShipRequest', 'DrawShipRewardRequest'].map(name => [name, Boolean(protocol?.[name] && (!['FillCargoShipRequest', 'DrawShipRewardRequest'].includes(name) || protocol?.[name.replace('Request', 'Response')]))])),
   };
@@ -190,6 +244,7 @@ function candidate(kind, target, costs, costSource, beforeState, expectedState, 
 }
 function buildCandidates(facts, { config = facts.config, parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   parametersOf(parameters); const opts = validateFleetConfig(moduleConfig), candidates = [];
+  if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return [resourceFieldCandidate(facts,parameters,opts)];
   const disabled = feature => opts.enabled !== true || opts[feature] !== true ? 'MODULE_DISABLED' : null;
   for (const fleet of facts.fleets ?? []) {
     if (parameters.buildingId !== undefined && parameters.buildingId !== fleet.buildingId) continue;
@@ -255,7 +310,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
   }
   return candidates;
 }
-export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
   { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },
@@ -289,6 +344,7 @@ export function planFleet(facts, options = {}) {
 }
 export function verifyFleet(operation, beforeFacts, afterFacts, response) {
   const type = operation?.actionType, target = operation?.target;
+  if(type==='giveUpField')return verifyResourceField(operation,beforeFacts,afterFacts);
   if (type === 'fleetFormation') {
     const id = target?.buildingId, before = beforeFacts?.formationFacts, after = afterFacts?.formationFacts;
     const old = before?.buildings?.find(row => row.buildingId === id), current = after?.buildings?.find(row => row.buildingId === id);

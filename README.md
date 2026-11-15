@@ -47,6 +47,8 @@ node src/app.mjs assets restore
 
 英雄页可明确英雄、兑换数量和总时长，调用 `POST /api/gameplay/heroes/star/prepare`（`heroId`、`num`、`maxDurationMs`）只读准备兑换后单星图。数量必须恰好补足下一颗星；图固定原星级、每步专属余额和星成本，兑换完整入库确认后才生成原单星计划（`universal:false`）。同一入口也接受 `targets: [{heroId,num}, ...]` 与 `maxDurationMs`，明确1至12名不同英雄的执行顺序，各最多一星；`num: 0` 仅表示已有足够专属碎片。准备时核各品质共享万能碎片总量，图共用原授权、累计预算及历史，未来收入不增加额度；每步独立复读，前置变化、拒绝或UNKNOWN停止，重启只读，仍未进行真实游戏验收。
 
+Fleet页可显式开启 `giveUpResourceField`，从本账号完整已占列表选择一个网格，以 `{resourceFieldGridIdx: 0}` 等精确参数重新探测、预览并单独授权放弃。0是有效网格，空白不代表0。沿用原Service、世界/网格UID预算、写前持久化与独立完整列表及库存复读；不领取收益，结果未知或重启均不重放，真实游戏未验。
+
 ## 它不是什么
 
 - 不做手机端抓包，不做云端同步。

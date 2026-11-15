@@ -157,11 +157,12 @@ export const FUNCTION_CONTRACTS = freeze({
     dependencyVersions: dependencies(['moduleConfig', ...['MuseumExpeditionStageCfg', 'MuseumExpeditionTeamCfg', 'MuseumExpeditionConditionCfg', 'MuseumExploreTimeFactorCfg', 'MuseumAchievementCfg', 'MuseumAreaCfg', 'MuseumAreaIndicatorCfg', 'MuseumDisplayCaseCfg', 'AntiqueBaseCfg'].map(name => 'config.' + name)]),
   }),
   fleet: contract('fleet', ['C131', 'C132', 'C133', 'C134', 'C401', 'C402', 'C406', 'C407', 'C408', 'C409'], ['P1-4', 'P2-6', 'P5-1', 'P5-2'], ['src/fleet.mjs#fleetModule', 'src/fleet.mjs#parametersOf'], {
-    buildingId: string, cityId: integer, shipIndex: integer, cargoIndex: integer, ...formationParameters,
+    buildingId: string, cityId: integer, shipIndex: integer, cargoIndex: integer, resourceFieldGridIdx:integer, ...formationParameters,
   }, {
-    implementation: { mode: 'CONTROLLED_WRITE', actions: ['fleetRepair', 'fleetStopRepair', 'fleetMove', 'fleetFormation', 'fleetStopAutoFight', 'cargoFill', 'cargoClaim'],
+    additionalRequirementIds: ['BIZ-W16'],
+    implementation: { mode: 'CONTROLLED_WRITE', actions: ['fleetRepair', 'fleetStopRepair', 'fleetMove', 'fleetFormation', 'fleetStopAutoFight', 'cargoFill', 'cargoClaim', 'giveUpField'],
       blockedCapabilities: [blocked('C406:attack', 'Existing city dispatch confirms MOVEMENT_ONLY'), blocked('C408:speedUpFleet', 'Current client path consumes premium currency'), blocked('C408:speedUpRepair', 'Unproven cost and payment semantics'), blocked('C134:speedUpCargo', 'Independent unproven payment semantics'), blocked('autoFight:true', 'Persistent automatic dispatch is outside a single-action permit'), blocked('C409:premium', 'D6 hard exclusion', 'NOT_IMPLEMENTED')] },
-    verification: verification('verifyFleet', 'src/fleet.mjs#verifyFleet', 'Fresh fleet/OnWater/cargo state, inventory and durability; movement is not attack or victory'),
+    verification: verification('verifyFleet', 'src/fleet.mjs#verifyFleet', 'Fresh fleet/OnWater/cargo state, inventory and durability; exact owned resource-field removal with unchanged peers, limit and complete inventory; movement is not attack or victory'),
     dependencyVersions: dependencies(['moduleConfig', 'config.CityCfg', 'config.AttackCityConsumeCfg', 'config.FormationTypePositionCfg', 'config.FormationHeroNumCfg', 'config.HeroCfg', 'mapAsset']),
   }),
   treasure: contract('treasure', [], [], ['src/treasure.mjs#treasureModule', 'src/treasure.mjs#parametersOf'], { uid: integer, fleetBuildingIds: array(string) }, {

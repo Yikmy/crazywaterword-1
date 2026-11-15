@@ -298,3 +298,9 @@ test('initial equipment D6 requires own exact free-first metadata and leaves gen
  for(const id of ['RUBY','钻石','4']){const a=action();a.costs=[{id,num:1}];assert.throws(()=>assertPaymentAllowed(a,{allowPaid:true}),{code:'D6_FORBIDDEN'});}
  const paid=action();paid.paid=true;assert.throws(()=>assertPaymentAllowed(paid,{allowPaid:true}),{code:'D6_FORBIDDEN'});
 });
+
+
+test('resource field give-up D6 requires exact own zero cost and one nonnegative int32 grid',()=>{
+ const valid={request:'GiveUpResFieldRequest',body:{resFieldGridIdx:0},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(valid));
+ for(const patch of [{body:{}},{body:{resFieldGridIdx:-1}},{body:{resFieldGridIdx:'0'}},{body:{resFieldGridIdx:2147483648}},{body:{resFieldGridIdx:0,buy:true}},{costs:undefined},{costs:[{id:'RUBY',num:1}]},{costs:[{id:'GOLD',num:1}]}])assert.throws(()=>assertPaymentAllowed({...valid,...patch}));
+});

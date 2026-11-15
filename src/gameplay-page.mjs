@@ -629,6 +629,16 @@ function gpRenderFleetOperations(view) {
  const live=()=>gpSafe(scope,revision)&&gpGet('fleet')===s&&s.data?.view===view&&Array.from(box.children).includes(section);
  const editable=()=>live()&&gpReady('fleet')&&!s.pending&&!s.configDirty&&!s.data?.status?.blocked&&!s.data?.status?.running&&!snapshot?.busy&&snapshot?.connected;
  const control=(input,allowed=()=>true)=>{input._fleetOperationLive=()=>editable()&&allowed();input.disabled=!input._fleetOperationLive();s.fleetOperationControls.push(input);return input;};
+ const fields=view?.resourceFields;
+ gpAllianceTable(section,'本账号已占资源田',['网格','城市','类型原值'],(fields?.fields||[]).map(row=>[row.gridIdx,row.cityId,row.type]));
+ section.appendChild(gpEl('p','资源田上限：'+(fields?.maxNum??'未知')+'。放弃只移除明确已占网格，不领取产出；须重新探测、预览并授权。'));
+ const fieldReady=()=>s.data?.config?.enabled===true&&s.data?.config?.giveUpResourceField===true&&Array.isArray(fields?.fields)&&s.revision===edit&&$('gp-fleet-parameters').value===source;
+ const field=control(gpEl('select'),fieldReady);field.dataset.resourceFieldTarget='true';let emptyField=gpEl('option','请选择明确已占资源田');emptyField.value='';field.appendChild(emptyField);
+ for(const row of fields?.fields||[]){const o=gpEl('option','网格 '+row.gridIdx+' · 城市 '+row.cityId);o.value=String(row.gridIdx);field.appendChild(o);}field.value='';section.appendChild(field);
+ const giveUp=control(gpEl('button','准备放弃指定资源田参数'),fieldReady);giveUp.dataset.resourceFieldPrepare='true';section.appendChild(giveUp);
+ giveUp.onclick=()=>{if(!giveUp._fleetOperationLive())return;const row=fields.fields.find(row=>String(row.gridIdx)===field.value);if(!row||!Number.isInteger(row.gridIdx)||row.gridIdx<0||row.gridIdx>2147483647){$('gp-fleet-hint').textContent='请选择本账号本次完整已占列表中的明确网格。';return;}$('gp-fleet-parameters').value=gpJson({resourceFieldGridIdx:row.gridIdx});gpInvalidate('fleet',true);gpRenderCandidates('fleet');gpRenderFleetOperations(view);$('gp-fleet-hint').textContent='放弃目标已准备；请重新探测，核对零成本及仅指定网格移除，再单独授权。';};
+ const fieldRows=(view?.candidates||[]).filter(row=>row.actionType==='giveUpField');
+ gpAllianceTable(section,'明确资源田放弃候选',['网格','成本','状态 / 阻塞','选择'],fieldRows.map(row=>{const choose=control(gpEl('button','选择此放弃候选'),()=>!s.dirty&&!gpBlocked(row));choose.dataset.resourceFieldCandidate=row.actionId;choose.onclick=()=>{if(choose._fleetOperationLive()&&s.data?.view?.candidates?.includes(row)){gpSelectDomainCandidate('fleet',row.actionId);gpRenderFleetOperations(view);}};return [row.target?.gridIdx,operationCosts(row.costs),row.reason??row.decision,choose];}));
  const labels={fleetRepair:'维修',fleetStopRepair:'停止维修',fleetStopAutoFight:'关闭委任',fleetMove:'移动到城市'};
  const rows=(view?.candidates||[]).filter(row=>Object.hasOwn(labels,row.actionType));
  gpAllianceTable(section,'当前具体维护 / 移动候选',['舰队','动作','目标城市','可执行成本','成本来源','状态 / 阻塞','选择'],rows.map(row=>{

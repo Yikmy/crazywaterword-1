@@ -271,6 +271,7 @@ export const ACTIONS = {
   },
   giveUpField: {
     request: 'GiveUpResFieldRequest',
+    costs: [],
     response: null,
     mutate: true,
     desc: '放弃已占领的资源田',
@@ -377,6 +378,8 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(farmPlant&&(!fields(body,['args'])||!Array.isArray(body.args)||body.args.length!==1||Reflect.ownKeys(body.args).length!==2||!fields(body.args[0],['buildingId','productId'])||!identifier(body.args[0].buildingId)||!identifier(body.args[0].productId)||!exactCosts(costs)||costs.length!==1))fail('COST_UNKNOWN','仅允许有精确种子成本的单田播种');
   if(forgeMake&&(!fields(body,['buildingId','makeId','universal'])||!identifier(body.buildingId)||!Number.isInteger(body.makeId)||body.makeId<=0||body.makeId>2147483647||body.universal!==false||!exactCosts(costs)||costs.length===0))fail('COST_UNKNOWN','装备制造仅允许精确配方、自有材料及universal=false');
   if(forgePick&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!Object.hasOwn(action,'costs')||!exactCosts(costs)||costs.length!==0))fail('COST_UNKNOWN','装备收取仅允许明确单建筑及零成本');
+  const giveUpField=request==='GiveUpResFieldRequest';
+  if(giveUpField&&(!fields(body,['resFieldGridIdx'])||!Number.isInteger(body.resFieldGridIdx)||body.resFieldGridIdx<0||body.resFieldGridIdx>2147483647||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','资源田放弃仅允许明确单个非负int32网格及显式零成本，不领取收益或混入支付字段');
   const sellTrade=request==='TradeSellRequest';
   if(sellTrade&&(!fields(body,['cityId','pid','sellNum'])||!['cityId','pid','sellNum'].every(k=>positiveInt32(body[k]))||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','贸易卖出仅允许明确单港口/持货批次/数量及显式零资源支出；不允许买入、航行或钻石');
   const buyTrade=request==='TradeBuyRequest';

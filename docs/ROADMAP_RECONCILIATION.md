@@ -1,6 +1,6 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
-当前核对日期：2026-11-15（Asia/Shanghai）；已提交源码基线：codex/phase-4-alliance-integration@7f784d6。本轮只对齐当前状态与文档，不新增玩法、不修改既有业务实现。另有9个src/tests文件含在途W14/BIZ-W16改动，尚未提交及完成整组回归，不计入已交付状态。PHASE1–4及D.1–D.28保留各自历史证据；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
+当前核对日期：2026-11-15（Asia/Shanghai）；源码基线：codex/phase-4-alliance-integration，本批W14/BIZ-W16自有资源田明确放弃提交树（父9994514）。9994514已完成原范围及README/PHASE4对账，本批仅收口既有在途业务切片。PHASE1–4及D.1–D.28保留各自历史证据；本页当前M/C/P/S/Inventory表及工作包状态为唯一进度基线。
 
 > 原目标COMPLETE_CRAZYWATER_PLATFORM_R1_R8范围不变，尚未完成；原D.1–D.28仅为交接历史。无新增Gate/阶段/编号，R7统一离线与R8单独真实授权条件保持。
 
@@ -12,8 +12,8 @@
 | W02 PARTIAL | 26静态模块加Stage、27合同、原核心Adapter及父资源/配额/UID预算已有 | 随原剩余领域补合同/Registry | 注册或协议存在不能证明未闭合写可执行 | 原公共实现保留；合同104755d及本批W07（父b4c5f64） | 本批Contract/Registry定向PASS计入W07六文件1015项；原W04及其他共享历史证据保留 |
 | W05 PARTIAL | 港口专业货舱/逐物品缺货、明确装货及到港领取已有 | 补原范围其余允许分支 | D6/未知成本/未证身份仅冻结具体操作；不推导全包完成 | fleet最近32656af；原领域提交保留 | 原fleet/HTTP/PAGE专项；本轮未重跑 |
 | W10 PARTIAL | 科技专业树、下一等级/实际扣点及复读已接原联盟链 | 原科技重置独立合同 | 重置成本/资格/恢复缺证 | 原科技提交保留；alliance最近72c6388 | 原alliance-tech/共享测试；本轮未重跑 |
-| W14 PARTIAL | 已提交Fleet编队/维修/移动及港口子集保留；BIZ-W16共享资源田放弃的9文件在途改动已保留，尚不计交付 | 修正原Contract测试缺少resourceFieldGridIdx的精确字段预期，复跑该公共合同后完成切片提交；再核BIZ-W15 | 攻击/模式结果、宣战成本/身份、非premium加速及占领仍缺证；MOVE非攻击，放弃非占领或收益 | 已提交fleet最近32656af；在途父7f784d6 | 2026-11-15在途17文件定向1912/1913，唯一失败为Contract精确字段列表未包含新增业务参数；0 cancel/skip/todo，99.29秒。其余领域/共享链/Client/HTTP/页面通过；非R7，REAL_UNVERIFIED |
-| W22 PARTIAL | 本轮重核原M0–M15、95C、42P、8S、273Inventory的精确集合及原W/R/E/X；对照已提交代码、公共API/专业页/Workflow和测试索引，保留各行12维边界。README地图争夺范围排除已改为具体缺证；PHASE4历史快照不覆盖现行状态 | 先完成在途W14/BIZ-W16的共享链回归与独立提交，再按§12.4继续原DAG；不重复已有统一入口/执行架构 | 全范围未齐，具体缺证只冻结对应操作；R7/R8 NOT_RUN | 本文档提交（父7f784d6）；原9a85396/1b18eea成果保留 | 本轮静态重算：M16/C95/P42/S8/Inventory273、W22/R8/E24/X18集合无增删；C53/38/4、P10/31/1、Inventory187/76/10；124个当前src/tests索引存在，原5输入未跟踪未暂存且字节保留。功能回归另属在途W14，不计本轮文档或R7/R8 |
+| W14 PARTIAL | 原Fleet编队/维修/移动及港口子集保留；本批BIZ-W16默认关闭、明确自有gridIdx（0有效）经原Fleet Function/Service/Executor/History、HTTP及专业页接入。复用私有连续流使推送失效旧计划；父预算预留世界/网格UID，写前意图持久化，独立完整MyResFields/库存复读只确认指定田移除、其他田/上限/库存不变；有限Workflow共用原授权、拒绝/UNKNOWN持久记忆 | 原BIZ-W15指定资源田占领合同：核舰队/目标/成本及独立归属，不以派遣当占领；缺证局部冻结后继续原独立范围 | 攻击/模式结果、宣战成本/身份、非premium加速、占领及其他原缺口保留；放弃不领取收益，UNKNOWN零重放，W14仍PARTIAL，R7/R8 NOT_RUN | 本批提交（父9994514）；原fleet32656af保留 | 2026-11-15：17文件初1912/1913，唯一旧Contract精确字段预期遗漏新增参数；修正并补普通Fleet共存/原Inventory追踪后3文件158/158 PASS（5.32秒），0 fail/cancel/skip/todo。其余Client/共享执行历史记忆/Workflow/D6/HTTP/完整页沿本批首次通过结果不重复运行。设置默认开关8/8另通过，5源语法及diff检查通过。覆盖缺省/零/重复、库存/推送/五维失效、意图失败零写、独立结算、UNKNOWN/重启/迟到/取消、拒绝跨连接持久；离线合成，REAL_UNVERIFIED |
+| W22 PARTIAL | 本轮重核原M0–M15、95C、42P、8S、273Inventory的精确集合及原W/R/E/X；对照已提交代码、公共API/专业页/Workflow和测试索引，保留各行12维边界。README地图争夺范围排除已改为具体缺证；PHASE4历史快照不覆盖现行状态 | W14/BIZ-W16已收口本批限定范围；按§12.4继续原DAG；不重复已有统一入口/执行架构 | 全范围未齐，具体缺证只冻结对应操作；R7/R8 NOT_RUN | 本文档提交（父7f784d6）；原9a85396/1b18eea成果保留 | 9994514文档批静态重算：M16/C95/P42/S8/Inventory273、W22/R8/E24/X18集合无增删；C53/38/4、P10/31/1、Inventory187/76/10；124个当前src/tests索引存在，原5输入未跟踪未暂存且字节保留。后续BIZ-W16本批独立交付使当前Inventory变为188/75/10，证据见W14；不外推W/M/C或R7/R8 |
 | W03 PARTIAL | 保留原资产archive/verify/restore及普通凭证显式导入。本批修复原worlds.listWorlds/listGroup/describeRole/describeWorld：真实Codec的角色ID、列表区服键、出生服和当前世界均按精确signed int64保留，安全值仍数值、大值十进制字符串；不改原通用normalize。缺失/继承默认/非法/冲突身份为未知，列表缺失不补空。原GET /api/worlds复用busy锁及activeTask，响应复核账号/角色/世界/连接/代次与client事实，旧读取不释放后继锁。原区服页面分别展示各身份，读取中清空、错账号拒绝；enter/输入继续禁用 | 既有角色实际切换继续核目标绑定/禁止隐式新建及UNKNOWN恢复合同；该操作缺证期间继续W19原Workflow无动作原因及归属 | 原LoginRequest仅worldId目标，没有角色ID/出生服条件或existingRoleOnly；列表观察不保证未来登录不会隐式新建，故切服写产品链未闭合，不能以本次只读修复标写完成。map-1/上游来源哈希缺证，归档complete=false；扫码/捕获未开放。R7/R8未执行 | c87947b；凭证导入b78878e及原资产成果保留 | 2026-11-15：server-runtime/account-view/cli-safety三文件106/106 PASS，0 fail/cancel/skip/todo，12.81秒。含真实本地Codec大int64、合服键分离、坏/缺失/冲突/原型默认、只读/零隐式连接、账号隔离、九种迟到身份变化、互斥/断开/后继锁、原POST enter403及CLI读凭证前写拒绝；3源语法/diff检查通过。全为合成凭证/回环HTTP/离线Codec，REAL_UNVERIFIED |
 | W13 PARTIAL | 已有48项缓存贯通钓鱼等级、精确鱼库存/容量、图鉴积分与下一档门槛；CLI、Explorer、只读钓鱼页与账号隔离 | 仅在目标可精确授权后接入领取/收线 | DrawFishReward 空请求缺档位条件；GainBigFish 缺可恢复待捕鱼身份与过期权威读源，冻结这两类写 | 285186f | fishing-view/data-catalog/explorer-view/explorer-api：35/35 PASS，0 fail/skip；本地 Codec、HTTP 与完整页面合成夹具，未连接游戏 |
 | W16 PARTIAL | 原任务/日活跃/赠礼、单封邮件及有界枚举、挂机等级、三类周礼包/周芯片任务及可信每日缓存失效保留。本批原Tasks每日订单复用13fef97计数观察，缺字段不补零；OrderDailyRewardCfg缺失/坏值/重复/含season或worldOpenDays但未有适用上下文时档位UNKNOWN，不合并成全赛季阈值、不生成该领取计划。主支线/成就独立观察继续；原Tasks API和页面显示观察值及周期未知 | W19原Tasks/Loop每日订单显式只读调查已接原Orders Function SURVEY（本批W19行）；继续其余有据奖励/周期合同，领奖写合同缺证保留 | 每日订单适用赛季/开服日、空请求实际领取目标与奖励归属及周期缺证；单一无上下文配置只保留原纯阈值算术，不证明真实领取。邮件实例附件归属、VIP礼包复读、日周周期/签到/挂机时段原缺证保留；UNKNOWN零重放，W16仍PARTIAL，R7/R8未执行 | eb045b1；每日缓存56ea228/2da3e5e、成就c0a6f24及原成果保留 | 2026-11-15：原生命周期/Tasks领域、缓存HTTP、账号页面和统一Workflow4文件333/333 PASS，0 fail/cancel/skip/todo；真实Codec区分缺省/明确零、跨赛季45档不混入、坏配置/重复/倒置阈值、独立主线保留、复用已有water零额外查询、原HTTP写入口403及Workflow禁写回归。与本轮W04测试存在重叠，不累计为平台总数；仅离线合成，REAL_UNVERIFIED |
@@ -41,7 +41,7 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 | 原95C | 95/95保留；53 EXISTING_FUNCTION / 38 PARTIAL / 4 PROTOCOL_ONLY | §5及5.1；Function状态不等于API/UI/Workflow或真实通过 |
 | 原42P | 42/42保留；10 EXISTING_UI / 31 PARTIAL / 1 EXCLUDE | §6.1；P5-3依D6硬拒钻石；已有界面不等于完整业务完成 |
 | 原8S | 8/8保留；各自已有有限实现及剩余边界 | §6.2；本地日历/具名WAIT不证明游戏日界，重启不续权 |
-| 原273 Inventory | 273/273保留；187 EXISTING_FUNCTION / 76 PARTIAL / 10 PROTOCOL_ONLY | 附录A；PLT43/DEX9/DAT48/BIZ116/ORD22/STG17/FRM8/PRO10，与95C不相加 |
+| 原273 Inventory | 273/273保留；188 EXISTING_FUNCTION / 75 PARTIAL / 10 PROTOCOL_ONLY | 附录A；PLT43/DEX9/DAT48/BIZ116/ORD22/STG17/FRM8/PRO10，与95C不相加 |
 | R1 | PARTIAL | 公共保护/合同子集已有；来源资产及完整原DoD未闭合 |
 | R2 | PARTIAL | 核心业务和成长子集已有；剩余领域缺口按W/C冻结 |
 | R3 | PARTIAL | 联盟/Museum/扫荡/日常子集已有；原完整范围未齐 |
@@ -66,9 +66,9 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 | 核对项 | 本轮实际结果 |
 |---|---|
 | 开发根目录 | //zhangnas/app/crazywaterword；初始aibot-crazywaterword为另一仓库，不在其中施工 |
-| 分支/HEAD | codex/phase-4-alliance-integration / 7f784d6（本轮文档提交的父提交）；未修改main |
+| 分支/HEAD | codex/phase-4-alliance-integration / 本批资源田提交树（父9994514）；未修改main |
 | 远端关系 | 2026-11-15安全fetch确认origin/codex/phase-4-alliance-integration=f87f028，为7f784d6祖先；本地领先24、落后0，无分叉。本轮提交另计；未push/merge |
-| 工作区 | 接手时9个src/tests tracked文件含W14/BIZ-W16在途改动，index为空；单独保留并验证，不混入本文档提交、不推导已交付。原5份输入保持原字节、未跟踪、未暂存；未读取真实账号/Token、未连接游戏 |
+| 工作区 | 9994514先独立提交三文档对账且保留原9文件在途字节；随后收口原切片及既有Contract测试，共10个src/tests文件和README/本表。原5份输入保持原字节、未跟踪、未暂存；未读取真实账号/Token、未连接游戏 |
 | 历史/权限 | PHASE1–4原提交和证据保留；允许离线施工与本地提交；push/merge/reset/rebase/clean及真实游戏操作仍未授权 |
 | 目录约束 | 沿用既有src/tests/tools/docs/data/work；不新建仓库、worktree、目录或报告 |
 
@@ -135,7 +135,7 @@ client.mjs:7–9仍TICK/PING=1000ms，历史约1105ms首Pong未处理只有单�
 | Alliance | 精确成员/请求、订单福利、科技单升、Fort普通捐赠、商船补货和应聘船长 | 帮助/求助权威额度冷却、科技重置、收益/隐藏跨玩法占用缺；W09/W10 |
 | Museum | 展陈/收益/成就/出发/道具加速/逐物品缺料，独立古董成长子集 | Complete/Reward可恢复身份与结算缺；W11 |
 | Treasure | 既有Stats/List/Rank/Defence及无人防守目标派舰、精确MyFleets关联 | 派遣不证明争夺/占有/战果/领奖；W14，不并入Museum |
-| Fleet | 编队/维修模式阈值预算优先序/停止维修/移动/港口及专业缺货 | 非零pet绑定、攻击宣战/结果、非premium加速、资源田写及在线奖未全；W05/W14 |
+| Fleet | 编队/维修模式阈值预算优先序/停止维修/移动/港口及专业缺货；明确自有资源田放弃 | 非零pet绑定、攻击宣战/结果、非premium加速、资源田占领及在线奖未全；W05/W14 |
 | Naval Rules | 有界WorldInfo精确筛选、三值规则、同查询规则响应哈希比较 | CURRENT_RESPONSE_ONLY非全图持续身份；跟随/动态攻击缺；W15 |
 | Workflow | 原生拖拽/有限DAG/父预算/run授权、持久图/历史/记忆、有限日周/可信事件和三类具名WAIT | 全业务目录/入口及权威cooldown/gameDay来源未闭合；W19/W20/W21 |
 
@@ -320,7 +320,7 @@ CrazyWater Platform
 | M8 | Formation & Battle Analysis | PARTIAL | W08 | 整队预设/普通解锁/极限复制/战报、有限顺序与历史胜率换阵已有；完整原DoD、所有模式及真实验收未齐 |
 | M9 | Mainline Automation | PARTIAL | W08/W19 | Stage门控/逐场持久历史与有限Function已有；真实间隔和战败分支未验 |
 | M10 | Alliance | PARTIAL | W09/W10 | 订单/福利/科技单升/Fort/商船补货与船长已有；帮助/求助/科技重置缺 |
-| M11 | Fleet & City War | PARTIAL | W14/W15 | 编队/维修/移动/港口及有界响应比较已有；攻击/加速/跟随/资源田写合同缺 |
+| M11 | Fleet & City War | PARTIAL | W14/W15 | 编队/维修/移动/港口、有界响应比较及明确自有资源田放弃已有；攻击/加速/跟随/资源田占领合同缺 |
 | M12 | Activities & Dailies | PARTIAL | W16/W17 | 具名任务、邮件、免费招募点金/试炼及部分周奖励已有；VIP/周期/订单档/挂机时段等缺 |
 | M13 | Trade King | PARTIAL | W18 | 当前港报价/精确买卖移动/自有加速及时钟等待已有；目的地报价、策略、到达收益缺 |
 | M14 | Workflow & Scheduler | PARTIAL | W19/W20 | 统一Tasks/Dailies/有限Loop、原生图、父预算/持久历史/有限日周事件已有；全入口覆盖与权威策略未全 |
@@ -1560,7 +1560,7 @@ R8从E01/E02开始，业务组按实际前置准备，E20组合在单域效果�
 
 下一批按价值及现有依赖推进；以下只是原工作项顺序，不新增阶段或审批：
 
-- W14 / BIZ-W16：先收口已有9文件在途改动。明确自有gridIdx（0有效）经原Fleet Function、OperationService及Workflow；目标UID预算、写前持久化和独立完整MyResFields/库存复读。完成领域、D6、Client、Contract/Registry、Service/History/Workflow、HTTP及专业页定向回归后独立提交，才更新该Inventory行；占领/战斗/收益不随之完成。
+- W14 / BIZ-W16：本批已收口原在途切片，明确自有gridIdx（0有效）经原Fleet Function、OperationService及Workflow，复用目标UID预算、写前持久化和独立完整MyResFields/库存复读；定向证据见顶部W14，不重复施工。占领/战斗/收益及完整W14不随之完成。
 - W14 / BIZ-W15：随后限定核旧指定资源田占领计划的原舰队/目标/成本与独立归属复读，优先复用已有Fleet/naval事实和Service。仅派遣不能证明占领；地图来源、模式结果或恢复身份缺失则记录原行并继续独立项。
 - W07 / C225–C230、BIZ-R07/R09：再选既有成长分支中尚未交付且能由固定配置、明确实例和独立复读证明的一项，接原Adapter/API/专业页；不重做显式零费装备首级、Pet FEED或已交成长。C228上限经验及Pet培育/空请求成熟领取仍缺权威落点与可恢复目标，无新来源不重复审计。
 - W19 / C604/C606、S5–S7：通用cooldown/gameDay仍须拒绝专属权威到期/周期来源，policyCoverage保持false；现有UNTIL_IDENTITY_CHANGE不能由本地时间、WAIT、重启或免费招募的eligibility=null解除。仅在新来源成立时接原记忆策略，不造第二调度器。
@@ -1571,7 +1571,7 @@ W18/C522已核：固定客户端TradeCity只取当前cargo.cityId，Radar无目�
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
 
-## 附录A — 原Inventory 273项逐项源码复核（当前已提交基线7f784d6）
+## 附录A — 原Inventory 273项逐项源码复核（当前本批资源田提交树，父9994514）
 
 本表按原文ID行顺序保留273项；它们是函数、数据、工具、参考子项、协议族的不同粒度，并非273项独立产品需求。原始95个Cxxx按主表计数；非C项按完整Inventory默认纳入对应工作包；Owner只裁定语义冲突或D6无允许路径，不默认移出交付范围。`EXISTING_FUNCTION`仅指该行标题所述Function存在，UI/API及端到端缺口另看profile和覆盖；PARTIAL不继承原报告结论。所有行必须与以下12维profile连读，行内缺口优先覆盖profile。
 
@@ -1587,7 +1587,7 @@ W18/C522已核：固定客户端TradeCity只取当前cargo.cityId，Radar无目�
 | P | PROTOCOL_ONLY或行内PARTIAL | 无目标写调用者；有参考/读探针不计业务写 | 仅底座和可能只读数据；目标写未接 | 无目标写API | 原始Explorer可看不等于业务UI | 业务校验/授权未实现或明确安全阻塞 | 未接目标业务 | 未接目标业务 | 无该写业务历史 | 未形成该写闭环；协议超时规则不能代替业务确认 | 只有协议/codec/读数据可能有测试；无目标业务Offline Verified | REAL_UNVERIFIED |
 | N | NOT_IMPLEMENTED或行内PARTIAL | 无该算法/完整业务调用者；附近基础函数行内列明 | N/A或基础数据已有 | 无该完整业务API | 无完整业务UI | 未实现；证据未知应阻塞 | 未实现该能力预算 | 未实现该业务桥 | 无该业务独立历史 | 未实现该闭环，不推定安全成功 | 无该业务专项通过证据 | REAL_UNVERIFIED |
 
-profile中的测试是继承的相关测试族索引，不能把整个族通过当作任一尚未实现分支已通过；本次文档核对未重跑。所有行保留原 Inventory 作为索引，不把旧基线行号当当前证据；本表以1536835原对账为基础，2026-11-15按7f784d6复算全部原ID/状态与源码、API/UI/Workflow/测试索引；W14/BIZ-W16在途改动尚不升级状态，保留既有12维profile及行内边界。原能力名内“当前未接”等字样是原Inventory历史标题，不是本版状态。DAT仅表示只读查询，不继承所属C的写能力。本版本R7/R8均NOT_RUN。
+profile中的测试是继承的相关测试族索引，不能把整个族通过当作任一尚未实现分支已通过；本次文档核对未重跑。所有行保留原 Inventory 作为索引，不把旧基线行号当当前证据；本表以1536835原对账为基础，2026-11-15按7f784d6复算全部原ID/状态与源码、API/UI/Workflow/测试索引；随后本批仅将BIZ-W16由PARTIAL升级为EXISTING_FUNCTION，273集合及其余状态不变，保留既有12维profile及行内边界。原能力名内“当前未接”等字样是原Inventory历史标题，不是本版状态。DAT仅表示只读查询，不继承所属C的写能力。本版本R7/R8均NOT_RUN。
 
 | 原ID | 原能力名 | Cxxx / 非C补充项 | 当前Function维度 | 当前实际函数 / 源码证据 | 12维Profile | 关键剩余缺口 / 限制 |
 |---|---|---|---|---|---|---|
@@ -1733,7 +1733,7 @@ profile中的测试是继承的相关测试族索引，不能把整个族通过�
 | BIZ-W13 | 串行计划执行与失败同类隔离 | C603 | EXISTING_FUNCTION | src/operation-service.mjs；tests/operation-service.test.mjs | G | Service/Executor统一已交付写；旧Web写403/CLI独立写拒绝，未映射业务仍未交付 |
 | BIZ-W14 | 世界地图资源田资产读取/展示 | C403 | PARTIAL | src/world.mjs；src/asset-readiness.mjs；tests/asset-readiness.test.mjs | R | 固定清单、只读诊断和保留归档已有；map-1及上游来源缺 |
 | BIZ-W15 | 指定资源田占领计划 | 非C:资源田占领 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 旧指定资源田计划保留，未接共享写及独立复读 |
-| BIZ-W16 | 放弃自有资源田 | 非C:资源田放弃 | PARTIAL | src/world.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 已提交基线仅旧计划；原Fleet共享链/API/专业页及独立复读的9文件在途改动待整组回归与提交，不以局部PASS升级 |
+| BIZ-W16 | 放弃自有资源田 | 非C:资源田放弃 | EXISTING_FUNCTION | src/fleet.mjs；src/client.mjs；src/actions.mjs；src/function-contracts.mjs；src/gameplay-page.mjs；tests/fleet.test.mjs；tests/gameplay-api.test.mjs；tests/farm-forge-full-page.test.mjs | G | 明确本账号当前完整已占列表中的单个gridIdx（0有效）；默认关闭，原授权/UID预算/持久历史/独立前后完整列表及库存不变验证；推送只失效，UNKNOWN/重启零重放。非占领/收益，REAL_UNVERIFIED |
 | BIZ-H01 | 英雄及阵容数据读取、养成计划展示；planHeroes、maxHeroLevelFor | C221 C211 | EXISTING_FUNCTION | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 成长等级和材料前检已有，复用Ledger |
 | BIZ-H02 | 英雄升级；planHeroes→runHeroPlan→sendHero | C222 | EXISTING_FUNCTION | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 明确单英雄等级加一及完整英雄池、库存复读已接 |
 | BIZ-H03 | 英雄升星；planHeroes→runHeroPlan | C223 | PARTIAL | src/hero-operations.mjs；tests/hero-service.test.mjs | G | 专属碎片星、明确1比1兑换、固定前置的单英雄及1至12名共享来源明确顺序单星组合已有；隐式混用及完整自动策略缺 |

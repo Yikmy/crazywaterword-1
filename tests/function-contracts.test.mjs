@@ -29,6 +29,7 @@ test('trusted contracts have detached JSON descriptions and stable capability/C/
   assert.deepEqual(FUNCTION_CONTRACTS['equipment-growth'].requirementIds.C,['C229']);assert.deepEqual(FUNCTION_CONTRACTS['equipment-growth'].requirementIds.P,['P3-6','P3-7']);
   assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].requirementIds.C,[]);assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].requirementIds.P,['P3-5']);assert.deepEqual(FUNCTION_CONTRACTS['formation-unlock'].inventoryRequirementIds,['FRM-005']);
   assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].requirementIds.P,['P3-6','P3-7']); assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].requirementIds.C,[]); assert.deepEqual(FUNCTION_CONTRACTS['equipment-forge'].inventoryRequirementIds,['BIZ-R07']);
+  assert.deepEqual(FUNCTION_CONTRACTS.fleet.additionalRequirementIds,['BIZ-W16']);assert.ok(FUNCTION_CONTRACTS.fleet.implementation.actions.includes('giveUpField'));
   assert.deepEqual(FUNCTION_CONTRACTS.farm.requirementIds.C, []);assert.deepEqual(FUNCTION_CONTRACTS.farm.inventoryRequirementIds,['BIZ-R16a','BIZ-R16b','BIZ-R16c']);
   assert.deepEqual(FUNCTION_CONTRACTS.treasure.requirementIds.C, []); // World treasure is not Museum C141-C144.
 });
@@ -105,7 +106,7 @@ test('true dependencies separate unrelated order rules and production policy', (
 test('input fields match seventeen existing domain parameter interfaces without transport controls', () => {
   const expected = { 'material-packs':['packId','itemId','num'], 'pirate-sweep':['uid','cityId','allowLowerLevel'], 'antique-growth':['antiqueId','action','suitId','num'], 'badge-growth':['heroId','uid','action','pos'], 'equipment-growth':['heroId','uid','action'], 'formation-unlock':['presetId'], 'equipment-forge':['buildingId','action','makeId','allowUniversal'], farm: ['buildingId','action','productId'],
     formation: ['presetId','heroIds','heroPositions','mode','raidId'], alliance: ['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num','action','shipId','crewId'],
-    museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','presetId','heroIds','heroPositions'],
+    museum: ['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'], fleet: ['buildingId','cityId','shipIndex','cargoIndex','resourceFieldGridIdx','presetId','heroIds','heroPositions'],
     treasure: ['uid','fleetBuildingIds'], naval: ['targetId','playerId','excludeGuildIds','cityIds','minimumPower','maximumPower','screenCenter'], stage: ['config','expectedStage'], orders: [], city: [], production: [], heroes: ['heroId','action','skillIdx','allowUniversal','num','expectedStar','expectedFragmentBalance','expectedStarCost'],
   };
   for (const [id, keys] of Object.entries(expected)) assert.deepEqual(Object.keys(FUNCTION_CONTRACTS[id].inputSchema.properties), keys);
