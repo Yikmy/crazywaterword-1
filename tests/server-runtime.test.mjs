@@ -206,7 +206,7 @@ test('reconnect cannot be overwritten by an old collection finishing late', asyn
 
 test('cached detail reads never send game requests; absent daily probes stay unknown', async () => {
   const data = { ok: { DailyTaskInfoRequest: { dailyTask: [{ id: 1005, progress: 0, targetProgress: 1 }] }, AllItemRequest: { items: [] }, AllResourceRequest: { list: [] }, AfkInfoRequest: {}, RecruitInfoRequest: {} }, failed: { ArenaInfoRequest: 'not collected' }, outcomes: {} };
-  const app = await harness({ collect: async () => data });
+  const app = await harness({ collect: async () => data, connectImpl: async function(login) { const response=await FakeClient.prototype.connect.call(this,login); return {...response,playerInfo:{...response.playerInfo,playerId:'17',worldId:'9'}}; } });
   try {
     await app.connect(); await app.refresh();
     const response = await app.call('/api/dailies'); assert.equal(response.status, 200);
@@ -286,7 +286,7 @@ async function dailyRuntimeHarness(options={}) {
  const app=await harness({protocol,collect:async()=>dailyRuntimeSnapshot(observation.marker),...options,clientFactory:opts=>new GameClient({...opts,WebSocketImpl:Socket})});
  async function login(account='account-A'){
   const count=sockets.length,connecting=app.connect(account);await until(()=>sockets.length===count+1);
-  const socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:account==='account-A'?'17':'18',worldId:'9',level:1,nickname:'synthetic-player'}});
+  const socket=sockets.at(-1);socket.open();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:account==='account-A'?'17':'18',worldId:options.worldId??'9',level:1,nickname:'synthetic-player'}});
   assert.equal((await connecting).status,200);const client=app.clients.at(-1);clearInterval(client.tickTimer);client.tickTimer=null;return socket;
  }
  return {...app,sockets,sent,login,observation,get collects(){return app.collects;}};
@@ -676,15 +676,24 @@ async function taskRewardCacheHarness({kind='main',outcome='SUCCESS',onWrite=nul
  const {createExecutionHistory}=await import('../src/execution-history.mjs'),{loadConfig}=await import('../src/config.mjs');
  const history=createExecutionHistory({file:path.join(sandbox,'task-cache-'+kind+'-'+outcome+'.json')}),config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')}),state=taskRuntimeSnapshot(),writes=[],reads=[];
  state.raw.AllItemRequest={items:[{itemId:'塑料',num:20}]};state.raw.AllResourceRequest={list:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}]};state.ok=structuredClone(state.raw);
- const app=await dailyRuntimeHarness({collect:async()=>structuredClone(state),operationOptions:{history,getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:{enabled:true}})}}});
+ state.raw.DailyTaskInfoRequest.dailyResetTime=Math.floor(Date.now()/1000)+7200;state.raw.DailyGiftPackRequest.heroId='马斯克';state.ok=structuredClone(state.raw);
+ const app=await dailyRuntimeHarness({worldId:['daily-activity','daily-gift'].includes(kind)?'1000001':'9',collect:async()=>structuredClone(state),operationOptions:{history,getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:{enabled:true}})}}});
  await app.login();await app.refresh();
  const session=app.sessions.get('account-A'),client=session.client;
- client.request=async(name,body,response)=>{reads.push(name);assert.ok(state.raw[name],'unexpected task read '+name);return client.codec.decode(client.codec.encode(response,0,state.raw[name])).body;};
+ const {trustedGameClock}=await import('../src/state-facts.mjs'),wall=Date.now(),clock=trustedGameClock({accountId:session.id,generation:session.generation,wallNow:()=>Date.now(),monotonicNow:()=>performance.now()});
+ clock.markPing(wall);clock.observePong({clientTimestamp:wall,serverTimestamp:wall});client.gameClock=clock;
+ const applyReward=([id,num])=>{const resource={EXP:1,GOLD:3,RUBY:4}[id];if(resource)state.raw.AllResourceRequest.list.find(row=>row.res===resource).amount+=num;else{let item=state.raw.AllItemRequest.items.find(row=>row.itemId===id);if(!item)state.raw.AllItemRequest.items.push(item={itemId:id,num:0});item.num+=num;}};
+ const applyDaily=()=>{state.raw.DailyTaskInfoRequest.dailyTask.find(row=>row.id===1001).rewardClaimed=true;state.raw.DailyTaskInfoRequest.dailyActivity+=5;state.raw.DailyTaskInfoRequest.weeklyActivity+=5;applyReward(['EXP',100]);state.ok=structuredClone(state.raw);};
+ client.request=async(name,body,response,_timeout,options)=>{
+  if(options?.mutate){options.beforeDispatch?.();writes.push({name,body:structuredClone(body)});await onWrite?.(app);if(outcome==='SUCCESS')applyDaily();if(outcome==='REJECTED')throw Object.assign(Error('synthetic rejected'),{code:'REJECTED'});return client.codec.decode(client.codec.encode(response,0,{activity:5})).body;}
+  reads.push(name);assert.ok(state.raw[name],'unexpected task read '+name);return client.codec.decode(client.codec.encode(response,0,state.raw[name])).body;};
  client.sendWatch=async(name,body,options)=>{
   options.beforeDispatch?.();writes.push({name,body:structuredClone(body)});
   await onWrite?.(app);
   if(outcome==='SUCCESS'){
-   if(kind==='achievement'){state.raw.AchievementInfoRequest.task[0].rewardClaimed=true;state.raw.AllResourceRequest.list[2].amount+=20;}
+   if(kind==='daily-gift'){state.raw.DailyGiftPackRequest.drawnPack.push('赠礼');applyReward(['RUBY',10]);}
+   else if(kind==='daily-activity'){state.raw.DailyTaskInfoRequest.dailyRewardClaimed.push(body.index[0]);const row=config.tables.DailyActivityRewardCfg.data.find(row=>row.season===1&&row.id===body.index[0]);applyReward(row.reward);}
+   else if(kind==='achievement'){state.raw.AchievementInfoRequest.task[0].rewardClaimed=true;state.raw.AllResourceRequest.list[2].amount+=20;}
    else{
     const reward=config.tables[kind==='main'?'MainTaskCfg':'BranchTaskCfg'].data.find(row=>row.taskId===body.taskId).reward;
     if(kind==='main')state.raw.MainTaskInfoRequest.task.rewardClaimed=true;else state.raw.MainTaskInfoRequest.branch=[];
@@ -694,7 +703,7 @@ async function taskRewardCacheHarness({kind='main',outcome='SUCCESS',onWrite=nul
   }
   return {status:outcome==='REJECTED'?'REJECTED':'UNKNOWN'};
  };
- const parameters={kind,taskId:kind==='main'?1:kind==='branch'?8001:1001};
+ const parameters=kind==='daily-activity'?{kind,tierId:1}:kind==='daily-gift'?{kind,packId:'赠礼'}:{kind,taskId:kind==='main'?1:kind==='branch'?8001:1001};
  async function plan(){const result=await app.operations.surveyModule(session,'task-rewards',parameters),candidate=result.view.candidates.find(row=>row.executable);assert.ok(candidate,JSON.stringify(result.view));return app.operations.plan(session,{module:'task-rewards',mode:'Manual',parameters,selections:[candidate.actionId]});}
  function authorize(plan){return app.operations.authorize(session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});}
  return {...app,history,state,writes,reads,session,plan,authorize,get collects(){return app.collects;}};
@@ -748,5 +757,22 @@ test('task cache history fingerprint ignores other accounts and daily or season 
   const source=app.history.originalRecords;app.history.originalRecords=()=>{throw Error('synthetic unreadable history');};
   const unavailable=(await app.call('/api/tasks')).data;assert.equal(unavailable.sources.MainTaskInfoRequest.reason,'TASK_CACHE_HISTORY_UNAVAILABLE');assert.equal(unavailable.sources.AchievementInfoRequest.reason,'TASK_CACHE_HISTORY_UNAVAILABLE');assert.equal(unavailable.sources.OnWaterRequest.status,'OBSERVED');app.history.originalRecords=source;
   assert.equal((await app.call('/api/tasks')).data.stale,false);assert.equal(app.writes.length,1);
+ }finally{await app.close();}
+});
+
+for(const kind of ['daily','daily-activity','daily-gift'])for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('original daily claim invalidates only its cached source '+kind+' '+outcome,async()=>{
+ const app=await taskRewardCacheHarness({kind,outcome});try{
+  const before=(await app.call('/api/dailies')).data;assert.equal(before.checklist.sources.daily.status,'AVAILABLE');assert.equal(before.checklist.sources.gift.status,'AVAILABLE');
+  const raw=JSON.stringify(app.session.snapshot),permit=app.authorize(await app.plan());
+  app.operations.executeDailyRewards(app.session,permit);await app.operations.settle('account-A');
+  assert.equal(app.history.originalRecords('account-A')[0].finalStatus,outcome);assert.equal(app.writes.length,1);
+  const reads=app.reads.length,sent=app.sent.length,after=(await app.call('/api/dailies')).data,overview=(await app.call('/api/overview')).data.activityAlliance.checklist;
+  const changed=kind==='daily-gift'?'gift':'daily',other=kind==='daily-gift'?'daily':'gift';
+  assert.equal(after.checklist.sources[changed].status,'UNKNOWN');assert.equal(overview.sources[changed].status,'UNKNOWN');assert.equal(after.checklist.sources[other].status,'AVAILABLE');assert.equal(overview.sources[other].status,'AVAILABLE');
+  if(kind==='daily-gift'){assert.equal(after.gift,null);assert.equal(after.tasks.length,1);assert.equal(after.chestsUnavailable,null);}
+  else{assert.deepEqual(after.tasks,[]);assert.equal(after.chests,null);assert.ok(after.gift);}
+  assert.equal((await app.call('/api/tasks')).data.stale,false);assert.equal(JSON.stringify(app.session.snapshot),raw);assert.equal(app.reads.length,reads);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+  if(outcome==='SUCCESS'){await app.refresh();assert.equal((await app.call('/api/dailies')).data.checklist.sources[changed].status,'AVAILABLE');}
+  else {await assert.rejects(app.plan());assert.equal(app.writes.length,1);}
  }finally{await app.close();}
 });

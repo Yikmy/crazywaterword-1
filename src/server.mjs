@@ -354,17 +354,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   function taskRewardWriteVersions(session) {
     try {
       const records=typeof history.originalRecords==='function' ? history.originalRecords(session.id) : history.list(session.id);
-      const writes={MainTaskInfoRequest:[],AchievementInfoRequest:[]};
+      const writes={MainTaskInfoRequest:[],AchievementInfoRequest:[],DailyTaskInfoRequest:[],DailyGiftPackRequest:[]};
       for(const run of records)for(const row of run.actions) {
         if(run.accountId!==session.id || row.module!=='task-rewards' || provenNotDispatched(row))continue;
-        const source=['main','branch'].includes(row.parameters?.kind) ? 'MainTaskInfoRequest' : row.parameters?.kind==='achievement' ? 'AchievementInfoRequest' : null;
-        if(source)writes[source].push(JSON.stringify([run.runId,row.actionId]));
+        const source={main:'MainTaskInfoRequest',branch:'MainTaskInfoRequest',achievement:'AchievementInfoRequest',daily:'DailyTaskInfoRequest','daily-activity':'DailyTaskInfoRequest','daily-gift':'DailyGiftPackRequest'}[row.parameters?.kind];
+        if(Object.hasOwn(writes,source))writes[source].push(JSON.stringify([run.runId,row.actionId]));
       }
       return Object.fromEntries(Object.entries(writes).map(([name,ids])=>[name,createHash('sha256').update(JSON.stringify(ids.sort())).digest('hex')]));
     } catch { return null; }
   }
-  function taskSnapshotFailures(session) {
-    const requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest'],binding=taskSnapshotBindings.get(session),failures={};
+  function taskSnapshotFailures(session, requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest']) {
+    const binding=taskSnapshotBindings.get(session),failures={};
     const context=overviewCacheContext(session),known=context.accountId && context.connectionId && context.playerId && context.worldId && Number.isSafeInteger(context.generation);
     if (!binding || binding.snapshot!==session.snapshot || binding.client!==session.client || !known || session.state!=='READY' || session.client?.connected!==true
       || JSON.stringify(binding.context)!==JSON.stringify(context)) { if(binding)binding.invalidated=true; return Object.fromEntries(requests.map(name=>[name,'TASK_CACHE_CONTEXT_CHANGED'])); }
@@ -372,7 +372,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const bodies=Object.hasOwn(session.snapshot,'raw') ? session.snapshot.raw : session.snapshot.ok;
     for(const name of requests)if(!Object.hasOwn(session.snapshot.ok??{},name) || Object.hasOwn(session.snapshot.failed??{},name) || session.snapshot.outcomes?.[name]?.status && session.snapshot.outcomes[name].status!=='SUCCESS' || !bodies?.[name] || typeof bodies[name]!=='object' || Array.isArray(bodies[name]))failures[name]='TASK_CACHE_SOURCE_UNAVAILABLE';
     const writes=taskRewardWriteVersions(session);
-    for(const name of ['MainTaskInfoRequest','AchievementInfoRequest']) {
+    for(const name of ['MainTaskInfoRequest','AchievementInfoRequest','DailyTaskInfoRequest','DailyGiftPackRequest'].filter(name=>requests.includes(name))) {
       if(!binding.writes || !writes)failures[name]='TASK_CACHE_HISTORY_UNAVAILABLE';
       else if(binding.writes[name]!==writes[name])failures[name]='TASK_CACHE_REWARD_WRITE';
     }
@@ -385,7 +385,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   function taskObservationSnapshot(session) {
-    const failures=taskSnapshotFailures(session);
+    const failures=taskSnapshotFailures(session,['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest','DailyTaskInfoRequest','DailyGiftPackRequest']);
     return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot?.failed,...failures}} : session.snapshot;
   }
 
@@ -693,7 +693,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const taskSnapshot=taskObservationSnapshot(session);
     const dailySnapshot=dailyInvalid ? {...taskSnapshot,failed:{...taskSnapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : taskSnapshot;
     const checklist = dailyChecklist(dailySnapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
-    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid };
+    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid || taskSnapshot!==session.snapshot };
     if(dailyInvalid)return {...base,tasks:[],chests:null,chestsUnavailable:dailyUnavailable,gift:null,ruby:null,text:formatDailyChecklist(checklist)};
     // Partial caches still expose each independently observed checklist section.
     if (!["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"].every(name => Object.hasOwn(session.snapshot?.ok ?? {}, name))) {
@@ -701,13 +701,21 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     }
     try {
       const instance = cachedClient(session, ["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"]);
+      const request=instance.request,dailyFailure=taskSnapshot?.failed?.DailyTaskInfoRequest,giftFailure=taskSnapshot?.failed?.DailyGiftPackRequest;
+      instance.request=(name,...args)=>{
+        const failure=name==='DailyTaskInfoRequest'?dailyFailure:name==='DailyGiftPackRequest'?giftFailure:null;
+        if(!failure)return request(name,...args);
+        instance.errors.set(name,String(failure));
+        if(name==='DailyTaskInfoRequest')return Promise.resolve({});
+        return Promise.reject(new Error(String(failure)));
+      };
       const survey = await surveyDailies(instance, protocol, { config, player: session.player });
       survey.tasks = survey.tasks.map((entry) => {
         if (entry.status === 'done') return entry;
         const missing = (DAILY_DRIVERS[entry.task.id]?.probes ?? []).map(([name]) => instance.errors.get(name)).filter(Boolean);
         return missing.length ? { task: entry.task, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
       });
-      const chestsUnavailable = Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
+      const chestsUnavailable = dailyFailure ? '每日任务来源已变化或不可确认，请重新采集' : Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
       if (chestsUnavailable) survey.chests = null;
       const text = formatSurvey(survey) + (chestsUnavailable ? '\n' + chestsUnavailable : '');
       return { ...base, tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
