@@ -1,11 +1,12 @@
 import { observeOrderProgress, observeOrderRefreshTiming } from './order-execution.mjs';
 import http from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { runtimeAssetReadiness } from './asset-readiness.mjs';
 import { createWriterOwnership } from './writer-ownership.mjs';
 import { createOperationService } from './operation-service.mjs';
 import { createWorkflowRunner, createWorkflowStore, exampleWorkflows, projectWorkflowExecutionHistory, simulateWorkflow, validateWorkflow } from './workflow.mjs';
 import { createExecutionHistory } from './execution-history.mjs';
+import { provenNotDispatched } from './operation-recovery.mjs';
 import { createExecutionMemory } from './execution-memory.mjs';
 import { createNamedFormationStore } from './named-formations.mjs';
 import { GAMEPLAY_MODULES, registerBusinessFunction } from './function-registry.mjs';
@@ -348,6 +349,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       return [kind,valid ? { streamId:fact.streamId, revision:fact.cacheRevision } : null];
     }));
   }
+  // Compare original durable dispatch evidence, including silent claims from any Service entry.
+  // This is cache invalidation only; a result or reconciliation never grants qualification.
+  function taskRewardWriteVersions(session) {
+    try {
+      const records=typeof history.originalRecords==='function' ? history.originalRecords(session.id) : history.list(session.id);
+      const writes={MainTaskInfoRequest:[],AchievementInfoRequest:[]};
+      for(const run of records)for(const row of run.actions) {
+        if(run.accountId!==session.id || row.module!=='task-rewards' || provenNotDispatched(row))continue;
+        const source=['main','branch'].includes(row.parameters?.kind) ? 'MainTaskInfoRequest' : row.parameters?.kind==='achievement' ? 'AchievementInfoRequest' : null;
+        if(source)writes[source].push(JSON.stringify([run.runId,row.actionId]));
+      }
+      return Object.fromEntries(Object.entries(writes).map(([name,ids])=>[name,createHash('sha256').update(JSON.stringify(ids.sort())).digest('hex')]));
+    } catch { return null; }
+  }
   function taskSnapshotFailures(session) {
     const requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest'],binding=taskSnapshotBindings.get(session),failures={};
     const context=overviewCacheContext(session),known=context.accountId && context.connectionId && context.playerId && context.worldId && Number.isSafeInteger(context.generation);
@@ -356,6 +371,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     if (binding.invalidated) return Object.fromEntries(requests.map(name=>[name,'TASK_CACHE_STALE']));
     const bodies=Object.hasOwn(session.snapshot,'raw') ? session.snapshot.raw : session.snapshot.ok;
     for(const name of requests)if(!Object.hasOwn(session.snapshot.ok??{},name) || Object.hasOwn(session.snapshot.failed??{},name) || session.snapshot.outcomes?.[name]?.status && session.snapshot.outcomes[name].status!=='SUCCESS' || !bodies?.[name] || typeof bodies[name]!=='object' || Array.isArray(bodies[name]))failures[name]='TASK_CACHE_SOURCE_UNAVAILABLE';
+    const writes=taskRewardWriteVersions(session);
+    for(const name of ['MainTaskInfoRequest','AchievementInfoRequest']) {
+      if(!binding.writes || !writes)failures[name]='TASK_CACHE_HISTORY_UNAVAILABLE';
+      else if(binding.writes[name]!==writes[name])failures[name]='TASK_CACHE_REWARD_WRITE';
+    }
     const current=taskStreamVersions(session);
     for(const [name,kinds] of [['MainTaskInfoRequest',['main','branch']],['AchievementInfoRequest',['achievement']]]) {
       if (binding.streams!==null && (current===null || kinds.some(kind=>!binding.streams[kind] || !current[kind]
@@ -381,13 +401,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const instance = await ensureConnected(session);
       assertCurrent(session, generation, instance);
       session.busy = '采集只读状态';
-      const snapshotContext=overviewCacheContext(session),resetBefore=currentDailyReset(session),taskStreams=taskStreamVersions(session);
+      const snapshotContext=overviewCacheContext(session),resetBefore=currentDailyReset(session),taskStreams=taskStreamVersions(session),taskWrites=taskRewardWriteVersions(session);
       const trackReset=instance instanceof GameClient || session.snapshotDailyReset!==null && session.snapshotDailyReset!==undefined || resetBefore!==null;
       const result = await activeTask(signal, collect(instance, protocol, { timeout: 15000 }));
       assertCurrent(session, generation, instance);
       session.snapshot = result;
       session.snapshotContext = snapshotContext;
-      taskSnapshotBindings.set(session, { snapshot:result, client:instance, context:snapshotContext, streams:taskStreams });
+      taskSnapshotBindings.set(session, { snapshot:result, client:instance, context:snapshotContext, streams:taskStreams, writes:taskWrites });
       session.snapshotAt = new Date().toISOString();
       session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null,cacheRevision:resetBefore?.cacheRevision??null} : null;
       session.snapshotStale = dailySnapshotInvalid(session);

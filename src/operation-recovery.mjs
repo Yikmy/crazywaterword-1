@@ -36,7 +36,7 @@ function sameFormation(a, b) {
   const left = completeFormation(a), right = completeFormation(b);
   return left !== null && right !== null && same(left, right);
 }
-function provenNotDispatched(row) {
+export function provenNotDispatched(row) {
   const proof = row.dispatchEvidence;
   if (!object(proof) || proof.version !== 1 || proof.contract !== RECOVERY_DISPATCH_CONTRACT || proof.state !== 'NOT_DISPATCHED') return false;
   if (row.dispatched === true || row.unresolvedWrite === true || row.verifiedReceipt ||

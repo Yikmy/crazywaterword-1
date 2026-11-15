@@ -42,10 +42,10 @@ class FakeClient extends EventEmitter {
   expire(state) { this.connected = false; this.state = state; this.emit('state', { state, detail: 'synthetic terminal condition' }); }
 }
 
-async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, clientFactory, protocol = {}, collect = async () => snapshot() } = {}) {
+async function harness({ assetRoot, writerOwnership, connectGate, connectImpl, clientFactory, operationOptions = {}, protocol = {}, collect = async () => snapshot() } = {}) {
   saveStore({ version: 1, activeId: 'account-A', accounts: [credential('account-A'), credential('account-B')] });
   const clients = []; let collects = 0;
-  const app = createConsole({ ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol, tracePath: path.join(sandbox, 'trace.log'), clientFactory: (options) => { const client = clientFactory ? clientFactory(options) : new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
+  const app = createConsole({ operationOptions, ...(assetRoot?{assetRoot}:{}), ...(writerOwnership ? { writerOwnership } : {}), port: 0, protocol, tracePath: path.join(sandbox, 'trace.log'), clientFactory: (options) => { const client = clientFactory ? clientFactory(options) : new FakeClient(connectGate); if (connectImpl) client.connect = connectImpl; clients.push(client); return client; }, collect: async (...args) => { collects++; return collect(...args); } });
   await app.listen(); const port = app.server.address().port;
   function call(route, { method = 'GET', account = 'account-A', body, headers = {}, rawBody } = {}) {
     const url = new URL(route, 'http://127.0.0.1:' + port); if (account) url.searchParams.set('account', account);
@@ -668,5 +668,85 @@ for(const [name,kind]of [['MainTaskInfoRequest','main'],['AchievementInfoRequest
    session.snapshot.ok[name]=old;delete session.snapshot.failed[name];session.snapshot.outcomes[name]={status:'SUCCESS'};
   }
   assert.equal(app.collects,1);assert.equal(app.sent.length,sent);
+ }finally{await app.close();}
+});
+
+// Real original Service, registry, codec and durable history; all task responses and sends are synthetic.
+async function taskRewardCacheHarness({kind='main',outcome='SUCCESS',onWrite=null}={}) {
+ const {createExecutionHistory}=await import('../src/execution-history.mjs'),{loadConfig}=await import('../src/config.mjs');
+ const history=createExecutionHistory({file:path.join(sandbox,'task-cache-'+kind+'-'+outcome+'.json')}),config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')}),state=taskRuntimeSnapshot(),writes=[],reads=[];
+ state.raw.AllItemRequest={items:[{itemId:'塑料',num:20}]};state.raw.AllResourceRequest={list:[{res:1,amount:100},{res:3,amount:200},{res:4,amount:50}]};state.ok=structuredClone(state.raw);
+ const app=await dailyRuntimeHarness({collect:async()=>structuredClone(state),operationOptions:{history,getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:{enabled:true}})}}});
+ await app.login();await app.refresh();
+ const session=app.sessions.get('account-A'),client=session.client;
+ client.request=async(name,body,response)=>{reads.push(name);assert.ok(state.raw[name],'unexpected task read '+name);return client.codec.decode(client.codec.encode(response,0,state.raw[name])).body;};
+ client.sendWatch=async(name,body,options)=>{
+  options.beforeDispatch?.();writes.push({name,body:structuredClone(body)});
+  await onWrite?.(app);
+  if(outcome==='SUCCESS'){
+   if(kind==='achievement'){state.raw.AchievementInfoRequest.task[0].rewardClaimed=true;state.raw.AllResourceRequest.list[2].amount+=20;}
+   else{
+    const reward=config.tables[kind==='main'?'MainTaskCfg':'BranchTaskCfg'].data.find(row=>row.taskId===body.taskId).reward;
+    if(kind==='main')state.raw.MainTaskInfoRequest.task.rewardClaimed=true;else state.raw.MainTaskInfoRequest.branch=[];
+    for(const[id,num]of reward){if(id==='EXP')state.raw.AllResourceRequest.list[0].amount+=num;else{let item=state.raw.AllItemRequest.items.find(row=>row.itemId===id);if(!item)state.raw.AllItemRequest.items.push(item={itemId:id,num:0});item.num+=num;}}
+   }
+   state.ok=structuredClone(state.raw);
+  }
+  return {status:outcome==='REJECTED'?'REJECTED':'UNKNOWN'};
+ };
+ const parameters={kind,taskId:kind==='main'?1:kind==='branch'?8001:1001};
+ async function plan(){const result=await app.operations.surveyModule(session,'task-rewards',parameters),candidate=result.view.candidates.find(row=>row.executable);assert.ok(candidate,JSON.stringify(result.view));return app.operations.plan(session,{module:'task-rewards',mode:'Manual',parameters,selections:[candidate.actionId]});}
+ function authorize(plan){return app.operations.authorize(session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});}
+ return {...app,history,state,writes,reads,session,plan,authorize,get collects(){return app.collects;}};
+}
+for(const kind of ['main','branch','achievement'])for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('silent original Service claim invalidates only its task cache '+kind+' '+outcome,async()=>{
+ const app=await taskRewardCacheHarness({kind,outcome});try{
+  const source=kind==='achievement'?'AchievementInfoRequest':'MainTaskInfoRequest',other=kind==='achievement'?'MainTaskInfoRequest':'AchievementInfoRequest';
+  const original=JSON.stringify(app.session.snapshot),plan=await app.plan();assert.equal((await app.call('/api/tasks')).data.sources[source].status,'OBSERVED');
+  const permit=app.authorize(plan);assert.equal((await app.call('/api/tasks')).data.sources[source].status,'OBSERVED');
+  app.operations.executeTaskRewards(app.session,permit);await app.operations.settle('account-A');
+  const record=app.history.originalRecords('account-A')[0];assert.equal(record.finalStatus,outcome);assert.equal(record.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.equal(app.writes.length,1);
+  const sent=app.sent.length,reads=app.reads.length,result=(await app.call('/api/tasks')).data;
+  assert.equal(result.sources[source].status,'UNKNOWN');assert.equal(result.sources[source].reason,'TASK_CACHE_REWARD_WRITE');assert.equal(result.sources[other].status,'OBSERVED');assert.equal(result.sources.OnWaterRequest.status,'OBSERVED');
+  assert.equal(result.plan.some(row=>kind==='achievement'?row.kind==='achievement':['main','branch'].includes(row.kind)),false);
+  if(kind==='achievement'){assert.equal((await app.call('/api/dailies')).data.checklist.sources.achievements.status,'UNKNOWN');assert.equal((await app.call('/api/overview')).data.activityAlliance.checklist.sources.achievements.status,'UNKNOWN');}
+  assert.equal(app.reads.length,reads);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);assert.equal(JSON.stringify(app.session.snapshot),original);
+  if(outcome==='SUCCESS'){await app.refresh();const fresh=(await app.call('/api/tasks')).data;assert.equal(fresh.sources[source].status,'OBSERVED');assert.equal(fresh.plan.some(row=>row.kind===kind),false);}
+  else{await assert.rejects(app.plan());assert.equal(app.writes.length,1);assert.equal((await app.call('/api/tasks')).data.sources[source].status,'UNKNOWN');}
+ }finally{await app.close();}
+});
+test('original pre-dispatch evidence keeps task cache observed when fresh execution eligibility changed',async()=>{
+ const app=await taskRewardCacheHarness({outcome:'NOT_EXECUTED'});try{
+  const plan=await app.plan(),permit=app.authorize(plan);app.state.raw.MainTaskInfoRequest.task.progress=0;
+  app.operations.executeTaskRewards(app.session,permit);await app.operations.settle('account-A');
+  const record=app.history.originalRecords('account-A')[0];assert.equal(record.finalStatus,'NOT_EXECUTED');assert.equal(record.actions[0].dispatchEvidence.state,'NOT_DISPATCHED');assert.equal(app.writes.length,0);
+  assert.equal((await app.call('/api/tasks')).data.sources.MainTaskInfoRequest.status,'OBSERVED');assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+
+test('write-ahead task intent invalidates cache while silent claim response is still pending',async()=>{
+ const gate=deferred();let dispatched=false;
+ const app=await taskRewardCacheHarness({onWrite:async current=>{
+  dispatched=true;const result=(await current.call('/api/tasks')).data;assert.equal(result.sources.MainTaskInfoRequest.reason,'TASK_CACHE_REWARD_WRITE');await gate.promise;
+ }});
+ try{
+  const permit=app.authorize(await app.plan());app.operations.execute(app.session,permit);await until(()=>dispatched);
+  assert.equal((await app.call('/api/tasks')).data.sources.MainTaskInfoRequest.status,'UNKNOWN');assert.equal(app.writes.length,1);
+  gate.resolve();await app.operations.settle('account-A');assert.equal(app.history.originalRecords('account-A')[0].finalStatus,'SUCCESS');
+  assert.equal((await app.call('/api/tasks')).data.sources.MainTaskInfoRequest.status,'UNKNOWN');
+ }finally{gate.resolve();await app.close();}
+});
+test('task cache history fingerprint ignores other accounts and daily or season task contracts',async()=>{
+ const app=await taskRewardCacheHarness();try{
+  app.operations.execute(app.session,app.authorize(await app.plan()));await app.operations.settle('account-A');await app.refresh();
+  const original=app.history.originalRecords('account-A')[0];
+  const foreign=structuredClone(original);foreign.runId+='-other-account';foreign.accountId='account-B';foreign.executionContext.accountId='account-B';app.history.put(foreign);
+  for(const kind of ['daily','weekly-chip-task']){const row=structuredClone(original);row.runId+='-'+kind;row.actions[0].parameters={kind,taskId:1,round:7};app.history.put(row);}
+  const sent=app.sent.length,reads=app.reads.length,result=(await app.call('/api/tasks')).data;assert.equal(result.stale,false);assert.ok(Object.values(result.sources).every(row=>row.status==='OBSERVED'));assert.equal(app.sent.length,sent);assert.equal(app.reads.length,reads);
+  // Unreadable original history hides only the dependent task sources; restoring
+  // its exact original evidence cannot invent writes or invalidate unrelated data.
+  const source=app.history.originalRecords;app.history.originalRecords=()=>{throw Error('synthetic unreadable history');};
+  const unavailable=(await app.call('/api/tasks')).data;assert.equal(unavailable.sources.MainTaskInfoRequest.reason,'TASK_CACHE_HISTORY_UNAVAILABLE');assert.equal(unavailable.sources.AchievementInfoRequest.reason,'TASK_CACHE_HISTORY_UNAVAILABLE');assert.equal(unavailable.sources.OnWaterRequest.status,'OBSERVED');app.history.originalRecords=source;
+  assert.equal((await app.call('/api/tasks')).data.stale,false);assert.equal(app.writes.length,1);
  }finally{await app.close();}
 });
