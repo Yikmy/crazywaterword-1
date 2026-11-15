@@ -215,7 +215,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     } finally { release(); }
   }
   function adapterFor(id) { if (!Object.hasOwn(modules, id)) throw error('未注册玩法', 'INVALID_INPUT', 400); return modules[id]; }
-  function executionAdapter(session,id) { const adapter=adapterFor(id),accountId=session.id;return id==='afk-level-rewards'?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,readIncomeHistory:()=>history.list(accountId)});}}:adapter; }
+  function executionAdapter(session,id) { const adapter=adapterFor(id),accountId=session.id;return ['afk-level-rewards','farm'].includes(id)?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,[id==='farm'?'readHarvestHistory':'readIncomeHistory']:()=>history.list(accountId)});}}:adapter; }
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id] ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
   function cacheModule(accountId, id, facts, options) {
     moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:clone(Object.fromEntries(Object.entries(facts).filter(([,value])=>typeof value!=='function')))});

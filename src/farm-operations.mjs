@@ -35,13 +35,14 @@ export function validateFarmConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateFarmParameters(v={}) {
-  if(!fields(v,['buildingId','action','productId','pendingHarvests','pendingPlants']))throw invalid('农田参数仅允许 buildingId、action、productId、pendingHarvests、pendingPlants');
+  if(!fields(v,['buildingId','action','productId','pendingHarvests','pendingPlants','replant']))throw invalid('农田参数仅允许 buildingId、action、productId、pendingHarvests、pendingPlants、replant');
   const out={};
   if(own(v,'buildingId')){if(!id(v.buildingId))throw invalid('地块ID无效');out.buildingId=v.buildingId;}
   if(own(v,'action')){if(!['harvest','plant'].includes(v.action))throw invalid('农田动作仅允许 harvest 或 plant');out.action=v.action;}
   if(own(v,'productId')){if(v.action!=='plant'||!id(v.productId))throw invalid('productId仅用于明确plant作物');out.productId=v.productId;}
   if(own(v,'pendingHarvests')){const sources=validateHarvestSources(v.pendingHarvests);if(v.action!=='harvest'||!id(v.buildingId)||sources[0].buildingId!==v.buildingId)throw invalid('收取来源守卫只用于明确首块地的harvest');out.pendingHarvests=sources;}
   if(own(v,'pendingPlants')){const sources=validatePlantSources(v.pendingPlants);if(v.action!=='plant'||!id(v.buildingId)||!id(v.productId)||sources[0].buildingId!==v.buildingId||sources[0].productId!==v.productId)throw invalid('播种来源守卫只用于明确首块空田和自选作物的plant');out.pendingPlants=sources;}
+  if(own(v,'replant')){const rows=validateReplantSources(v.replant);if(!['harvest','plant'].includes(v.action)||v.buildingId!==rows[0].buildingId||own(v,'pendingPlants')||v.action==='plant'&&(v.productId!==rows[0].nextProductId||own(v,'pendingHarvests'))||v.action==='harvest'&&own(v,'pendingHarvests')&&!same(v.pendingHarvests,rows.map(originalHarvestSource)))throw invalid('再播种须绑定当前原田块、作物、种子成本及明确先收后种顺序');out.replant=rows;}
   return out;
 }
 function validateHarvestSources(v){
@@ -49,7 +50,13 @@ function validateHarvestSources(v){
   const out=[];for(const row of v){if(!fields(row,['buildingId','productId','plantTime','ripeTime','identity'])||!['buildingId','productId','plantTime','ripeTime','identity'].every(k=>own(row,k))||!id(row.buildingId)||!id(row.productId)||!positive(row.plantTime)||!uint(row.ripeTime)||row.ripeTime<row.plantTime||typeof row.identity!=='string'||! /^[a-f0-9]{64}$/.test(row.identity)||out.some(r=>r.buildingId===row.buildingId))throw invalid('收取来源须保留地块、作物、种植成熟秒数及原身份');out.push(copy(row));}return out;
 }
 export function validateFarmHarvestPreparation(v){
-  if(!fields(v,['targets','maxDurationMs'])||!own(v,'targets')||!own(v,'maxDurationMs')||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('有限收取须明确原目标及1至86400000毫秒总时长');return {targets:validateHarvestSources(v.targets),maxDurationMs:v.maxDurationMs};
+  if(!fields(v,['targets','maxDurationMs','replant'])||!own(v,'targets')||!own(v,'maxDurationMs')||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('有限收取须明确原目标及1至86400000毫秒总时长');const targets=validateHarvestSources(v.targets),out={targets,maxDurationMs:v.maxDurationMs};
+  if(own(v,'replant')){if(!Array.isArray(v.replant)||Object.getPrototypeOf(v.replant)!==Array.prototype||Reflect.ownKeys(v.replant).length!==targets.length+1||v.replant.length!==targets.length||!targets.every((t,i)=>Object.getOwnPropertyDescriptor(v.replant,i)?.enumerable&&own(Object.getOwnPropertyDescriptor(v.replant,i),'value')&&fields(v.replant[i],['buildingId','productId'])&&['buildingId','productId'].every(k=>own(v.replant[i],k))&&v.replant[i].buildingId===t.buildingId&&id(v.replant[i].productId)))throw invalid('再播种必须明确每块原田的下一作物，顺序和数量须与收取一致');out.replant=copy(v.replant);}return out;
+}
+function originalHarvestSource(row){return {buildingId:row.buildingId,productId:row.productId,plantTime:row.plantTime,ripeTime:row.ripeTime,identity:row.identity};}
+function validateReplantSources(v){
+  if(!Array.isArray(v)||Object.getPrototypeOf(v)!==Array.prototype||v.length<1||v.length>12||Reflect.ownKeys(v).length!==v.length+1||!Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&own(d,'value')))throw invalid('再播种来源必须为明确1至12田有序数组');
+  for(const row of v)if(!fields(row,['buildingId','productId','plantTime','ripeTime','identity','nextProductId','seedId','seedNum'])||!['buildingId','productId','plantTime','ripeTime','identity','nextProductId','seedId','seedNum'].every(k=>own(row,k))||!id(row.nextProductId)||!id(row.seedId)||premium(row.seedId)||safeResourceQuantity(row.seedNum)===null||row.seedNum<=0)throw invalid('再播种来源、下一作物和初始种子成本不完整');validateHarvestSources(v.map(originalHarvestSource));return copy(v);
 }
 function validatePlantSources(v){
   if(!Array.isArray(v)||Object.getPrototypeOf(v)!==Array.prototype||v.length<1||v.length>12||Reflect.ownKeys(v).length!==v.length+1||!Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&own(d,'value')))throw invalid('播种来源须为1至12块不同空田及自选作物的明确有序数组');
@@ -131,12 +138,14 @@ export async function surveyFarmOperations(client,protocol,options={}) {
   const core=await surveyCoreOperations(client,protocol,{...options,parameters:{}});assertExecutionActive(client,options);
   if(!same(context,client.factContext??{}))throw Object.assign(new Error('农田采集期间账号或代次已变化'),{code:'CANCELLED'});
   const facts=decorateFarmSurvey(core,{config:options.config,protocol,context,player:options.player,sourceAt,time:readGameTime(client)});
-  liveFarmFacts.set(facts,{client,player:options.player,context:copy(context),digest:farmDigest(facts)});return facts;
+  const history=options.parameters?.action==='plant'&&options.parameters?.replant?{readHarvestHistory:options.readHarvestHistory,harvestSettlements:readHarvestSettlements(options.readHarvestHistory,context,options.player)}:{};
+  liveFarmFacts.set(facts,{client,player:options.player,context:copy(context),digest:farmDigest(facts),...history});return facts;
 }
 const farmDigest=f=>hash({...f,stock:[...f.stock]});
 function currentFarmSurvey(facts) {
   const live=liveFarmFacts.get(facts),context=live?.context;
   if(!live||live.client.connected!==true||!id(context.connectionId)||!same(context,live.client.factContext)||!same(contextOf(context,live.player),facts.identityContext)||live.digest!==farmDigest(facts))return null;
+  if(own(live,'harvestSettlements')&&!same(live.harvestSettlements,readHarvestSettlements(live.readHarvestHistory,context,live.player)))return null;
   return live;
 }
 function harvestClock(facts) {
@@ -160,6 +169,25 @@ function farmTargetIdentity(facts,plot){return plot?hash({context:facts.identity
 function harvestPlotSource(facts,plot){return plot?.reliable&&plot.productId?{buildingId:plot.buildingId,productId:plot.productId,plantTime:plot.plantTime,ripeTime:plot.ripeTime,identity:farmTargetIdentity(facts,plot)}:null;}
 function plantPlotIdentity(facts,plot,productId){return plot?hash({context:facts.identityContext,targetPlot:plot.raw,autoFarming:facts.autoFarming,crop:facts.catalog?.crops?.find(r=>r.productId===productId),buildingTypes:facts.catalog.types}):null;}
 function plantPlotSource(facts,plot,productId){return plot?.reliable&&plot.state==='EMPTY'?{buildingId:plot.buildingId,productId,identity:plantPlotIdentity(facts,plot,productId)}:null;}
+function readHarvestSettlements(read,context,player){
+ try{if(typeof read!=='function')return null;const runs=read();if(!Array.isArray(runs))return null;const current={...contextOf(context,player),connectionId:context.connectionId},scope=c=>c&&{accountId:c.accountId,generation:c.generation,playerId:exactIdentity(c.playerId),worldId:exactIdentity(c.worldId),connectionId:c.connectionId},out=[];
+  const relevant=runs.filter(r=>r?.accountId===current.accountId&&same(scope(r.executionContext),current)&&r.module==='farm'&&id(r.runId)&&Array.isArray(r.actions));
+  for(const run of relevant){if(run.finalStatus!=='SUCCESS'||!id(run.planSummary?.batchId)||run.authorizationSummary?.batchId!==run.planSummary.batchId||run.authorizationSummary?.planHash!==run.planSummary.planHash||!id(run.planSummary.planHash)||run.actions.length!==1||!Number.isFinite(Date.parse(run.startedAt))||!Number.isFinite(Date.parse(run.finishedAt))||Date.parse(run.finishedAt)<Date.parse(run.startedAt))continue;const row=run.actions[0],before=row.beforeState,after=row.afterState,received=row.responseEvidence,planned=run.planSummary.actions; if(run.planSummary.module!=='farm'||!dense(planned)||planned.length!==1||['module','actionId','actionType','target','parameters','beforeState','expectedState','identity','costs','costSource','budgetClaims'].some(k=>!same(planned[0][k],row[k]))||!same(row.costs,[])||!same(run.authorizationSummary.resourceBudget,[])||!same(run.planSummary.resourceBudget,[]))continue;
+   if(row.module!=='farm'||row.actionType!=='HARVEST'||row.result!=='SUCCESS'||row.requestStatus!=='SUCCESS'||row.dispatched!==true||row.unresolvedWrite!==false||row.verification?.status!=='CONFIRMED'||row.beforeInventoryReliable!==true||row.afterInventoryReliable!==true||!id(row.actionId)||!same(run.authorizationSummary.actionIds,[row.actionId])||row.parameters?.action!=='harvest'||row.parameters.buildingId!==before?.buildingId||!before?.farm||!after?.farm||!same(parsePlot(after,['农田'])?.state,'EMPTY')||!same(Object.fromEntries(Object.entries(before).filter(([k])=>k!=='farm')),Object.fromEntries(Object.entries(after).filter(([k])=>k!=='farm'))))continue;
+   const source={buildingId:before.buildingId,productId:before.farm.productId,plantTime:before.farm.plantTime,ripeTime:before.farm.ripeTime,identity:row.identity};try{validateHarvestSources([source]);}catch{continue;}if(!same(row.target,{buildingId:source.buildingId,productId:source.productId})||row.actionId!=='farm:HARVEST:'+hash(row.target)||received?.buildingId!==source.buildingId||received.productId!==source.productId||safeResourceQuantity(received.num)===null||received.num<=0||!dense(received.critical)||!received.critical.length||received.critical.some(n=>!uint(n)))continue;
+   const stock=v=>{if(!dense(v)||v.some(r=>!fields(r,['id','num'])||!id(r.id)||safeResourceQuantity(r.num)===null)||new Set(v.map(r=>r.id)).size!==v.length)return null;return new Map(v.map(r=>[r.id,r.num]));},a=stock(row.beforeInventory),b=stock(row.afterInventory);if(!a||!b||[...new Set([...a.keys(),...b.keys(),source.productId])].some(k=>!Number.isSafeInteger((a.get(k)??0)+(k===source.productId?received.num:0))||(b.get(k)??0)!==(a.get(k)??0)+(k===source.productId?received.num:0)))continue;
+   if(relevant.some(r=>r.finalStatus==='SUCCESS'&&Number.isFinite(Date.parse(r.finishedAt))&&Date.parse(r.finishedAt)>=Date.parse(run.startedAt)&&r.actions.some(p=>p.actionType==='PLANT'&&p.result==='SUCCESS'&&p.verification?.status==='CONFIRMED'&&p.target?.buildingId===source.buildingId)))continue;
+   out.push({runId:run.runId,batchId:run.planSummary.batchId,actionId:row.actionId,source,beforeState:copy(before),afterState:copy(after)});
+  }return out.sort((a,b)=>stableBusinessValue(a).localeCompare(stableBusinessValue(b)));
+ }catch{return null;}
+}
+function replantGuard(facts,parameters){
+ const rows=parameters.replant;if(!rows)return null;if(!currentFarmSurvey(facts))return 'FARM_REPLANT_CONNECTION_OR_HISTORY_UNKNOWN';const ledger=new ResourceLedger(facts.stock);
+ for(let i=0;i<rows.length;i++){const row=rows[i],plot=facts.plots.find(p=>p.buildingId===row.buildingId),crop=facts.catalog.crops.find(c=>c.productId===row.nextProductId);if(!crop?.reliable||!same(crop.costs,[{id:row.seedId,num:row.seedNum}]))return 'FARM_REPLANT_COST_CHANGED';if(!ledger.reserve(crop.costs))return 'FARM_REPLANT_TOTAL_SEED_SHORTAGE';
+  if(parameters.action==='plant'&&i===0){const proofs=liveFarmFacts.get(facts)?.harvestSettlements?.filter(p=>same(p.source,originalHarvestSource(row))&&p.source.identity===farmTargetIdentity(facts,parsePlot(p.beforeState,facts.catalog.types))&&same(p.afterState,plot?.raw));if(proofs?.length!==1)return 'FARM_REPLANT_CONFIRMED_HARVEST_REQUIRED';}
+  else if(!same(originalHarvestSource(row),harvestPlotSource(facts,plot)))return 'FARM_REPLANT_SOURCE_CHANGED';
+ }return null;
+}
 function candidate(facts,parameters,{moduleConfig=FARM_DEFAULT_CONFIG}={}) {
   const plot=facts?.plots?.find(r=>r.buildingId===parameters.buildingId),actionType=parameters.action==='plant'?'PLANT':'HARVEST';
   const crop=facts?.catalog?.crops?.find(r=>r.productId===(parameters.productId??plot?.productId));
@@ -183,6 +211,7 @@ function candidate(facts,parameters,{moduleConfig=FARM_DEFAULT_CONFIG}={}) {
   else if(!facts.available?.includes('FarmPlantRequest'))reason='FARM_PLANT_PROTOCOL_UNAVAILABLE';
   else if(costs.some(r=>premium(r.id)||safeResourceQuantity(facts.stock.get(r.id)??0)<r.num))reason='SEED_STOCK_INSUFFICIENT_OR_D6_FORBIDDEN';
   else if(parameters.pendingPlants&&(!currentFarmSurvey(facts)||parameters.pendingPlants.some(row=>!same(row,plantPlotSource(facts,facts.plots.find(p=>p.buildingId===row.buildingId),row.productId)))))reason='FARM_PLANT_SOURCE_CHANGED';
+  if(reason===null)reason=replantGuard(facts,parameters);
   const target={buildingId:parameters.buildingId??null,...(actionType==='PLANT'?{productId:parameters.productId??null}:{productId:plot?.productId??null})};
   const beforeState=plot?copy(plot.raw):null;
   const expectedState=actionType==='PLANT'?{buildingId:target.buildingId,productId:target.productId,seedCosts:costs,autoFarming:false,requiresCompleteCropState:true}:
@@ -196,8 +225,8 @@ function choices(facts,parameters) {
   const out=[];
   for(const plot of facts?.plots??[]) {
     if(parameters.buildingId&&parameters.buildingId!==plot.buildingId)continue;
-    if(parameters.action!=='plant')out.push({buildingId:plot.buildingId,action:'harvest',...(parameters.pendingHarvests?{pendingHarvests:copy(parameters.pendingHarvests)}:{})});
-    if(parameters.action!=='harvest')for(const crop of facts?.catalog?.crops??[]){if(!id(crop.productId)||parameters.productId&&parameters.productId!==crop.productId||out.some(row=>row.buildingId===plot.buildingId&&row.action==='plant'&&row.productId===crop.productId))continue;out.push({buildingId:plot.buildingId,action:'plant',productId:crop.productId,...(parameters.pendingPlants?{pendingPlants:copy(parameters.pendingPlants)}:{})});}
+    if(parameters.action!=='plant')out.push({buildingId:plot.buildingId,action:'harvest',...(parameters.pendingHarvests?{pendingHarvests:copy(parameters.pendingHarvests)}:{}),...(parameters.replant?{replant:copy(parameters.replant)}:{})});
+    if(parameters.action!=='harvest')for(const crop of facts?.catalog?.crops??[]){if(!id(crop.productId)||parameters.productId&&parameters.productId!==crop.productId||out.some(row=>row.buildingId===plot.buildingId&&row.action==='plant'&&row.productId===crop.productId))continue;out.push({buildingId:plot.buildingId,action:'plant',productId:crop.productId,...(parameters.pendingPlants?{pendingPlants:copy(parameters.pendingPlants)}:{}),...(parameters.replant?{replant:copy(parameters.replant)}:{})});}
   }
   return out.length?out:[parameters];
 }
@@ -247,11 +276,17 @@ export function verifyFarmOperation(operation,beforeFacts,afterFacts,response) {
   return {confirmed:true,reason:'新OnWater精确地块/作物与AllItem+AllResource精确种子净扣确认；静默窗口本身不是成功',afterState:copy(after.raw)};
 }
 export function prepareFarmHarvestWorkflow(facts,{config,moduleConfig=FARM_DEFAULT_CONFIG,...payload}={}){
-  const p=validateFarmHarvestPreparation(payload);if(!authority(facts)||!harvestClock(facts)||!same(facts.catalog,catalogFrom(config)))throw invalid('收取准备需要当前连接可信事实、完整配置和服务器时钟');
-  const budget={resources:[],quotas:[],uids:[]},nodes=[{id:'start',type:'START'}];
-  for(let i=0;i<p.targets.length;i++){const source=p.targets[i],parameters={buildingId:source.buildingId,action:'harvest',pendingHarvests:copy(p.targets.slice(i))},row=candidate(facts,parameters,{moduleConfig:validateFarmConfig(moduleConfig)});if(!row.executable||!same(source,harvestPlotSource(facts,facts.plots.find(plot=>plot.buildingId===source.buildingId))))throw invalid('原地块来源、成熟资格或独立单田合同不满足：'+(row.blockedReason??source.buildingId));budget.uids.push(...copy(row.budgetClaims.uids));nodes.push({id:'harvest-'+i,type:'ACTION',module:'farm',parameters,selection:{unique:true}},{id:'verify-'+i,type:'VERIFY',module:'farm'});}
-  nodes.push({id:'stop',type:'STOP'});const graph={version:1,id:'farm-harvest-'+hash(p).slice(0,20),name:'明确农田有限顺序收取',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:p.targets.length,modules:['farm']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
-  return {targets:copy(p.targets),graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'按明确顺序逐田收取，每步复用原单田合同及独立库存净入确认。固定所有尚未收取目标的作物、种植成熟时间及身份；发生变化、拒绝、UNKNOWN或到限停止后继。仅预留原地块UID，不预估奖励或扩大预算。准备不授权、不派发，重启只读不重放；不开放批量请求结算。'};
+ const p=validateFarmHarvestPreparation(payload);if(!authority(facts)||!harvestClock(facts)||!same(facts.catalog,catalogFrom(config)))throw invalid('收取准备需要当前连接可信事实、完整配置和服务器时钟');
+ const ledger=new ResourceLedger(facts.stock),replant=p.replant?.map((next,i)=>{const crop=facts.catalog.crops.find(c=>c.productId===next.productId);if(!crop?.reliable||!facts.available.includes('FarmPlantRequest')||!ledger.reserve(crop.costs))throw invalid('初始自有种子或明确下一作物配置不足，不能预支未来收取收入');return {...copy(p.targets[i]),nextProductId:next.productId,seedId:crop.costs[0].id,seedNum:crop.costs[0].num};});
+ const budget=ledger.reservationSummary(),nodes=[{id:'start',type:'START'}];
+ for(let i=0;i<p.targets.length;i++){
+  const source=p.targets[i],parameters={buildingId:source.buildingId,action:'harvest',pendingHarvests:copy(p.targets.slice(i)),...(replant?{replant:copy(replant.slice(i))}:{})},row=candidate(facts,parameters,{moduleConfig:validateFarmConfig(moduleConfig)});
+  if(!row.executable||!same(source,harvestPlotSource(facts,facts.plots.find(plot=>plot.buildingId===source.buildingId))))throw invalid('原地块来源、成熟资格或独立单田合同不满足：'+(row.blockedReason??source.buildingId));
+  budget.uids.push(...copy(row.budgetClaims.uids));nodes.push({id:'harvest-'+i,type:'ACTION',module:'farm',parameters,selection:{unique:true}},{id:(replant?'verify-harvest-':'verify-')+i,type:'VERIFY',module:'farm'});
+  if(replant)nodes.push({id:'plant-'+i,type:'ACTION',module:'farm',parameters:{buildingId:source.buildingId,action:'plant',productId:replant[i].nextProductId,replant:copy(replant.slice(i))},selection:{unique:true}},{id:'verify-plant-'+i,type:'VERIFY',module:'farm'});
+ }
+ nodes.push({id:'stop',type:'STOP'});const graph={version:1,id:(replant?'farm-replant-':'farm-harvest-')+hash(p).slice(0,20),name:replant?'明确农田收取确认后再播种':'明确农田有限顺序收取',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:p.targets.length*(replant?2:1),modules:['farm']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
+ return {targets:copy(p.targets),...(replant?{replant:copy(replant)}:{}),graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:replant?'每田原作物收取确认落盘后，须由同账号/角色/世界/连接/代次历史及新调查实际空田证明前置，再播种明确下一作物。初始自有种子覆盖全部目标，累计资源和原收取UID预算固定；剩余来源或成本变化、拒绝、UNKNOWN及到限停止后继。准备不授权不派发，重启只读零重放，不开放批量请求。':'按明确顺序逐田收取，每步复用原单田合同及独立库存净入确认。固定所有尚未收取目标的作物、种植成熟时间及身份；发生变化、拒绝、UNKNOWN或到限停止后继。仅预留原地块UID，不预估奖励或扩大预算。准备不授权、不派发，重启只读不重放；不开放批量请求结算。'};
 }
 export function prepareFarmPlantWorkflow(facts,{config,moduleConfig=FARM_DEFAULT_CONFIG,...payload}={}){
   const p=validateFarmPlantPreparation(payload);if(!authority(facts)||!currentFarmSurvey(facts)||!same(facts.catalog,catalogFrom(config)))throw invalid('播种准备需要当前连接完整空田/库存事实及明确种子配置');
@@ -260,7 +295,7 @@ export function prepareFarmPlantWorkflow(facts,{config,moduleConfig=FARM_DEFAULT
   nodes.push({id:'stop',type:'STOP'});const graph={version:1,id:'farm-plant-'+hash(p).slice(0,20),name:'明确空田有限顺序播种',budget:ledger.reservationSummary(),runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:p.targets.length,modules:['farm']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
   return {targets:copy(p.targets),graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'按明确顺序逐田播种自选作物，每步复用原单田合同及精确种子净扣/目标作物独立确认；固定所有剩余空田和作物配置身份。初始持有种子须足额，累计父预算不随未来收入增加。来源或成本变化、拒绝、UNKNOWN及到限停止后继；准备不授权不派发，重启只读不重放，不开放批量播种请求。'};
 }
-function farmRejectionIdentity(operation,options){const parameters=operation?.parameters;if(parameters&&(own(parameters,'pendingHarvests')||own(parameters,'pendingPlants'))){const {pendingHarvests,pendingPlants,...plain}=parameters;return businessRejectionIdentityFromHistory({...operation,parameters:plain},options);}return businessRejectionIdentityFromHistory(operation,options);}
+function farmRejectionIdentity(operation,options){const parameters=operation?.parameters;if(parameters&&(own(parameters,'pendingHarvests')||own(parameters,'pendingPlants')||own(parameters,'replant'))){const {pendingHarvests,pendingPlants,replant,...plain}=parameters;return businessRejectionIdentityFromHistory({...operation,parameters:plain},options);}return businessRejectionIdentityFromHistory(operation,options);}
 export function farmDependencyVersions({config,moduleConfig=FARM_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFarmConfig(moduleConfig),...Object.fromEntries(['BuildingCfg','FarmlandPlantCfg'].map(name=>['config.'+name,copy(config?.tables?.[name]??null)])),evidence:FARM_EVIDENCE};}
 export const farmModule=Object.freeze({id:'farm',label:'农田',capabilities:Object.freeze(['BIZ-R16a','BIZ-R16b','BIZ-R16c']),defaultConfig:FARM_DEFAULT_CONFIG,
   validateConfig:validateFarmConfig,validateParameters:validateFarmParameters,survey:surveyFarmOperations,view:viewFarmOperations,plan:planFarmOperations,verify:verifyFarmOperation,rejectionIdentity:farmRejectionIdentity,
