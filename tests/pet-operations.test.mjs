@@ -393,3 +393,79 @@ for(const level of [false,true])for(const balance of ['explicit-zero','omitted-z
    await assert.rejects(next.surveyModule(fresh,'pet',f.parameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);
   }
  });
+
+// Ordinary breeding observations reuse the original Pet survey only; no writer.
+function ordinaryBreedFacts(t,options={}){
+ const f=fixture(t,options);
+ f.session.player.worldId='1000001';
+ f.config.tables.ItemCfg.data.push({id:'宠物1蓝基因'});f.state.stock.set('宠物1蓝基因',80);f.state.stock.set('GOLD',4000);
+ f.config.tables.PetSpeciesCfg={data:[{spId:1,season:1}]};
+ f.config.tables.PetBreedCfg={data:[{petId:'蓝宠物1',spId:1,season:1,breedTime:14400,cost:[['宠物1蓝基因',80],['GOLD',4000]]}]};
+ f.room.level=2;f.room.petBreed.breedQ.splice(1);
+ return f;
+}
+test('ordinary Pet breeding observes exact fixed-client prerequisites without an action, authorization or history',async t=>{
+ const f=ordinaryBreedFacts(t,{shared:true}),facts=await f.survey(),q=pet.petBreedQualification(facts,f.options());
+ assert.equal(q.status,'OBSERVED');assert.equal(q.readOnly,true);assert.equal(q.executable,false);assert.equal(q.universal,false);assert.equal(q.season,1);
+ assert.deepEqual(q.candidates[0].costs,[{id:'宠物1蓝基因',num:80},{id:'GOLD',num:4000}]);assert.equal(q.candidates[0].conditions,'MET');assert.equal(q.candidates[0].breedTime,14400);
+ assert.equal(q.candidates[0].action,undefined);assert.equal(q.candidates[0].executable,false);assert.equal(q.candidates[0].blockedReason,'PET_BREED_QUEUE_RESULT_IDENTITY_UNPROVEN');
+ assert.deepEqual(pet.viewPet(facts,f.options()).breeding,q);assert.equal(f.plan(facts).actions[0].action.request,'PetFeedRequest');
+ assert.equal(f.state.writes.length,0);assert.equal(f.state.reads.length,4);assert.deepEqual(f.durable.list(account),[]);
+ assert.throws(()=>pet.validatePetParameters({action:'breed',buildingId:parameters.buildingId,petId:'蓝宠物1'}),{code:'INVALID_PARAMETERS'});
+ assert.throws(()=>assertPaymentAllowed({request:'PetBreedRequest',body:{petId:'蓝宠物1',universal:false},costs:q.candidates[0].costs}));
+});
+for(const [name,mutate,expected]of [
+ ['genes',f=>f.state.stock.set('宠物1蓝基因',79),'NOT_MET'],
+ ['gold',f=>f.state.stock.set('GOLD',3999),'NOT_MET'],
+ ['pet season',f=>f.config.tables.PetBreedCfg.data[0].season=2,'NOT_MET'],
+ ['species season',f=>f.config.tables.PetSpeciesCfg.data[0].season=2,'NOT_MET'],
+ ['full queue',f=>f.room.petBreed.breedQ.push({...structuredClone(f.job),idx:2}),'NOT_MET'],
+ ['building level',f=>f.room.level=1,'NOT_MET'],
+ ['automatic room',f=>f.room.auto=true,'UNKNOWN'],
+ ['missing automation',f=>delete f.room.auto,'UNKNOWN'],
+ ['upgrading room',f=>f.room.buildFinishTime=1200,'UNKNOWN'],
+ ['no breeding room',f=>f.state.buildings.splice(0,1),'UNKNOWN'],
+])test('ordinary Pet read-only conditions preserve '+name,async t=>{
+ const f=ordinaryBreedFacts(t);mutate(f);const q=pet.petBreedQualification(await f.survey(),f.options());assert.equal(q.status,'OBSERVED');assert.equal(q.candidates[0].conditions,expected);assert.equal(q.candidates[0].executable,false);assert.equal(f.state.writes.length,0);
+});
+for(const [name,mutate]of [
+ ['missing cost',f=>delete f.config.tables.PetBreedCfg.data[0].cost],
+ ['missing species',f=>delete f.config.tables.PetSpeciesCfg],
+ ['duplicate pet',f=>f.config.tables.PetBreedCfg.data.push(structuredClone(f.config.tables.PetBreedCfg.data[0]))],
+ ['duplicate species',f=>f.config.tables.PetSpeciesCfg.data.push({spId:1,season:1})],
+ ['string cost',f=>f.config.tables.PetBreedCfg.data[0].cost[0][1]='80'],
+ ['negative cost',f=>f.config.tables.PetBreedCfg.data[0].cost[0][1]=-1],
+ ['paid cost',f=>f.config.tables.PetBreedCfg.data[0].cost[1][0]='RUBY'],
+ ['unknown gene',f=>f.config.tables.PetBreedCfg.data[0].cost[0][0]='unknown-gene'],
+ ['missing duration',f=>delete f.config.tables.PetBreedCfg.data[0].breedTime],
+ ['inherited season',f=>{const row=f.config.tables.PetBreedCfg.data[0];delete row.season;Object.setPrototypeOf(row,{season:1});}],
+ ['accessor cost',f=>Object.defineProperty(f.config.tables.PetBreedCfg.data[0],'cost',{enumerable:true,get(){throw Error('must not read accessor');}})],
+])test('unknown ordinary Pet definition is local and preserves original feed '+name,async t=>{
+ const f=ordinaryBreedFacts(t);mutate(f);const facts=await f.survey(),q=pet.petBreedQualification(facts,f.options());assert.equal(q.status,'UNKNOWN');assert.deepEqual(q.candidates,[]);assert.equal(f.plan(facts).actions[0].action.request,'PetFeedRequest');assert.equal(f.state.writes.length,0);
+});
+for(const dimension of ['account','player','world','generation','connection','config','snapshot','disconnected'])test('ordinary Pet observation cannot reuse another '+dimension,async t=>{
+ const f=ordinaryBreedFacts(t),facts=await f.survey();assert.equal(pet.petBreedQualification(facts,f.options()).candidates[0].conditions,'MET');
+ if(dimension==='account')f.client.factContext.accountId='other-account';if(dimension==='player')f.session.player.playerId='18';if(dimension==='world')f.session.player.worldId='2000001';if(dimension==='generation')f.client.factContext.generation++;if(dimension==='connection')f.client.factContext.connectionId='new';if(dimension==='config')f.config.tables.PetBreedCfg.data[0].cost[0][1]++;if(dimension==='snapshot')facts.breedDefinitions[0].costs[0].num=0;if(dimension==='disconnected')f.client.connected=false;
+ assert.equal(pet.petBreedQualification(facts,f.options()).status,'UNKNOWN');assert.equal(f.state.writes.length,0);
+});
+test('ordinary Pet reads use the retained real config and Codec, preserving unknown inventory and season',async t=>{
+ const f=ordinaryBreedFacts(t),fixed=extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')));
+ for(const name of ['PetBreedCfg','PetSpeciesCfg','PetBaseCfg','ItemCfg'])f.config.tables[name]=fixed[name];
+ const q=pet.petBreedQualification(await f.survey(),f.options()),row=q.candidates.find(r=>r.petId==='蓝宠物1');assert.equal(q.status,'OBSERVED');assert.deepEqual(row.costs,[{id:'宠物1蓝基因',num:80},{id:'GOLD',num:4000}]);assert.equal(row.breedTime,14400);assert.equal(row.conditions,'MET');
+ f.state.onResponse=(name,value)=>{if(name==='AllResourceRequest')delete value.list[0].amount;return value;};assert.equal(pet.petBreedQualification(await f.survey(),f.options()).status,'UNKNOWN');
+ f.state.onResponse=null;f.session.player.worldId='9';assert.equal(pet.petBreedQualification(await f.survey(),f.options()).reason,'PET_BREED_SEASON_UNKNOWN');assert.equal(f.state.writes.length,0);
+});
+test('ordinary Pet existing HTTP survey returns read-only conditions with no extra queries or history',async t=>{
+ const f=ordinaryBreedFacts(t,{http:true});await f.call('/api/gameplay?module=pet');const result=await f.call('/api/gameplay/survey',{body:{module:'pet',parameters}});
+ assert.equal(result.status,200,JSON.stringify(result));assert.equal(result.data.view.breeding.candidates[0].conditions,'MET');assert.equal(result.data.view.breeding.executable,false);assert.deepEqual(f.durable.list(account),[]);assert.equal(f.state.reads.length,4);assert.equal(f.state.writes.length,0);assert.deepEqual(f.counts(),{clients:0,collections:0});
+});
+
+test('ordinary Pet late read is cancelled after identity changes and creates no write or recovered observation',async t=>{
+ const f=ordinaryBreedFacts(t);f.state.onRead=async name=>{if(name==='OnWaterRequest')f.client.factContext.connectionId='late-read-other-connection';};
+ await assert.rejects(f.survey(),{code:'CANCELLED'});assert.equal(f.state.writes.length,0);
+});
+test('ordinary Pet observed conditions do not change original Service UNKNOWN reservations or restart blocking',async t=>{
+ const f=ordinaryBreedFacts(t,{shared:true,apply:false}),read=await f.service.surveyModule(f.session,'pet',parameters);assert.equal(read.view.breeding.candidates[0].conditions,'MET');
+ const p=await f.displayed(),{record}=await f.execute(p);assert.equal(record.finalStatus,'UNKNOWN');assert.deepEqual(record.runBudget.reserved,claims);
+ const next=f.newService();await assert.rejects(next.surveyModule({...f.session,client:{...f.client,uncertainWrites:new Map()}},'pet',parameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].name,'PetFeedRequest');
+});

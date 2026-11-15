@@ -57,7 +57,7 @@ export const FUNCTION_CONTRACTS = freeze({
   }),
   pet: contract('pet',[],['P3-6','P3-7'],['src/pet-operations.mjs#petModule','src/pet-operations.mjs#planPet'],{action:{type:'string',enum:['feed','level']},buildingId:string,jobIdx:integer,uid:string},{
     inventoryRequirementIds:['BIZ-R08'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['FEED','LEVEL'],blockedCapabilities:[blocked('BREED','Breeding needs a separately recoverable assigned queue and result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},
+    implementation:{mode:'CONTROLLED_WRITE',actions:['FEED','LEVEL'],blockedCapabilities:[blocked('BREED','Ordinary gene/GOLD, season and queue prerequisites are read-only observations; PetBreedRequest lacks building/queue identity and a separately recoverable result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},
     verification:verification('verifyPet','src/pet-operations.mjs#verifyPet','Full OnWater queue identity and AllPet plus exact material debits prove a single configured time reduction or precise transition to mature list; LEVEL binds unique serving building and UID, trusted player level, exact next-level config attributes and owned pet experience debit; preserve peers and all other state; no new owned pet or automatic claim'),
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.PetParamCfg','config.PetBaseCfg','config.ItemCfg'],[{when:'parameters.action=level',keys:['config.PetLevelCfg','config.PetAdvancedCfg']}]),
   }),

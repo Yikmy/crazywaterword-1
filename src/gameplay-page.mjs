@@ -584,6 +584,8 @@ function gpRenderDomain(id,view){
    table('单级升级',['建筑','海兽 UID','当前等级','目标等级','成本','状态'],(view?.candidates||[]).filter(row=>row.actionType==='LEVEL').map(row=>[row.target.buildingId,row.target.uid,row.target.fromLevel,row.target.toLevel,operationCosts(row.costs),row.executable?'可以预览':row.blockedReason]));
   }
   if(view?.mode!=='level'){
+  table('普通培育条件（只读）',['海兽','专属基因与金币','所需秒数','赛季','库存','队列','条件'],(view?.breeding?.candidates||[]).map(row=>[row.petId,operationCosts(row.costs),row.breedTime,row.seasonAvailable?'已开放':'未开放',row.stockAvailable?'足够':'不足',row.queueAvailable===null?'未知':row.queueAvailable?'有空位':'无空位',row.conditions==='MET'?'条件满足；暂不可培育':row.conditions==='NOT_MET'?'条件未满足':'未知']));
+  box.appendChild(gpEl('p','普通培育仅观察专属基因、金币、赛季和队列条件；'+(view?.breeding?.status==='UNKNOWN'?'来源未知：'+show(view.breeding.reason)+'。':'')+'培育结果尚无法可靠确认，暂不开放培育；条件满足不代表可执行，不兑换万能基因，不领取成熟海兽。'));
   table('培育队列',['培育室','任务idx','海兽','星级','开始时间','完成时间'],(view?.rooms||[]).flatMap(room=>(room.queue?.breedQ||[]).map(job=>[room.buildingId,job.idx,job.petId,job.star,job.startTime,job.finishTime])));
   table('单次投喂',['培育室','任务idx','海兽','材料成本','状态'],(view?.candidates||[]).filter(row=>row.actionType==='FEED').map(row=>[row.target.buildingId,row.target.jobIdx,row.target.petId,operationCosts(row.costs),row.executable?'可以预览':row.blockedReason]));
   box.appendChild(gpEl('p','每次只投喂指定培育批次一次，减时 '+String(view?.secondsReduced??'未知')+' 秒；只用自有材料。成熟列表变化须独立复读，不自动领取或补料。'));

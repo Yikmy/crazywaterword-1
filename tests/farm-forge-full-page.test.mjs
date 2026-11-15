@@ -3005,3 +3005,12 @@ test('production factory PAGE retired account controls cannot change current sel
 test('production factory PAGE renders observed identifiers as text and keeps controls bounded after repeated browsing',async()=>{
  const key='<img src=x onerror=alert(1)>',u=await productionFactoryUi(view=>{view.factories[0].buildingId=key;});selectProductionFactory(u,key);assert.ok(u.detail.textContent.includes(key));assert.equal(descendants(u.detail).some(n=>String(n.tagName).toLowerCase()==='img'),false);for(let i=0;i<10;i++){selectProductionFactory(u,'2材料厂');selectProductionFactory(u,key);}assert.equal(descendants(u.detail).filter(n=>n.dataset.productionFactoryRecipe).length,1);assert.equal(writes(u.h).length,0);
 });
+
+for(const state of ['MET','NOT_MET','UNKNOWN'])test('Pet ordinary breeding full PAGE shows '+state+' as read-only without new action controls',async()=>{
+ const spec=structuredClone(cases.find(s=>s.module==='pet'));spec.facts.breeding={readOnly:true,executable:false,status:'OBSERVED',candidates:[{petId:'<img src=x onerror=alert(1)>',costs:[{id:'宠物1蓝基因',num:80},{id:'GOLD',num:4000}],breedTime:14400,seasonAvailable:true,stockAvailable:state!=='NOT_MET',queueAvailable:state==='UNKNOWN'?null:true,conditions:state,executable:false}]};
+ const h=await loaded(spec),text=h.node('gp-pet-facts').textContent;assert.match(text,/普通培育条件（只读）/);assert.match(text,/宠物1蓝基因 × 80/);assert.match(text,/GOLD × 4000/);assert.match(text,/14400/);assert.equal(text.includes('<img src=x onerror=alert(1)>'),true);assert.match(text,state==='MET'?/条件满足；暂不可培育/:state==='NOT_MET'?/条件未满足/:/未知/);assert.match(text,/条件满足不代表可执行/);
+ assert.equal(domainButtons(h,spec).length,2);assert.deepEqual(descendants(h.node('gp-pet-facts')).filter(n=>n.dataset.petMode).map(n=>n.dataset.petMode),['feed','level']);assert.equal(writes(h).length,0);
+});
+test('Pet ordinary breeding full PAGE keeps missing sources local to observation',async()=>{
+ const spec=structuredClone(cases.find(s=>s.module==='pet'));spec.facts.breeding={readOnly:true,executable:false,status:'UNKNOWN',reason:'PET_BREED_CONFIG_UNKNOWN_OR_CHANGED',candidates:[]};const h=await loaded(spec);assert.match(h.node('gp-pet-facts').textContent,/来源未知：PET_BREED_CONFIG_UNKNOWN_OR_CHANGED/);assert.equal(domainButtons(h,spec).length,2);assert.equal(writes(h).length,0);
+});

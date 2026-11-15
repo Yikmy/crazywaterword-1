@@ -19,7 +19,7 @@ const queries=[['water','OnWaterRequest','OnWaterResponse'],['pets','AllPetReque
 const source='v76 PetFeedView._onBtnFood; PetUtil.breedSpeedSeconds; local reference pet.mjs#planPet; DispPetBreedJob and PetParamCfg[投喂减少培育时间]';
 export const PET_DEFAULT_CONFIG=Object.freeze({enabled:false});
 export const PET_EVIDENCE=Object.freeze({source,requirement:'BIZ-R08',request:'PetFeedRequest',response:'NO_DEDICATED_RESPONSE',
-  level:Object.freeze({request:'PetLevelUpRequest',response:'NO_DEDICATED_RESPONSE',source:levelSource}),breed:'BLOCKED_EVIDENCE',claim:'BLOCKED_EVIDENCE_TARGETLESS_RECOVERY_IDENTITY',universal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
+  level:Object.freeze({request:'PetLevelUpRequest',response:'NO_DEDICATED_RESPONSE',source:levelSource}),ordinaryBreed:Object.freeze({source:'v76 PetFeedView._onBtnBreed/_refreshBreedCost/_refreshBreedSelect; PetUtil.speciesCfgBySeason; PetBreedCfg/PetSpeciesCfg',readOnly:true,executable:false,universal:false}),breed:'BLOCKED_EVIDENCE',claim:'BLOCKED_EVIDENCE_TARGETLESS_RECOVERY_IDENTITY',universal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const dense=v=>Array.isArray(v)&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
@@ -64,6 +64,42 @@ function catalog(config,action='feed'){
   const speed=p.filter(r=>own(r,'paramName')&&r.paramName==='投喂减少培育时间');
   if(action!=='level'&&(speed.length!==1||!own(speed[0],'paramValue')||!positive(speed[0].paramValue)))return null;
   return {seconds:action==='level'?null:speed[0].paramValue,types:b.map(r=>r.buildingType),pets:base.map(({petId,star})=>({petId,star})),itemIds:items.map(r=>r.id)};
+}
+// The fixed client proves ordinary gene/GOLD prerequisites, but PetBreedRequest
+// carries neither a building nor a queue identity. This observation never emits
+// an action or substitutes for a recoverable result contract.
+function breedDefinitions(config,cat){
+  const rows=config?.tables?.PetBreedCfg?.data,species=config?.tables?.PetSpeciesCfg?.data;
+  const data=(v,k)=>Object.getOwnPropertyDescriptor(v??{},k)?.enumerable===true&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k),'value');
+  if(!cat||!dense(rows)||!rows.length||!dense(species)||!species.length||!species.every(r=>['spId','season'].every(k=>data(r,k)&&positive(r[k])))||!unique(species,r=>r.spId))return null;
+  const result=[];
+  for(const row of rows){
+    if(!['petId','spId','season','breedTime','cost'].every(k=>data(row,k))||!id(row.petId)||!positive(row.spId)||!positive(row.season)||!positive(row.breedTime)||!cat.pets.some(p=>p.petId===row.petId)||!species.some(r=>r.spId===row.spId)||!dense(row.cost)||row.cost.length!==2)return null;
+    const [gene,gold]=row.cost;
+    if(![gene,gold].every(p=>dense(p)&&p.length===2&&Number.isSafeInteger(p[1])&&p[1]>0)||!id(gene[0])||!cat.itemIds.includes(gene[0])||Object.values(RESOURCE_NAMES).includes(gene[0])||gold[0]!=='GOLD')return null;
+    result.push({petId:row.petId,spId:row.spId,season:row.season,speciesSeason:species.find(r=>r.spId===row.spId).season,breedTime:row.breedTime,costs:[{id:gene[0],num:gene[1]},{id:'GOLD',num:gold[1]}]});
+  }
+  return unique(result,r=>r.petId)?result:null;
+}
+export function petBreedQualification(f,{config}={}){
+  const base={readOnly:true,executable:false,universal:false,blockedReason:'PET_BREED_QUEUE_RESULT_IDENTITY_UNPROVEN'};
+  const unknown=reason=>({...base,status:'UNKNOWN',reason,season:null,rooms:[],candidates:[]});
+  if(!authority(f,config)||liveFacts.get(f)?.client.connected!==true)return unknown('PET_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  if(!f.breedDefinitions||!same(f.breedDefinitions,breedDefinitions(config,f.catalog)))return unknown('PET_BREED_CONFIG_UNKNOWN_OR_CHANGED');
+  const season=Number(BigInt(f.context.worldId)/1000000n%1000n);
+  if(!positive(season))return unknown('PET_BREED_SEASON_UNKNOWN');
+  const rooms=f.buildings.filter(b=>makeTypeResolver(config)(b.buildingId)===type).map(b=>{
+    const available=own(b,'auto')&&b.auto===false&&b.level>0&&own(b,'buildFinishTime')&&b.buildFinishTime===0;
+    return {buildingId:b.buildingId,queueAvailable:available?b.petBreed.breedQ.length<Math.min(b.level,b.petBreed.maxQLength):null};
+  });
+  const candidates=f.breedDefinitions.map(row=>{
+    const seasonAvailable=row.season<=season&&row.speciesSeason<=season;
+    const stockAvailable=row.costs.every(c=>(f.stock.get(c.id)??0)>=c.num);
+    const queueAvailable=rooms.some(r=>r.queueAvailable===true)?true:rooms.length&&rooms.every(r=>r.queueAvailable===false)?false:null;
+    const conditions=!seasonAvailable||!stockAvailable||queueAvailable===false?'NOT_MET':queueAvailable===null?'UNKNOWN':'MET';
+    return {...copy(row),...base,seasonAvailable,stockAvailable,queueAvailable,conditions};
+  });
+  return {...base,status:'OBSERVED',reason:null,season,rooms,candidates};
 }
 function costsOf(raw,cat){
   if(!dense(raw)||!raw.length||!cat)return null;
@@ -127,7 +163,7 @@ export async function surveyPet(client,protocol,{config,player,parameters={},sig
   const inventory=parseOperationInventory(raw.items,raw.resources).stockReliable?parseOperationInventory(inputs.items,inputs.resources):{stock:new Map(),stockReliable:false};
   const sourceFacts=Object.fromEntries(results.map(([key,,sourceAt],i)=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,scope:{kind:'ACCOUNT'},source:queries[i][2],sourceAt,reliable:i===0?buildings!==null:i===1?pets!==null:inventory.stockReliable})]));
   const levelSourceAfter=parameters.action==='level'?levelSourceOf(client,context):null;
-  const facts={levelSource:levelSourceBefore&&same(levelSourceBefore,levelSourceAfter)?levelSourceAfter:null,module:moduleId,parameters,context,catalog:cat,inputs,buildings,pets,...inventory,sourceFacts,startClock,endClock:clockOf(client,context),available:Object.keys(protocol??{}).filter(name=>protocol[name]?.encode&&protocol[name]?.decode),notes,state:{context,buildings,pets}};
+  const facts={breedDefinitions:breedDefinitions(config,cat),levelSource:levelSourceBefore&&same(levelSourceBefore,levelSourceAfter)?levelSourceAfter:null,module:moduleId,parameters,context,catalog:cat,inputs,buildings,pets,...inventory,sourceFacts,startClock,endClock:clockOf(client,context),available:Object.keys(protocol??{}).filter(name=>protocol[name]?.encode&&protocol[name]?.decode),notes,state:{context,buildings,pets}};
   liveFacts.set(facts,{client,player,digest:digest(facts)});return facts;
 }
 function authority(f,config,{settlement=false}={}){
@@ -217,7 +253,7 @@ export function viewPet(f,{config,moduleConfig,parameters=f?.parameters??{}}={})
     const c=candidate(f,choice,{config,moduleConfig});return without(c,['identity','configEvidence']);
   });
   return {module:moduleId,mode:p.action??'feed',serving:valid?f.buildings.filter(b=>['宠物','宠物B','宠物C'].includes(makeTypeResolver(config)(b.buildingId))).map(b=>({buildingId:b.buildingId,uid:b.petServe?.petUid??null})):[],playerLevel:f?.levelSource?.playerLevel??null,rooms:rooms.map(b=>({buildingId:b.buildingId,level:b.level,queue:copy(b.petBreed)})),pets:valid?copy(f.pets):[],secondsReduced:valid?f.catalog.seconds:null,
-    candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
+    breeding:petBreedQualification(f,{config}),candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
 }
 export function planPet(f,{config,moduleConfig,parameters={},selections,ledger=new ResourceLedger(f?.stockReliable?f.stock:null)}={}){
   const c=candidate(f,parameters,{config,moduleConfig});
