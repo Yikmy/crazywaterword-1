@@ -776,3 +776,17 @@ for(const kind of ['daily','daily-activity','daily-gift'])for(const outcome of [
   else {await assert.rejects(app.plan());assert.equal(app.writes.length,1);}
  }finally{await app.close();}
 });
+
+test('old daily API and Checklist expose the same observation qualification and independent unknown reward state',async()=>{
+ const rows=[{id:1001,progress:1,targetProgress:1},{id:1002,progress:'1',targetProgress:1,rewardClaimed:false},{id:1006,progress:1,targetProgress:1,rewardClaimed:true}];
+ const app=await dailyRuntimeHarness({collect:async()=>{const state=dailyRuntimeSnapshot();state.raw.DailyTaskInfoRequest.dailyTask=rows;state.ok=structuredClone(state.raw);return state;}});
+ try{
+  await app.login();await app.refresh();const raw=JSON.stringify(app.sessions.get('account-A').snapshot),sent=app.sent.length,response=await app.call('/api/dailies');assert.equal(response.status,200);
+  const view=response.data;assert.equal(view.readOnly,true);assert.equal(view.executable,false);assert.equal(view.taskListStatus,'OBSERVED');
+  assert.equal(view.tasks[0].status,'done');assert.equal(view.tasks[0].qualification.rewardState,'UNKNOWN');assert.equal(view.tasks[0].qualification.claimable,null);
+  assert.equal(view.tasks[1].status,'unknown');assert.deepEqual(view.tasks[1].actions,[]);assert.equal(view.tasks[2].qualification.rewardState,'CLAIMED');assert.equal(view.tasks[2].qualification.claimable,false);
+  for(let i=0;i<rows.length;i++)assert.deepEqual(view.tasks[i].qualification,view.checklist.tasks.rows[i].qualification);
+  const overview=(await app.call('/api/overview')).data.activityAlliance.checklist;assert.deepEqual(overview.tasks.rows.map(row=>row.qualification),view.tasks.map(row=>row.qualification));
+  assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),raw);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});

@@ -1,6 +1,6 @@
 import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
-import { CHEST_TABLE, claimableDailyTasks, describeDailyTask, planDailyGift, parseDailyTaskObservation } from './dailies.mjs';
+import { CHEST_TABLE, describeDailyTask, planDailyGift, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
 import { taskObservation, taskQualification } from './tasks.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -32,28 +32,24 @@ function source(state,request) {
     precision:exact?'DECODED_EXACT':'LEGACY_NORMALIZED'} };
 }
 function dailyTasks(body,config) {
-  const rows = own(body,'dailyTask');
-  const validList = dense(rows) && rows.every(row=>positive(own(row,'id'))) && new Set(rows.map(row=>own(row,'id'))).size === rows.length;
-  if(!validList)return {status:'UNKNOWN',reason:'DAILY_TASK_LIST_UNKNOWN',rows:[],counts:{total:null,completed:null,claimed:null,eligible:null}};
+  const rows = dailyTaskRows(body);
+  if(rows===null)return {status:'UNKNOWN',reason:'DAILY_TASK_LIST_UNKNOWN',rows:[],counts:{total:null,completed:null,claimed:null,eligible:null}};
   const configured=table(config,'DailyTaskCfg'), validConfig=dense(configured)&&configured.every(row=>positive(own(row,'taskId')))&&new Set(configured.map(row=>own(row,'taskId'))).size===configured.length;
   const tasks=rows.map(row=>{
-    const taskId=own(row,'id'),progress=count(row,'progress'),target=count(row,'targetProgress'),claimed=own(row,'rewardClaimed');
-    const rewardClaimed=typeof claimed==='boolean'?claimed:null;
-    const parsed={id:taskId,progress,targetProgress:target,rewardClaimed};
-    const known=parseDailyTaskObservation(parsed)!==null;
-    const eligible=known?claimableDailyTasks({dailyTask:[parsed]}).length===1:null;
-    const status=rewardClaimed===true?'CLAIMED':!known?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE';
+    const {taskId,progress,targetProgress:target,rewardClaimed}=dailyTaskObservation(row),qualification=dailyTaskQualification(row);
+    const parsed={id:taskId,progress,targetProgress:target,rewardClaimed},eligible=qualification.claimable;
+    const status=qualification.rewardState==='CLAIMED'?'CLAIMED':eligible===null?'UNKNOWN':eligible?'ELIGIBLE':'INCOMPLETE';
     const definition=validConfig?configured.find(r=>own(r,'taskId')===taskId):null;
     const safeDefinition=definition?{taskId,type:text(own(definition,'type'))?own(definition,'type'):String(taskId),desc:text(own(definition,'desc'))?own(definition,'desc'):''}:null;
     const described=describeDailyTask(parsed,{tables:{DailyTaskCfg:{data:safeDefinition?[safeDefinition]:[]}}});
     const activity=count(definition,'point'),experience=count(definition,'exp');
-    return {taskId,title:described.title,description:described.desc,progress,targetProgress:target,rewardClaimed,eligible,status,
+    return {taskId,title:described.title,description:described.desc,progress,targetProgress:target,rewardClaimed,eligible,status,qualification,
       configuredReward:activity!==null&&experience!==null?{activity,experience}:null,
       executable:false,blockedReason:'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION',claimFunctionId:'task-rewards',claimParameters:{kind:'daily',taskId},...(taskId===1010?{functionId:'pirate-sweep'}:taskId===1006?{functionId:'free-gold'}:taskId===1004?{functionId:'afk-level-rewards'}:taskId===1002?{functionId:'free-recruit'}:taskId===1009?{functionId:'trial-challenge'}:taskId===1003?{functionId:'stage'}:taskId===1008?{functionId:'fleet'}:taskId===1012?{functionId:'alliance'}:taskId===1016?{functionId:'museum'}:{})};
   });
-  const complete=row=>row.progress!==null&&row.targetProgress!==null&&row.targetProgress>0;
+  const complete=row=>row.qualification.completion!=='UNKNOWN';
   return {status:tasks.every(row=>row.eligible!==null)?'AVAILABLE':'PARTIAL',reason:tasks.some(row=>row.eligible===null)?'DAILY_TASK_FIELDS_UNKNOWN':null,rows:tasks,
-    counts:{total:tasks.length,completed:tasks.every(complete)?tasks.filter(row=>row.progress>=row.targetProgress).length:null,
+    counts:{total:tasks.length,completed:tasks.every(complete)?tasks.filter(row=>row.qualification.completion==='COMPLETE').length:null,
       claimed:tasks.every(row=>row.rewardClaimed!==null)?tasks.filter(row=>row.rewardClaimed).length:null,
       eligible:tasks.every(row=>row.eligible!==null)?tasks.filter(row=>row.eligible).length:null}};
 }

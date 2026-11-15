@@ -203,22 +203,36 @@ function explicitCount(value, key) {
     && Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : null;
 }
 // Daily protocol rows use explicit int32 fields; period and reward settlement are separate.
+export function dailyTaskObservation(row) {
+  const field=key=>{
+    const descriptor=row!==null&&typeof row==='object'&&!Array.isArray(row)?Object.getOwnPropertyDescriptor(row,key):null;
+    return descriptor?.enumerable&&Object.hasOwn(descriptor,'value')?descriptor.value:undefined;
+  };
+  const count=(key,positive=false)=>{const value=field(key);return Number.isInteger(value)&&value>=(positive?1:0)&&value<=2147483647?value:null;};
+  const claimed=field('rewardClaimed');
+  return {taskId:count('id',true),progress:count('progress'),targetProgress:count('targetProgress',true),rewardClaimed:typeof claimed==='boolean'?claimed:null};
+}
+// Preserve the original rows; duplicate or incomplete identities cannot form a task list.
+export function dailyTaskRows(body) {
+  const descriptor=body!==null&&typeof body==='object'?Object.getOwnPropertyDescriptor(body,'dailyTask'):null;
+  const rows=descriptor?.enumerable&&Object.hasOwn(descriptor,'value')?descriptor.value:null;
+  return rewardDense(rows)&&rows.every(row=>dailyTaskObservation(row).taskId!==null)&&new Set(rows.map(row=>dailyTaskObservation(row).taskId)).size===rows.length?rows:null;
+}
 export function parseDailyTaskObservation(row) {
-  const fields = ['id', 'progress', 'targetProgress', 'rewardClaimed'];
-  if (!row || typeof row !== 'object'
-    || !fields.every(key => Object.hasOwn(Object.getOwnPropertyDescriptor(row, key) ?? {}, 'value'))) return null;
-  const count = value => Number.isInteger(value) && value >= 0 && value <= 2147483647;
-  if (!count(row.id) || row.id === 0 || !count(row.progress)
-    || !count(row.targetProgress) || row.targetProgress === 0 || typeof row.rewardClaimed !== 'boolean') return null;
-  return { taskId: row.id, progress: row.progress, targetProgress: row.targetProgress, rewardClaimed: row.rewardClaimed };
+  const task=dailyTaskObservation(row);
+  return Object.values(task).some(value=>value===null)?null:task;
+}
+// Progress observations never prove period validity, authority, reward mapping or settlement.
+export function dailyTaskQualification(row) {
+  const task=dailyTaskObservation(row),known=task.taskId!==null;
+  const completion=!known||task.progress===null||task.targetProgress===null?'UNKNOWN':task.progress>=task.targetProgress?'COMPLETE':'INCOMPLETE';
+  const rewardState=!known||task.rewardClaimed===null?'UNKNOWN':task.rewardClaimed?'CLAIMED':'UNCLAIMED';
+  return {completion,rewardState,claimable:completion==='UNKNOWN'||rewardState==='UNKNOWN'?null:completion==='COMPLETE'&&rewardState==='UNCLAIMED'};
 }
 
 // This preview is progress eligibility only; the Function separately requires a current daily period.
 export function claimableDailyTasks(daily) {
-  return (Array.isArray(daily?.dailyTask) ? daily.dailyTask : []).filter(row => {
-    const task = parseDailyTaskObservation(row);
-    return task !== null && task.progress >= task.targetProgress && task.rewardClaimed === false;
-  });
+  return (dailyTaskRows(daily)??[]).filter(row=>dailyTaskQualification(row).claimable===true);
 }
 
 function configuredCount(config, name) {
@@ -459,7 +473,12 @@ export async function surveyDailies(client, protocol, options = {}) {
   const { config = null, player = null, timeout = 8000 } = options;
   const query = (name, body, response, duration = timeout) => dailyQuery(client, name, body, response, { ...options, timeout: duration });
   const daily = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
-  const tasks = (daily.dailyTask ?? []).map((task) => describeDailyTask(task, config));
+  const rows=dailyTaskRows(daily),validList=rows!==null;
+  const tasks=(validList?rows:[]).map(row=>{
+    // Preserve unknown data fields without invoking accessors or inheriting protobuf defaults.
+    const data=Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptors(row)).filter(([,descriptor])=>descriptor.enumerable&&Object.hasOwn(descriptor,'value')).map(([key,descriptor])=>[key,descriptor.value]));
+    return {task:describeDailyTask(data,config),qualification:dailyTaskQualification(row)};
+  });
   const itemList = await query('AllItemRequest', {}, 'AllItemResponse', timeout);
   // Preserve invalid/missing quantities rather than coercing null or protobuf defaults to zero.
   const items = Array.isArray(itemList?.items) ? stockFromResponses({ items: itemList.items.map((item) => ({
@@ -503,19 +522,20 @@ export async function surveyDailies(client, protocol, options = {}) {
 
   const now = Date.now() / 1000;
   const evaluations = [];
-  for (const task of tasks) {
-    if (task.progress >= task.targetProgress) {
-      evaluations.push({ task, status: 'done', actions: [] });
+  for (const {task,qualification} of tasks) {
+    if(qualification.completion==='UNKNOWN'){evaluations.push({task,qualification,status:'unknown',reason:'任务进度或目标未知，未生成驱动建议',actions:[]});continue;}
+    if (qualification.completion==='COMPLETE') {
+      evaluations.push({ task, qualification, status: 'done', actions: [] });
       continue;
     }
     const driver = DAILY_DRIVERS[task.id];
     if (!driver) {
-      evaluations.push({ task, status: 'unknown', reason: '没有对应的驱动' });
+      evaluations.push({ task, qualification, status: 'unknown', reason: '没有对应的驱动' });
       continue;
     }
     const failedProbe = (driver.probes ?? []).find(([name]) => probeFailures.has(name));
     if (failedProbe) {
-      evaluations.push({ task, status: 'unknown', reason: probeFailures.get(failedProbe[0]), actions: [] });
+      evaluations.push({ task, qualification, status: 'unknown', reason: probeFailures.get(failedProbe[0]), actions: [] });
       continue;
     }
     let verdict;
@@ -524,7 +544,7 @@ export async function surveyDailies(client, protocol, options = {}) {
     } catch (error) {
       verdict = { status: 'error', reason: error.message };
     }
-    evaluations.push({ task, ...verdict });
+    evaluations.push({ task, ...verdict, qualification });
   }
   let gift = null;
   if (protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
@@ -536,7 +556,7 @@ export async function surveyDailies(client, protocol, options = {}) {
       gift = null;
     }
   }
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player };
+  return { readOnly:true, executable:false, qualificationScope:'TASK_PROGRESS_ONLY', taskListStatus:validList?'OBSERVED':'UNKNOWN', taskListReason:validList?null:'DAILY_TASK_LIST_UNKNOWN', daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player };
 }
 
 async function dailyQuery(client, name, body, response, options, mutate = false) {
@@ -568,6 +588,7 @@ function chestLine(name, chest) {
 
 export function formatSurvey(survey) {
   const lines = [];
+  if(survey.taskListStatus==='UNKNOWN')lines.push('每日任务列表未知，未生成驱动建议');
   const label = { ready: '可做', paid: '需付费', partial: '部分', waiting: '等待中', done: '已完成', blocked: '不可用', error: '出错', unknown: '未知' };
   for (const entry of survey.tasks) {
     const task = entry.task;

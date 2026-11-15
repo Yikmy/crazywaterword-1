@@ -693,7 +693,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const taskSnapshot=taskObservationSnapshot(session);
     const dailySnapshot=dailyInvalid ? {...taskSnapshot,failed:{...taskSnapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : taskSnapshot;
     const checklist = dailyChecklist(dailySnapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
-    const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid || taskSnapshot!==session.snapshot };
+    const base = { accountId: account.id, readOnly:true, executable:false, qualificationScope:'TASK_PROGRESS_ONLY', taskListStatus:'UNKNOWN', taskListReason:'DAILY_TASK_SOURCE_UNAVAILABLE', checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid || taskSnapshot!==session.snapshot };
     if(dailyInvalid)return {...base,tasks:[],chests:null,chestsUnavailable:dailyUnavailable,gift:null,ruby:null,text:formatDailyChecklist(checklist)};
     // Partial caches still expose each independently observed checklist section.
     if (!["DailyTaskInfoRequest","AllItemRequest","AllResourceRequest","AfkInfoRequest","RecruitInfoRequest"].every(name => Object.hasOwn(session.snapshot?.ok ?? {}, name))) {
@@ -713,12 +713,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       survey.tasks = survey.tasks.map((entry) => {
         if (entry.status === 'done') return entry;
         const missing = (DAILY_DRIVERS[entry.task.id]?.probes ?? []).map(([name]) => instance.errors.get(name)).filter(Boolean);
-        return missing.length ? { task: entry.task, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
+        return missing.length ? { ...entry, status: 'unknown', reason: missing.join('; '), actions: [] } : entry;
       });
       const chestsUnavailable = dailyFailure ? '每日任务来源已变化或不可确认，请重新采集' : Object.values(CHEST_TABLE).some((name) => !config?.tables?.[name]?.data?.length) ? '缺少有效奖励配置，无法判断奖励档位' : null;
       if (chestsUnavailable) survey.chests = null;
       const text = formatSurvey(survey) + (chestsUnavailable ? '\n' + chestsUnavailable : '');
-      return { ...base, tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
+      return { ...base, taskListStatus:survey.taskListStatus, taskListReason:survey.taskListReason, tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, chestsUnavailable, gift: survey.gift, ruby: survey.ruby, text };
     } catch {
       return { ...base, tasks: [], chests: null, chestsUnavailable: '旧日常预览无法解析缓存', gift: null, ruby: null, text: formatDailyChecklist(checklist) };
     }

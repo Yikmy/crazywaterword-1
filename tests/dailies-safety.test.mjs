@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
-import { DAILY_DRIVERS, runDailies, claimDailies, surveyDailies, parseDailyTaskObservation, claimableDailyTasks } from '../src/dailies.mjs';
+import { DAILY_DRIVERS, runDailies, claimDailies, surveyDailies, parseDailyTaskObservation, claimableDailyTasks, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from '../src/dailies.mjs';
 
 const protocol = loadProtocol();
 const noSleep = async () => {};
@@ -199,4 +199,69 @@ test('daily progress preview and Function share exact explicit int32 row observa
  const type=protocol.DailyTaskInfoResponse;
  const absent=type.decode(type.encode({dailyTask:[{id:1001,targetProgress:1,rewardClaimed:false}]}).finish()).dailyTask[0];
  assert.equal(absent.progress,0);assert.equal(parseDailyTaskObservation(absent),null);
+});
+
+
+test('daily observation keeps completion, reward state and eligibility separate without defaults or coercion',()=>{
+ const valid={id:1001,progress:1,targetProgress:1,rewardClaimed:false,extra:'retained'};
+ for(const [row,completion,rewardState,claimable]of[
+  [valid,'COMPLETE','UNCLAIMED',true],
+  [{...valid,progress:0},'INCOMPLETE','UNCLAIMED',false],
+  [{...valid,rewardClaimed:true},'COMPLETE','CLAIMED',false],
+  [{id:1001,progress:1,targetProgress:1},'COMPLETE','UNKNOWN',null],
+  [{id:1001,rewardClaimed:true},'UNKNOWN','CLAIMED',null],
+  [{...valid,targetProgress:0},'UNKNOWN','UNCLAIMED',null],
+  [{...valid,progress:'1'},'UNKNOWN','UNCLAIMED',null],
+  [{...valid,id:0},'UNKNOWN','UNKNOWN',null],
+ ]){
+  assert.deepEqual(dailyTaskQualification(row),{completion,rewardState,claimable});
+  assert.deepEqual(claimableDailyTasks({dailyTask:[row]}),claimable===true?[row]:[]);
+ }
+ for(const key of ['id','progress','targetProgress','rewardClaimed']){
+  for(const descriptor of [{enumerable:true,get(){throw Error('must not execute accessor');}},{enumerable:false,value:valid[key]}]){
+   const row={...valid};Object.defineProperty(row,key,descriptor);assert.equal(parseDailyTaskObservation(row),null);assert.equal(dailyTaskQualification(row).claimable,null);assert.equal(claimableDailyTasks({dailyTask:[row]}).length,0);
+  }
+ }
+ const inherited=Object.create(valid);assert.deepEqual(dailyTaskObservation(inherited),{taskId:null,progress:null,targetProgress:null,rewardClaimed:null});assert.equal(parseDailyTaskObservation(inherited),null);
+ for(const value of [null,[],1,'row'])assert.equal(parseDailyTaskObservation(value),null);
+ const type=protocol.DispDailyTask,omitted=type.decode(type.encode({id:1001,targetProgress:1,rewardClaimed:false}).finish());
+ assert.equal(omitted.progress,0);assert.equal(dailyTaskObservation(omitted).progress,null);assert.equal(dailyTaskQualification(omitted).completion,'UNKNOWN');assert.equal(valid.extra,'retained');
+});
+
+test('legacy daily survey uses the shared read-only qualification and retains original valid driver suggestions',async()=>{
+ const rows=[{id:1001,progress:1,targetProgress:1,extra:'keep-without-claim-marker'},
+ {id:1002,progress:1,targetProgress:1,rewardClaimed:true},
+ {id:1006,progress:0,targetProgress:2,rewardClaimed:false}];
+ const f=fixture({tasks:rows,replies:{ClickGoldInfoRequest:{info:{freeTimes:0}}}}),report=await surveyDailies(f.client,protocol,{config:clickConfig});
+ assert.equal(report.readOnly,true);assert.equal(report.executable,false);assert.equal(report.qualificationScope,'TASK_PROGRESS_ONLY');assert.equal(report.taskListStatus,'OBSERVED');
+ for(let i=0;i<rows.length;i++)assert.deepEqual(report.tasks[i].qualification,dailyTaskQualification(rows[i]));
+ assert.equal(report.tasks[0].status,'done');assert.equal(report.tasks[0].qualification.claimable,null);assert.equal(report.tasks[0].task.extra,rows[0].extra);assert.deepEqual(report.tasks[0].actions,[]);
+ assert.equal(report.tasks[1].status,'done');assert.equal(report.tasks[1].qualification.claimable,false);
+ const expected=DAILY_DRIVERS[1006].evaluate({task:rows[2],probe:()=>({info:{freeTimes:0}}),config:clickConfig,ruby:1000});
+ assert.equal(report.tasks[2].status,expected.status);assert.deepEqual(report.tasks[2].actions,expected.actions);assert.deepEqual(f.mutations,[]);
+});
+for(const [label,change]of[
+ ['zero target',row=>row.targetProgress=0],['negative target',row=>row.targetProgress=-1],['string progress',row=>row.progress='2'],['unsafe progress',row=>row.progress=2147483648],
+ ['infinite progress',row=>row.progress=Infinity],['missing progress',row=>delete row.progress],['missing target',row=>delete row.targetProgress],
+ ['accessor progress',row=>Object.defineProperty(row,'progress',{enumerable:true,get(){throw Error('must not execute');}})],
+])test('legacy daily preview cannot complete or suggest actions from unknown counts '+label,async()=>{
+ const row={id:1006,progress:2,targetProgress:2,rewardClaimed:false,extra:'keep'};change(row);
+ const f=fixture({tasks:[row,{id:1001,progress:1,targetProgress:1,rewardClaimed:false}]}),report=await surveyDailies(f.client,protocol,{config:clickConfig});
+ assert.equal(report.tasks[0].status,'unknown');assert.equal(report.tasks[0].qualification.completion,'UNKNOWN');assert.equal(report.tasks[0].qualification.claimable,null);assert.deepEqual(report.tasks[0].actions,[]);assert.equal(report.tasks[0].task.extra,'keep');assert.equal(report.tasks[1].status,'done');assert.deepEqual(f.mutations,[]);
+});
+for(const [label,rows]of [['duplicate',[{id:1001,progress:1,targetProgress:1},{id:1001,progress:1,targetProgress:1}]],['sparse',Array(1)],['invalid identity',[{id:0,progress:1,targetProgress:1}]],['malformed',{}],['missing',undefined]])test('legacy daily preview unknown task list preserves independent gift '+label,async()=>{
+ const f=fixture({replies:{DailyTaskInfoRequest:{dailyTask:rows},DailyGiftPackRequest:{heroId:'h',drawnPack:[]}}}),report=await surveyDailies(f.client,protocol);
+ assert.equal(report.taskListStatus,'UNKNOWN');assert.equal(report.taskListReason,'DAILY_TASK_LIST_UNKNOWN');assert.deepEqual(report.tasks,[]);assert.equal(report.gift.freeAvailable,true);assert.deepEqual(f.mutations,[]);
+});
+
+
+test('one daily list parser preserves exact rows and rejects ambiguous identities across preview and claim candidates',async()=>{
+ const row={id:1001,progress:1,targetProgress:1,rewardClaimed:false,extra:'keep'},rows=[row],body={dailyTask:rows};
+ assert.equal(dailyTaskRows(body),rows);assert.equal(claimableDailyTasks(body)[0],row);assert.deepEqual(dailyTaskRows({dailyTask:[]}),[]);
+ const sparse=[row];sparse.length=2;
+ for(const invalid of [{dailyTask:[row,{...row}]},{dailyTask:sparse},{dailyTask:[row,{id:0}]},Object.create(body),{}]){
+  assert.equal(dailyTaskRows(invalid),null);assert.deepEqual(claimableDailyTasks(invalid),[]);
+ }
+ const accessor={};Object.defineProperty(accessor,'dailyTask',{enumerable:true,get(){throw Error('must not invoke list getter');}});assert.equal(dailyTaskRows(accessor),null);assert.deepEqual(claimableDailyTasks(accessor),[]);
+ const f=fixture({replies:{DailyTaskInfoRequest:{dailyTask:[row,{...row}]}}}),report=await surveyDailies(f.client,protocol);assert.equal(report.taskListStatus,'UNKNOWN');assert.deepEqual(report.tasks,[]);assert.deepEqual(f.mutations,[]);
 });
