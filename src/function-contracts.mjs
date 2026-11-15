@@ -67,11 +67,11 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyTrialChallenge','src/trial-challenge.mjs#verifyTrialChallenge','Exact typed raid/stage/config rewards and independent exact passedStage, unchanged sweep counters/heroes and complete net inventory'),
     dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.TrialRaidCfg','config.TrialRaidStageCfg','config.ItemCfg']),
   }),
-  'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{payment:{type:'string',enum:['free','ticket']},count:{type:'integer',enum:[1,10,50]}},{
+  'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{payment:{type:'string',enum:['free','ticket']},count:{type:'integer',enum:[1,10,50]},recruit:{type:'string',enum:['hero','antique']}},{
     inventoryRequirementIds:['BIZ-D02'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','RECRUIT'],blockedCapabilities:[blocked('ADVANCED_AND_ANTIQUE','Only explicit free way=1 or owned-ticket ways=2/3/4 with exact 1/10/50 tickets; advanced, antique and purchase remain blocked')]},
-    verification:verification('verifyFreeRecruit','src/free-recruit.mjs#verifyFreeRecruit','Exact 1/10/50 typed reward entries and independent RecruitInfo: free creates a future cooldown; single ticket retains a future marker, explicit batches retain the observed marker and debit exactly 10/50 owned tickets. Exact aggregate new heroes/fragments and complete stock; other heroes and antique state unchanged'),
-    dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.HeroCfg','config.ItemCfg']),
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','RECRUIT'],blockedCapabilities:[blocked('ADVERTISING_DIVE_AND_PURCHASE','Only explicit hero or antique free way=1 or owned-ticket ways=2/3/4 with exact 1/10/50 tickets; advertising, dive and purchase remain blocked')]},
+    verification:verification('verifyFreeRecruit','src/free-recruit.mjs#verifyFreeRecruit','Exact 1/10/50 typed reward entries and independent RecruitInfo: free creates a future cooldown; single ticket retains a future marker, explicit batches retain the observed marker and debit exactly 10/50 owned tickets. Exact aggregate new heroes/fragments and complete stock; other recruit state unchanged; explicit antique type=1 additionally requires AllAntique ownership, configured conversion and original derived-suit/hero validation: only new ownership permits server-derived power/attributes, every other hero field remains exact'),
+    dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.HeroCfg','config.ItemCfg','config.AntiqueBaseCfg','config.AntiqueFragReturnCfg','config.AntiqueSuitCfg']),
   }),
   'free-gold': contract('free-gold',[],['P6-2'],['src/free-gold.mjs#freeGoldModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D06'],

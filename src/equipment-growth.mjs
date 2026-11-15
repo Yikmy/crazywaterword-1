@@ -315,3 +315,6 @@ function verifyStar(op,b,a,p,config){
   if(!putOnFresh(b)||!putOnFresh(a))return fail('EQUIPMENT_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {confirmed:true,reason:'新 Equips 与 AllHero 双重完整复读确认同UID单次升星、原归属和等级/精炼/洗练不变，升星石及精铁精确净扣；目标随机属性及英雄派生数值仅保留服务器观察',afterState:{hero:copy(after),equipment:copy(afterEquipment)},responseEvidence:null};
 }
+
+// Reuse the same strict server-derived hero field shape in other growth domains.
+export { derivedReliable as heroDerivedStateReliable };

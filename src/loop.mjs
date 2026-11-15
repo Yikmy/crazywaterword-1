@@ -1,5 +1,6 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
+import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
@@ -230,6 +231,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           module=({1002:'free-recruit',1003:'stage',1004:'afk-level-rewards',1006:'free-gold',1008:'fleet',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
+          if(module==='free-recruit'){parameters=validateFreeRecruitParameters(parameters);if(parameters.recruit==='antique')invalid('日常1002仅代表英雄招募，古董请用原Workflow独立ACTION');}
           if(module==='afk-level-rewards')try{parameters=validateAfkLevelRewardsParameters(row.parameters);if(parameters.action!=='income')invalid('必须明确income');}catch{invalid('日常1004普通挂机收益须明确action=income、当前等级和完整区间');}
           if(module==='fleet')try{selection=fleetCargoFillSelection(parameters);}catch{invalid('日常1008仅支持明确货轮和货格的单次装货；任务进度需独立观察');}
           if(module==='alliance')try{selection=allianceOrderSelection(parameters);}catch{invalid('日常1012仅支持明确城市的联盟订单');}

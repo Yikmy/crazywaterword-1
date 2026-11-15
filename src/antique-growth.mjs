@@ -508,3 +508,6 @@ export const antiqueGrowthModule = Object.freeze({
   dependencyVersions: antiqueGrowthDependencyVersions,
   dependencyKeys: Object.freeze(['moduleConfig', ...allTables.map(name => 'config.' + name)]),
 });
+
+// Shared domain parsers/derived-state verification; no execution authority.
+export { readCatalog as readAntiqueGrowthCatalog, suitsConfirmed as antiqueSuitsConfirmed };

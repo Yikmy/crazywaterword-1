@@ -1,6 +1,8 @@
-// W16: explicit free, single-ticket or fixed owned-ticket batch hero recruit.
+// W16: explicit hero/antique free, single-ticket or fixed owned-ticket batches.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { heroDerivedStateReliable } from './equipment-growth.mjs';
+import { parseAntiqueOwnership, readAntiqueGrowthCatalog, antiqueSuitsConfirmed } from './antique-growth.mjs';
 import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
 import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
@@ -19,6 +21,8 @@ const fields=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,O
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
 const configNames=['ModuleOpenCfg','HeroCfg','ItemCfg'];
+const configNamesFor=p=>p?.recruit==='antique'?[...configNames,'AntiqueBaseCfg','AntiqueFragReturnCfg','AntiqueSuitCfg']:configNames;
+const sourcesFor=p=>p?.recruit==='antique'?{...sources,antiques:'AllAntiqueResponse'}:sources;
 const sources={recruit:'RecruitInfoResponse',heroes:'AllHeroResponse',city:'OnWaterResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
 const liveFacts=new WeakMap(),costSource='Fixed v76 HeroRecruitItem and RecruitUtil; exactly way=RECRUIT_FREE(1), zero ticket or resource debit';
 const ticketCostSource='Fixed v76 HeroRecruitItem._recruit and RecruitUtil.needRecruitItemNum; ways 2/3/4 consume exactly 1/10/50 owned 抽卡券';
@@ -30,7 +34,7 @@ export const FREE_RECRUIT_EVIDENCE=Object.freeze({
  batchSemantics:'Explicit RECRUIT_BATCH_10(3)/RECRUIT_BATCH_50(4), exactly 10/50 owned tickets; independent batch branch, no free substitution; exact typed reward count and net state required',
  batchDispatchModuleByteOffset:3609201,batchCostModuleByteOffset:5533184,
  antiqueObservationModuleByteOffset:265838,
- antiqueObservationSemantics:'AntiqueRecruitItem uses RecruitInfo.antique, the same free marker comparison, and owned 藏品券 costs 1/10/50; separate AntiqueRecruitRequest type/way and configured duplicate conversion require their own settlement contract',
+ antiqueObservationSemantics:'AntiqueRecruitItem uses RecruitInfo.antique, the same free marker comparison, and owned 藏品券 costs 1/10/50; explicit AntiqueRecruitRequest type=1/way uses its own typed new-antique/configured conversion branch and independent AllAntique ownership; original growth catalog and derived-suit validation are reused',
  advertisingSemantics:'RecruitView._onBtnAdRecruit calls recruitAdv only after AdvUtils.playAdv success; RECRUIT_ADV(5) is advertising, never ordinary free authorization',
  realGame:'REAL_UNVERIFIED'
 });
@@ -46,8 +50,8 @@ export function heroRecruitCosts(way) {
  return ownedRecruitCosts(way,'抽卡券');
 }
 export function validateFreeRecruitParameters(v={}) {
- if(!fields(v,['payment','count'])||own(v,'payment')&&!['free','ticket'].includes(v.payment)||own(v,'count')&&(v.payment!=='ticket'||![1,10,50].includes(v.count)))throw invalid('默认免费单次；自有券仅接受明确 payment=ticket 与 count=1、10或50');
- return v.payment==='ticket'?{payment:'ticket',...(v.count>1?{count:v.count}:{})}:{};
+ if(!fields(v,['payment','count','recruit'])||own(v,'recruit')&&!['hero','antique'].includes(v.recruit)||own(v,'payment')&&!['free','ticket'].includes(v.payment)||own(v,'count')&&(v.payment!=='ticket'||![1,10,50].includes(v.count)))throw invalid('默认英雄免费单次；古董须明确recruit=antique，自有券须明确payment=ticket与count=1、10或50');
+ return {...(v.recruit==='antique'?{recruit:'antique'}:{}),...(v.payment==='ticket'?{payment:'ticket',...(v.count>1?{count:v.count}:{})}:{})};
 }
 function roleId(v) {
  if(typeof v==='number'&&(!Number.isSafeInteger(v)||v<=0))return null;
@@ -69,9 +73,9 @@ function parseRecruitData(data) {
  if(!keys.every(k=>own(data,k)&&uint(data[k]))||!own(data,'task')||!['times','gotId'].every(k=>own(data.task,k)&&uint(data.task[k])))return null;
  return {freeEndTimeSeconds:data.freeEndTimeSeconds,nextLuck:data.nextLuck,recruitTimes:data.recruitTimes,task:{times:data.task.times,gotId:data.task.gotId}};
 }
-function parseRecruit(raw) {
+function parseRecruit(raw,parameters={}) {
  if(!own(raw,'hero'))return null;
- const hero=parseRecruitData(raw.hero);return hero?{hero,antique:own(raw,'antique')?copy(raw.antique):null}:null;
+ const hero=parseRecruitData(raw.hero),antique=parameters.recruit==='antique'?parseRecruitData(raw.antique):own(raw,'antique')?copy(raw.antique):null;return hero&&(parameters.recruit!=='antique'||antique)?{hero,antique}:null;
 }
 function parseHeroes(raw) {
  if(!own(raw,'heroes')||!dense(raw.heroes))return null;
@@ -85,58 +89,63 @@ function parseBroadcast(raw) {
  return {buildingId:'1广播站',level:rows[0].level};
 }
 const stockState=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
-function snapshot(inputs,context) {
- const recruit=parseRecruit(inputs?.recruit),heroes=parseHeroes(inputs?.heroes),broadcast=parseBroadcast(inputs?.city),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
- return recruit&&heroes&&broadcast&&inventory.stockReliable?{context,recruit,heroes,broadcast,inventory:stockState(inventory.stock)}:null;
+function snapshot(inputs,context,parameters={}) {
+ const recruit=parseRecruit(inputs?.recruit,parameters),antiques=parameters.recruit==='antique'?parseAntiqueOwnership(inputs?.antiques):null,heroes=parseHeroes(inputs?.heroes),broadcast=parseBroadcast(inputs?.city),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
+ return recruit&&heroes&&broadcast&&inventory.stockReliable&&(parameters.recruit!=='antique'||antiques)?{context,recruit,heroes,broadcast,inventory:stockState(inventory.stock),...(parameters.recruit==='antique'?{antiques}:{})}:null;
 }
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyFreeRecruit(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
  parameters=validateFreeRecruitParameters(parameters);
+ const readSources=sourcesFor(parameters),tables=configNamesFor(parameters);
  const opts={signal,stop},context=contextOf(client,player),notes=[],startClock=clockOf(client,context);
  const active=()=>assertExecutionActive(client,opts);active();
- const observations=await Promise.all(Object.entries(sources).map(async([key,response])=>{
+ const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
   const name=response.replace(/Response$/,'Request');active();
   if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return[key,null,null];}
   try{const value=await awaitExecution(client.request(name,{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}
   catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return[key,null,null];}
  }));
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('招募采集期间账号或连接变化'),{code:'CANCELLED'});
- const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),recruit=parseRecruit(raw.recruit),heroes=parseHeroes(raw.heroes),broadcast=parseBroadcast(raw.city),inventory=parseOperationInventory(raw.items,raw.resources);
- const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:k==='recruit'?recruit!==null:k==='heroes'?heroes!==null:k==='city'?broadcast!==null:inventory.stockReliable})]));
- const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context),available:Object.keys(protocol??{}),notes,startClock,endClock};
+ const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),recruit=parseRecruit(raw.recruit,parameters),heroes=parseHeroes(raw.heroes),broadcast=parseBroadcast(raw.city),inventory=parseOperationInventory(raw.items,raw.resources);
+ const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:readSources[k],sourceAt,scope,reliable:k==='recruit'?recruit!==null:k==='heroes'?heroes!==null:k==='city'?broadcast!==null:k==='antiques'?parseAntiqueOwnership(raw.antiques)!==null:inventory.stockReliable})]));
+ const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(tables.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context,parameters),available:Object.keys(protocol??{}),notes,startClock,endClock};
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 
 function authority(f) {
  const live=liveFacts.get(f),c=f?.context;
  if(!live||live.digest!==digest(f)||live.client.connected!==true||!same(c,contextOf(live.client,live.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
- if(!same(snapshot(f.inputs,c),f.state))return false;
- return Object.entries(sources).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
+ if(!same(snapshot(f.inputs,c,f.parameters),f.state))return false;
+ return Object.entries(sourcesFor(f.parameters)).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 function currentClock(f) {
  const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
  return clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs?clock:null;
 }
-function catalog(config) {
+function catalog(config,parameters={}) {
  const modules=config?.tables?.ModuleOpenCfg?.data,heroes=config?.tables?.HeroCfg?.data,items=config?.tables?.ItemCfg?.data;
  if(!dense(modules)||!dense(heroes)||!heroes.length||!dense(items))return null;
  const gates=modules.filter(r=>own(r,'moduleId')&&r.moduleId==='英雄入口');
  if(gates.length!==1||!own(gates[0],'playerLevel')||!positive(gates[0].playerLevel)||heroes.some(r=>!own(r,'id')||!text(r.id))||new Set(heroes.map(r=>r.id)).size!==heroes.length||items.some(r=>!own(r,'id')||!text(r.id))||new Set(items.map(r=>r.id)).size!==items.length)return null;
- return {requiredLevel:gates[0].playerLevel,heroIds:heroes.map(r=>r.id),itemIds:items.map(r=>r.id)};
+ const common={requiredLevel:gates[0].playerLevel,heroIds:heroes.map(r=>r.id),itemIds:items.map(r=>r.id)};
+ if(parameters.recruit!=='antique')return common;
+ const antique=readAntiqueGrowthCatalog(config,{action:'activate'}),returns=config?.tables?.AntiqueFragReturnCfg?.data;
+ if(!antique||!dense(returns)||returns.some(r=>!own(r,'color')||!text(r.color)||!own(r,'count')||!positive(r.count))||new Set(returns.map(r=>r.color)).size!==returns.length||antique.base.some(r=>!returns.some(x=>x.color===r.color)||!common.itemIds.includes(r.antiqueId+'碎片'))||!common.itemIds.includes('藏品券'))return null;
+ return {...common,requiredLevel:Math.max(common.requiredLevel,antique.playerLevel),antique,fragReturns:returns.map(r=>({color:r.color,count:r.count}))};
 }
 function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}) {
  parameters=validateFreeRecruitParameters(parameters);
- const ticket=parameters.payment==='ticket',count=ticket?(parameters.count??1):1,way=ticket?({1:2,10:3,50:4})[count]:1,costs=heroRecruitCosts(way);
- const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
- const valid=authority(f)&&same(parameters,f.parameters),clock=valid?currentClock(f):null,beforeState=copy(f?.state??null),marker=f?.state?.recruit?.hero?.freeEndTimeSeconds??null;
- const readiness=freeRecruitReadiness(marker,clock);
- const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs||ticket&&!defs.itemIds.includes('抽卡券')?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':ticket&&count===1&&readiness!=='COOLDOWN'?'RECRUIT_TICKET_REQUIRES_KNOWN_COOLDOWN':!ticket&&readiness!=='READY_BY_CLOCK'?'FREE_RECRUIT_COOLDOWN':ticket&&(f.stock.get('抽卡券')??0)<count?'RECRUIT_TICKET_INSUFFICIENT':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
- // Stable across reconnects for the original rejection memory; no invented day limit.
- const ticketUid=hash({recruit:beforeState?.recruit,heroes:beforeState?.heroes,broadcast:beforeState?.broadcast,inventory:beforeState?.inventory,defs});
- const identity=hash({beforeState,defs,...(ticket?{parameters}:{})}),budgetClaims=ticket?{resources:copy(costs),quotas:[],uids:[{type:moduleId,id:'ticket:'+ticketUid}]}:{resources:[],quotas:[{id:moduleId+':cooldown:'+marker,num:1}],uids:[{type:moduleId,id:String(marker)}]};
- const expectedState=beforeState?{context:copy(beforeState.context),broadcast:copy(beforeState.broadcast),rule:count===1?'EXACT_SINGLE_TYPED_RECRUIT':'EXACT_BATCH_TYPED_RECRUIT',cooldown:ticket?(count===1?'UNCHANGED_FUTURE_AND_MATCHES_REREAD':'UNCHANGED_AND_MATCHES_REREAD'):'FUTURE_EXPLICIT_AND_MATCHES_REREAD',reward:count===1?'EXACT_TYPED_FRAGMENT_NET_OR_ONE_NEW_HERO_ID':'EXACT_TYPED_REWARD_COUNT_AND_AGGREGATE_NET',otherBalances:'UNCHANGED'}:null;
- return {module:moduleId,actionId:moduleId+':'+(ticket?'ticket:':'')+marker+':'+identity,actionType:ticket?'RECRUIT':'CLAIM',target:{freeEndTimeSeconds:marker,way},parameters,identity,beforeState,expectedState,costs,costSource:ticket?ticketCostSource:costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:ticket?'自有抽卡券招募 ×'+count:'免费英雄招募 ×1',requiredLevel:defs?.requiredLevel??null,
- ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('RecruitStartRequest',{way})}}:{})};
+ const antique=parameters.recruit==='antique',key=antique?'antique':'hero',ticketId=antique?'藏品券':'抽卡券',prefix=antique?'antique:':'';
+ const ticket=parameters.payment==='ticket',count=ticket?(parameters.count??1):1,way=ticket?({1:2,10:3,50:4})[count]:1,costs=ownedRecruitCosts(way,ticketId),tables=configNamesFor(parameters);
+ const matches=same(tables.map(n=>config?.tables?.[n]??null),tables.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence,parameters):null;
+ const valid=authority(f)&&same(parameters,f.parameters),clock=valid?currentClock(f):null,beforeState=copy(f?.state??null),marker=f?.state?.recruit?.[key]?.freeEndTimeSeconds??null;
+ const readiness=freeRecruitReadiness(marker,clock),writeRequest=antique?'AntiqueRecruitRequest':request,writeResponse=antique?'AntiqueRecruitResponse':response;
+ const blockedReason=!validateFreeRecruitConfig(moduleConfig).enabled?'FREE_RECRUIT_DISABLED':!valid?'FREE_RECRUIT_AUTHORITY_UNKNOWN':!defs||ticket&&!defs.itemIds.includes(ticketId)?'FREE_RECRUIT_CONFIG_UNKNOWN':!positive(f.context.playerLevel)?'FREE_RECRUIT_LEVEL_UNKNOWN':f.context.playerLevel<defs.requiredLevel?'FREE_RECRUIT_LEVEL_LOCKED':!clock?'FREE_RECRUIT_CLOCK_UNKNOWN':ticket&&count===1&&readiness!=='COOLDOWN'?'RECRUIT_TICKET_REQUIRES_KNOWN_COOLDOWN':!ticket&&readiness!=='READY_BY_CLOCK'?'FREE_RECRUIT_COOLDOWN':ticket&&(f.stock.get(ticketId)??0)<count?'RECRUIT_TICKET_INSUFFICIENT':![writeRequest,writeResponse].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const ticketUid=hash({recruit:beforeState?.recruit,heroes:beforeState?.heroes,broadcast:beforeState?.broadcast,inventory:beforeState?.inventory,defs,...(antique?{antiques:beforeState?.antiques}:{})});
+ const identity=hash({beforeState,defs,...(ticket||antique?{parameters}:{})}),budgetClaims=ticket?{resources:copy(costs),quotas:[],uids:[{type:moduleId,id:prefix+'ticket:'+ticketUid}]}:{resources:[],quotas:[{id:moduleId+':'+prefix+'cooldown:'+marker,num:1}],uids:[{type:moduleId,id:prefix+marker}]};
+ const expectedState=beforeState?{context:copy(beforeState.context),broadcast:copy(beforeState.broadcast),rule:count===1?'EXACT_SINGLE_TYPED_RECRUIT':'EXACT_BATCH_TYPED_RECRUIT',cooldown:ticket?(count===1?'UNCHANGED_FUTURE_AND_MATCHES_REREAD':'UNCHANGED_AND_MATCHES_REREAD'):'FUTURE_EXPLICIT_AND_MATCHES_REREAD',reward:antique?'EXACT_TYPED_ANTIQUE_OR_CONFIGURED_CONVERSION_AND_FULL_NET':count===1?'EXACT_TYPED_FRAGMENT_NET_OR_ONE_NEW_HERO_ID':'EXACT_TYPED_REWARD_COUNT_AND_AGGREGATE_NET',otherBalances:'UNCHANGED',...(antique?{heroDerivedValues:'SERVER_OBSERVED_ONLY_FOR_NEW_ANTIQUE_OTHER_HERO_FIELDS_EXACT'}:{})}:null;
+ return {module:moduleId,actionId:moduleId+':'+prefix+(ticket?'ticket:':'')+marker+':'+identity,actionType:ticket?'RECRUIT':'CLAIM',target:{freeEndTimeSeconds:marker,way,...(antique?{recruit:'antique',type:1}:{})},parameters,identity,beforeState,expectedState,costs,costSource:antique?'Fixed v76 AntiqueRecruitItem/RecruitUtil: type=RECRUIT_ANTIQUE(1), ways 1/2/3/4 cost zero/1/10/50 owned 藏品券':ticket?ticketCostSource:costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:ticket?'自有'+ticketId+'招募 ×'+count:'免费'+(antique?'古董':'英雄')+'招募 ×1',requiredLevel:defs?.requiredLevel??null,
+ ...(blockedReason===null?{action:{request:writeRequest,response:writeResponse,body:buildDailyDriverBody(writeRequest,{way,...(antique?{type:1}:{})})}}:{})};
 }
 const cooldownSource='RecruitInfoResponse.hero.freeEndTimeSeconds';
 export function freeRecruitReadiness(marker,bounds) {
@@ -157,7 +166,7 @@ export function validateFreeRecruitCooldownObservation(v) {
  return copy(v);
 }
 function recruitCooldownObservation(f) {
- const valid=authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit.hero.freeEndTimeSeconds:null;
+ const valid=f?.parameters?.recruit!=='antique'&&authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit.hero.freeEndTimeSeconds:null;
  const bounds=clock?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
  return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:cooldownSource,freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
   serverBounds:bounds,readiness:valid?freeRecruitReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
@@ -170,12 +179,12 @@ function antiqueRecruitObservation(f,{config}={}) {
  const gates=dense(rows)?rows.filter(r=>own(r,'moduleId')&&r.moduleId==='藏品'):[];
  const level=gates.length===1&&own(gates[0],'playerLevel')&&positive(gates[0].playerLevel)?gates[0].playerLevel:null;
  const defs=catalog(f?.configEvidence),data=parseRecruitData(f?.state?.recruit?.antique);
- const valid=authority(f)&&same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null))&&defs?.itemIds.includes('藏品券')&&level!==null&&positive(f.context.playerLevel)&&data!==null;
+ const valid=authority(f)&&same(configNamesFor(f?.parameters).map(n=>config?.tables?.[n]??null),configNamesFor(f?.parameters).map(n=>f?.configEvidence?.tables?.[n]??null))&&defs?.itemIds.includes('藏品券')&&level!==null&&positive(f.context.playerLevel)&&data!==null;
  const clock=valid?currentClock(f):null,readiness=valid?freeRecruitReadiness(data.freeEndTimeSeconds,clock):'UNKNOWN';
  const ownedTickets=valid?(f.stock.get('藏品券')??0):null;
  return {kind:'antique',status:valid?'OBSERVED':'UNKNOWN',source:'RecruitInfoResponse.antique',recruit:valid?copy(data):null,
   requiredLevel:valid?level:null,ticketId:'藏品券',ownedTickets,readiness,eligibility:null,executable:false,autoResume:false,
-  blockedReason:'ANTIQUE_RECRUIT_SETTLEMENT_CONTRACT_UNVERIFIED',
+  blockedReason:'CONDITIONS_ARE_NOT_EXECUTION_AUTHORITY',
   modes:[1,2,3,4].map(way=>{
    const costs=ownedRecruitCosts(way,'藏品券'),count=way===1?1:costs[0].num;
    const observedRequirementsMet=!valid?null:f.context.playerLevel<level?false:!clock||readiness==='UNKNOWN'?null:way===1?readiness==='READY_BY_CLOCK':way===2?readiness==='COOLDOWN'&&ownedTickets>=count:ownedTickets>=count;
@@ -185,7 +194,7 @@ function antiqueRecruitObservation(f,{config}={}) {
 
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??f?.parameters??{});
- return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，广告招募、古董写入和购买仍关闭；古董资格仅展示原调查的独立只读条件，未知结果不重放。']};
+ return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，古董写入须显式recruit=antique并重新调查完整藏品/配置，再独立授权；只读条件不构成许可。广告、潜水和购买仍关闭，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);
@@ -195,28 +204,46 @@ export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],le
 }
 export function verifyFreeRecruit(operation,before,after,result) {
  const no=reason=>({confirmed:false,reason});
- if(!authority(before)||!authority(after)||!same(before.context,after.context)||!currentClock(before)||!currentClock(after)||!same(before.configEvidence,after.configEvidence))return no('招募前后账号、可信时钟、配置或库存不可靠');
+ if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.parameters,after.parameters)||!currentClock(before)||!currentClock(after)||!same(before.configEvidence,after.configEvidence))return no('招募前后账号、可信时钟、配置或库存不可靠');
  const canonical=candidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(operation?.[k],canonical[k])))return no('招募合同与写前事实不一致');
+ const antique=canonical.parameters.recruit==='antique',key=antique?'antique':'hero',other=antique?'hero':'antique';
  const ticket=canonical.parameters.payment==='ticket',count=canonical.parameters.count??1;
  const data=own(result,'recruitData')?parseRecruitData(result.recruitData):null;
- const markerMatches=data&&(ticket?data.freeEndTimeSeconds===before.state.recruit.hero.freeEndTimeSeconds:data.freeEndTimeSeconds>before.state.recruit.hero.freeEndTimeSeconds);
- if(!data||!own(result,'reward')||!dense(result.reward)||result.reward.length!==count||count===1&&data.freeEndTimeSeconds*1000<=currentClock(after).latestMs||!markerMatches||!same(data,after.state.recruit.hero)||!same(before.state.recruit.antique,after.state.recruit.antique)||!same(before.state.broadcast,after.state.broadcast))return no('缺少同一次明确回执与独立新冷却，或无关招募/广播站状态变化');
- const defs=catalog(before.configEvidence),stock=new Map(before.stock),heroes=copy(before.state.heroes),received=[];
- if(ticket)stock.set('抽卡券',stock.get('抽卡券')-count);
+ const markerMatches=data&&(ticket?data.freeEndTimeSeconds===before.state.recruit[key].freeEndTimeSeconds:data.freeEndTimeSeconds>before.state.recruit[key].freeEndTimeSeconds);
+ if(!data||!own(result,'reward')||!dense(result.reward)||result.reward.length!==count||count===1&&data.freeEndTimeSeconds*1000<=currentClock(after).latestMs||!markerMatches||!same(data,after.state.recruit[key])||!same(before.state.recruit[other],after.state.recruit[other])||!same(before.state.broadcast,after.state.broadcast))return no('缺少同一次明确回执与独立新冷却，或无关招募/广播站状态变化');
+ const defs=catalog(before.configEvidence,before.parameters),stock=new Map(before.stock),heroes=copy(before.state.heroes),antiques=antique?copy(before.state.antiques.antiques):null,received=[],newColors=new Set();
+ if(ticket){const id=antique?'藏品券':'抽卡券';stock.set(id,stock.get(id)-count);}
+ const addItem=(id,num)=>{const n=(stock.get(id)??0)+num;if(!defs.itemIds.includes(id)||!Number.isSafeInteger(num)||num<=0||!Number.isSafeInteger(n))return false;stock.set(id,n);received.push({kind:'ITEM',id,num});return true;};
  for(const reward of result.reward){
- if(own(reward,'frag')&&reward.frag!==null) {
-  if(!own(reward.frag,'asset')||!dense(reward.frag.asset)||reward.frag.asset.length!==1)return no('碎片奖励包不完整或多义');
-  const item=reward.frag.asset[0],num=own(item,'num')?safeResourceQuantity(item.num):null;
-  if(!own(item,'type')||item.type!==0||!own(item,'id')||!defs.itemIds.includes(item.id)||num===null||num<=0)return no('碎片奖励身份/数量不明确');
-  const n=(stock.get(item.id)??0)+num;if(!Number.isSafeInteger(n))return no('碎片库存溢出');stock.set(item.id,n);received.push({kind:'ITEM',id:item.id,num});
- } else {
-  if(!own(reward,'heroId')||!defs.heroIds.includes(reward.heroId)||heroes.some(h=>h.heroId===reward.heroId)||own(reward,'trans')&&reward.trans!==false)return no('未确认明确且此前未拥有的新英雄');
-  const added=after.state.heroes.find(h=>h.heroId===reward.heroId);if(!added)return no('新英雄未复读确认');heroes.push(copy(added));heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId));received.push({kind:'HERO',heroId:reward.heroId});
+  const packKey=antique?'reward':'frag';
+  if(own(reward,packKey)&&reward[packKey]!==null){
+   const pack=reward[packKey];if(!own(pack,'asset')||!dense(pack.asset)||pack.asset.length!==1)return no('碎片奖励包不完整或多义');
+   const item=pack.asset[0],num=own(item,'num')?safeResourceQuantity(item.num):null;
+   if(!own(item,'type')||item.type!==0||!own(item,'id')||!addItem(item.id,num))return no('碎片奖励身份/数量不明确或库存溢出');
+  }else if(antique){
+   const base=own(reward,'antiqueId')?defs.antique.base.find(r=>r.antiqueId===reward.antiqueId):null;
+   if(!base)return no('藏品奖励身份未知');
+   if(own(reward,'trans')&&reward.trans===true){
+    const conversion=defs.fragReturns.find(r=>r.color===base.color);if(!conversion||!addItem(base.antiqueId+'碎片',conversion.count))return no('藏品转换品质、碎片或数量未知');
+   }else{
+    if(own(reward,'trans')&&reward.trans!==false||antiques.some(r=>r.id===base.antiqueId))return no('新藏品与重复转换状态混淆');
+    const added=after.state.antiques.antiques.find(r=>r.id===base.antiqueId);if(!added)return no('新藏品未独立复读确认');
+    antiques.push(copy(added));antiques.sort((a,b)=>a.id.localeCompare(b.id));newColors.add(base.color);received.push({kind:'ANTIQUE',antiqueId:base.antiqueId,star:added.star});
+   }
+  }else{
+   if(!own(reward,'heroId')||!defs.heroIds.includes(reward.heroId)||heroes.some(h=>h.heroId===reward.heroId)||own(reward,'trans')&&reward.trans!==false)return no('未确认明确且此前未拥有的新英雄');
+   const added=after.state.heroes.find(h=>h.heroId===reward.heroId);if(!added)return no('新英雄未复读确认');heroes.push(copy(added));heroes.sort((a,b)=>a.heroId.localeCompare(b.heroId));received.push({kind:'HERO',heroId:reward.heroId});
+  }
  }
- }
- if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state.heroes,heroes)||!same(after.state.inventory,stockState(stock)))return no('英雄/完整库存未确认本次精确奖励，或存在无关变化');
- return {confirmed:true,afterState:copy(after.state),reason:ticket?'明确'+count+'次回执、冷却保持及完整库存精确扣券与奖励净入共同确认':'单次免费回执与独立新冷却、英雄/完整库存净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received:count===1?received[0]:received}};
+ if(antique&&(!same(antiques,after.state.antiques.antiques)||before.state.antiques.masterLv!==after.state.antiques.masterLv||!antiqueSuitsConfirmed(before.state.antiques.suits,after.state.antiques.suits,defs.antique.derivedSuitTasks.filter(r=>newColors.has(r.color)).map(r=>r.suitId))))return no('藏品、套装或精通存在未授权变化');
+ // Newly owned antiques can refresh server-derived hero power/attributes, as
+ // original growth already permits. Every other hero field and ID stays exact;
+ // conversion-only results cannot authorize even derived changes.
+ const omitDerived=h=>Object.fromEntries(Object.entries(h).filter(([k])=>!['power','attributes'].includes(k)));
+ const heroesConfirmed=same(after.state.heroes,heroes)||antique&&newColors.size>0&&heroes.length===after.state.heroes.length&&heroes.every((h,i)=>heroDerivedStateReliable(after.state.heroes[i])&&same(omitDerived(h),omitDerived(after.state.heroes[i])));
+ if(Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!heroesConfirmed||!same(after.state.inventory,stockState(stock)))return no('英雄/藏品/完整库存未确认本次精确奖励，或存在无关变化');
+ return {confirmed:true,afterState:copy(after.state),reason:'明确'+count+'次'+(antique?'古董':'英雄')+'回执、独立招募状态及完整库存精确净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received:count===1?received[0]:received}};
 }
-export function freeRecruitDependencyVersions({config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeRecruitConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const freeRecruitModule=Object.freeze({id:moduleId,label:'英雄免费或自有券招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});
+export function freeRecruitDependencyVersions({config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters={}}={}) {return {moduleConfig:validateFreeRecruitConfig(moduleConfig),tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))};}
+export const freeRecruitModule=Object.freeze({id:moduleId,label:'英雄/古董免费或自有券招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});
