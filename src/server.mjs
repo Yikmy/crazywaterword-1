@@ -846,7 +846,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         }
         const session = sessions.get(id); scoped = session ?? null;
         if (!session?.client?.connected || session.state !== 'READY') { json({ error: '账号未连接，请先显式连接', code: 'NOT_CONNECTED' }, 409); return; }
-        if(route==='POST /api/gameplay/heroes/star/prepare'){if([...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('升星组合只接受唯一精确账号'),{code:'INVALID_INPUT',statusCode:400});fields(['heroId','num','maxDurationMs']);json({...await operations.prepareHeroStarSource(session,payload),csrfToken:operationCsrf});return;}
+        if(route==='POST /api/gameplay/heroes/star/prepare'){if([...parsed.searchParams.keys()].some(key=>key!=='account'))throw Object.assign(Error('升星组合只接受唯一精确账号'),{code:'INVALID_INPUT',statusCode:400});fields(['heroId','num','targets','maxDurationMs']);json({...await operations.prepareHeroStarSource(session,payload),csrfToken:operationCsrf});return;}
         if(stageRecommendationRoute){json({...await operations.prepareStageRecommendationSource(session,payload),csrfToken:operationCsrf});return;}
         if(route==='POST /api/formations/extreme/survey'){json({...await operations.extremeFormations(session,payload),csrfToken:operationCsrf});return;}
         if(route==='POST /api/formations/extreme/prepare'){json({...await operations.prepareExtremeFormationSource(session,payload),csrfToken:operationCsrf});return;}

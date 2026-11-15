@@ -2744,3 +2744,32 @@ for(const corrupt of ['hero','guard','budget','edge','extraParameter','rounds'])
  if(corrupt==='hero')reply.heroId='B';if(corrupt==='guard')reply.graph.nodes[3].parameters.expectedStar=2;if(corrupt==='budget')reply.graph.budget.resources[0].num=2;if(corrupt==='edge')reply.graph.edges[2].to='exchange';if(corrupt==='extraParameter')reply.graph.nodes[3].parameters.allowUniversal=true;if(corrupt==='rounds')reply.graph.runPolicy.maxRounds=2;
  h.respond('/api/gameplay/heroes/star/prepare',reply);await task;assert.equal(h.node('wf-json').value,original);assert.match(h.node('gp-heroes-hint').textContent,/未准备/);assert.equal(writes(h,'/api/workflows/start').length,0);
 });
+
+
+function multiHeroUiPreview(targets=[{heroId:'A',num:3},{heroId:'B',num:3}]) {
+ const base=heroStarUiPreview(),nodes=[{id:'start',type:'START'}],resources=new Map(),uids=[];
+ base.targets=targets.map(row=>({heroId:row.heroId,fromStar:1,toStar:2,ownedFragments:row.num===0?8:2,exchangeNum:row.num,starCost:5}));
+ const add=(id,num)=>resources.set(id,(resources.get(id)||0)+num);
+ for(const [i,row]of base.targets.entries())for(const original of heroStarUiPreview().graph.nodes.slice(1,-1)){
+  if(row.exchangeNum===0&&original.id.includes('exchange'))continue;const node=structuredClone(original);node.id+='-'+i;
+  if(node.parameters){node.parameters.heroId=row.heroId;node.parameters.expectedFragmentBalance=node.parameters.action==='fragment-exchange'?row.ownedFragments:row.ownedFragments+row.exchangeNum;if(node.parameters.action==='fragment-exchange'){node.parameters.num=row.exchangeNum;add('蓝卡万能碎片',row.exchangeNum);uids.push({type:'hero-fragment-exchange',id:row.heroId});}else add(row.heroId+'碎片',5);}
+  nodes.push(node);
+ }
+ nodes.push({id:'stop',type:'STOP'});base.graph={version:1,id:'hero-stars-synthetic',name:'明确英雄单星顺序',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),runPolicy:{maxDurationMs:60000,maxActions:nodes.filter(n=>n.type==='ACTION').length,modules:['heroes']},budget:{resources:[...resources].map(([id,num])=>({id,num})),quotas:[],uids}};return base;
+}
+async function multiHeroUi(){const spec=structuredClone(cases.find(s=>s.actionType==='FRAGMENT-EXCHANGE'));spec.facts.heroes.push({...structuredClone(spec.facts.heroes[0]),heroId:'B'});spec.facts.fragments.push({...structuredClone(spec.facts.fragments[0]),heroId:'B',targetId:'B碎片'});const h=await loaded(spec),controls=descendants(h.node('gp-heroes-facts'));return {h,target:controls.find(e=>e.dataset.heroExchangeTarget),num:controls.find(e=>e.dataset.heroExchangeQuantity),duration:controls.find(e=>e.dataset.heroStarDuration),add:controls.find(e=>e.dataset.heroStarAdd),prepare:controls.find(e=>e.dataset.heroStarSequencePrepare)};}
+function addHeroUi(u,heroId,num){u.target.value=heroId;u.num.value=String(num);u.add.click();}
+test('hero composition page sends ordered multi-hero targets and never executes during preview',async()=>{
+ const u=await multiHeroUi(),{h,prepare,duration}=u;addHeroUi(u,'A',3);addHeroUi(u,'B',3);duration.value='60';const task=prepare.click();assertMutation(h.pending('/api/gameplay/heroes/star/prepare'),'/api/gameplay/heroes/star/prepare',{targets:[{heroId:'A',num:3},{heroId:'B',num:3}],maxDurationMs:60000});h.respond('/api/gameplay/heroes/star/prepare',multiHeroUiPreview());await task;assert.equal(JSON.parse(h.node('wf-json').value).id,'hero-stars-synthetic',h.node('gp-heroes-hint').textContent);for(const route of ['/api/workflows/start','/api/workflows/save','/api/operations/authorize','/api/operations/execute'])assert.equal(writes(h,route).length,0);
+});
+test('hero composition page reorders and removes declared targets, allows explicit zero and blocks duplicate targets',async()=>{
+ const u=await multiHeroUi(),{h,prepare,duration}=u;addHeroUi(u,'A',3);addHeroUi(u,'A',3);assert.match(h.node('gp-heroes-hint').textContent,/不同英雄/);addHeroUi(u,'B',0);let controls=descendants(h.node('gp-heroes-facts'));const old=controls.find(e=>e.dataset.heroStarList==='up'&&e.dataset.heroStarListIndex==='1');old.click();old.click();duration.value='60';let task=prepare.click();assertMutation(h.pending('/api/gameplay/heroes/star/prepare'),'/api/gameplay/heroes/star/prepare',{targets:[{heroId:'B',num:0},{heroId:'A',num:3}],maxDurationMs:60000});h.respond('/api/gameplay/heroes/star/prepare',multiHeroUiPreview([{heroId:'B',num:0},{heroId:'A',num:3}]));await task;assert.equal(JSON.parse(h.node('wf-json').value).nodes[1].parameters.heroId,'B',h.node('gp-heroes-hint').textContent);controls=descendants(h.node('gp-heroes-facts'));controls.find(e=>e.dataset.heroStarList==='remove'&&e.dataset.heroStarListIndex==='0').click();task=prepare.click();assertMutation(h.pending('/api/gameplay/heroes/star/prepare'),'/api/gameplay/heroes/star/prepare',{targets:[{heroId:'A',num:3}],maxDurationMs:60000});h.respond('/api/gameplay/heroes/star/prepare',multiHeroUiPreview([{heroId:'A',num:3}]));await task;
+});
+for(const corrupt of ['order','budget','missingCost','zero','nodes','selection'])test('multi-hero page rejects altered '+corrupt+' response and preserves editor',async()=>{
+ const u=await multiHeroUi(),{h,prepare,duration}=u;addHeroUi(u,'A',3);addHeroUi(u,'B',3);duration.value='60';const before=h.node('wf-json').value,task=prepare.click(),reply=multiHeroUiPreview();
+ if(corrupt==='order')reply.targets.reverse();if(corrupt==='budget')reply.graph.budget.resources[0].num=7;if(corrupt==='missingCost')reply.graph.budget.resources[0]={id:'fake'};if(corrupt==='zero')reply.targets[1].exchangeNum=0;if(corrupt==='nodes')reply.graph.nodes[7].parameters.expectedFragmentBalance=6;if(corrupt==='selection')reply.graph.nodes[7].selection={unique:true,actionId:'fake'};
+ h.respond('/api/gameplay/heroes/star/prepare',reply);await task;assert.equal(h.node('wf-json').value,before);assert.match(h.node('gp-heroes-hint').textContent,/未准备/);
+});
+for(const change of ['account','editor','duration'])test('multi-hero page ignores delayed response after '+change,async()=>{
+ const u=await multiHeroUi(),{h,prepare,duration}=u;addHeroUi(u,'A',3);addHeroUi(u,'B',3);duration.value='60';const task=prepare.click();if(change==='account')h.run("selectAccount('B');selectAccount('A');");if(change==='editor'){h.node('wf-name').value='new';h.node('wf-name').oninput();}if(change==='duration')duration.value='61';const before=h.node('wf-json').value;h.respond('/api/gameplay/heroes/star/prepare',multiHeroUiPreview());await task;assert.equal(h.node('wf-json').value,before);assert.equal(writes(h,'/api/workflows/start').length,0);
+});

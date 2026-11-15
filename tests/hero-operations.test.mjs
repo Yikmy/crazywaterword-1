@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions, prepareHeroStarWorkflow } from '../src/hero-operations.mjs';
+import { HERO_DEFAULT_CONFIG, heroModule, validateHeroConfig, validateHeroParameters, parseOperationHero, surveyHeroOperations, viewHeroOperations, planHeroOperations, verifyHeroOperation, heroDependencyVersions, prepareHeroStarWorkflow, validateHeroStarPreparation } from '../src/hero-operations.mjs';
 import { planHeroes, buildHeroBody, buildHeroAction } from '../src/heroes.mjs';
 import { ResourceLedger, createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -516,4 +516,39 @@ test('composition refuses guessed quantities, unavailable costs, capacity and mi
  const cfg=structuredClone(c.config);cfg.tables.HeroStarCfg.data[2].consumeBlue=6;assert.throws(()=>prepareHeroStarWorkflow(facts,{...base,config:cfg}));
  const guards={expectedStar:1,expectedFragmentBalance:2,expectedStarCost:5};for(const patch of [{expectedStar:undefined},{expectedStar:-1},{expectedFragmentBalance:1.5},{expectedStarCost:0},{action:'level'},{expectedStarCost:'5'}])assert.throws(()=>validateHeroParameters({...exchangeParams('A',3),...guards,...patch}));
  const p={...exchangeParams('A',3),...guards};const op=plan(facts,p,c.config).actions[0];c.stock.set('A碎片',5);c.stock.set('蓝卡万能碎片',17);const after=await exchangeSurvey(c,p);assert.equal(verifyHeroOperation(op,facts,after,null).confirmed,true);op.configEvidence.HeroStarCfg.data[2].consumeBlue=6;assert.equal(verifyHeroOperation(op,facts,after,null).reason,'HERO_FRAGMENT_PLAN_OR_IDENTITY_MISMATCH');
+});
+
+const multiHeroInput={targets:[{heroId:'A',num:3},{heroId:'B',num:3}],maxDurationMs:60000};
+async function multiHeroFacts({source=6,ownedB=2}={}){const c=combinedClient();c.stock.set('蓝卡万能碎片',source);c.stock.set('B碎片',ownedB);return {c,facts:await exchangeSurvey(c)};}
+test('multiple heroes share one observed universal budget, exact order and original atomic contracts',async()=>{
+ const {c,facts}=await multiHeroFacts(),result=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput});
+ assert.deepEqual(result.targets.map(row=>row.heroId),['A','B']);assert.deepEqual(result.graph.budget.resources,[{id:'蓝卡万能碎片',num:6},{id:'A碎片',num:5},{id:'B碎片',num:5}]);assert.deepEqual(result.graph.budget.uids,['A','B'].map(id=>({type:'hero-fragment-exchange',id})));assert.equal(result.graph.nodes.length,10);assert.equal(result.graph.runPolicy.maxActions,4);assert.equal(result.graph.runPolicy.maxDurationMs,60000);
+ assert.deepEqual(result.graph.nodes.filter(n=>n.type==='ACTION').map(n=>[n.parameters.heroId,n.parameters.action]),[['A','fragment-exchange'],['A','star'],['B','fragment-exchange'],['B','star']]);assert.deepEqual(c.writes,[]);
+ const reversed=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput,targets:[...multiHeroInput.targets].reverse()});assert.deepEqual(reversed.targets.map(row=>row.heroId),['B','A']);assert.notEqual(reversed.graph.id,result.graph.id);
+});
+test('aggregate source shortage blocks preparation even when each exchange is individually affordable',async()=>{
+ const {c,facts}=await multiHeroFacts({source:5});for(const heroId of ['A','B'])assert.equal(plan(facts,exchangeParams(heroId,3),c.config).actions.length,1);
+ assert.throws(()=>prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput}),/共享万能碎片总量不足/);assert.deepEqual(c.writes,[]);
+});
+test('explicit zero uses only observed owned fragments and preserves extra dedicated stock',async()=>{
+ const {c,facts}=await multiHeroFacts({source:3,ownedB:8}),input={...multiHeroInput,targets:[{heroId:'B',num:0},{heroId:'A',num:3}]},result=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...input});
+ assert.equal(result.graph.nodes.length,8);assert.equal(result.graph.runPolicy.maxActions,3);const first=result.graph.nodes[1];assert.equal(first.parameters.action,'star');assert.equal(first.parameters.expectedFragmentBalance,8);assert.equal(first.parameters.allowUniversal,false);assert.equal(plan(facts,first.parameters,c.config).actions.length,1);assert.deepEqual(result.graph.budget.uids,[{type:'hero-fragment-exchange',id:'A'}]);
+ assert.throws(()=>prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput,targets:[{heroId:'A',num:0}]}));assert.throws(()=>prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput,targets:[{heroId:'B',num:1}]}));
+});
+test('twelve explicit exchange/star targets exactly fit the original fifty-node Workflow limit',async()=>{
+ const c=combinedClient(),template=structuredClone(c.heroes[0]);c.heroes=Array.from({length:12},(_,i)=>({...structuredClone(template),heroId:'H'+i}));c.stock=new Map([['蓝卡万能碎片',12],...c.heroes.map(row=>[row.heroId+'碎片',4])]);c.config.tables.HeroCfg.data=c.heroes.map(row=>({id:row.heroId,type:'英雄',quality:'BLUE',universalItemId:'蓝卡万能碎片'}));c.config.tables.ItemCfg.data=[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...c.heroes.map(row=>({id:row.heroId+'碎片',type:'英雄碎片',quality:'BLUE'}))];
+ const facts=await exchangeSurvey(c),targets=c.heroes.map(row=>({heroId:row.heroId,num:1})),result=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,targets,maxDurationMs:86400000});const {validateWorkflow}=await import('../src/workflow.mjs'),{GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');assert.equal(validateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).workflow.nodes.length,50);assert.equal(result.graph.edges.length,49);assert.equal(result.graph.runPolicy.maxActions,24);assert.equal(result.graph.budget.resources[0].num,12);
+});
+test('multi-hero input rejects mixing, duplicate/sparse/oversized/hidden targets and never invokes accessors',()=>{
+ const valid=validateHeroStarPreparation(multiHeroInput);assert.deepEqual(valid,multiHeroInput);valid.targets[0].num=4;assert.equal(multiHeroInput.targets[0].num,3);
+ for(const targets of [[],[{heroId:'A',num:3},{heroId:'A',num:3}],Array(2),Array.from({length:13},(_,i)=>({heroId:'H'+i,num:1})),[{heroId:'A',num:-1}],[{heroId:'A',num:1.5}],[{heroId:'A',num:2147483648}],[{heroId:'A',num:'3'}],[{heroId:'A',num:0,costs:[]}],[{heroId:'A'}]])assert.throws(()=>validateHeroStarPreparation({...multiHeroInput,targets}));
+ for(const extra of [{heroId:'A'},{num:3},{budget:{}},{allowUniversal:true}])assert.throws(()=>validateHeroStarPreparation({...multiHeroInput,...extra}));
+ let invoked=false;const getter=[];Object.defineProperty(getter,'0',{enumerable:true,get(){invoked=true;return {heroId:'A',num:3};}});assert.throws(()=>validateHeroStarPreparation({...multiHeroInput,targets:getter}));assert.equal(invoked,false);
+ const extra=[{heroId:'A',num:3}];extra.extra=true;assert.throws(()=>validateHeroStarPreparation({...multiHeroInput,targets:extra}));
+});
+
+test('multi-hero mixed qualities keep independent owned source pools and cannot substitute another quality',async()=>{
+ const {c}=await multiHeroFacts({source:3});c.config.tables.HeroCfg.data[1].quality='ORANGE';c.config.tables.HeroCfg.data[1].universalItemId='橙卡万能碎片';c.config.tables.ItemCfg.data.find(row=>row.id==='B碎片').quality='ORANGE';c.config.tables.ItemCfg.data.push({id:'橙卡万能碎片',type:'英雄万能碎片',quality:'ORANGE'});c.stock.set('橙卡万能碎片',3);
+ const facts=await exchangeSurvey(c),prepared=prepareHeroStarWorkflow(facts,{config:c.config,moduleConfig:enabled,...multiHeroInput});assert.deepEqual(prepared.graph.budget.resources,[{id:'蓝卡万能碎片',num:3},{id:'A碎片',num:5},{id:'橙卡万能碎片',num:3},{id:'B碎片',num:5}]);
+ c.stock.set('橙卡万能碎片',2);c.stock.set('蓝卡万能碎片',1000);const missing=await exchangeSurvey(c);assert.throws(()=>prepareHeroStarWorkflow(missing,{config:c.config,moduleConfig:enabled,...multiHeroInput}));assert.deepEqual(c.writes,[]);
 });

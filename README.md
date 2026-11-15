@@ -45,7 +45,7 @@ node src/app.mjs assets restore
 
 主线战败建议沿原 `POST /api/formations/recommendation/prepare` 准备有限图。`presetIds` 与 `maxDurationMs` 继续限定候选和总期限；可明确加入 `selectionRule: "OBSERVED_WIN_RATE"`、`minSamples`（1–200），按最近最多200份原历史中同账号/角色/世界/关卡、相同已观察队伍资料及对手、精确候选站位的胜率排序，同率保留输入顺序，再按 `maxAttempts` 截断。每候选样本不足则不生成统计图，不开战采样。准备只读；保存/开战仍沿原授权、独立复读和确认战败分支。未观察属性、成长与随机仍未知，历史排序不保证后续更优；UNKNOWN及重启不自动续跑。
 
-英雄页可明确英雄、兑换数量和总时长，调用 `POST /api/gameplay/heroes/star/prepare`（`heroId`、`num`、`maxDurationMs`）只读准备兑换后单星图。数量必须恰好补足下一颗星；图固定原星级、每步专属余额和星成本，兑换完整入库确认后才生成原单星计划（`universal:false`）。两步共用原授权、累计预算及历史；前置变化或UNKNOWN停止，重启只读，仍未进行真实游戏验收。
+英雄页可明确英雄、兑换数量和总时长，调用 `POST /api/gameplay/heroes/star/prepare`（`heroId`、`num`、`maxDurationMs`）只读准备兑换后单星图。数量必须恰好补足下一颗星；图固定原星级、每步专属余额和星成本，兑换完整入库确认后才生成原单星计划（`universal:false`）。同一入口也接受 `targets: [{heroId,num}, ...]` 与 `maxDurationMs`，明确1至12名不同英雄的执行顺序，各最多一星；`num: 0` 仅表示已有足够专属碎片。准备时核各品质共享万能碎片总量，图共用原授权、累计预算及历史，未来收入不增加额度；每步独立复读，前置变化、拒绝或UNKNOWN停止，重启只读，仍未进行真实游戏验收。
 
 ## 它不是什么
 

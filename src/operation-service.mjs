@@ -1,4 +1,4 @@
-import {prepareHeroStarWorkflow} from './hero-operations.mjs';
+import {prepareHeroStarWorkflow,validateHeroStarPreparation} from './hero-operations.mjs';
 import {projectStageBattleHistory,prepareStageRecommendation,validateStageRecommendationSequence} from './stage-history.mjs';
 import { confirmedStageDefeat, validateWorkflow, workflowScheduledAt, workflowEventCursor, workflowLevelEvent, projectWorkflowReasonHistory } from './workflow.mjs';
 import { surveyAntiqueSummary, antiqueSummaryView } from './antique-summary.mjs';
@@ -313,12 +313,12 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     }finally{release();}
   }
   async function prepareHeroStarSource(session,payload) {
-    exact(payload,['heroId','num','maxDurationMs']);
+    payload=validateHeroStarPreparation(payload);
     const release=acquire(session,'operations:HERO_STAR_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try {
       plans.delete(session.id);
-      const adapter=adapterFor('heroes'),parameters={heroId:payload.heroId,action:'fragment-exchange',num:payload.num},config=getConfig(),moduleConfig=moduleSettings.get(session.id,'heroes').config;
-      const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters:{action:'star'}}))+operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters})),dependency=dependencies();
+      const adapter=adapterFor('heroes'),target=payload.targets?.[0]??payload,parameters=target.num===0?{heroId:target.heroId,action:'star'}:{heroId:target.heroId,action:'fragment-exchange',num:target.num},config=getConfig(),moduleConfig=moduleSettings.get(session.id,'heroes').config;
+      const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters:{action:'star'}}))+operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'heroes').config,parameters:{action:'fragment-exchange'}})),dependency=dependencies();
       const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters,signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('组合准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=prepareHeroStarWorkflow(facts,{config,moduleConfig,...payload});

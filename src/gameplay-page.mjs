@@ -210,6 +210,24 @@ function gpTradeSaleSource(){try{return gpJson(gpParse('gp-trade-parameters'));}
 function gpTradeSaleEditable(){const s=gpGet('trade');return gpReady('trade')&&!s.pending&&!s.configDirty&&!s.data?.status?.blocked&&!s.data?.status?.running&&!snapshot?.busy&&snapshot?.connected;}
 function gpDomainSelectable(id){const s=gpGet(id);return gpReady(id)&&!s.pending&&!s.dirty&&!s.configDirty&&!s.data?.status?.blocked&&!s.data?.status?.running&&!snapshot?.busy&&snapshot?.connected;}
 function gpSelectDomainCandidate(id,actionId){const s=gpGet(id);if(!gpDomainSelectable(id))return;const row=s.data?.view?.candidates?.find(row=>row.actionId===actionId);if(!row||gpBlocked(row))return;s.selected.clear();s.selected.add(actionId);s.plan=null;s.revision++;if(row.parameters)$('gp-'+id+'-parameters').value=gpJson(row.parameters);gpClear($('gp-'+id+'-plan-view'));gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择当前单项候选；请预览成本及效果并授权。';}
+function gpHeroStarGraph(data,payload,view,accountId){
+ const multiple=Array.isArray(payload.targets),declared=multiple?payload.targets:[{heroId:payload.heroId,num:payload.num}],rows=multiple?data.targets:[data],graph=data.graph;
+ const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b);
+ if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||!Array.isArray(rows)||rows.length!==declared.length)throw Error('返回的账号或英雄顺序不匹配');
+ const nodes=[{id:'start',type:'START'}],amounts=new Map(),uids=[],targetIds=new Set(declared.map(row=>row.heroId+'碎片'));
+ const add=(id,num)=>{const sum=(amounts.get(id)||0)+num;if(!Number.isSafeInteger(sum))throw Error('累计预算不可靠');amounts.set(id,sum);};
+ for(const [index,request]of declared.entries()){
+  const row=rows[index],heroId=request.heroId,num=request.num,from=row?.fromStar,owned=row?.ownedFragments,cost=row?.starCost,ending=multiple?'-'+index:'';
+  if(row?.heroId!==heroId||row.exchangeNum!==num||!Number.isInteger(from)||from<0||from>=2147483647||row.toStar!==from+1||!Number.isSafeInteger(owned)||owned<0||!Number.isInteger(cost)||cost<1||cost>2147483647||num!==Math.max(0,cost-owned)||!multiple&&num===0)throw Error('返回的英雄、数量、星级或缺口不匹配');
+  const guard={expectedStar:from,expectedFragmentBalance:owned,expectedStarCost:cost};
+  if(num>0){const source=view?.fragments?.find(item=>item.heroId===heroId)?.sourceId;if(typeof source!=='string'||targetIds.has(source))throw Error('万能来源缺失或与目标冲突');add(source,num);uids.push({type:'hero-fragment-exchange',id:heroId});nodes.push({id:'exchange'+ending,type:'ACTION',module:'heroes',parameters:{heroId,action:'fragment-exchange',num,...guard},selection:{unique:true}},{id:'verify-exchange'+ending,type:'VERIFY',module:'heroes'});}
+  add(heroId+'碎片',cost);nodes.push({id:'star'+ending,type:'ACTION',module:'heroes',parameters:{heroId,action:'star',allowUniversal:false,...guard,expectedFragmentBalance:owned+num},selection:{unique:true}},{id:'verify-star'+ending,type:'VERIFY',module:'heroes'});
+ }
+ nodes.push({id:'stop',type:'STOP'});
+ const resources=graph?.budget?.resources;
+ if(!same(graph?.nodes,nodes)||!same(graph?.edges,nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})))||!same(graph?.runPolicy,{maxDurationMs:payload.maxDurationMs,maxActions:nodes.filter(node=>node.type==='ACTION').length,modules:['heroes']})||!Array.isArray(resources)||resources.length!==amounts.size||new Set(resources.map(row=>row.id)).size!==amounts.size||resources.some(row=>!amounts.has(row?.id)||!same(row,{id:row.id,num:amounts.get(row.id)}))||!same(graph.budget.quotas,[])||!same(graph.budget.uids,uids))throw Error('返回的累计预算或执行链不匹配');
+ return graph;
+}
 function gpRenderDomain(id,view){
  const s=gpGet(id),box=gpClear($('gp-'+id+'-facts'));s.actionControls=[];s.mailPageControls=[];
  const show=value=>value===null||value===undefined?'未知':String(value);
@@ -432,29 +450,33 @@ function gpRenderDomain(id,view){
   prepare.onclick=()=>{if(!valid(prepare))return;const quantity=Number(num.value);if(!heroSelect.value||!Number.isInteger(quantity)||quantity<1||quantity>2147483647){$('gp-'+id+'-hint').textContent='先选择英雄，并输入本次兑换的正整数数量。';return;}draft({action:'fragment-exchange',heroId:heroSelect.value,num:quantity});};
   const exchangeDraft=gpParse('gp-'+id+'-parameters');if(exchangeDraft.action==='fragment-exchange'){heroSelect.value=exchangeDraft.heroId||'';num.value=exchangeDraft.num===undefined?'':String(exchangeDraft.num);}
   const durationLabel=gpEl('label','兑换及升星总时长（秒）'),duration=gpEl('input');duration.type='number';duration.min='1';duration.max='86400';duration.step='1';duration.value='';duration.dataset.heroStarDuration='true';durationLabel.appendChild(duration);
+  const sequenceBox=gpEl('div'),sequenceAdd=gpEl('button','加入升星顺序'),sequencePrepare=gpEl('button','预览按顺序逐英雄升星');sequenceAdd.dataset.heroStarAdd='true';sequencePrepare.dataset.heroStarSequencePrepare='true';sequencePrepare._heroStarPrepare=true;
+  s.heroStarTargets=s.heroStarTargets||[];const sequence=()=>gpJson(s.heroStarTargets),sequenceChange=()=>{gpInvalidate(id,true);gpRenderCandidates(id);drawSequence();gpControls(id);};
+  function drawSequence(){gpClear(sequenceBox);s.actionControls=s.actionControls.filter(control=>!control._heroStarList);for(const [index,row]of s.heroStarTargets.entries()){
+   const line=gpEl('div',(index+1)+'. '+row.heroId+' · 明确兑换 '+row.num+' 个'),token=sequence();
+   for(const [label,kind]of [['上移','up'],['下移','down'],['移除','remove']]){const button=gpEl('button',label);button.dataset.heroStarList=kind;button.dataset.heroStarListIndex=String(index);button._heroExchangeDraft=true;button._heroStarList=true;button._blocked=kind==='up'&&index===0||kind==='down'&&index===s.heroStarTargets.length-1;button.disabled=button._blocked||!gpHeroExchangeEditable();button.onclick=()=>{if(!valid(button)||sequence()!==token)return;if(kind==='remove')s.heroStarTargets.splice(index,1);else{const next=index+(kind==='up'?-1:1);[s.heroStarTargets[index],s.heroStarTargets[next]]=[s.heroStarTargets[next],s.heroStarTargets[index]];}sequenceChange();};s.actionControls.push(button);line.appendChild(button);}sequenceBox.appendChild(line);
+  }if(!s.heroStarTargets.length)sequenceBox.textContent='尚未声明多英雄顺序。每个英雄最多一星；已有足够专属碎片可明确填0。';}
+  sequenceAdd.onclick=()=>{if(!valid(sequenceAdd))return;const n=Number(num.value);if(!heroSelect.value||!/^(0|[1-9][0-9]*)$/.test(num.value)||!Number.isInteger(n)||n>2147483647||s.heroStarTargets.length>=12||s.heroStarTargets.some(row=>row.heroId===heroSelect.value)){$('gp-'+id+'-hint').textContent='顺序须1至12个不同英雄，兑换量为明确非负整数；0仅用于已有足够专属碎片。';return;}s.heroStarTargets.push({heroId:heroSelect.value,num:n});sequenceChange();};
   const starPrepare=gpEl('button','预览兑换后单次升星工作流');starPrepare.dataset.heroStarPrepare='true';starPrepare._heroStarPrepare=true;
-  starPrepare.onclick=async()=>{
-   if(!valid(starPrepare)||!wfEditorEditable())return;
+  starPrepare.onclick=()=>prepareStar(false);sequencePrepare.onclick=()=>prepareStar(true);
+  async function prepareStar(multiple){
+   if(!valid(multiple?sequencePrepare:starPrepare)||!wfEditorEditable())return;
    const heroId=heroSelect.value,quantityText=num.value,durationText=duration.value,quantity=Number(quantityText),seconds=Number(durationText);
-   if(!heroId||!/^[1-9][0-9]*$/.test(quantityText)||!Number.isInteger(quantity)||quantity>2147483647||!/^[1-9][0-9]*$/.test(durationText)||!Number.isInteger(seconds)||seconds>86400){$('gp-'+id+'-hint').textContent='须明确英雄、恰好补足下一星的兑换数量及1至86400秒总时长。';return;}
+   if((multiple?s.heroStarTargets.length<1||s.heroStarTargets.length>12:!heroId||!/^[1-9][0-9]*$/.test(quantityText)||!Number.isInteger(quantity)||quantity>2147483647)||!/^[1-9][0-9]*$/.test(durationText)||!Number.isInteger(seconds)||seconds>86400){$('gp-'+id+'-hint').textContent='须明确英雄、恰好补足下一星的兑换数量及1至86400秒总时长。';return;}
+   const payload={...(multiple?{targets:s.heroStarTargets.map(row=>({...row}))}:{heroId,num:quantity}),maxDurationMs:seconds*1000},sequenceSource=sequence();
    const requestScope=viewGuard.begin('hero-star-prepare'),editor=captureStageRecommendationEditor(),stateRevision=++s.revision;
-   const active=()=>gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===stateRevision&&s.data?.view===view&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&heroSelect.value===heroId&&num.value===quantityText&&duration.value===durationText;
+   const active=()=>gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===stateRevision&&s.data?.view===view&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&heroSelect.value===heroId&&num.value===quantityText&&duration.value===durationText&&sequence()===sequenceSource;
    s.plan=null;gpClear($('gp-'+id+'-plan-view'));s.pending=true;gpControls(id);
    try{
-    const data=await operationMutation('/api/gameplay/heroes/star/prepare',{heroId,num:quantity,maxDurationMs:seconds*1000},requestScope);
+    const data=await operationMutation('/api/gameplay/heroes/star/prepare',payload,requestScope);
     if(!active())return;
-    const graph=data.graph,actions=graph?.nodes?.filter(node=>node.type==='ACTION'),cost=data.starCost,owned=data.ownedFragments,from=data.fromStar;
-    const expected=(action,balance)=>({heroId,action,...(action==='fragment-exchange'?{num:quantity}:{allowUniversal:false}),expectedStar:from,expectedFragmentBalance:balance,expectedStarCost:cost});
-    const same=(a,b)=>a&&typeof a==='object'&&!Array.isArray(a)&&JSON.stringify(Object.keys(a).sort())===JSON.stringify(Object.keys(b).sort())&&JSON.stringify(a,Object.keys(b).sort())===JSON.stringify(b,Object.keys(b).sort());
-    if(data.accountId!==requestScope.account||data.heroId!==heroId||data.exchangeNum!==quantity||!Number.isInteger(from)||from<0||from>=2147483647||data.toStar!==from+1||!Number.isInteger(owned)||owned<0||!Number.isInteger(cost)||cost<1||cost>2147483647||owned+quantity!==cost||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||graph?.runPolicy?.maxDurationMs!==seconds*1000||graph.runPolicy.maxActions!==2||graph.runPolicy.modules?.length!==1||graph.runPolicy.modules[0]!=='heroes'||actions?.length!==2||actions[0].module!=='heroes'||actions[1].module!=='heroes'||!same(actions[0].parameters,expected('fragment-exchange',owned))||!same(actions[1].parameters,expected('star',cost)))throw Error('返回的英雄、数量、星级或有限流程不匹配');
-    const sourceId=view?.fragments?.find(row=>row.heroId===heroId)?.sourceId,resources=graph.budget?.resources,steps=['start','exchange','verify-exchange','star','verify-star','stop'];
-    if(typeof sourceId!=='string'||sourceId===heroId+'碎片'||resources?.length!==2||resources.filter(row=>row.id===sourceId&&row.num===quantity).length!==1||resources.filter(row=>row.id===heroId+'碎片'&&row.num===cost).length!==1||graph.budget.quotas?.length!==0||graph.budget.uids?.length!==1||graph.budget.uids[0].type!=='hero-fragment-exchange'||graph.budget.uids[0].id!==heroId||graph.nodes.length!==6||graph.edges?.length!==5||graph.nodes.some((node,i)=>node.id!==steps[i]||node.type!==['START','ACTION','VERIFY','ACTION','VERIFY','STOP'][i])||graph.edges.some((edge,i)=>!same(edge,{from:steps[i],to:steps[i+1]}))||!same(graph.runPolicy,{maxDurationMs:seconds*1000,maxActions:2,modules:['heroes']}))throw Error('返回的累计预算或两步执行链不匹配');
-    editor.accept(graph);$('wf-hint').textContent='已载入兑换后单次升星预览；请核对两步累计预算，再保存或开始并授权。';$('gp-'+id+'-hint').textContent=data.limitation;
+    const graph=gpHeroStarGraph(data,payload,view,requestScope.account);
+    editor.accept(graph);$('wf-hint').textContent='已载入明确顺序的单星预览；请核对累计预算，再保存或开始并授权。';$('gp-'+id+'-hint').textContent=data.limitation;
    }catch(cause){if(gpSafe(requestScope,revision)&&gpGet(id)===s)$('gp-'+id+'-hint').textContent='组合未准备：'+cause.message;}
    finally{if(gpSafe(requestScope,revision)&&gpGet(id)===s){s.pending=false;gpControls(id);}}
-  };
-  for(const control of [heroSelect,num,prepare,duration,starPrepare]){control._heroExchangeDraft=true;control.disabled=!gpHeroExchangeEditable();s.actionControls.push(control);}
-  heroLabel.appendChild(heroSelect);numLabel.appendChild(num);box.appendChild(heroLabel);box.appendChild(numLabel);box.appendChild(prepare);box.appendChild(durationLabel);box.appendChild(starPrepare);
+  }
+  for(const control of [heroSelect,num,prepare,duration,starPrepare,sequenceAdd,sequencePrepare]){control._heroExchangeDraft=true;control.disabled=!gpHeroExchangeEditable();s.actionControls.push(control);}
+  heroLabel.appendChild(heroSelect);numLabel.appendChild(num);box.appendChild(heroLabel);box.appendChild(numLabel);box.appendChild(prepare);box.appendChild(durationLabel);box.appendChild(starPrepare);box.appendChild(gpEl('h3','多英雄单星顺序'));box.appendChild(gpEl('p','依次添加英雄及明确兑换量；按列表顺序各升一星。共享万能碎片在准备时核总量，所有英雄共用本次总时长与累计预算。'));box.appendChild(sequenceAdd);box.appendChild(sequenceBox);box.appendChild(sequencePrepare);drawSequence();
  }else if(id==='equipment-forge'){
   table('装备厂队列',['建筑','等级','队列'],(view?.forges||[]).map(row=>[row.buildingId,row.level,gpJson(row.queue)]));
   table('制造配方',['配方','部位','所需赛季','材料','可能产物'],(view?.recipes||[]).map(row=>[row.makeId,row.type,row.season,operationCosts(row.costs),(row.equipIds||[]).join('、')]));

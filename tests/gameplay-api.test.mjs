@@ -1014,17 +1014,18 @@ test('bounded recommendation per-batch authorization requires four fresh origina
   const done=(await waitForWorkflow(app,'COMPLETED')).status;assert.equal(done.trace.filter(row=>row.result==='CONFIRMED_DEFEAT').length,1);assert.equal(battles,2);assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
-for(const mode of ['refused-next-save','unconfirmed-next-save','role','world','generation','connection','configuration','write-intent','result-persistence','memory-persistence','deadline'])test('bounded recommendation stops further dispatch at original shared boundary '+mode,async()=>{
+for(const mode of ['refused-next-save','unconfirmed-next-save','role','world','generation','connection','configuration','write-intent','result-persistence','memory-persistence','deadline'])test('bounded recommendation stops further dispatch at original shared boundary '+mode,async t=>{
+ let boundaryNow=Date.now();if(mode==='deadline')t.mock.method(Date,'now',()=>boundaryNow);
  const {app,payload,session}=await recommendationHttpFixture({extraPreset:true});const put=app.history.put,list=app.history.list;try{
   let battles=0,saves=0;const request=session.client.request.bind(session.client);session.client.request=async(...args)=>{
    if(args[0]==='SaveFormationRequest'&&++saves===2){if(mode==='refused-next-save')throw Object.assign(Error('synthetic definite refusal'),{code:'SERVER_ERROR',serverError:1});if(mode==='unconfirmed-next-save')return {formation:structuredClone(args[1].formation)};}
    const value=await request(...args);if(args[0]!=='ChallengeStageRequest')return value;battles++;
    if(mode==='role')session.player.playerId='18';if(mode==='world')session.player.worldId=8;if(mode==='generation')session.generation++;if(mode==='connection')session.connectionId='changed';
    if(mode==='configuration')app.operations.saveModuleConfig('A',{module:'formation',config:{enabled:false,mainlineEnabled:false}});
-   if(mode==='deadline')await new Promise(resolve=>setTimeout(resolve,650));
+   if(mode==='deadline')boundaryNow+=60001;
    return {...value,stats:{...value.stats,isLeftWin:false}};
   };
-  const prepared=await app.call('/api/formations/recommendation/prepare',{body:{...payload,presetIds:[2,3],maxAttempts:2,maxDurationMs:mode==='deadline'?500:60000}});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const prepared=await app.call('/api/formations/recommendation/prepare',{body:{...payload,presetIds:[2,3],maxAttempts:2,maxDurationMs:60000}});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
   if(mode==='memory-persistence'){let pending=false;app.history.put=record=>{const result=put(record);if(record.module==='stage'&&record.actions.some(row=>row.result==='FAILED')&&!record.finishedAt)pending=true;return result;};app.history.list=(...args)=>{if(pending){pending=false;throw Error('synthetic execution memory origin unavailable');}return list(...args);};}
   if(mode==='write-intent'||mode==='result-persistence')app.history.put=record=>{if(record.module==='stage'&&(mode==='write-intent'?record.actions.some(row=>row.requestStatus==='DISPATCHING'):record.finishedAt))throw Object.assign(Error('synthetic bounded persistence failure'),{code:'HISTORY_UNAVAILABLE'});return put(record);};
   assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;assert.equal((await app.call('/api/workflows/authorize-run',{body:{offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true}})).status,200);
@@ -1332,5 +1333,23 @@ for(const unconfirmed of [false,true])test('hero combination HTTP prepares read-
   const approval={offer:first.authorizationOffer,batchId:first.plan.batchId,planHash:first.plan.planHash,confirm:true};assert.equal((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);const final=(await waitForWorkflow(app,unconfirmed?'UNKNOWN':'COMPLETED')).status;
   const writes=app.requests.filter(row=>/^Hero(FragExchange|StarUp)Request$/.test(row.name));assert.deepEqual(writes.map(row=>row.name),unconfirmed?['HeroFragExchangeRequest']:['HeroFragExchangeRequest','HeroStarUpRequest']);if(!unconfirmed){assert.deepEqual(writes[1].body,{heroId:'tank',universal:false});assert.equal(t.heroState.heroes[0].star,2);assert.equal(t.heroState.stock.get('tank碎片'),0);assert.equal(t.heroState.stock.get('蓝卡万能碎片'),17);}
   const history=(await app.call('/api/workflows/history?workflowRunId='+final.runId)).data;assert.equal(history.resumable,false);assert.equal(history.readOnly,true);assert.equal((await app.call('/api/workflows/history?workflowRunId='+final.runId,{id:'B'})).status,404);assert.notEqual((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+test('multi-hero star preparation HTTP accepts only explicit ordered targets and stays read-only',async()=>{
+ const app=await harness({includeHeroes:true,includeFragments:true});
+ try{const t=app.ready('A');t.heroState.heroes.forEach(row=>row.star=1);t.heroState.stock.set('tank碎片',2);t.heroState.stock.set('ranger碎片',2);t.heroState.stock.set('蓝卡万能碎片',6);await app.enable();const body={targets:[{heroId:'tank',num:3},{heroId:'ranger',num:3}],maxDurationMs:60000};
+  const prepared=await app.call('/api/gameplay/heroes/star/prepare',{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.deepEqual(prepared.data.targets.map(row=>row.heroId),['tank','ranger']);assert.equal(prepared.data.graph.runPolicy.maxActions,4);assert.deepEqual(prepared.data.graph.budget.resources,[{id:'蓝卡万能碎片',num:6},{id:'tank碎片',num:5},{id:'ranger碎片',num:5}]);assert.deepEqual(prepared.data.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.parameters.heroId),['tank','tank','ranger','ranger']);assert.equal(app.requests.filter(row=>/^Hero(FragExchange|StarUp)Request$/.test(row.name)).length,0);assert.deepEqual((await app.call('/api/operations/history')).data.runs,[]);
+  for(const invalid of [{targets:[{heroId:'tank',num:3},{heroId:'tank',num:3}],maxDurationMs:60000},{targets:[{heroId:'tank',num:2},{heroId:'ranger',num:3}],maxDurationMs:60000},{targets:body.targets,maxDurationMs:0},{targets:body.targets,maxDurationMs:86400001}])assert.equal((await app.call('/api/gameplay/heroes/star/prepare',{body:invalid})).status,400);
+ }finally{await app.close();}
+});
+
+for(const uncertainSecond of [false,true])test('multi-hero HTTP original finite authorization '+(uncertainSecond?'stops on second-target UNKNOWN':'settles both targets and shared budget'),async()=>{
+ const app=await harness({includeHeroes:true,includeFragments:true});
+ try{const t=app.ready('A');t.heroState.stock.set('tank碎片',2);t.heroState.stock.set('ranger碎片',2);t.heroState.stock.set('蓝卡万能碎片',6);await app.enable();const payload={targets:[{heroId:'tank',num:3},{heroId:'ranger',num:3}],maxDurationMs:60000};
+ if(uncertainSecond){const old=t.client.sendWatch.bind(t.client);t.client.sendWatch=async(name,body,...args)=>name==='HeroFragExchangeRequest'&&body.heroId==='ranger'?{status:'UNKNOWN'}:old(name,body,...args);}
+ const prepared=await app.call('/api/gameplay/heroes/star/prepare',{body:payload});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);const first=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;const approval={offer:first.authorizationOffer,batchId:first.plan.batchId,planHash:first.plan.planHash,confirm:true};assert.equal((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);const final=(await waitForWorkflow(app,uncertainSecond?'UNKNOWN':'COMPLETED')).status;
+ assert.equal(t.heroState.heroes[0].star,2);assert.equal(t.heroState.heroes[1].star,uncertainSecond?1:2);assert.equal(t.heroState.stock.get('蓝卡万能碎片'),uncertainSecond?3:0);const runs=(await app.call('/api/operations/history')).data.runs;assert.equal(runs.length,uncertainSecond?3:4);assert.equal(runs[0].finalStatus,uncertainSecond?'UNKNOWN':'SUCCESS');assert.equal(final.runBudget.state,'CLOSED');
+ const history=(await app.call('/api/workflows/history?workflowRunId='+final.runId)).data;assert.equal(history.readOnly,true);assert.equal(history.resumable,false);assert.equal(history.runAuthorization.scope.graph.nodes.filter(n=>n.type==='ACTION').length,4);assert.deepEqual(history.runAuthorization.scope.graph.budget,prepared.data.graph.budget);assert.equal((await app.call('/api/workflows/history?workflowRunId='+final.runId,{id:'B'})).status,404);assert.notEqual((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });

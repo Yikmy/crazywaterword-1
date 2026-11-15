@@ -500,24 +500,50 @@ function starStepProblem(facts, parameters, config) {
   if (hero.star !== parameters.expectedStar || (facts.stock.get(hero.heroId + '碎片') ?? 0) !== parameters.expectedFragmentBalance || !next || next[qualityCost[cfg.quality]] !== parameters.expectedStarCost) return 'HERO_STAR_STEP_CHANGED';
   return null;
 }
-export function prepareHeroStarWorkflow(facts, {config, moduleConfig, heroId, num, maxDurationMs} = {}) {
-  if (!id(heroId) || !positive(num) || !Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > 86400000) throw invalid('须明确英雄、正int32兑换数量及1至86400000毫秒总时长');
+function prepareSingleHeroStarWorkflow(facts, {config, moduleConfig, heroId, num, maxDurationMs, allowOwned = false} = {}) {
+  if (!id(heroId) || !(allowOwned ? uint(num) : positive(num)) || !Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > 86400000) throw invalid('须明确英雄、正int32兑换数量及1至86400000毫秒总时长');
   const hero = facts?.heroes?.find(row => row.heroId === heroId), owned = facts?.stock?.get(heroId + '碎片') ?? 0;
   if (!exclusiveAuthority(facts) || !hero || configProblem(config, hero, 'star')) throw invalid('升星组合缺少完整英雄、库存、身份或星级成本');
   const cfg = rows(config, 'HeroCfg').find(row => row.id === heroId), next = rows(config, 'HeroStarCfg').find(row => row.star === hero.star + 1), need = next?.[qualityCost[cfg.quality]];
-  if (!positive(need) || owned >= need || num !== need - owned) throw invalid('本次兑换数量必须恰好补足下一颗星的专属碎片缺口，不推测或多兑换');
+  if (!positive(need) || !allowOwned && owned >= need || num !== Math.max(0, need - owned)) throw invalid('本次兑换数量必须恰好补足下一颗星的专属碎片缺口，不推测或多兑换');
   const guards = {expectedStar: hero.star, expectedFragmentBalance: owned, expectedStarCost: need};
-  const exchange = {heroId, action:'fragment-exchange', num, ...guards}, star = {heroId, action:'star', allowUniversal:false, ...guards, expectedFragmentBalance:need};
-  const operation = planHeroOperations(facts, {config, moduleConfig, parameters:exchange}).actions[0];
+  const exchange = {heroId, action:'fragment-exchange', num, ...guards}, star = {heroId, action:'star', allowUniversal:false, ...guards, expectedFragmentBalance:owned + num};
+  const operation = planHeroOperations(facts, {config, moduleConfig, parameters:num > 0 ? exchange : star}).actions[0];
   if (!operation) throw invalid('当前兑换不能通过原英雄合同');
   if (!facts.available?.includes('HeroStarUpRequest') || !facts.available?.includes('HeroStarUpResponse')) throw invalid('单星请求或回执协议不可用');
-  const budget = {resources:[...clone(operation.costs), {id:heroId + '碎片', num:need}], quotas:[], uids:clone(operation.budgetClaims.uids)};
+  const budget = {resources:resourceCosts([...operation.costs, ...(num > 0 ? [{id:heroId + '碎片', num:need}] : [])]), quotas:[], uids:clone(operation.budgetClaims?.uids ?? [])};
   const suffix = hash({exchange, star, budget, maxDurationMs}).slice(0,20), nodes = [
-    {id:'start',type:'START'}, {id:'exchange',type:'ACTION',module:'heroes',parameters:exchange,selection:{unique:true}},
-    {id:'verify-exchange',type:'VERIFY',module:'heroes'}, {id:'star',type:'ACTION',module:'heroes',parameters:star,selection:{unique:true}},
+    {id:'start',type:'START'}, ...(num > 0 ? [{id:'exchange',type:'ACTION',module:'heroes',parameters:exchange,selection:{unique:true}},
+    {id:'verify-exchange',type:'VERIFY',module:'heroes'}] : []), {id:'star',type:'ACTION',module:'heroes',parameters:star,selection:{unique:true}},
     {id:'verify-star',type:'VERIFY',module:'heroes'}, {id:'stop',type:'STOP'}];
   return {heroId, fromStar:hero.star, toStar:hero.star+1, exchangeNum:num, ownedFragments:owned, starCost:need,
-    graph:{version:1,id:'hero-star-'+suffix,name:heroId+' 明确兑换后单次升星',budget,runPolicy:{maxDurationMs,maxActions:2,modules:['heroes']},nodes,edges:nodes.slice(1).map((node,index)=>({from:nodes[index].id,to:node.id}))},
+    graph:{version:1,id:'hero-star-'+suffix,name:heroId+' 明确兑换后单次升星',budget,runPolicy:{maxDurationMs,maxActions:num > 0 ? 2 : 1,modules:['heroes']},nodes,edges:nodes.slice(1).map((node,index)=>({from:nodes[index].id,to:node.id}))},
     resumable:false, requiresFreshPlan:true, requiresAuthorization:true,
     limitation:'先按明确数量1:1兑换，完整库存确认后重新调查单次升星；各步复用原授权、父预算与历史，UNKNOWN立即停止且不重放。准备不执行，不授予权限，重启只读。专属碎片预算包含兑换所得，但收入不增加累计额度。'};
+}
+
+export function validateHeroStarPreparation(value) {
+  if (!plainFields(value, ['heroId','num','targets','maxDurationMs']) || !own(value,'maxDurationMs') || !Number.isSafeInteger(value.maxDurationMs) || value.maxDurationMs < 1 || value.maxDurationMs > 86400000) throw invalid('升星准备须明确1至86400000毫秒总时长及受支持的英雄声明');
+  if (!own(value, 'targets')) {
+    if (!own(value,'heroId') || !own(value,'num') || !id(value.heroId) || !positive(value.num)) throw invalid('单英雄准备须明确英雄和正int32兑换量');
+    return {heroId:value.heroId,num:value.num,maxDurationMs:value.maxDurationMs};
+  }
+  if (own(value,'heroId') || own(value,'num') || !dense(value.targets) || Object.getPrototypeOf(value.targets) !== Array.prototype || value.targets.length < 1 || value.targets.length > 12 || Reflect.ownKeys(value.targets).length !== value.targets.length + 1 || !Array.from({length:value.targets.length},(_,index)=>own(Object.getOwnPropertyDescriptor(value.targets,String(index)),'value')).every(Boolean)
+    || value.targets.some(row => !plainFields(row,['heroId','num']) || !own(row,'heroId') || !own(row,'num') || !id(row.heroId) || !uint(row.num)) || new Set(value.targets.map(row=>row.heroId)).size !== value.targets.length) throw invalid('多英雄准备须明确1至12个不同英雄的顺序及非负int32兑换量，不混用单英雄字段');
+  return {targets:value.targets.map(({heroId,num})=>({heroId,num})),maxDurationMs:value.maxDurationMs};
+}
+export function prepareHeroStarWorkflow(facts, {config, moduleConfig, ...input} = {}) {
+  const parameters=validateHeroStarPreparation(input);
+  if (!own(parameters,'targets')) return prepareSingleHeroStarWorkflow(facts,{config,moduleConfig,...parameters});
+  const parts=parameters.targets.map(target=>prepareSingleHeroStarWorkflow(facts,{config,moduleConfig,...target,maxDurationMs:parameters.maxDurationMs,allowOwned:true}));
+  const targets=parts.map(({heroId,fromStar,toStar,exchangeNum,ownedFragments,starCost})=>({heroId,fromStar,toStar,exchangeNum,ownedFragments,starCost}));
+  const exchanges=parts.filter(part=>part.exchangeNum>0).flatMap(part=>part.graph.budget.resources.filter(row=>row.id!==part.heroId+'碎片')),sourceIds=new Set(exchanges.map(row=>row.id));
+  if (targets.some(row=>sourceIds.has(row.heroId+'碎片')) || !new ResourceLedger(facts.stock).reserve(exchanges)) throw invalid('共享万能碎片总量不足或来源与目标重叠；未来收入不补足本次准备');
+  const nodes=[{id:'start',type:'START'}];
+  for (const [index,part] of parts.entries()) for (const node of part.graph.nodes.slice(1,-1)) nodes.push({...clone(node),id:node.id+'-'+index});
+  nodes.push({id:'stop',type:'STOP'});
+  const budget={resources:resourceCosts(parts.flatMap(part=>part.graph.budget.resources)),quotas:[],uids:parts.flatMap(part=>part.graph.budget.uids)},maxActions=parts.reduce((sum,part)=>sum+part.graph.runPolicy.maxActions,0),suffix=hash({targets,budget,maxDurationMs:parameters.maxDurationMs}).slice(0,20);
+  return {targets,graph:{version:1,id:'hero-stars-'+suffix,name:'明确英雄单星顺序（'+targets.length+'名）',budget,runPolicy:{maxDurationMs:parameters.maxDurationMs,maxActions,modules:['heroes']},nodes,edges:nodes.slice(1).map((node,index)=>({from:nodes[index].id,to:node.id}))},
+    resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+    limitation:'按明确英雄顺序各升一星；兑换量必须恰好补缺，已有足够专属碎片则明确填0。共享万能碎片在准备时核总量；每步重新调查、使用原授权/累计预算/独立复读及历史。未来收入不增加额度，前置变化、拒绝、UNKNOWN或期限到限停止；重启只读。'};
 }
