@@ -69,3 +69,43 @@ test('reset protocol availability cannot grant an unevidenced tech reset or disa
  assert.ok(v.candidates.some(row=>row.actionType==='upgradeTech'));assert.equal(v.candidates.some(row=>row.actionType==='resetTech'),false);assert.throws(()=>planAlliance(f,{config,moduleConfig,parameters,selections:['alliance:resetTech']}));assert.equal(verifyAlliance({actionType:'resetTech',target:{}},f,f,{}),false);
  assert.throws(()=>assertPaymentAllowed({request:'ResetGuildTechRequest',body:{},costs:[]}));
 });
+for(const fault of ['id-conflict','count-conflict','resource-collision','inherited-id','inherited-resource-list'])
+ test('legacy alliance inventory cannot grant technology qualification from '+fault,async()=>{
+  const c=fake();
+  if(fault==='id-conflict')c.answers.AllItemRequest.items[0].id='foreign-tech-point';
+  if(fault==='count-conflict')c.answers.AllItemRequest.items[0].count=999;
+  if(fault==='resource-collision'){c.answers.AllItemRequest.items.push({itemId:'GOLD',num:10});c.answers.AllResourceRequest={list:[{res:3,amount:10}]};}
+  const request=c.request.bind(c);
+  if(fault==='inherited-id'||fault==='inherited-resource-list')c.request=async(...args)=>{
+   const value=await request(...args);
+   if(fault==='inherited-id'&&args[0]==='AllItemRequest')value.items[0]=Object.create({itemId:'公会科技点',num:100});
+   return fault==='inherited-resource-list'&&args[0]==='AllResourceRequest'?Object.create({list:[]}):value;
+  };
+  const f=await read(c);assert.equal(f.stockReliable,false);assert.equal(action(f),undefined);assert.equal(reason(f),'TECH_STOCK_UNKNOWN');assert.equal(c.writes.length,0);
+ });
+
+for(const format of ['canonical','legacy','matching','missing-items','missing-resources'])
+ test('alliance shared inventory preserves '+format+' compatibility and independent read observations',async()=>{
+  const c=fake();c.answers.AllResourceRequest={list:[{res:3,amount:10}]};
+  if(format==='legacy')c.answers.AllItemRequest.items=c.answers.AllItemRequest.items.map(({itemId,num})=>({id:itemId,count:num}));
+  if(format==='matching')for(const row of c.answers.AllItemRequest.items){row.id=row.itemId;row.count=row.num;}
+  if(format==='missing-items')c.answers.AllItemRequest=new Error('synthetic missing items');
+  if(format==='missing-resources')c.answers.AllResourceRequest=new Error('synthetic missing resources');
+  const f=await read(c),known=!format.startsWith('missing');assert.equal(f.stockReliable,known);
+  assert.equal(f.stock.get('公会科技点'),format==='missing-items'?undefined:100);assert.equal(f.stock.get('GOLD'),format==='missing-resources'?undefined:10);
+  assert.equal(f.guildId,'10');assert.equal(f.techReliable,true);assert.equal(f.membersReliable,true);
+  assert.equal(Boolean(action(f)),known);if(known)assert.deepEqual(action(f).costs,[{id:'公会科技点',num:24}]);
+  else assert.equal(reason(f),'TECH_STOCK_UNKNOWN');assert.equal(c.reads.length,11);assert.deepEqual(c.writes,[]);
+ });
+
+for(const phase of ['before','after'])for(const alias of ['id','count'])
+ test('original technology executor handles shared inventory '+alias+' conflict '+phase+' dispatch',async()=>{
+  const c=fake(),f=await read(c),op=action(f),request=c.request.bind(c),budget={ledger:null};
+  c.uncertainWrites=new Set();c.markUnverifiedWrite=n=>c.uncertainWrites.add(n);
+  c.request=async(...args)=>{const value=await request(...args);if(args[0]==='AllItemRequest'&&(phase==='before'||c.writes.length))value.items[0][alias]=alias==='id'?'foreign-tech-point':999;return value;};
+  const result=await executeBusinessOperation(c,protocol,op,{adapter:allianceModule,config,moduleConfig,parameters,player,allowMutate:true,budget});
+  assert.equal(result.status,phase==='before'?'NOT_EXECUTED':'UNKNOWN');assert.equal(c.writes.length,phase==='before'?0:1);
+  assert.equal(result.dispatched,phase==='after');
+  if(phase==='after'){assert.equal(result.unresolvedWrite,true);assert.equal(budget.ledger.reserved.get('公会科技点'),24);assert.equal(c.uncertainWrites.size,1);}
+  else assert.equal(budget.ledger?.reserved.get('公会科技点')??0,0);
+ });
