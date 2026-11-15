@@ -14,7 +14,7 @@ import { createStandaloneStageJournal, projectStageBattleHistory } from './stage
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { readDailyResetEvent, readPlayerLevelEvent, GameClient } from './client.mjs';
+import { readDailyResetEvent, readPlayerLevelEvent, readTaskProgressEvent, GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -61,7 +61,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   let closingPromise = null;
   const globalLog = [];
   const streams = new Set();
-  const sessions = new Map();
+  const sessions = new Map(), taskSnapshotBindings = new WeakMap();
   const knownSecrets = new Set();
 
   const logLimit = (list) => {
@@ -157,7 +157,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
             isCurrent: () => !closed && sessions.get(id) === session && session.generation === generation && session.client === instance && Boolean(writerOwnership.assertOwned()),
             onUpdate: (status) => {
               if (sessions.get(id) !== session || session.generation !== generation || session.client !== instance) return;
-              if (status.lastResult) session.snapshotStale = Boolean(session.snapshot);
+              if (status.lastResult) { session.snapshotStale = Boolean(session.snapshot); const binding=taskSnapshotBindings.get(session); if(binding)binding.invalidated=true; }
               emit(session, 'stages', '自动闯关：' + status.state, { runId: status.runId, stage: status.currentStage, attempts: status.attempts });
             } });
         }
@@ -247,7 +247,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     });
     on('frame', ({ dir, name, seq, bytes }) => { if (current()) trace(session, (dir === 'out' ? '->' : '<-') + ' [' + name + '] seq=' + seq + ' ' + bytes.byteLength + 'B'); });
     on('message', ({ seq, name, body }) => { if (!current()) return;
-      if(name==='SCPlayerExpUpdate'){const fact=readPlayerLevelEvent(instance);if(fact.reliable&&fact.accountId===session.id&&fact.generation===session.generation&&fact.connectionId===session.connectionId&&fact.playerId===String(session.player?.playerId)&&fact.worldId===String(session.player?.worldId)&&fact.event?.seq===seq&&session.player.level!==fact.playerLevel){session.player={...session.player,level:fact.playerLevel};session.snapshotStale=true;}}
+      if(name==='SCPlayerExpUpdate'){const fact=readPlayerLevelEvent(instance);if(fact.reliable&&fact.accountId===session.id&&fact.generation===session.generation&&fact.connectionId===session.connectionId&&fact.playerId===String(session.player?.playerId)&&fact.worldId===String(session.player?.worldId)&&fact.event?.seq===seq&&session.player.level!==fact.playerLevel){session.player={...session.player,level:fact.playerLevel};session.snapshotStale=true;const binding=taskSnapshotBindings.get(session);if(binding)binding.invalidated=true;}}
       if(['SCDailyTaskReset','SCDailyTaskUpdate','SCDailyWeeklyReset'].includes(name) && dailySnapshotInvalid(session))session.snapshotStale=true;
       trace(session, '[' + name + '] seq=' + seq + ' ' + JSON.stringify(redact(body, secrets())).slice(0, 400)); });
     on('pong', ({ latencyMs, offsetMs }) => { if (current()) trace(session, 'pong ' + latencyMs + 'ms offset=' + offsetMs + 'ms'); });
@@ -338,6 +338,37 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     return fact.event!==null && body?.dailyResetTime!==fact.event.dailyResetTime;
   }
 
+  // Existing private task streams attest cache changes without advancing Workflow progress events.
+  function taskStreamVersions(session) {
+    if (!(session.client instanceof GameClient)) return null;
+    return Object.fromEntries(['main','branch','achievement'].map(kind => {
+      const fact=readTaskProgressEvent(session.client,{kind});
+      const valid=fact.reliable && fact.accountId===session.id && fact.generation===session.generation && fact.connectionId===session.connectionId
+        && fact.playerId===String(session.player?.playerId) && fact.worldId===String(session.player?.worldId);
+      return [kind,valid ? { streamId:fact.streamId, revision:fact.cacheRevision } : null];
+    }));
+  }
+  function taskSnapshotFailures(session) {
+    const requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest'],binding=taskSnapshotBindings.get(session),failures={};
+    const context=overviewCacheContext(session),known=context.accountId && context.connectionId && context.playerId && context.worldId && Number.isSafeInteger(context.generation);
+    if (!binding || binding.snapshot!==session.snapshot || binding.client!==session.client || !known || session.state!=='READY' || session.client?.connected!==true
+      || JSON.stringify(binding.context)!==JSON.stringify(context)) { if(binding)binding.invalidated=true; return Object.fromEntries(requests.map(name=>[name,'TASK_CACHE_CONTEXT_CHANGED'])); }
+    if (binding.invalidated) return Object.fromEntries(requests.map(name=>[name,'TASK_CACHE_STALE']));
+    const bodies=Object.hasOwn(session.snapshot,'raw') ? session.snapshot.raw : session.snapshot.ok;
+    for(const name of requests)if(!Object.hasOwn(session.snapshot.ok??{},name) || Object.hasOwn(session.snapshot.failed??{},name) || session.snapshot.outcomes?.[name]?.status && session.snapshot.outcomes[name].status!=='SUCCESS' || !bodies?.[name] || typeof bodies[name]!=='object' || Array.isArray(bodies[name]))failures[name]='TASK_CACHE_SOURCE_UNAVAILABLE';
+    const current=taskStreamVersions(session);
+    for(const [name,kinds] of [['MainTaskInfoRequest',['main','branch']],['AchievementInfoRequest',['achievement']]]) {
+      if (binding.streams!==null && (current===null || kinds.some(kind=>!binding.streams[kind] || !current[kind]
+        || JSON.stringify(binding.streams[kind])!==JSON.stringify(current[kind])))) failures[name]='TASK_CACHE_SOURCE_CHANGED';
+    }
+    return failures;
+  }
+
+  function taskObservationSnapshot(session) {
+    const failures=taskSnapshotFailures(session);
+    return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot?.failed,...failures}} : session.snapshot;
+  }
+
   function refresh(session, account) {
     if (operations.running(session.id) || (session.busy?.startsWith('operations:') || session.workflowOwner) || session.stageRunner?.getStatus().running || session.stageRunner?.getStatus().inFlight) {
       const error = new Error('自动闯关或未决战斗期间不能完整采集；已有缓存仍可浏览');
@@ -350,12 +381,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       const instance = await ensureConnected(session);
       assertCurrent(session, generation, instance);
       session.busy = '采集只读状态';
-      const snapshotContext=overviewCacheContext(session),resetBefore=currentDailyReset(session);
+      const snapshotContext=overviewCacheContext(session),resetBefore=currentDailyReset(session),taskStreams=taskStreamVersions(session);
       const trackReset=instance instanceof GameClient || session.snapshotDailyReset!==null && session.snapshotDailyReset!==undefined || resetBefore!==null;
       const result = await activeTask(signal, collect(instance, protocol, { timeout: 15000 }));
       assertCurrent(session, generation, instance);
       session.snapshot = result;
       session.snapshotContext = snapshotContext;
+      taskSnapshotBindings.set(session, { snapshot:result, client:instance, context:snapshotContext, streams:taskStreams });
       session.snapshotAt = new Date().toISOString();
       session.snapshotDailyReset=trackReset ? {streamId:resetBefore?.streamId??null,cursor:resetBefore?.cursor??null,cacheRevision:resetBefore?.cacheRevision??null} : null;
       session.snapshotStale = dailySnapshotInvalid(session);
@@ -430,7 +462,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
       fishing: view.fishing,
       ownAlliance: operations.allianceOverview(session),
       fleetWorld: operations.fleetOverview(session),
-      activityAlliance: activityAllianceOverview(session.snapshot,{config,context:overviewCacheContext(session),observedContext:session.snapshotContext,updatedAt:session.snapshotAt,stale:session.snapshotStale===true,dailyInvalid:dailySnapshotInvalid(session)}),
+      activityAlliance: activityAllianceOverview(taskObservationSnapshot(session),{config,context:overviewCacheContext(session),observedContext:session.snapshotContext,updatedAt:session.snapshotAt,stale:session.snapshotStale===true,dailyInvalid:dailySnapshotInvalid(session)}),
       resFields: view.resFields,
       monthCard: view.monthCard,
       unreadable: Object.keys(failed),
@@ -569,9 +601,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   async function tasks(session, account) {
-    const instance = cachedClient(session, ["MainTaskInfoRequest","AchievementInfoRequest","OnWaterRequest"], { preserveSource: true });
+    const instance = cachedClient(session, [], { preserveSource: true });
+    const failures=taskSnapshotFailures(session),request=instance.request;
+    instance.request=(name,...args)=>failures[name] ? Promise.resolve({}) : request(name,...args);
     const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe() });
-    return { ...survey, text: formatTaskPlan(survey) };
+    for(const [name,reason] of Object.entries(failures))survey.notes.push(name+' 来源未知（'+reason+'），请显式重新采集');
+    return { ...survey, accountId:account.id, updatedAt:session.snapshotAt, stale:Object.keys(failures).length>0,
+      sources:Object.fromEntries(['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest'].map(name=>[name,{status:failures[name]?'UNKNOWN':'OBSERVED',reason:failures[name]??null}])),text: formatTaskPlan(survey) };
   }
 
   async function world(session, account) {
@@ -634,7 +670,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const config = loadConfigSafe();
     const dailyInvalid=dailySnapshotInvalid(session);
     const dailyUnavailable='每日任务来源已变化或不可确认，请重新采集';
-    const dailySnapshot=dailyInvalid ? {...session.snapshot,failed:{...session.snapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : session.snapshot;
+    const taskSnapshot=taskObservationSnapshot(session);
+    const dailySnapshot=dailyInvalid ? {...taskSnapshot,failed:{...taskSnapshot?.failed,DailyTaskInfoRequest:dailyUnavailable}} : taskSnapshot;
     const checklist = dailyChecklist(dailySnapshot, { config, context:toSnapshotJson({accountId:account.id,generation:session.generation,connectionId:session.connectionId,playerId:session.player?.playerId,worldId:session.player?.worldId}) });
     const base = { accountId: account.id, checklist, updatedAt: session.snapshotAt ?? null, stale: session.snapshotStale === true || dailyInvalid };
     if(dailyInvalid)return {...base,tasks:[],chests:null,chestsUnavailable:dailyUnavailable,gift:null,ruby:null,text:formatDailyChecklist(checklist)};

@@ -152,7 +152,7 @@ function seedTaskProgress(client,body,socket) {
  const state=liveTaskProgress.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
  if(state?.invalid)return;
  if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateTaskProgress(client,'TASK_PROGRESS_LOGIN_OR_CONTEXT_UNKNOWN');return;}
- Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch','achievement'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,events:[],tasks:new Map(),invalid:null}]))});
+ Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch','achievement'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,cacheRevision:0,events:[],tasks:new Map(),invalid:null}]))});
 }
 function taskProgressCount(value) {
  let n;
@@ -178,7 +178,9 @@ function observeTaskProgress(client,kind,body,seq,receivedAt) {
  if(parsed.some(row=>!Number.isInteger(row.taskId)||row.taskId<1||row.taskId>2147483647||row.progress===null||(kind==='main'||achievement)&&typeof row.rewardClaimed!=='boolean'||achievement&&(row.targetProgress===null||row.targetProgress==='0'))||new Set(parsed.map(row=>row.taskId)).size!==parsed.length){stream.invalid='TASK_PROGRESS_SOURCE_UNKNOWN';return;}
  if(parsed.some(row=>stream.tasks.has(row.taskId)&&BigInt(row.progress)<BigInt(stream.tasks.get(row.taskId)))){stream.invalid='TASK_PROGRESS_ROLLBACK';return;}
  const changed=parsed.filter(row=>stream.tasks.get(row.taskId)!==row.progress),newTargets=changed.filter(row=>!stream.tasks.has(row.taskId)).length;
- if(!Number.isSafeInteger(stream.cursor)||stream.cursor>Number.MAX_SAFE_INTEGER-changed.length||stream.tasks.size+newTargets>200){stream.invalid='TASK_PROGRESS_LIMIT';return;}
+ if(!Number.isSafeInteger(stream.cursor)||stream.cursor>Number.MAX_SAFE_INTEGER-changed.length||!Number.isSafeInteger(stream.cacheRevision)||stream.cacheRevision>=Number.MAX_SAFE_INTEGER||stream.tasks.size+newTargets>200){stream.invalid='TASK_PROGRESS_LIMIT';return;}
+ // Cache invalidation also observes claim/target-only pushes; the progress event cursor remains separate.
+ if(parsed.length)stream.cacheRevision++;
  // Validate the entire push before recording any member; one invalid row cannot partially fire a workflow.
  for(const row of changed){stream.tasks.set(row.taskId,row.progress);const cursor=++stream.cursor;stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,...row,receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();}
 }
@@ -190,7 +192,7 @@ export function readTaskProgressEvent(client,{kind,cursor}={}) {
  if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return {status:'UNKNOWN',reliable:false,reason:stream?.invalid??state?.reason??'TASK_PROGRESS_BASELINE_UNKNOWN'};
  const event=cursor===undefined?stream.events.at(-1)??null:stream.events.find(row=>row.cursor===cursor);
  if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'TASK_PROGRESS_CURSOR_UNAVAILABLE'};
- return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':kind==='achievement'?'SCAchievementUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,event:event?structuredClone(event):null};
+ return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':kind==='achievement'?'SCAchievementUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,cacheRevision:stream.cacheRevision,event:event?structuredClone(event):null};
 }
 export const TASK_PROGRESS_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 MainTaskModel._onSCMainTaskUpdate/_onSCBranchTaskUpdate and AchievementModel._onSCAchievementUpdate; exact taskId/id and signed int64 progress',scope:'New accepted progress only; not target completion, claim eligibility, game day or reward receipt',realGame:'REAL_UNVERIFIED'});
 

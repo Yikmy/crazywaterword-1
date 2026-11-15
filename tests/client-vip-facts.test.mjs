@@ -544,3 +544,17 @@ test('achievement cursor eviction, new login, old socket and sequence gap retain
  old.receive('SCAchievementUpdate',{task:[achievementRow(71,'999')]},202);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cursor,0);
  socket.receive('SCAchievementUpdate',{task:[achievementRow()]},1);socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'2')]},3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);
 });
+
+
+test('task source revisions cover claim-only changes without firing another progress event',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();
+ const before=readTaskProgressEvent(f.client,{kind:'achievement'});assert.equal(before.cacheRevision,0);
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'1')]},1);
+ const first=readTaskProgressEvent(f.client,{kind:'achievement'});assert.equal(first.cursor,1);assert.equal(first.cacheRevision,1);
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'1',{rewardClaimed:true})]},2);
+ const claimed=readTaskProgressEvent(f.client,{kind:'achievement'});assert.equal(claimed.cursor,first.cursor);assert.equal(claimed.cacheRevision,2);assert.deepEqual(claimed.event,first.event);
+ f.client.emit('message',{name:'SCAchievementUpdate',seq:3,body:{task:[achievementRow(71,'2')]}});assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cacheRevision,2);
+ socket.receive('SCAchievementUpdate',{task:[achievementRow(71,'2')]},2);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cacheRevision,2);
+ socket.receive('SCAchievementUpdate',{},3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cacheRevision,2);
+ assert.equal(readTaskProgressEvent(f.client,{kind:'main'}).cacheRevision,0);assert.equal(readTaskProgressEvent(f.client,{kind:'branch'}).cacheRevision,0);
+});

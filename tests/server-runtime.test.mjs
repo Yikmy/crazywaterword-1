@@ -212,7 +212,8 @@ test('cached detail reads never send game requests; absent daily probes stay unk
     const response = await app.call('/api/dailies'); assert.equal(response.status, 200);
     assert.equal(response.data.tasks[0].status, 'unknown'); assert.match(response.data.tasks[0].reason, /ArenaInfoRequest/);
     assert.deepEqual(response.data.tasks[0].actions, []); assert.equal(app.collects, 1);
-    for (const route of ['/api/world', '/api/heroes', '/api/tasks']) assert.notEqual((await app.call(route)).status, 200);
+    for (const route of ['/api/world', '/api/heroes']) assert.notEqual((await app.call(route)).status, 200);
+    const tasks=await app.call('/api/tasks');assert.equal(tasks.status,200);assert.equal(tasks.data.readOnly,true);assert.equal(tasks.data.executable,false);assert.deepEqual(tasks.data.plan,[]);assert.ok(Object.values(tasks.data.sources).every(row=>row.status==='UNKNOWN'));
     const overview = await app.call('/api/overview'); assert.equal(overview.data.claimable.email, null); assert.equal(overview.data.claimable.mainTask, null);
   } finally { await app.close(); }
 });
@@ -580,20 +581,92 @@ test('bounded Fleet HTTP delayed response cannot publish across role switch',asy
 
 
 test('Tasks HTTP reads exact source cache per account and never calls the game transport',async()=>{
- const app=await harness();
+ const app=await dailyRuntimeHarness({collect:async client=>{
+  const claimed=client.factContext.accountId==='account-B';
+  const raw={MainTaskInfoRequest:{task:{taskId:1,progress:15,rewardClaimed:claimed},branch:[]},AchievementInfoRequest:{task:[{id:1001,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:claimed}]},OnWaterRequest:{}};
+  return {ok:{...raw,AchievementInfoRequest:{task:[{id:1001,progress:9007199254740992,targetProgress:9007199254740992,rewardClaimed:false}]}},raw,failed:{}};
+ }});
  try{
-  for(const account of ['account-A','account-B']){
-   await app.connect(account);
-   const session=app.sessions.get(account),claimed=account==='account-B';
-   const raw={MainTaskInfoRequest:{task:{taskId:1,progress:15,rewardClaimed:claimed},branch:[]},AchievementInfoRequest:{task:[{id:1001,progress:'9007199254740993',targetProgress:'9007199254740994',rewardClaimed:claimed}]},OnWaterRequest:{}};
-   session.snapshot={ok:{...raw,AchievementInfoRequest:{task:[{id:1001,progress:9007199254740992,targetProgress:9007199254740992,rewardClaimed:false}]}},raw,failed:{}};
-  }
+  for(const account of ['account-A','account-B']){await app.login(account);await app.refresh(account);}
+  const sent=app.sent.length;
   for(const account of ['account-A','account-B']){
    const response=await app.call('/api/tasks',{account});assert.equal(response.status,200);assert.equal(response.data.readOnly,true);assert.equal(response.data.executable,false);
    const row=response.data.achievement[0];assert.equal(row.progress,'9007199254740993');assert.equal(row.target,'9007199254740994');assert.equal(row.qualification.completion,'INCOMPLETE');assert.equal(row.qualification.claimable,false);assert.equal(row.claimed,account==='account-B');
   }
   delete app.sessions.get('account-A').snapshot.raw.AchievementInfoRequest;
   const missing=await app.call('/api/tasks');assert.equal(missing.status,200);assert.deepEqual(missing.data.achievement,[]);assert.equal(missing.data.plan.some(x=>x.kind==='achievement'),false);
-  assert.equal(app.collects,0);assert.equal(app.clients.length,2);assert.ok(app.clients.every(c=>c.connectCalls===1));
+  assert.equal(app.collects,2);assert.equal(app.sent.length,sent);assert.equal(app.clients.length,2);
+ }finally{await app.close();}
+});
+
+
+function taskRuntimeSnapshot(){
+ const state=dailyRuntimeSnapshot();
+ state.raw.MainTaskInfoRequest={task:{taskId:1,progress:15,rewardClaimed:false},branch:[{taskId:8001,progress:1}]};state.raw.OnWaterRequest={};
+ state.raw.AchievementInfoRequest={task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:false}]};
+ state.ok={...state.ok,...structuredClone(state.raw)};return state;
+}
+for(const [name,body,changed]of [
+ ['SCMainTaskUpdate',{task:{taskId:1,progress:'15',rewardClaimed:true}},'MainTaskInfoRequest'],
+ ['SCBranchTaskUpdate',{task:{taskId:8001,progress:'1'}},'MainTaskInfoRequest'],
+ ['SCAchievementUpdate',{task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:true}]},'AchievementInfoRequest'],
+])test('Tasks cache invalidates only the accepted source, including claim-only push '+name,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>taskRuntimeSnapshot()});
+ try{
+  const socket=await app.login();socket.receive(name,body,1);await app.refresh();
+  const original=JSON.stringify(app.sessions.get('account-A').snapshot),before=(await app.call('/api/tasks')).data,sent=app.sent.length;
+  assert.equal(before.sources[changed].status,'OBSERVED');
+  app.clients[0].emit('message',{name,seq:2,body});assert.equal((await app.call('/api/tasks')).data.sources[changed].status,'OBSERVED');
+  socket.receive(name,body,2);
+  const after=(await app.call('/api/tasks')).data;assert.equal(after.sources[changed].status,'UNKNOWN');assert.equal(after.stale,true);
+  assert.equal(after.plan.some(x=>changed==='MainTaskInfoRequest'?['main','branch'].includes(x.kind):x.kind==='achievement'),false);
+  const independent=changed==='MainTaskInfoRequest'?'AchievementInfoRequest':'MainTaskInfoRequest';assert.equal(after.sources[independent].status,'OBSERVED');assert.equal(after.plan.some(x=>independent==='MainTaskInfoRequest'?x.kind==='main':x.kind==='achievement'),true);
+  if(changed==='AchievementInfoRequest'){
+   assert.equal((await app.call('/api/dailies')).data.checklist.sources.achievements.status,'UNKNOWN');
+   const overview=(await app.call('/api/overview')).data.activityAlliance;
+   assert.equal(overview.checklist.sources.achievements.status,'UNKNOWN');assert.equal(overview.checklist.tasks.counts.eligible,1);
+  }
+  assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),original);assert.equal(app.collects,1);assert.equal(app.sent.length,sent);
+  await app.refresh();assert.equal((await app.call('/api/tasks')).data.sources[changed].status,'OBSERVED');assert.equal(app.collects,2);
+ }finally{await app.close();}
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId','client'])test('Tasks cache cannot transfer or revive after observed context change '+field,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>taskRuntimeSnapshot()});
+ try{
+  await app.login();await app.refresh();const session=app.sessions.get('account-A'),sent=app.sent.length;
+  assert.ok((await app.call('/api/tasks')).data.plan.length>0);
+  const target=field==='accountId'?session:field==='playerId'||field==='worldId'?session.player:session,key=field==='accountId'?'id':field,old=target[key];
+  target[key]=field==='generation'?old+1:field==='client'?{connected:true}:'changed';
+  const invalid=(await app.call('/api/tasks')).data;assert.deepEqual(invalid.plan,[]);assert.ok(Object.values(invalid.sources).every(x=>x.status==='UNKNOWN'));
+  target[key]=old;const restored=(await app.call('/api/tasks')).data;assert.deepEqual(restored.plan,[]);assert.equal(restored.stale,true);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+
+test('task push during collection cannot certify the raced source and sequence gaps require a new connection',async()=>{
+ const gate=deferred();const app=await dailyRuntimeHarness({collect:()=>gate.promise});
+ try{
+  const socket=await app.login(),refresh=app.refresh();await until(()=>app.collects===1);
+  socket.receive('SCAchievementUpdate',{task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:true}]},1);gate.resolve(taskRuntimeSnapshot());await refresh;
+  const raced=(await app.call('/api/tasks')).data;assert.equal(raced.sources.AchievementInfoRequest.status,'UNKNOWN');assert.equal(raced.sources.MainTaskInfoRequest.status,'OBSERVED');
+  socket.receive('SCAchievementUpdate',{task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:true}]},3);
+  await app.refresh();assert.equal((await app.call('/api/tasks')).data.sources.AchievementInfoRequest.status,'UNKNOWN');
+ }finally{gate.resolve(taskRuntimeSnapshot());await app.close();}
+});
+
+
+for(const [name,kind]of [['MainTaskInfoRequest','main'],['AchievementInfoRequest','achievement'],['OnWaterRequest','orderDaily']])test('missing or failed task source leaves independent cache observations available '+name,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>taskRuntimeSnapshot()});
+ try{
+  await app.login();await app.refresh();const session=app.sessions.get('account-A'),sent=app.sent.length;
+  for(const mode of ['failed','missing','outcome']){
+   const old=session.snapshot.ok[name];
+   if(mode==='failed')session.snapshot.failed[name]='synthetic failure';
+   if(mode==='missing')delete session.snapshot.ok[name];
+   if(mode==='outcome')session.snapshot.outcomes[name]={status:'UNKNOWN'};
+   const result=await app.call('/api/tasks');assert.equal(result.status,200);assert.equal(result.data.sources[name].status,'UNKNOWN');assert.equal(result.data.plan.some(x=>x.kind===kind),false);
+   const independent=name==='MainTaskInfoRequest'?'achievement':'main';assert.ok(result.data.plan.some(x=>x.kind===independent));
+   session.snapshot.ok[name]=old;delete session.snapshot.failed[name];session.snapshot.outcomes[name]={status:'SUCCESS'};
+  }
+  assert.equal(app.collects,1);assert.equal(app.sent.length,sent);
  }finally{await app.close();}
 });
