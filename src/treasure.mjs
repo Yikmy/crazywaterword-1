@@ -2,8 +2,9 @@ import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // World treasure integration, adapted from the reference survey/view/plan functions.
 // No transport executor, no inferred victory and no short-window success assumption.
 import { ResourceLedger } from './resource-ledger.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 import { toSnapshotJson } from './game.mjs';
-import { strictParameters, stringIds, invalid, readNavalFact, stockFacts, fleetFacts, configuredCost, rowsOf, quantity, factQuantity, stable, selectedActions, moduleConfiguration } from './naval-facts.mjs';
+import { strictParameters, stringIds, invalid, readNavalFact, fleetFacts, configuredCost, rowsOf, quantity, factQuantity, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 
 export const TREASURE_DEFAULT_CONFIG = Object.freeze({ enabled: false, dispatch: false, colors: [5], maxFleets: 1, minimumDurabilityRatio: 0.8, petrolReserve: 0 });
@@ -38,7 +39,7 @@ export async function surveyTreasure(client, protocol, { config = null, player =
   const stats = sources.TreasureLootStatsRequest;
   const season = sources.SeasonRankInfoRequest;
   return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources,
-    targetDetails, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), ...fleetFacts(sources.MyFleetsRequest), treasureReliable, treasures,
+    targetDetails, ...parseOperationInventory(sources.AllItemRequest.body, sources.AllResourceRequest.body), ...fleetFacts(sources.MyFleetsRequest), treasureReliable, treasures,
     statsReliable: stats.available && factQuantity(stats.body, 'todayRewardTimes') !== null && factQuantity(stats.body, 'totalRewardTimes') !== null && stats.body.totalRewardTimes > 0,
     todayRewardTimes: quantity(stats.body?.todayRewardTimes), totalRewardTimes: factQuantity(stats.body, 'totalRewardTimes'),
     season: { startTime: factQuantity(season.body, 'startTime'), endTime: factQuantity(season.body, 'endTime'), reliable: season.available },
@@ -92,11 +93,12 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
 export function treasureView(facts, options = {}) { return { candidates: buildCandidates(facts, options), targetDetails: facts.targetDetails ?? null, reliability: { treasures: facts.treasureReliable === true, fleets: facts.fleetReliable === true, stock: facts.stockReliable === true, stats: facts.statsReliable === true }, treasures: facts.treasures ?? [], fleets: facts.fleets ?? [], todayRewardTimes: facts.todayRewardTimes, totalRewardTimes: facts.totalRewardTimes }; }
 export function planTreasure(facts, options = {}) { return selectedActions(buildCandidates(facts, options), options.selections ?? [], options.ledger ?? new ResourceLedger(facts.stockReliable ? facts.stock : null), validateTreasureConfig(options.moduleConfig).petrolReserve); }
 export function verifyTreasure(operation, beforeFacts, afterFacts) {
-  if (operation?.actionType !== 'treasureDispatch' || !beforeFacts?.fleetReliable || !afterFacts?.fleetReliable || !afterFacts?.treasureReliable) return { confirmed: false, reason: '寻宝权威复读不完整' };
+  if (operation?.actionType !== 'treasureDispatch' || !beforeFacts?.fleetReliable || !afterFacts?.fleetReliable || !afterFacts?.treasureReliable || beforeFacts?.stockReliable!==true || afterFacts?.stockReliable!==true) return { confirmed: false, reason: '寻宝权威复读或库存不完整' };
   const target = operation.target, ids = target?.fleetBuildingIds;
   if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length) return { confirmed: false, reason: '舰队选择无效' };
   const targetExists = afterFacts.treasures.some(treasure => treasure.uid === target.uid);
-  const confirmed = targetExists && ids.every(id => { const before = beforeFacts.fleets.find(fleet => fleet.buildingId === id), after = afterFacts.fleets.find(fleet => fleet.buildingId === id); return before?.state === 1 && before.treasureLootUid === 0 && after?.treasureLootUid === target.uid && [1, 2, 3, 5].includes(after.state); });
-  return { confirmed, reason: confirmed ? 'MyFleets 精确舰队已关联目标宝藏；仅确认派遣，不代表获胜或奖励到账' : 'MyFleets 未证实精确舰队派遣到目标；保留 UNKNOWN' };
+  const inventoryConfirmed = Array.isArray(operation.costs) && operation.costs.length===1 && operation.costs[0]?.id==='汽油' && stockMatchesDelta(beforeFacts.stock, afterFacts.stock, operation.costs, []);
+  const confirmed = inventoryConfirmed && targetExists && ids.every(id => { const before = beforeFacts.fleets.find(fleet => fleet.buildingId === id), after = afterFacts.fleets.find(fleet => fleet.buildingId === id); return before?.state === 1 && before.treasureLootUid === 0 && after?.treasureLootUid === target.uid && [1, 2, 3, 5].includes(after.state); });
+  return { confirmed, reason: confirmed ? 'MyFleets 精确舰队已关联目标宝藏且汽油净扣已确认；仅确认派遣，不代表获胜或奖励到账' : inventoryConfirmed ? 'MyFleets 未证实精确舰队派遣到目标；保留 UNKNOWN' : '汽油净扣或其他库存变化未按授权成本确认；保留 UNKNOWN' };
 }
 export const treasureModule = Object.freeze({ id: 'treasure', rejectionIdentity: businessRejectionIdentityFromHistory, validateParameters: parametersOf, defaultConfig: TREASURE_DEFAULT_CONFIG, validateConfig: validateTreasureConfig, survey: surveyTreasure, view: treasureView, plan: planTreasure, verify: verifyTreasure });

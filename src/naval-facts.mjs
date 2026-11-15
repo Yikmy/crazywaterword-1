@@ -60,6 +60,23 @@ export function fleetFacts(source) {
   })) : [];
   return { fleets, fleetReliable: reliable };
 }
+// Exact complete inventory delta; callers retain their original authoritative parsers.
+export function stockMatchesDelta(before, after, costs, rewards) {
+  if (!(before instanceof Map) || !(after instanceof Map) || !Array.isArray(costs) || !Array.isArray(rewards)) return false;
+  const delta = new Map();
+  for (const [rows, sign] of [[costs, -1], [rewards, 1]]) for (const row of rows) {
+    if (!row || typeof row.id !== 'string' || !row.id.trim() || !Number.isSafeInteger(row.num) || row.num < 0) return false;
+    const next = (delta.get(row.id) ?? 0) + sign * row.num;
+    if (!Number.isSafeInteger(next)) return false;
+    delta.set(row.id, next);
+  }
+  return [...new Set([...before.keys(), ...after.keys(), ...delta.keys()])].every(id => {
+    const old = quantity(before.has(id) ? before.get(id) : 0), current = quantity(after.has(id) ? after.get(id) : 0);
+    const expected = old + (delta.get(id) ?? 0);
+    return nonempty(id) && old !== null && current !== null && Number.isSafeInteger(expected) && expected >= 0 && current === expected;
+  });
+}
+
 export function selectedActions(candidates, selections = [], ledger = new ResourceLedger(null), petrolReserve = 0) {
   if (!Array.isArray(selections)) throw invalid('必须提供明确的业务选择数组');
   const ids = selections.map(selection => {

@@ -4,7 +4,7 @@ import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { loadMapAsset } from './world.mjs';
 import { parseFormation, validateFormationParameters, planFormation, catalogFrom } from './formation.mjs';
-import { strictParameters, invalid, readNavalFact, stockFacts, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, moduleConfiguration } from './naval-facts.mjs';
+import { strictParameters, invalid, readNavalFact, stockFacts, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
 import { readGameTime } from './state-facts.mjs';
 import { readResourceFieldRevision } from './client.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -101,14 +101,7 @@ function cargoInventory(facts) {
 }
 function cargoStockAmount(stock,id) {return stock instanceof Map?quantity(stock.has(id)?stock.get(id):0):null;}
 function cargoInventoryMatches(beforeFacts,afterFacts,costs,rewards) {
-  const before=cargoInventory(beforeFacts),after=cargoInventory(afterFacts);if(!before||!after)return false;
-  const delta=new Map();
-  for(const {id,num} of costs)delta.set(id,(delta.get(id)??0)-num);
-  for(const {id,num} of rewards)delta.set(id,(delta.get(id)??0)+num);
-  return [...new Set([...before.keys(),...after.keys(),...delta.keys()])].every(id=>{
-    const old=cargoStockAmount(before,id),current=cargoStockAmount(after,id),expected=old+(delta.get(id)??0);
-    return old!==null&&current!==null&&Number.isSafeInteger(expected)&&expected>=0&&current===expected;
-  });
+  return stockMatchesDelta(cargoInventory(beforeFacts),cargoInventory(afterFacts),costs,rewards);
 }
 function cargoFillExpected(ship,index) {return {cargoIndex:index+1,filled:true,reward:ship.orderItem[index].reward};}
 function cargoClaimExpected(ship) {return {oldArrivalConsumed:true,reward:ship.reward};}

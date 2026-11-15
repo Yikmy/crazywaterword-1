@@ -168,7 +168,7 @@ export const FUNCTION_CONTRACTS = freeze({
   treasure: contract('treasure', [], [], ['src/treasure.mjs#treasureModule', 'src/treasure.mjs#parametersOf'], { uid: integer, fleetBuildingIds: array(string) }, {
     implementation: { mode: 'CONTROLLED_WRITE', actions: ['treasureDispatch'], requirementScope: 'Original Inventory PRO-009 world TreasureLoot; distinct from Museum C141-C144',
       blockedCapabilities: [blocked('OCCUPIED_TREASURE_COMBAT', 'Battle identity, side and outcome evidence are unavailable'), blocked('TREASURE_REWARD', 'Dispatch confirmation does not establish victory, loot or reward')] },
-    verification: verification('verifyTreasure', 'src/treasure.mjs#verifyTreasure', 'MyFleets association confirms dispatch only, not treasure ownership or reward'),
+    verification: verification('verifyTreasure', 'src/treasure.mjs#verifyTreasure', 'MyFleets exact association and complete inventory confirm declared petrol debit only; not treasure ownership or reward'),
     dependencyVersions: dependencies(['moduleConfig', 'config.GameplayOpenCfg', 'config.WorldParamCfg']),
   }),
   naval: contract('naval', ['C403', 'C404', 'C405', 'C410'], ['P1-4', 'P5-4', 'P5-5'], ['src/naval-rules.mjs#navalModule', 'src/naval-rules.mjs#navalParameters', 'src/naval-rules.mjs#evaluateNavalRules'], {
