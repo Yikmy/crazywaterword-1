@@ -290,3 +290,8 @@ test('fixed retained configuration supplies real output quality and exact afford
  const client=fake({stock}),facts=await survey(client,{},config),out=prepareForge(facts,config,prepInput({makeIds:config.tables.BuildingEquipMakeCfg.data.map(row=>row.makeId)}));
  assert.equal(out.candidates.length,12);assert.equal(out.selected.type,'防具');assert.equal(out.selected.makeId,2003);assert.equal(out.selected.qualityName,'橙');assert.deepEqual(out.graph.budget.resources,out.selected.costs);assert.equal(out.candidates.find(row=>row.makeId===2004).blockedReason,'RECIPE_SEASON_UNAVAILABLE');assert.equal(client.writes.length,0);
 });
+
+for(const wireMode of [false,true])test('forge exact last material and gold debit accepts omitted empty item, codec '+wireMode,async()=>{
+ const {client,operation}=await prepared(params(),{wireMode,stock:{材料:4,GOLD:20,其他:7},afterWrite(c){assert.equal(c.stock.get('材料'),0);assert.equal(c.stock.get('GOLD'),0);c.stock.delete('材料');c.stock=new Map([...c.stock].reverse());}});
+ assert.ok(operation);assert.deepEqual(operation.costs,[{id:'材料',num:4},{id:'GOLD',num:20}]);const result=await run(client,operation);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.stock.has('材料'),false);assert.equal(client.stock.get('GOLD'),0);assert.equal(client.stock.get('其他'),7);assert.equal(client.uncertainWrites.size,0);
+});

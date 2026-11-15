@@ -303,3 +303,8 @@ test('confirmed exchange income cannot increase the original parent resource cei
   assert.equal(duplicate.canReserveClaims(f.operation.budgetClaims), false);
   assert.equal(f.client.writes.length, 1); parent.close('SUCCESS');
 });
+
+for(const [i,color]of colors.entries())test('antique exchange exact full source exhaustion and omitted empty item preserves '+color+' target and collateral stock',async()=>{
+ const f=await fixture({action:'exchange',antiqueId:id(color),num:100},{afterWrite(c){assert.equal(c.stock.get(universal[i]),0);c.stock.delete(universal[i]);c.stock=new Map([...c.stock].reverse());}});
+ assert.ok(f.operation);assert.equal(f.operation.expectedState.exchange.target.after,200);const result=await run(f);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(f.client.writes.length,1);assert.equal(f.client.stock.has(universal[i]),false);assert.equal(f.client.stock.get(id(color)+'碎片'),200);assert.equal(f.client.stock.get('普通材料'),5);assert.equal(f.client.gold,50000);assert.equal(f.client.uncertainWrites.size,0);
+});

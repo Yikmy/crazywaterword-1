@@ -564,3 +564,8 @@ test('optional legacy inventory aliases use the original strict parser without r
     assert.equal(parseOperationInventory({ items: [row] }, resources, { allowLegacyAliases: true }).stockReliable, false);
   }
 });
+
+for(const quality of ['BLUE','PURPLE','ORANGE','RED'])test('hero fragment full source exhaustion accepts omitted zero item and exact net credit '+quality,async()=>{
+ const {client,operation}=await exchangePrepared({quality,stock:7,afterWrite(c){const source=c.config.tables.HeroCfg.data[0].universalItemId;assert.equal(c.stock.get(source),0);c.stock.delete(source);c.stock=new Map([...c.stock].reverse());}}),scope={accountId:'account-A',runId:'last-fragment-run',generation:1,connectionId:'exchange-connection'},budget={scope,runBudget:createRunBudgetContext({scope,limits:operation.budgetClaims}),batchId:'last-fragment-batch',limits:operation.budgetClaims,ledger:null};
+ const result=await executeBusinessOperation(client,wireProtocol,operation,{adapter:heroModule,...exchangeOptions(operation.parameters,client.config),allowMutate:true,budget});assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.stock.get('A碎片'),17);assert.equal(client.stock.get('B碎片'),3);assert.equal(client.stock.get('其他'),2);assert.equal(client.stock.has(client.config.tables.HeroCfg.data[0].universalItemId),false);assert.equal(client.uncertainWrites.size,0);assert.deepEqual(budget.runBudget.snapshot().reserved.resources,operation.costs);
+});

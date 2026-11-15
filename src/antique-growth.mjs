@@ -5,6 +5,7 @@ import { stableBusinessValue, businessRejectionIdentityFromHistory } from './bus
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 
@@ -255,12 +256,8 @@ function verifyAdvanced(contract, before, after, response) {
         || after.ownership.masterLv !== contract.expectedState.masterLv) return fail('ANTIQUE_MASTER_RECEIPT_AND_REREAD_NOT_CONFIRMED');
     if (!same(before.ownership.suits, after.ownership.suits)) return fail('ANTIQUE_SUIT_OR_MASTER_UNEXPECTED_CHANGE');
   } else if (!same(before.ownership, after.ownership)) return fail('ANTIQUE_EXCHANGE_OWNERSHIP_UNEXPECTED_CHANGE');
-  const stockExpected = new Map(before.stock);
-  for (const { id, num } of contract.costs) stockExpected.set(id, (stockExpected.get(id) ?? 0) - num);
-  if (mode === 'exchange') {
-    const { target } = contract.expectedState.exchange; stockExpected.set(target.id, target.after);
-  }
-  if (![...new Set([...stockExpected.keys(), ...after.stock.keys()])].every(id => (stockExpected.get(id) ?? 0) === (after.stock.get(id) ?? 0)))
+  const rewards = mode === 'exchange' ? [{ id: contract.expectedState.exchange.target.id, num: contract.parameters.num }] : [];
+  if (!stockMatchesDelta(before.stock, after.stock, contract.costs, rewards))
     return fail('ANTIQUE_EXACT_MATERIAL_EFFECT_NOT_CONFIRMED');
   if (!freshFacts(before) || !freshFacts(after)) return fail('ANTIQUE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return { confirmed: true, reason: mode === 'suit' ? '完整复读确认指定套装恰好升一级及精确材料净扣；目标派生数值仅观察服务器原值'
@@ -468,11 +465,6 @@ export function planAntiqueGrowth(facts, { config, parameters = facts?.parameter
   }
   return { module: moduleId, actions, notes };
 }
-function exactDebits(before, after, costs) {
-  const debits = new Map(costs.map(row => [row.id, row.num]));
-  return [...new Set([...before.keys(), ...after.keys(), ...debits.keys()])]
-    .every(id => (after.get(id) ?? 0) === (before.get(id) ?? 0) - (debits.get(id) ?? 0));
-}
 function suitsConfirmed(before, after, allowed) {
   if (before.length !== after.length) return false;
   return before.every((row, index) => {
@@ -501,7 +493,7 @@ export function verifyAntiqueGrowth(operation, before, after, response) {
   if (!same(expected, after.ownership.antiques)) return fail('ANTIQUE_EXACT_OWNERSHIP_EFFECT_NOT_CONFIRMED');
   if (before.ownership.masterLv !== after.ownership.masterLv
       || !suitsConfirmed(before.ownership.suits, after.ownership.suits, contract.allowedDerivedSuitIds)) return fail('ANTIQUE_SUIT_OR_MASTER_UNEXPECTED_CHANGE');
-  if (!exactDebits(before.stock, after.stock, contract.costs)) return fail('ANTIQUE_EXACT_FRAGMENT_DEBIT_NOT_CONFIRMED');
+  if (!stockMatchesDelta(before.stock, after.stock, contract.costs, [])) return fail('ANTIQUE_EXACT_FRAGMENT_DEBIT_NOT_CONFIRMED');
   if (!freshFacts(before) || !freshFacts(after)) return fail('ANTIQUE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return { confirmed: true, reason: parameters.action === 'activate'
     ? '完整藏品复读确认明确零星激活与自有专属碎片精确扣除；允许的既有套装派生值仅展示服务器原值'

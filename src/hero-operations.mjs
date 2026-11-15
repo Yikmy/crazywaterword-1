@@ -2,6 +2,7 @@
 // durable execution history belong to the existing shared operation executor.
 import { createHash } from 'node:crypto';
 import { planHeroes, buildHeroAction } from './heroes.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -441,11 +442,7 @@ function verifyExclusiveGrowth(operation, beforeFacts, afterFacts, parameters) {
   if (!equal(expected, after.raw)) return fail(dimension === 'star' ? 'EXACT_SINGLE_EXCLUSIVE_STAR_NOT_CONFIRMED' : 'EXACT_SINGLE_EXCLUSIVE_LEVEL_NOT_CONFIRMED');
   const others = facts => facts.heroes.filter(row => row.heroId !== parameters.heroId).map(row => row.raw);
   if (!equal(others(beforeFacts), others(afterFacts))) return fail('NON_TARGET_HERO_CHANGED');
-  const debits = new Map(contract.costs.map(row => [row.id, row.num]));
-  for (const key of new Set([...beforeFacts.stock.keys(), ...afterFacts.stock.keys()])) {
-    const beforeAmount = beforeFacts.stock.get(key) ?? 0;
-    if (beforeAmount < (debits.get(key) ?? 0) || (afterFacts.stock.get(key) ?? 0) !== beforeAmount - (debits.get(key) ?? 0)) return fail('EXACT_EXCLUSIVE_MATERIAL_DEBIT_OR_OTHER_INVENTORY_CHANGED');
-  }
+  if (!stockMatchesDelta(beforeFacts.stock, afterFacts.stock, contract.costs, [])) return fail('EXACT_EXCLUSIVE_MATERIAL_DEBIT_OR_OTHER_INVENTORY_CHANGED');
   return { confirmed: true, reason: (dimension === 'star' ? '新 AllHero 完整复读确认已有专武单次星级+1、等级不变、对应碎片和升星石精确扣除及非目标状态不变' : '新 AllHero 完整复读确认已有专武单次等级+1、所选材料精确扣除及非目标状态不变') + '；仅目标power/attributes允许权威派生变化', afterState: clone(after.raw), responseEvidence: null };
 }
 
@@ -490,11 +487,8 @@ function verifyFragmentExchange(operation, before, after, parameters) {
   const contract = fragmentExchangeCandidate(before, parameters, { config, moduleConfig: { enabled: true } });
   if (!contract.executable || operation.module !== 'heroes' || ['actionId','actionType','target','identity','action','beforeState','expectedState','costs','costSource','budgetClaims','configEvidence'].some(key => !equal(operation[key], contract[key]))) return fail('HERO_FRAGMENT_PLAN_OR_IDENTITY_MISMATCH');
   if (!equal(before.heroes, after.heroes)) return fail('HERO_CHANGED_DURING_FRAGMENT_EXCHANGE');
-  const { sourceId, targetId } = contract.beforeState, num = parameters.num;
-  for (const key of new Set([sourceId, targetId, ...before.stock.keys(), ...after.stock.keys()])) {
-    const expected = (before.stock.get(key) ?? 0) + (key === sourceId ? -num : key === targetId ? num : 0);
-    if ((after.stock.get(key) ?? 0) !== expected) return fail('EXACT_FRAGMENT_EXCHANGE_OR_OTHER_INVENTORY_CHANGED');
-  }
+  const { targetId } = contract.beforeState;
+  if (!stockMatchesDelta(before.stock, after.stock, contract.costs, [{ id: targetId, num: parameters.num }])) return fail('EXACT_FRAGMENT_EXCHANGE_OR_OTHER_INVENTORY_CHANGED');
   return { confirmed: true, reason: '新完整库存确认对应万能碎片精确扣除及专属碎片1:1净入，全部英雄和其他库存不变', afterState: clone(contract.expectedState), responseEvidence: null };
 }
 

@@ -2,6 +2,7 @@
 // cancellation, finite budgets and durable UNKNOWN. Preparation freezes a reviewed recipe.
 import { createHash } from 'node:crypto';
 import { surveyCityOperations } from './city-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { makeTypeResolver } from './world.mjs';
 import { seasonFromWorldId } from './alliance.mjs';
 import { parseOperationHero, parseOperationInventory } from './hero-operations.mjs';
@@ -176,7 +177,6 @@ export function planEquipmentForge(f,{config,moduleConfig=FORGE_DEFAULT_CONFIG,p
   const row=candidate(f,parameters,{config,moduleConfig});if(row.executable&&(selections===undefined||selections.includes(row.actionId))&&ledger.reserve(row.costs))return {module:'equipment-forge',actions:[row],notes:[]};
   return {module:'equipment-forge',actions:[],notes:[row.blockedReason??'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_INSUFFICIENT']};
 }
-function inventoriesMatch(b,a,costs){const debits=new Map(costs.map(v=>[v.id,v.num]));for(const k of new Set([...b.stock.keys(),...a.stock.keys()])){const before=b.stock.get(k)??0,after=a.stock.get(k)??0;if(before<(debits.get(k)??0)||after!==before-(debits.get(k)??0))return false;}return true;}
 const withoutQueue=b=>Object.fromEntries(Object.entries(b.raw).filter(([k])=>k!=='equipMaking'));
 export function verifyEquipmentForge(op,b,a,response){
   const fail=reason=>({confirmed:false,reason});let p,costs;try{p=validateForgeParameters(op?.parameters);costs=resourceCosts(op?.costs);}catch{return fail('OPERATION_CONTRACT_INVALID');}
@@ -188,7 +188,7 @@ export function verifyEquipmentForge(op,b,a,response){
   const contract=candidate(b,p,{config:cfg,moduleConfig:{enabled:true}});
   if(op?.module!=='equipment-forge'||!contract.executable||!before||!after||!same(op.target,contract.target)||op.actionType!==contract.actionType||op.costSource!==source||!same(op.action,contract.action)||!same(op.beforeState,contract.beforeState)||!same(op.expectedState,contract.expectedState)||!same(costs,contract.costs)||op.identity!==contract.identity)return fail('FORGE_PLAN_OR_BATCH_MISMATCH');
   if(!same(withoutQueue(before),withoutQueue(after))||!same(b.buildings.filter(v=>v!==before),a.buildings.filter(v=>v!==after)))return fail('NON_TARGET_BUILDING_CHANGED');
-  if(!same(b.ownership.heroes,a.ownership.heroes)||!inventoriesMatch(b,a,costs))return fail('OWNERSHIP_OR_EXACT_INVENTORY_CHANGED');
+  if(!same(b.ownership.heroes,a.ownership.heroes)||!stockMatchesDelta(b.stock,a.stock,costs,[]))return fail('OWNERSHIP_OR_EXACT_INVENTORY_CHANGED');
   if(clock(a).earliest===null||clock(a).now<clock(b).now)return fail('TRUSTED_GAME_CLOCK_UNKNOWN');
   if(p.action==='make'){
     if(before.queue?.state!=='IDLE'||!allowedQueue(after.queue,recipe)||after.queue.finishTime<clock(b).earliest||!same(b.ownership,a.ownership))return fail('EXACT_NEW_FORGE_QUEUE_NOT_CONFIRMED');
