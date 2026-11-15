@@ -34,8 +34,8 @@ export function validateAfkLevelRewardsConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateAfkLevelRewardsParameters(v={}) {
-  if(isIncome(v)){if(!fields(v,['action','level','afkStartTime','afkFinishTime'])||!['action','level','afkStartTime','afkFinishTime'].every(k=>own(v,k))||!positive(v.level)||!positive(v.afkStartTime)||!positive(v.afkFinishTime)||v.afkFinishTime<=v.afkStartTime)throw invalid('普通挂机收益必须明确 action=income、当前等级及完整起止秒数');return {action:'income',level:v.level,afkStartTime:v.afkStartTime,afkFinishTime:v.afkFinishTime};}
-  if(isUpgrade(v)){if(!fields(v,['action','level','levels'])||!['action','level','levels'].every(k=>own(v,k))||!positive(v.level)||![1,5,10].includes(v.levels)||!positive(v.level+v.levels))throw invalid('挂机升级必须明确当前 level 与增加的 levels（1、5或10）');return {action:'upgrade',level:v.level,levels:v.levels};}
+  if(isIncome(v)){if(!fields(v,['action','level','afkStartTime','afkFinishTime','upgradePreparation'])||!['action','level','afkStartTime','afkFinishTime'].every(k=>own(v,k))||!positive(v.level)||!positive(v.afkStartTime)||!positive(v.afkFinishTime)||v.afkFinishTime<=v.afkStartTime)throw invalid('普通挂机收益必须明确 action=income、当前等级及完整起止秒数');if(own(v,'upgradePreparation')&&(!fields(v.upgradePreparation,['levels','expectedCost'])||!own(v.upgradePreparation,'levels')||!own(v.upgradePreparation,'expectedCost')||![1,5,10].includes(v.upgradePreparation.levels)||!Number.isSafeInteger(v.upgradePreparation.expectedCost)||v.upgradePreparation.expectedCost<=0||!positive(v.level+v.upgradePreparation.levels)))throw invalid('收益的升级前置须明确1/5/10级及已核定的自有徽章成本');return {action:'income',level:v.level,afkStartTime:v.afkStartTime,afkFinishTime:v.afkFinishTime,...(own(v,'upgradePreparation')?{upgradePreparation:copy(v.upgradePreparation)}:{})};}
+  if(isUpgrade(v)){if(!fields(v,['action','level','levels','incomeFrom','expectedUpgradeCost'])||!['action','level','levels'].every(k=>own(v,k))||!positive(v.level)||![1,5,10].includes(v.levels)||!positive(v.level+v.levels))throw invalid('挂机升级必须明确当前 level 与增加的 levels（1、5或10）');if(own(v,'incomeFrom')||own(v,'expectedUpgradeCost')){const from=v.incomeFrom;if(!own(v,'incomeFrom')||!fields(from,['afkStartTime','afkFinishTime'])||!['afkStartTime','afkFinishTime'].every(k=>own(from,k)&&positive(from[k]))||from.afkFinishTime<=from.afkStartTime||!own(v,'expectedUpgradeCost')||!Number.isSafeInteger(v.expectedUpgradeCost)||v.expectedUpgradeCost<=0)throw invalid('依赖升级须明确原收益起止区间与固定徽章成本');}return {action:'upgrade',level:v.level,levels:v.levels,...(own(v,'incomeFrom')?{incomeFrom:copy(v.incomeFrom),expectedUpgradeCost:v.expectedUpgradeCost}:{})};}
   if(!fields(v,['level'])||own(v,'level')&&!positive(v.level))throw invalid('挂机等级奖励仅接受正 int32 level 或空参数');
   return own(v,'level')?{level:v.level}:{};
 }
@@ -85,7 +85,7 @@ export async function surveyAfkLevelRewards(client,protocol,{config,player,param
   const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:sourcesFor(parameters)[key],sourceAt,scope,reliable:key==='afk'?afk!==null:inventory.stockReliable})]));
   const upgradeFacts=isUpgrade(parameters)?{mainlineStage:own(player,'mainlineStage')&&positive(player.mainlineStage)?player.mainlineStage:null,incomeHistory:readIncomeSettlements(readIncomeHistory,context)}:{};
   const f={module:moduleId,parameters,context,...upgradeFacts,configEvidence:{tables:Object.fromEntries(configNamesFor(parameters).map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,afk,...inventory,state:afk&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes,...(isPeriod(parameters)?{startClock,endClock:readIncomeClock(client,context)}:{})};
-  liveFacts.set(f,{digest:digest(f),client,player,...(isUpgrade(parameters)?{readIncomeHistory}:{})});return f;
+  liveFacts.set(f,{digest:digest(f),client,player,mainlineStage:own(player,'mainlineStage')&&positive(player.mainlineStage)?player.mainlineStage:null,...(isUpgrade(parameters)?{readIncomeHistory}:{})});return f;
 }
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,afk:f.afk,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,...(isPeriod(f.parameters)?{startClock:f.startClock,endClock:f.endClock}:{}),...(isUpgrade(f.parameters)?{mainlineStage:f.mainlineStage,incomeHistory:f.incomeHistory}:{})});
 function authority(f) {
@@ -143,7 +143,7 @@ export function verifyAfkLevelReward(operation,before,after,result) {
  if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('独立复读未确认精确等级与奖励净入，或无关状态变化');
  return {confirmed:true,afterState:copy(after.state),reason:'专用回执与独立复读同时确认单档等级奖励及完整库存净入'};
 }
-export function afkLevelRewardsDependencyVersions({config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG,parameters={},player}={}) {return {moduleConfig:validateAfkLevelRewardsConfig(moduleConfig),tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)])),...(isIncome(parameters)?{incomeEvidence:AFK_INCOME_EVIDENCE}:{}),...(isUpgrade(parameters)?{upgradeEvidence:AFK_UPGRADE_EVIDENCE,mainlineStage:own(player,'mainlineStage')&&positive(player.mainlineStage)?player.mainlineStage:null}:{})};}
+export function afkLevelRewardsDependencyVersions({config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG,parameters={},player}={}) {return {moduleConfig:validateAfkLevelRewardsConfig(moduleConfig),tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)])),...(isIncome(parameters)?{incomeEvidence:AFK_INCOME_EVIDENCE,...(parameters.upgradePreparation?{upgradeEvidence:AFK_UPGRADE_EVIDENCE,mainlineStage:own(player,'mainlineStage')&&positive(player.mainlineStage)?player.mainlineStage:null}:{})}:{}),...(isUpgrade(parameters)?{upgradeEvidence:AFK_UPGRADE_EVIDENCE,mainlineStage:own(player,'mainlineStage')&&positive(player.mainlineStage)?player.mainlineStage:null}:{})};}
 function incomeClock(f) {const bound=liveFacts.get(f);return bound?readIncomeClock(bound.client,f.context):null;}
 function readIncomeClock(client,context) {
  let c;try{c=client.gameClock?.read(context);}catch{return null;}
@@ -158,15 +158,15 @@ function incomeDefinitions(f,config) {
  return {row:copy(row),items:items.map(r=>r.id).sort(),badges:badges.map(r=>r.id).sort()};
 }
 function incomeCandidate(f,p,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {
- const valid=authority(f),clock=valid?incomeClock(f):null,defs=incomeDefinitions(f,config),a=f?.afk;
- const target=copy(p),beforeState=copy(f?.state??null),expectedState=beforeState?{context:copy(beforeState.context),rule:'NORMAL_AFK_INTERVAL_SETTLEMENT',interval:'EXPLICIT_NEW_START_AND_SAME_DURATION_MATCH_REREAD',reward:'TYPED_ITEM_RESOURCE_AND_BADGE_NET_CREDITS',otherState:'UNCHANGED',amount:'SERVER_RECEIPT_ONLY'}:null;
+ const valid=authority(f),clock=valid?incomeClock(f):null,defs=incomeDefinitions(f,config),a=f?.afk,upgrade=p.upgradePreparation?upgradePreparationView(f,config,moduleConfig).options.find(r=>r.levels===p.upgradePreparation.levels):null;
+ const target={action:'income',level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime},beforeState=copy(f?.state??null),expectedState=beforeState?{context:copy(beforeState.context),rule:'NORMAL_AFK_INTERVAL_SETTLEMENT',interval:'EXPLICIT_NEW_START_AND_SAME_DURATION_MATCH_REREAD',reward:'TYPED_ITEM_RESOURCE_AND_BADGE_NET_CREDITS',otherState:'UNCHANGED',amount:'SERVER_RECEIPT_ONLY'}:null;
  const identity=hash({target,beforeState,defs}),budgetClaims={resources:[],quotas:[],uids:[{type:'afk-income-interval',id:p.level+':'+p.afkStartTime+':'+p.afkFinishTime}]};
- const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_INCOME_CONFIG_UNKNOWN':!same({level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},{level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime})?'AFK_INTERVAL_CHANGED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':Math.floor(clock.earliestMs/1000)-a.afkStartTime-1<60?'AFK_INCOME_TOO_EARLY':!['DrawAfkRewardRequest','DrawAfkRewardResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_INCOME_CONFIG_UNKNOWN':p.upgradePreparation&&(!upgrade||upgrade.blockedReason||upgrade.costs?.[0]?.num!==p.upgradePreparation.expectedCost)?'AFK_UPGRADE_PRECONDITION_CHANGED':!same({level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},{level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime})?'AFK_INTERVAL_CHANGED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':Math.floor(clock.earliestMs/1000)-a.afkStartTime-1<60?'AFK_INCOME_TOO_EARLY':!['DrawAfkRewardRequest','DrawAfkRewardResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  return {module:moduleId,actionId:moduleId+':income:'+identity,actionType:'INCOME',target,parameters:copy(p),identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 ordinary DrawAfkRewardRequest has no useAdvCard; zero debit, receipt-only income',budgetClaims,executable:blockedReason===null,blockedReason,label:'普通挂机本段收益',rewards:null,...(blockedReason===null?{action:{request:'DrawAfkRewardRequest',response:'DrawAfkRewardResponse',body:{}}}:{})};
 }
 function incomeView(f,p,options) {
  const clock=authority(f)?incomeClock(f):null;
- return {module:moduleId,afk:copy(f?.afk??null),income:{serverBounds:clock,minimumElapsedSeconds:61,amount:null},candidates:[incomeCandidate(f,p,options)],notes:[...(f?.notes??[]),'普通时段收益与等级奖励分开；资格依可信服务器时间，金额仅以专用回执及独立库存净入确认。无广告、无升级、无自动重放。']};
+ return {module:moduleId,afk:copy(f?.afk??null),upgradePreparation:upgradePreparationView(f,options.config,options.moduleConfig),income:{serverBounds:clock,minimumElapsedSeconds:61,amount:null},candidates:[incomeCandidate(f,p,options)],notes:[...(f?.notes??[]),'普通时段收益与等级奖励分开；资格依可信服务器时间，金额仅以专用回执及独立库存净入确认。无广告、无升级、无自动重放。']};
 }
 function incomeRewards(result,defs,before) {
  if(!own(result,'reward')||result.reward===null)return null;const packet=toSnapshotJson(result.reward);
@@ -206,7 +206,7 @@ function readIncomeSettlements(read,context) {
     if(row?.module!==moduleId||row.actionType!=='INCOME'||!identifier(row.actionId)||row.result!=='SUCCESS'||row.requestStatus!=='SUCCESS'||row.verification?.status!=='CONFIRMED'||row.dispatched!==true||row.unresolvedWrite!==false||row.beforeInventoryReliable!==true||row.afterInventoryReliable!==true||!same(ctx(row.beforeState?.context),context)||!same(ctx(row.afterState?.context),context))continue;
     const a=parseAfk({afkInfo:row.beforeState.afk}),b=parseAfk({afkInfo:row.afterState.afk}),interval=row.responseEvidence?.interval,received=row.responseEvidence?.received,p=row.parameters;
     if(!a||!b||!isIncome(p)||p.level!==a.level||p.afkStartTime!==a.afkStartTime||p.afkFinishTime!==a.afkFinishTime||b.level!==a.level||b.rewardedLevel!==a.rewardedLevel||b.afkStartTime<=a.afkStartTime||b.afkFinishTime<=b.afkStartTime||!same(interval,{afkStartTime:b.afkStartTime,afkFinishTime:b.afkFinishTime})||!dense(received?.credits)||!dense(received?.badges)||received.credits.length+received.badges.length===0)continue;
-    out.push({runId:run.runId,batchId:run.planSummary.batchId,actionId:row.actionId,afk:{level:b.level,afkStartTime:b.afkStartTime,afkFinishTime:b.afkFinishTime}});
+    out.push({runId:run.runId,batchId:run.planSummary.batchId,actionId:row.actionId,sourceAfk:{level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},afk:{level:b.level,afkStartTime:b.afkStartTime,afkFinishTime:b.afkFinishTime}});
    }
   }
   return out.sort((a,b)=>stableBusinessValue(a).localeCompare(stableBusinessValue(b)));
@@ -226,11 +226,11 @@ function upgradeDefinitions(f,config,p) {
 }
 function upgradeCandidate(f,p,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {
  const valid=authority(f),clock=valid?incomeClock(f):null,a=f?.afk,defs=upgradeDefinitions(f,config,p),period=a?{level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime}:null;
- const proof=f?.incomeHistory?.find(r=>same(r.afk,period))??null;
- const target={...copy(p),interval:period,incomeSettlement:proof?{runId:proof.runId,batchId:proof.batchId,actionId:proof.actionId}:null},beforeState=copy(f?.state??null),costs=defs?[{id:'挂机徽章',num:defs.cost}]:[],identity=hash({target,beforeState,defs});
+ const proof=f?.incomeHistory?.find(r=>same(r.afk,period)&&(!p.incomeFrom||same(r.sourceAfk,{level:p.level,...p.incomeFrom})))??null;
+ const target={action:'upgrade',level:p.level,levels:p.levels,interval:period,incomeSettlement:proof?{runId:proof.runId,batchId:proof.batchId,actionId:proof.actionId}:null},beforeState=copy(f?.state??null),costs=defs?[{id:'挂机徽章',num:defs.cost}]:[],identity=hash({target,beforeState,defs});
  const expectedState={level:p.level+p.levels,interval:'EXPLICIT_TYPED_RESPONSE_MATCHING_INDEPENDENT_REREAD',debits:copy(costs),otherState:'UNCHANGED'};
- const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN':a.level!==p.level?'AFK_LEVEL_CHANGED':!proof?'AFK_CONFIRMED_INCOME_REQUIRED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':clock.earliestMs<a.afkStartTime*1000?'AFK_INTERVAL_CLOCK_UNKNOWN':Math.floor(clock.latestMs/1000)-a.afkStartTime-1>=60?'AFK_INCOME_REQUIRED_AGAIN':defs.targets.some(r=>r.stage>defs.mainlineStage-1)?'AFK_MAINLINE_LOCKED':(f.stock.get('挂机徽章')??0)<defs.cost?'AFK_UPGRADE_MATERIAL_SHORTAGE':!['UpgradeAfkLevelRequest','UpgradeAfkLevelResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
- const budgetClaims={resources:copy(costs),quotas:[],uids:[{type:'afk-upgrade',id:p.level+':'+(a?.afkStartTime??'?')+':'+(a?.afkFinishTime??'?')+':'+p.levels}]};
+ const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN':own(p,'expectedUpgradeCost')&&defs.cost!==p.expectedUpgradeCost?'AFK_UPGRADE_COST_CHANGED':a.level!==p.level?'AFK_LEVEL_CHANGED':!proof?'AFK_CONFIRMED_INCOME_REQUIRED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':clock.earliestMs<a.afkStartTime*1000?'AFK_INTERVAL_CLOCK_UNKNOWN':Math.floor(clock.latestMs/1000)-a.afkStartTime-1>=60?'AFK_INCOME_REQUIRED_AGAIN':defs.targets.some(r=>r.stage>defs.mainlineStage-1)?'AFK_MAINLINE_LOCKED':(f.stock.get('挂机徽章')??0)<defs.cost?'AFK_UPGRADE_MATERIAL_SHORTAGE':!['UpgradeAfkLevelRequest','UpgradeAfkLevelResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const budgetClaims={resources:copy(costs),quotas:[],uids:[{type:'afk-upgrade',id:upgradeUid(p,a)}]};
  return {module:moduleId,actionId:moduleId+':upgrade:'+identity,actionType:'UPGRADE',target,parameters:copy(p),identity,beforeState,expectedState,costs,costSource:'Fixed v76 UpgradeAfkLevelRequest increment; sum every target OfflineCfg.consume owned 挂机徽章',budgetClaims,executable:blockedReason===null,blockedReason,label:'挂机明确增加 '+p.levels+' 级',rewards:[],...(blockedReason===null?{action:{request:'UpgradeAfkLevelRequest',response:'UpgradeAfkLevelResponse',body:{level:p.levels}}}:{})};
 }
 function verifyUpgrade(operation,before,after,result) {
@@ -247,4 +247,34 @@ function verifyUpgrade(operation,before,after,result) {
  return {confirmed:true,afterState:copy(after.state),reason:'已确认前置收益、增量等级、逐档挂机徽章净扣及专用新区间独立复读',responseEvidence:{interval:{afkStartTime:start,afkFinishTime:finish},level:result.level,costs:copy(canonical.costs),incomeSettlement:copy(canonical.target.incomeSettlement)}};
 }
 
-export const afkLevelRewardsModule=Object.freeze({id:moduleId,label:'挂机等级奖励',capabilities:Object.freeze(['BIZ-R10']),defaultConfig:AFK_LEVEL_REWARDS_DEFAULT_CONFIG,validateConfig:validateAfkLevelRewardsConfig,validateParameters:validateAfkLevelRewardsParameters,survey:surveyAfkLevelRewards,view:viewAfkLevelRewards,plan:planAfkLevelRewards,verify:verifyAfkLevelReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:afkLevelRewardsDependencyVersions});
+
+function upgradeUid(p,a) {return p.incomeFrom?p.level+':income:'+p.incomeFrom.afkStartTime+':'+p.incomeFrom.afkFinishTime+':'+p.levels:p.level+':'+(a?.afkStartTime??'?')+':'+(a?.afkFinishTime??'?')+':'+p.levels;}
+function upgradePreparationView(f,config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG) {
+ const bound=liveFacts.get(f),valid=authority(f)&&isIncome(f.parameters)&&positive(bound?.mainlineStage)&&bound.player?.mainlineStage===bound.mainlineStage;
+ const options=[1,5,10].map(levels=>{
+  const p={action:'upgrade',level:f?.afk?.level,levels},defs=valid?upgradeDefinitions({...f,mainlineStage:bound.mainlineStage},config,p):null;
+  const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!defs?'AFK_UPGRADE_CONFIG_OR_MAINLINE_UNKNOWN':defs.targets.some(r=>r.stage>defs.mainlineStage-1)?'AFK_MAINLINE_LOCKED':(f.stock.get('挂机徽章')??0)<defs.cost?'AFK_UPGRADE_MATERIAL_SHORTAGE':!['UpgradeAfkLevelRequest','UpgradeAfkLevelResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+  return {levels,targetLevel:positive(p.level)?p.level+levels:null,costs:defs?[{id:'挂机徽章',num:defs.cost}]:null,blockedReason};
+ });return {reliable:valid,mainlineStage:valid?bound.mainlineStage:null,options};
+}
+export function validateAfkUpgradePreparation(v) {
+ if(!fields(v,['level','levels','afkStartTime','afkFinishTime','maxDurationMs'])||!['level','levels','afkStartTime','afkFinishTime','maxDurationMs'].every(k=>own(v,k))||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('准备须明确挂机等级、原收益区间、增加1/5/10级及1至86400000毫秒总时长');
+ validateAfkLevelRewardsParameters({action:'income',level:v.level,afkStartTime:v.afkStartTime,afkFinishTime:v.afkFinishTime});validateAfkLevelRewardsParameters({action:'upgrade',level:v.level,levels:v.levels});return {level:v.level,levels:v.levels,afkStartTime:v.afkStartTime,afkFinishTime:v.afkFinishTime,maxDurationMs:v.maxDurationMs};
+}
+export function prepareAfkUpgradeWorkflow(f,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG,...input}={}) {
+ const p=validateAfkUpgradePreparation(input),income={action:'income',level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime};
+ if(!isIncome(f?.parameters)||!same(f.parameters,income)||!incomeCandidate(f,income,{config,moduleConfig}).executable)throw invalid('原收益区间、可信资格或普通收益完整合同不满足，不能准备后继升级');
+ const quote=upgradePreparationView(f,config,moduleConfig).options.find(row=>row.levels===p.levels);if(!quote||quote.blockedReason||!quote.costs)throw invalid('当前主线门槛、逐档成本、自有徽章库存或升级协议不满足');
+ const incomeFrom={afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime},upgrade={action:'upgrade',level:p.level,levels:p.levels,incomeFrom,expectedUpgradeCost:quote.costs[0].num};
+ income.upgradePreparation={levels:p.levels,expectedCost:quote.costs[0].num};
+ const nodes=[{id:'start',type:'START'},{id:'income',type:'ACTION',module:moduleId,parameters:income,selection:{unique:true}},{id:'verify-income',type:'VERIFY',module:moduleId},{id:'upgrade',type:'ACTION',module:moduleId,parameters:upgrade,selection:{unique:true}},{id:'verify-upgrade',type:'VERIFY',module:moduleId},{id:'stop',type:'STOP'}];
+ const budget={resources:copy(quote.costs),quotas:[],uids:[{type:'afk-income-interval',id:p.level+':'+p.afkStartTime+':'+p.afkFinishTime},{type:'afk-upgrade',id:upgradeUid(upgrade)}]},suffix=hash({p,budget}).slice(0,20);
+ return {source:{level:p.level,...incomeFrom},levels:p.levels,targetLevel:quote.targetLevel,costs:copy(quote.costs),mainlineStage:liveFacts.get(f).mainlineStage,graph:{version:1,id:'afk-income-upgrade-'+suffix,name:'普通收益确认后明确升级'+p.levels+'级',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:2,modules:[moduleId]},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'固定原收益区间及升级增量；当前自有徽章须足额，逐档成本及累计父预算不随收入扩大。收益SUCCESS/CONFIRMED落盘后独立调查新段，匹配原收益来源才允许升级。每步复用原授权及历史，状态变化、拒绝、UNKNOWN或到限停止；重启只读，不自动重放。'};
+}
+
+function afkRejectionIdentity(operation){
+ if(isIncome(operation?.parameters)){const {upgradePreparation,...parameters}=operation.parameters;return businessRejectionIdentity({...operation,parameters});}
+ if(isUpgrade(operation?.parameters)){const {incomeFrom,expectedUpgradeCost,...parameters}=operation.parameters,interval=operation.target?.interval;return businessRejectionIdentity({...operation,parameters,budgetClaims:interval?{...operation.budgetClaims,uids:[{type:'afk-upgrade',id:upgradeUid(parameters,interval)}]}:operation.budgetClaims});}
+ return businessRejectionIdentity(operation);
+}
+export const afkLevelRewardsModule=Object.freeze({id:moduleId,label:'挂机等级奖励',capabilities:Object.freeze(['BIZ-R10']),defaultConfig:AFK_LEVEL_REWARDS_DEFAULT_CONFIG,validateConfig:validateAfkLevelRewardsConfig,validateParameters:validateAfkLevelRewardsParameters,survey:surveyAfkLevelRewards,view:viewAfkLevelRewards,plan:planAfkLevelRewards,verify:verifyAfkLevelReward,rejectionIdentity:afkRejectionIdentity,dependencyVersions:afkLevelRewardsDependencyVersions});
