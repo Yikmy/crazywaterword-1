@@ -1527,3 +1527,27 @@ for(const stage of ['exchange','production'])for(const outcome of ['success','un
 for(const change of ['account','player','world','connection','generation','config'])test('material production HTTP rejects late '+change+' preparation without writes',async()=>{
  const {app,session,client,state,config}=await materialProductionHttp();try{let changed=false;state.onRead=()=>{if(changed)return;changed=true;if(change==='account')client.factContext.accountId='B';if(change==='player')session.player.playerId='2';if(change==='world')session.player.worldId=2000001;if(change==='connection')client.factContext.connectionId=session.connectionId='other';if(change==='generation'){client.factContext.generation=++session.generation;session.busy='successor';}if(change==='config')config.tables.BuildingProduceCfg.data[0].costItem[0][1]++;};const reply=await app.call(materialProductionRoute,{body:materialProductionBody});assert.notEqual(reply.status,200);assert.equal(state.writes.length,0);assert.equal(app.history.list('A').length,0);assert.equal(session.busy,change==='generation'?'successor':null);}finally{await app.close();}
 });
+
+const multipleMaterialHttpBody={exchanges:[{packId:'原料自选包',itemId:'木材',num:2},{packId:'原料自选包',itemId:'鱼',num:1}],buildingId:'1材料厂',productId:'布匹',maxDurationMs:60000};
+async function multipleMaterialHttp(){
+ const f=await materialProductionHttp();f.config.tables.ItemCfg.data.push({id:'鱼',type:'原料'});f.config.tables.SelectPackLibCfg.data.push({itemId:'原料自选包',selectItemId:'鱼',type:'道具',num:1,season:1});f.config.tables.BuildingProduceCfg.data[0].costItem=[['木材',2],['鱼',1]];const send=f.client.sendWatch.bind(f.client);f.client.sendWatch=async(n,b,o)=>{const r=await send(n,b,o);if(n==='StartFactoryProduceRequest'&&f.state.productionApply)f.state.stock.set('鱼',f.state.stock.get('鱼')-1);return r;};return f;
+}
+for(const outcome of ['success','unknown-1','unknown-2','unknown-3','refused-1','refused-2','refused-3'])test('multiple material production HTTP '+outcome+' uses original finite run authorization and per-step history',async()=>{
+ const {app,state,client}=await multipleMaterialHttp();try{
+  const at=Number(outcome.at(-1)),send=client.sendWatch.bind(client);client.sendWatch=async(n,b,o)=>{
+   if(outcome.startsWith('refused')&&state.writes.length+1===at){o.beforeDispatch?.();state.writes.push({n,b:structuredClone(b)});throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});}
+   const r=await send(n,b,o);if(outcome.startsWith('unknown')&&state.writes.length===at)state.stock.set('unrelated',999);return r;
+  };
+  const reply=await app.call(materialProductionRoute,{body:multipleMaterialHttpBody});assert.equal(reply.status,200,JSON.stringify(reply.data));assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(reply.data.graph.budget.resources,[{id:'原料自选包',num:3},{id:'木材',num:2},{id:'鱼',num:1}]);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:reply.data.graph}})).status,200);const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,approval={offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true};
+  assert.equal((await app.call('/api/workflows/authorize-run',{body:approval,authorized:false})).status,403);assert.equal(state.writes.length,0);assert.equal((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);
+  const expected=outcome==='success'?'COMPLETED':outcome.startsWith('unknown')?'UNKNOWN':'FAILED';await waitForWorkflow(app,expected);assert.equal(state.writes.length,outcome==='success'?3:at);assert.equal(app.history.list('A').length,state.writes.length);assert.deepEqual(app.history.list('B'),[]);assert.equal(app.history.list('A')[0].finalStatus,outcome==='success'?'SUCCESS':expected==='UNKNOWN'?'UNKNOWN':'REJECTED');
+  if(outcome==='success')assert.deepEqual(state.writes.map(row=>row.b.selectItemId??row.b.productId),['木材','鱼','布匹']);assert.equal((await app.call('/api/workflows/authorize-run',{body:approval})).status,400);assert.equal(app.counts().clients,0);
+ }finally{await app.close();}
+});
+test('multiple material production HTTP preserves guards and rejects malformed or underfunded selections',async()=>{
+ const {app,state}=await multipleMaterialHttp();try{
+  for(const [opts,expected]of [[{body:multipleMaterialHttpBody,authorized:false},403],[{body:multipleMaterialHttpBody,headers:{'x-cw-csrf':'bad'}},403],[{body:multipleMaterialHttpBody,id:null},400],[{body:{...multipleMaterialHttpBody,...materialProductionBody}},400],[{body:{...multipleMaterialHttpBody,exchanges:[]}},400],[{body:{...multipleMaterialHttpBody,exchanges:[{packId:'原料自选包',itemId:'木材',num:0},multipleMaterialHttpBody.exchanges[1]]}},400]])assert.equal((await app.call(materialProductionRoute,opts)).status,expected);
+  assert.equal((await app.call(materialProductionRoute+'?extra=1',{body:multipleMaterialHttpBody})).status,400);state.stock.set('原料自选包',2);assert.equal((await app.call(materialProductionRoute,{body:multipleMaterialHttpBody})).status,400);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);
+ }finally{await app.close();}
+});

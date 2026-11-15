@@ -42,7 +42,7 @@ function contextOf(client,player) {
 const stockState=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
 const snapshot=(inputs,context)=>{const i=parseOperationInventory(inputs?.items,inputs?.resources);return i.stockReliable?{context,inventory:stockState(i.stock)}:null;};
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available});
-export async function surveyMaterialPacks(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}){
+export async function surveyMaterialPacks(client,protocol,{config,player,parameters={},signal,stop,validatePreparation,timeout=15000}={}){
  parameters=validateMaterialPackParameters(parameters);const opts={signal,stop},context=contextOf(client,player),notes=[];
  const active=()=>assertExecutionActive(client,opts);active();
  const observations=await Promise.all(Object.entries(sources).map(async([key,response])=>{
@@ -55,7 +55,7 @@ export async function surveyMaterialPacks(client,protocol,{config,player,paramet
  const raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),inventory=parseOperationInventory(raw.items,raw.resources);
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:inventory.stockReliable})]));
  const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:inventory.stockReliable?snapshot(inputs,context):null,available:Object.keys(protocol??{}),notes};
- liveFacts.set(f,{client,player,digest:digest(f)});return f;
+ liveFacts.set(f,{client,player,digest:digest(f),validatePreparation});return f;
 }
 function authority(f){
  const live=liveFacts.get(f),c=f?.context;
@@ -76,7 +76,8 @@ function candidate(f,parameters,{config,moduleConfig=MATERIAL_PACK_DEFAULT_CONFI
  const r=matching?reward(f?.configEvidence,packId,itemId):null,season=valid?seasonOf(f.context):null;
  const have=valid?(f.stock.get(packId)??0):null,gain=r?num*r.num:null,stock=valid?new Map(f.stock):null;
  const total=valid&&gain!==null?(stock.get(itemId)??0)+gain:null;
- const blockedReason=!validateMaterialPackConfig(moduleConfig).enabled?'MATERIAL_PACK_DISABLED':!valid?'MATERIAL_PACK_AUTHORITY_UNKNOWN':!r?'MATERIAL_PACK_CONFIG_UNKNOWN':season===null||season<r.season?'MATERIAL_PACK_SEASON_LOCKED':!f.available.includes(request)?'PROTOCOL_UNAVAILABLE':have<num?'MATERIAL_PACK_SHORTAGE':!Number.isSafeInteger(gain)||!Number.isSafeInteger(total)?'MATERIAL_PACK_QUANTITY_OVERFLOW':null;
+ let preparationValid=true;const guard=liveFacts.get(f)?.validatePreparation;if(typeof guard==='function')try{preparationValid=guard({identity:hash({beforeState:f.state,parameters,reward:r,season}),state:f.state})===true;}catch{preparationValid=false;}
+ const blockedReason=!preparationValid?'MATERIAL_PRODUCTION_SOURCE_CHANGED':!validateMaterialPackConfig(moduleConfig).enabled?'MATERIAL_PACK_DISABLED':!valid?'MATERIAL_PACK_AUTHORITY_UNKNOWN':!r?'MATERIAL_PACK_CONFIG_UNKNOWN':season===null||season<r.season?'MATERIAL_PACK_SEASON_LOCKED':!f.available.includes(request)?'PROTOCOL_UNAVAILABLE':have<num?'MATERIAL_PACK_SHORTAGE':!Number.isSafeInteger(gain)||!Number.isSafeInteger(total)?'MATERIAL_PACK_QUANTITY_OVERFLOW':null;
  const beforeState=copy(f?.state??null);let expectedState=null;
  if(stock&&r&&have>=num&&Number.isSafeInteger(gain)&&Number.isSafeInteger(total)){stock.set(packId,have-num);stock.set(itemId,total);expectedState={context:copy(f.context),inventory:stockState(stock)};}
  const identity=hash({beforeState,parameters,reward:r,season}),costs=[{id:packId,num}],budgetClaims={resources:copy(costs),quotas:[],uids:[]};
@@ -120,5 +121,37 @@ export function confirmedMaterialPackSettlement(runs,context,identity,config){
   const expected={context:copy(context),inventory:stockState(initial)},costs=[{id:p.packId,num:p.num}],claims={resources:costs,quotas:[],uids:[]};
   if(row.identity!==hash({beforeState:before,parameters:p,reward:r,season})||row.actionId!==moduleId+':'+row.identity||!same(row.target,{packId:p.packId,itemId:p.itemId})||!same(row.costs,costs)||row.costSource!==costSource||!same(row.budgetClaims,claims)||!same(summary.resourceBudget,costs)||!same(authorization.resourceBudget,costs)||!same(row.expectedState,expected)||!same(row.afterState,expected)||!same(stockState(final),expected.inventory)||!same(row.responseEvidence,{packId:p.packId,itemId:p.itemId,packsUsed:p.num,materialReceived:gain}))return null;
   return {runId:run.runId,finishedAt:run.finishedAt,identity,parameters:p,state:expected};
+ }catch{return null;}
+}
+
+export function projectMaterialPackPreparations(f,selections,options={}){
+ if(!authority(f)||!dense(selections)||selections.length<1||selections.length>23)throw invalid('须明确1至23项有序兑换及当前完整库存');
+ const stock=new Map(f.stock),quotes=[];
+ for(const input of selections){
+  const parameters=validateMaterialPackParameters(input);
+  if(!Object.keys(parameters).length)throw invalid('每项兑换须完整指定包、材料和数量');
+  const row=candidate(f,parameters,options),r=reward(options.config,parameters.packId,parameters.itemId);
+  if(!row.executable||!r||(stock.get(parameters.packId)??0)<parameters.num)throw invalid('明确兑换的总持有包、资格或成本不足');
+  const beforeState={context:copy(f.context),inventory:stockState(stock)},gain=parameters.num*r.num,total=(stock.get(parameters.itemId)??0)+gain;
+  if(!Number.isSafeInteger(total))throw invalid('累计材料数量溢出');
+  stock.set(parameters.packId,stock.get(parameters.packId)-parameters.num);stock.set(parameters.itemId,total);
+  const identity=hash({beforeState,parameters,reward:r,season:seasonOf(f.context)});
+  quotes.push({parameters,identity,actionId:moduleId+':'+identity,gain,costs:copy(row.costs),beforeState,expectedState:{context:copy(f.context),inventory:stockState(stock)}});
+ }
+ return quotes;
+}
+
+// Each predecessor must independently pass the original settlement proof.
+export function confirmedMaterialPackSequence(runs,context,identities,config){
+ try{
+  if(!dense(identities)||identities.length<1||identities.length>23||new Set(identities).size!==identities.length)return null;
+  const settlements=identities.map(id=>confirmedMaterialPackSettlement(runs,context,id,config));
+  if(settlements.some(s=>!s))return null;
+  const records=settlements.map(s=>runs.find(run=>run.runId===s.runId)),workflowId=records[0].workflowId;
+  if(records.length>1&&(!text(workflowId)||records.some(r=>r.workflowId!==workflowId)))return null;
+  for(let i=1;i<settlements.length;i++)if(!same(records[i].actions[0].beforeState,settlements[i-1].state)||Date.parse(records[i].startedAt)<Date.parse(records[i-1].finishedAt))return null;
+  const ids=new Set(settlements.map(s=>s.runId)),start=Date.parse(records[0].startedAt);
+  if(runs.some(run=>run?.accountId===context.accountId&&!ids.has(run.runId)&&same(run.executionContext&&{accountId:run.executionContext.accountId,generation:run.executionContext.generation,connectionId:run.executionContext.connectionId,playerId:roleId(run.executionContext.playerId),worldId:roleId(run.executionContext.worldId)},context)&&run.actions?.some(a=>a.dispatched===true)&&Date.parse(run.finishedAt??run.startedAt)>=start))return null;
+  return {...settlements.at(-1),runIds:[...ids]};
  }catch{return null;}
 }

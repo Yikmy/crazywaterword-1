@@ -2,7 +2,7 @@
 // authoritative verification, account locking and durable history stay with their owners.
 import { createHash } from 'node:crypto';
 import { stableBusinessValue } from './business-functions.mjs';
-import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPackSettlement } from './material-packs.mjs';
+import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPackSettlement, projectMaterialPackPreparations, confirmedMaterialPackSequence } from './material-packs.mjs';
 import { resourceCosts } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView } from './order-execution.mjs';
@@ -261,6 +261,7 @@ const productionSources=new WeakMap(),productionHash=value=>createHash('sha256')
 const productionSame=(a,b)=>stableBusinessValue(a)===stableBusinessValue(b);
 const productionOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value');
 const productionFields=(v,keys)=>plain(v)&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable&&productionOwn(v,k));
+const productionArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const productionText=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\u0000-\u001f\u007f]/.test(v);
 function productionRole(v){const x=toSnapshotJson(v);try{return (typeof v!=='number'||Number.isSafeInteger(v))&&(typeof x==='string'&&/^[1-9][0-9]*$/.test(x)||typeof x==='number'&&Number.isSafeInteger(x)&&x>0)&&BigInt(x)<(1n<<63n)?String(x):null;}catch{return null;}}
 function productionScope(client,player){const c=client.factContext,role=k=>productionOwn(player,k)&&(!productionOwn(c,k)||productionRole(c[k])===productionRole(player[k]))?productionRole(player[k]):null;return {accountId:productionText(c?.accountId)?c.accountId:null,generation:Number.isSafeInteger(c?.generation)&&c.generation>=0?c.generation:null,connectionId:productionText(c?.connectionId)?c.connectionId:null,playerId:role('playerId'),worldId:role('worldId')};}
@@ -270,7 +271,8 @@ function productionAuthority(f,options){const live=productionSources.get(f),c=li
 export function validateProductionParameters(value={}){
  if(!productionFields(value,['buildingId','productId','materialSource']))throw invalid('生产参数仅允许明确工厂、产品及材料包来源；普通入口保持空对象');
  if(Reflect.ownKeys(value).length===0)return {};
- if(!['buildingId','productId','materialSource'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!productionFields(value.materialSource,['exchangeIdentity','productionIdentity'])||!['exchangeIdentity','productionIdentity'].every(k=>productionOwn(value.materialSource,k)&&typeof value.materialSource[k]==='string'&&/^[a-f0-9]{64}$/.test(value.materialSource[k])))throw invalid('组合生产须明确工厂、产品和完整固定来源摘要');
+ if(!['buildingId','productId','materialSource'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!productionFields(value.materialSource,['exchangeIdentity','productionIdentity','exchangeIdentities'])||!['exchangeIdentity','productionIdentity'].every(k=>productionOwn(value.materialSource,k)&&typeof value.materialSource[k]==='string'&&/^[a-f0-9]{64}$/.test(value.materialSource[k])))throw invalid('组合生产须明确工厂、产品和完整固定来源摘要');
+ if(productionOwn(value.materialSource,'exchangeIdentities')){const ids=value.materialSource.exchangeIdentities;if(!productionArray(ids)||ids.length<2||ids.length>23||ids.some(id=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))||new Set(ids).size!==ids.length||ids.at(-1)!==value.materialSource.exchangeIdentity)throw invalid('多项兑换须保留完整有序来源及最终摘要');}
  return structuredClone(value);
 }
 function productionQuote(f,options,buildingId,productId){
@@ -285,19 +287,26 @@ function boundProductionCandidates(f,options,rows){
  const parameters=validateProductionParameters(options.parameters);if(!parameters.materialSource)return rows;
  const live=productionAuthority(f,options),quote=productionQuote(f,options,parameters.buildingId,parameters.productId);if(!live||!quote||quote.identity!==parameters.materialSource.productionIdentity||typeof live.read!=='function')return [];
  let runs;try{runs=live.read();}catch{return [];}
- const settlement=confirmedMaterialPackSettlement(runs,live.context,parameters.materialSource.exchangeIdentity,options.config);
+ const identities=parameters.materialSource.exchangeIdentities,settlement=identities?confirmedMaterialPackSequence(runs,live.context,identities,options.config):confirmedMaterialPackSettlement(runs,live.context,parameters.materialSource.exchangeIdentity,options.config);
  const inventory=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
  if(!settlement||!productionSame(settlement.state.inventory,inventory))return [];
- const consumed=runs.some(run=>run?.accountId===live.context.accountId&&run.runId!==settlement.runId&&productionSame(run.executionContext&&{...run.executionContext,playerId:productionRole(run.executionContext.playerId),worldId:productionRole(run.executionContext.worldId)},live.context)&&run.actions?.some(row=>row.dispatched===true&&(Date.parse(run.finishedAt??run.startedAt)>=Date.parse(settlement.finishedAt)||row.parameters?.materialSource?.exchangeIdentity===settlement.identity)));
+ const consumed=runs.some(run=>run?.accountId===live.context.accountId&&!(settlement.runIds??[settlement.runId]).includes(run.runId)&&productionSame(run.executionContext&&{...run.executionContext,playerId:productionRole(run.executionContext.playerId),worldId:productionRole(run.executionContext.worldId)},live.context)&&run.actions?.some(row=>row.dispatched===true&&(Date.parse(run.finishedAt??run.startedAt)>=Date.parse(settlement.finishedAt)||row.parameters?.materialSource?.exchangeIdentity===settlement.identity)));
  if(consumed)return [];
  return rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId&&productionSame(row.costs,quote.costs));
 }
+
 export function validateMaterialProductionPreparation(value){
- if(!productionFields(value,['packId','itemId','num','buildingId','productId','maxDurationMs'])||!['packId','itemId','num','buildingId','productId','maxDurationMs'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('准备须明确材料包、材料、包数、工厂、产品及1至86400000毫秒总时长');
+ const multi=productionOwn(value,'exchanges'),keys=multi?['exchanges','buildingId','productId','maxDurationMs']:['packId','itemId','num','buildingId','productId','maxDurationMs'];
+ if(!productionFields(value,keys)||!keys.every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('准备须明确有序兑换、工厂、产品及1至86400000毫秒总时长');
+ if(multi){
+  if(!productionArray(value.exchanges)||value.exchanges.length<2||value.exchanges.length>23)throw invalid('多项准备须明确2至23项兑换，受原50节点边界限制');
+  const exchanges=value.exchanges.map(validateMaterialPackParameters);if(exchanges.some(row=>Object.keys(row).length!==3))throw invalid('每项须明确包、材料及数量');
+  return {exchanges,buildingId:value.buildingId,productId:value.productId,maxDurationMs:value.maxDurationMs};
+ }
  const parameters=validateMaterialPackParameters({packId:value.packId,itemId:value.itemId,num:value.num});return {...parameters,buildingId:value.buildingId,productId:value.productId,maxDurationMs:value.maxDurationMs};
 }
 export function prepareMaterialProductionWorkflow(f,packFacts,{config,moduleConfig=defaultConfig,materialPackConfig={enabled:false},...input}={}){
- const p=validateMaterialProductionPreparation(input),options={config,moduleConfig},quote=productionQuote(f,options,p.buildingId,p.productId),exchangeParameters={packId:p.packId,itemId:p.itemId,num:p.num},exchange=materialPackModule.view(packFacts,{config,moduleConfig:materialPackConfig,parameters:exchangeParameters}).candidates[0];
+ const p=validateMaterialProductionPreparation(input);if(p.exchanges)return prepareMultipleMaterialProductionWorkflow(f,packFacts,{config,moduleConfig,materialPackConfig,...p});const options={config,moduleConfig},quote=productionQuote(f,options,p.buildingId,p.productId),exchangeParameters={packId:p.packId,itemId:p.itemId,num:p.num},exchange=materialPackModule.view(packFacts,{config,moduleConfig:materialPackConfig,parameters:exchangeParameters}).candidates[0];
  if(!productionAuthority(f,options))throw invalid('生产准备必须使用当前连接的完整私有来源');
  const stock=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
  if(!settings(moduleConfig).enabled||!quote||!exchange?.executable||!productionSame(exchange.beforeState?.context,productionSources.get(f)?.context)||!productionSame(exchange.beforeState.inventory,stock))throw invalid('须有同五维真实库存、明确持有包和完整工厂/配方来源；准备不制造可执行库存');
@@ -306,4 +315,31 @@ export function prepareMaterialProductionWorkflow(f,packFacts,{config,moduleConf
  const budget={resources:[...limits].map(([id,num])=>({id,num})),quotas:[],uids:[]},parameters={buildingId:p.buildingId,productId:p.productId,materialSource:{exchangeIdentity:exchange.identity,productionIdentity:quote.identity}},nodes=[{id:'start',type:'START'},{id:'exchange',type:'ACTION',module:'material-packs',parameters:exchangeParameters,selection:exchange.actionId},{id:'verify-exchange',type:'VERIFY',module:'material-packs'},{id:'produce',type:'ACTION',module:'production',parameters,selection:{unique:true}},{id:'verify-produce',type:'VERIFY',module:'production'},{id:'stop',type:'STOP'}];
  const graph={version:1,id:'material-production-'+productionHash({p,parameters,budget}).slice(0,20),name:'明确材料包确认后指定单份生产',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:2,modules:['material-packs','production']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
  return {source:p,costs:structuredClone(quote.costs),exchange:{actionId:exchange.actionId,gain:exchange.gain,costs:structuredClone(exchange.costs)},graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'固定持有包、材料/包数、工厂/配方及累计支出上限。兑换SUCCESS/CONFIRMED落盘后，以同账号/角色/世界/连接/代次的完整库存和未消费来源重新调查及单独授权生产；投影不当库存，收入不扩大父预算。拒绝、UNKNOWN、来源/成本变化或到限停止；重启只读零重放。'};
+}
+
+function prepareMultipleMaterialProductionWorkflow(f,packFacts,{config,moduleConfig,materialPackConfig,...p}){
+ const options={config,moduleConfig},live=productionAuthority(f,options),quote=productionQuote(f,options,p.buildingId,p.productId);
+ if(!live||!settings(moduleConfig).enabled||!quote)throw invalid('须有当前完整生产来源和固定可用工厂/配方');
+ const exchanges=projectMaterialPackPreparations(packFacts,p.exchanges,{config,moduleConfig:materialPackConfig}),stock=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num})),last=exchanges.at(-1);
+ if(!productionSame(exchanges[0].beforeState,{context:live.context,inventory:stock})||p.exchanges.some(p=>!quote.costs.some(cost=>cost.id===p.itemId)))throw invalid('所有明确材料须属本配方，且生产和材料来源完整一致');
+ const final=new Map(last.expectedState.inventory.map(row=>[row.id,row.num]));
+ if((final.get(p.productId)??0)>=f.stockCap||quote.costs.some(row=>(final.get(row.id)??0)<row.num))throw invalid('明确多项兑换不能覆盖完整单份配方或已达存量上限');
+ const limits=new Map();for(const cost of [...exchanges.flatMap(row=>row.costs),...quote.costs]){const num=(limits.get(cost.id)??0)+cost.num;if(!Number.isSafeInteger(num))throw invalid('累计成本溢出');limits.set(cost.id,num);}
+ const budget={resources:[...limits].map(([id,num])=>({id,num})),quotas:[],uids:[]},parameters={buildingId:p.buildingId,productId:p.productId,materialSource:{exchangeIdentity:last.identity,productionIdentity:quote.identity,exchangeIdentities:exchanges.map(row=>row.identity)}},nodes=[{id:'start',type:'START'}];
+ exchanges.forEach((row,i)=>nodes.push({id:'exchange-'+i,type:'ACTION',module:'material-packs',parameters:row.parameters,selection:row.actionId},{id:'verify-exchange-'+i,type:'VERIFY',module:'material-packs'}));
+ nodes.push({id:'produce',type:'ACTION',module:'production',parameters,selection:{unique:true}},{id:'verify-produce',type:'VERIFY',module:'production'},{id:'stop',type:'STOP'});
+ const graph={version:1,id:'material-production-'+productionHash({p,parameters,budget}).slice(0,20),name:'明确多项材料确认后指定单份生产',budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:exchanges.length+1,modules:['material-packs','production']},nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id}))};
+ return {source:p,costs:structuredClone(quote.costs),exchanges:exchanges.map(({actionId,gain,costs})=>({actionId,gain,costs})),graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'固定每项包、材料、数量和顺序，以及同一工厂/配方、累计支出与总期限。每步从实际完整库存重新调查和授权；全部同五维、同Workflow的SUCCESS/CONFIRMED连续结算落盘才允许生产。投影不作库存，收入不扩大父预算；来源变化、拒绝、UNKNOWN或到限即停，重启只读零重放。'};
+}
+
+export function validateMaterialExchangeProductionSource(f,state,parameters,identity,runs,options){
+ try{
+  parameters=validateProductionParameters(parameters);const ids=parameters.materialSource?.exchangeIdentities,index=ids?.indexOf(identity),live=productionAuthority(f,options),quote=productionQuote(f,options,parameters.buildingId,parameters.productId);
+  if(!settings(options.moduleConfig).enabled||!live||!quote||quote.identity!==parameters.materialSource.productionIdentity||index===undefined||index<0||!productionSame(state.context,live.context))return false;
+  const stock=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
+  if(!productionSame(stock,state.inventory))return false;
+  if(index===0)return true;
+  const settled=confirmedMaterialPackSequence(runs.filter(run=>!(run.finalStatus==='EXECUTING'&&run.module==='material-packs'&&run.actions?.length===1&&run.actions[0].identity===identity)),live.context,ids.slice(0,index),options.config);
+  return Boolean(settled&&productionSame(settled.state,state));
+ }catch{return false;}
 }
