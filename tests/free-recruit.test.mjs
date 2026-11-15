@@ -1,4 +1,4 @@
-import { runDailies } from '../src/dailies.mjs';
+import { runDailies, DAILY_DRIVERS } from '../src/dailies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
-import { freeRecruitModule,validateFreeRecruitCooldownObservation,validateFreeRecruitConfig,validateFreeRecruitParameters,surveyFreeRecruit,viewFreeRecruit,planFreeRecruit,verifyFreeRecruit,freeRecruitDependencyVersions } from '../src/free-recruit.mjs';
+import { freeRecruitModule,heroRecruitCosts,validateFreeRecruitCooldownObservation,validateFreeRecruitConfig,validateFreeRecruitParameters,surveyFreeRecruit,viewFreeRecruit,planFreeRecruit,verifyFreeRecruit,freeRecruitDependencyVersions } from '../src/free-recruit.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { createRunBudgetContext } from '../src/resource-ledger.mjs';
@@ -23,28 +23,28 @@ const clone=v=>structuredClone(v),wire=(n,b)=>protocol[n].decode(protocol[n].enc
 const heroId=actual.tables.HeroCfg.data[0].id,newId=actual.tables.HeroCfg.data[1].id,itemId=actual.tables.ItemCfg.data.find(r=>r.type==='英雄碎片').id;
 const hero=id=>({heroId:id,level:1,star:0,power:'9007199254740993',skillLevels:[1],equips:[],attributes:[]});
 const config=()=>({tables:Object.fromEntries(['ModuleOpenCfg','HeroCfg','ItemCfg'].map(k=>[k,clone(actual.tables[k])]))});
-function fixture({codec=true,apply=true,fragment=false,receipt=null}={}) {
- const recruit={freeEndTimeSeconds:0,nextLuck:10,recruitTimes:1,task:{times:1,gotId:0}};
+function fixture({codec=true,apply=true,fragment=false,receipt=null,ticket=false,ticketCount=2}={}) {
+ const recruit={freeEndTimeSeconds:ticket?2000:0,nextLuck:10,recruitTimes:1,task:{times:1,gotId:0}};
  const next={freeEndTimeSeconds:2000,nextLuck:9,recruitTimes:2,task:{times:2,gotId:0}};
  receipt??={recruitData:next,reward:fragment?[{heroId,trans:true,frag:{asset:[{type:0,id:itemId,num:10}]}}]:[{heroId:newId,trans:false}]};
- const state={wall:1000000,mono:100,recruit:{hero:clone(recruit),antique:clone(recruit)},heroes:[hero(heroId)],city:{building:[{buildingId:'1广播站',level:1}]},stock:[{itemId,num:9}],resources:[{res:3,amount:100},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
+ const state={wall:1000000,mono:100,recruit:{hero:clone(recruit),antique:clone(recruit)},heroes:[hero(heroId)],city:{building:[{buildingId:'1广播站',level:1}]},stock:[{itemId,num:9},...(ticket?[{itemId:'抽卡券',num:ticketCount}]:[])],resources:[{res:3,amount:100},{res:4,amount:50}],reads:[],writes:[],overrides:{},onRead:null,onWrite:null,onDispatch:null};
  const clock=trustedGameClock({accountId:'synthetic-A',generation:3,wallNow:()=>state.wall,monotonicNow:()=>state.mono});
  clock.markPing(state.wall);clock.observePong(wire('PingResponse',{clientTimestamp:state.wall,serverTimestamp:state.wall}));
  const client={connected:true,factContext:{accountId:'synthetic-A',generation:3,connectionId:'offline-recruit'},gameClock:clock,pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),
  markUnverifiedWrite(n,b){this.uncertainWrites.set(JSON.stringify([n,b]),true);},confirmWatchedWrite(n,b){this.uncertainWrites.delete(JSON.stringify([n,b]));},
  async request(n,b,r,timeout,opts) {
   if(codec)wire(n,b);
-  if(opts?.mutate){state.onDispatch?.();opts.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){state.recruit.hero=clone(next);if(fragment)state.stock[0].num+=10;else state.heroes.push(hero(newId));}await state.onWrite?.();return codec?wire(r,receipt):clone(receipt);}
+  if(opts?.mutate){state.onDispatch?.();opts.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});if(apply){if(ticket)state.stock.find(r=>r.itemId==='抽卡券').num--;state.recruit.hero=clone(next);if(fragment)state.stock[0].num+=10;else state.heroes.push(hero(newId));}await state.onWrite?.();return codec?wire(r,receipt):clone(receipt);}
   state.reads.push(n);await state.onRead?.(n);
   let value=n==='RecruitInfoRequest'?state.recruit:n==='AllHeroRequest'?{heroes:state.heroes}:n==='OnWaterRequest'?state.city:n==='AllItemRequest'?{items:state.stock}:n==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,n))value=state.overrides[n];if(value instanceof Error)throw value;assert.ok(value,'unexpected '+n);return codec?wire(r,value):clone(value);
  }};
- const options={config:config(),moduleConfig:{enabled:true},parameters:{},player:{playerId:'9007199254740995',worldId:'17',level:10}};
+ const options={config:config(),moduleConfig:{enabled:true},parameters:ticket?{payment:'ticket'}:{},player:{playerId:'9007199254740995',worldId:'17',level:10}};
  return {state,client,options};
 }
 async function ready(extra={}){const f=fixture(extra),facts=await surveyFreeRecruit(f.client,protocol,f.options),row=viewFreeRecruit(facts,f.options).candidates[0],operation=planFreeRecruit(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,operation};}
 const budget=f=>{const scope={accountId:'synthetic-A',generation:3,connectionId:'offline-recruit',runId:'run'},limits=f.operation.budgetClaims;return {ledger:null,runBudget:createRunBudgetContext({scope,limits}),scope,limits,batchId:'batch'};};
-async function settle(f,mutate){const reply=await f.client.request('RecruitStartRequest',{way:1},'RecruitStartResponse',1000,{mutate:true});mutate?.(f.state);const after=await surveyFreeRecruit(f.client,protocol,f.options);return {after,reply};}
+async function settle(f,mutate){const reply=await f.client.request('RecruitStartRequest',f.operation.action.body,'RecruitStartResponse',1000,{mutate:true});mutate?.(f.state);const after=await surveyFreeRecruit(f.client,protocol,f.options);return {after,reply};}
 
 for(const fragment of[false,true])test('exact free recruit contract independently confirms '+(fragment?'fragment net':'new hero'),async()=>{
  const f=await ready({fragment});assert.ok(f.operation,JSON.stringify(viewFreeRecruit(f.facts,f.options)));
@@ -57,9 +57,9 @@ for(const fragment of[false,true])test('exact free recruit contract independentl
  assert.equal(result.responseEvidence.received.kind,fragment?'ITEM':'HERO');
 });
 
-test('strict empty parameters/default off/D6 reject ticket, bulk and missing debit metadata',()=>{
- assert.deepEqual(validateFreeRecruitParameters({}),{});assert.deepEqual(validateFreeRecruitConfig({}),{enabled:false});
- for(const p of[null,[],{way:1},{times:1},Object.create({})])assert.throws(()=>validateFreeRecruitParameters(p),{code:'INVALID_PARAMETERS'});
+test('strict default-free parameters/default off/D6 reject implicit ticket, bulk and missing debit metadata',()=>{
+ assert.deepEqual(validateFreeRecruitParameters({}),{});assert.deepEqual(validateFreeRecruitParameters({payment:'free'}),{});assert.deepEqual(validateFreeRecruitParameters({payment:'ticket'}),{payment:'ticket'});assert.deepEqual(validateFreeRecruitConfig({}),{enabled:false});
+ for(const p of[null,[],{way:1},{times:1},{payment:2},{payment:'auto'},{payment:'ticket',times:1},Object.create({})])assert.throws(()=>validateFreeRecruitParameters(p),{code:'INVALID_PARAMETERS'});
  for(const c of[null,{enabled:1},{paid:false}])assert.throws(()=>validateFreeRecruitConfig(c),{code:'INVALID_PARAMETERS'});
  const a={request:'RecruitStartRequest',body:{way:1},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));
  for(const body of[{way:1,times:1},{way:3},{way:4},{way:5},{}])assert.throws(()=>assertPaymentAllowed({...a,body}));
@@ -127,14 +127,14 @@ test('absent/ambiguous typed reward, forged operation and delayed cooldown canno
 for(const apply of[true,false])test('shared executor confirms or persists UNKNOWN '+apply,async()=>{
  const f=await ready({apply}),result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:freeRecruitModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,apply?'SUCCESS':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.client.uncertainWrites.size,apply?0:1);
 });
-function serviceFixture(t,{apply=true,file=null}={}) {
+function serviceFixture(t,{apply=true,file=null,ticket=false}={}) {
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-free-recruit-')):null;file??=path.join(dir,'history.json');
- const f=fixture({apply}),durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(clone(row));return durable.put(row);}};
+ const f=fixture({apply,ticket}),durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(clone(row));return durable.put(row);}};
  const session={id:'synthetic-A',client:f.client,player:f.options.player,generation:3,connectionId:'offline-recruit',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:{enabled:true}})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  const send=f.client.request.bind(f.client);f.client.request=async(...args)=>{if(args[4]?.mutate)f.state.saved=clone(journal.at(-1));return send(...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
- const plan=async()=>{const read=await service.surveyModule(session,'free-recruit',{}),row=read.view.candidates[0];assert.ok(row.executable,JSON.stringify(row));return service.plan(session,{module:'free-recruit',mode:'Manual',parameters:{},selections:[row.actionId]});};
+ const plan=async()=>{const read=await service.surveyModule(session,'free-recruit',f.options.parameters),row=read.view.candidates[0];assert.ok(row.executable,JSON.stringify(row));return service.plan(session,{module:'free-recruit',mode:'Manual',parameters:f.options.parameters,selections:[row.actionId]});};
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true});
  const run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
  return {...f,session,service,history,durable,file,plan,authorize,run};
@@ -289,3 +289,49 @@ test('legacy Daily Driver cannot dispatch after cancellation or identity change'
  for(const cancel of [true,false]){const f=serviceFixture(t),permit=f.authorize(await f.plan());if(cancel)f.session.abort.abort();else f.session.player.worldId='18';
  const result=await runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.notEqual(result[0].status,'SUCCESS');assert.equal(f.state.writes.length,0);}
 });
+
+for(const fragment of [false,true])for(const ticketCount of [1,2])test('single owned-ticket mode shares exact reward verification '+fragment+' '+ticketCount,async()=>{
+ const f=await ready({ticket:true,fragment,ticketCount});assert.ok(f.operation);assert.deepEqual(f.operation.parameters,{payment:'ticket'});assert.equal(f.operation.actionType,'RECRUIT');assert.deepEqual(f.operation.action.body,{way:2});assert.deepEqual(f.operation.costs,[{id:'抽卡券',num:1}]);assert.deepEqual(f.operation.budgetClaims.resources,f.operation.costs);assert.deepEqual(f.operation.budgetClaims.quotas,[]);assert.equal(f.operation.budgetClaims.uids.length,1);
+ assert.equal(f.state.writes.length,0);assert.equal(viewFreeRecruit(f.facts,f.options).cooldownObservation.readiness,'COOLDOWN');
+ const {after,reply}=await settle(f,s=>{if(ticketCount===1)s.stock=s.stock.filter(r=>r.itemId!=='抽卡券');});const result=verifyFreeRecruit(f.operation,f.facts,after,reply);assert.equal(result.confirmed,true,result.reason);assert.equal(result.responseEvidence.received.kind,fragment?'ITEM':'HERO');assert.equal(after.stock.get('抽卡券')??0,ticketCount-1);
+});
+test('ticket D6 accepts only explicit own way2 with exactly one owned ticket',()=>{
+ const action={request:'RecruitStartRequest',body:{way:2},costs:[{id:'抽卡券',num:1}]};assert.doesNotThrow(()=>assertPaymentAllowed(action));
+ for(const patch of [{costs:undefined},{costs:[]},{costs:[{id:'GOLD',num:1}]},{costs:[{id:'RUBY',num:1}]},{costs:[{id:'抽卡券',num:0}]},{costs:[{id:'抽卡券',num:2}]},{costs:[{id:'抽卡券',num:'1'}]},{costs:[{id:'抽卡券',num:1},{id:'GOLD',num:1}]},{body:{way:2,free:true}},{body:{way:3}},{body:{way:4}},{body:{way:5}}])for(const allowPaid of [false,true])assert.throws(()=>assertPaymentAllowed({...action,...patch},{allowPaid}));
+ const inherited=Object.assign(Object.create({costs:action.costs}),{request:action.request,body:action.body});assert.throws(()=>assertPaymentAllowed(inherited));
+});
+for(const [label,mutate] of [
+ ['no ticket',f=>f.state.stock=f.state.stock.filter(r=>r.itemId!=='抽卡券')],['free ready',f=>f.state.recruit.hero.freeEndTimeSeconds=0],['boundary unknown',f=>f.state.recruit.hero.freeEndTimeSeconds=1000],['missing marker',f=>delete f.state.recruit.hero.freeEndTimeSeconds],['missing clock',f=>f.client.gameClock.reset()],['missing ticket config',f=>f.options.config.tables.ItemCfg.data=f.options.config.tables.ItemCfg.data.filter(r=>r.id!=='抽卡券')]
+])test('ticket qualification blocks without explicit prerequisites: '+label,async()=>{const f=fixture({ticket:true});mutate(f);const facts=await surveyFreeRecruit(f.client,protocol,f.options);assert.equal(viewFreeRecruit(facts,f.options).candidates[0].executable,false);assert.equal(f.state.writes.length,0);});
+test('free mode never falls back to tickets and mode parameters cannot reuse facts',async()=>{
+ const f=await ready({ticket:true});assert.equal(viewFreeRecruit(f.facts,{...f.options,parameters:{}}).candidates[0].executable,false);assert.equal(planFreeRecruit(f.facts,{...f.options,parameters:{},selections:[f.operation.actionId]}).actions.length,0);
+ const options={...f.options,parameters:{}},facts=await surveyFreeRecruit(f.client,protocol,options);assert.equal(viewFreeRecruit(facts,options).candidates[0].executable,false);assert.equal(f.state.writes.length,0);
+ const free=await ready();assert.equal(planFreeRecruit(free.facts,{...free.options,parameters:{payment:'ticket'},selections:[free.operation.actionId]}).actions.length,0);
+});
+for(const [label,mutate] of [
+ ['no debit',s=>s.stock.find(r=>r.itemId==='抽卡券').num++],['two tickets',s=>s.stock.find(r=>r.itemId==='抽卡券').num--],['unrelated income',s=>s.stock[0].num++],['GOLD debit',s=>s.resources[0].amount--],['extra hero',s=>s.heroes.push(hero(actual.tables.HeroCfg.data[2].id))],['marker extended',s=>s.recruit.hero.freeEndTimeSeconds++],['expired marker',s=>s.recruit.hero.freeEndTimeSeconds=0],['antique mutation',s=>s.recruit.antique.recruitTimes++],['wrong result',s=>s.recruit.hero.nextLuck++],['free boundary reached',s=>{s.wall+=1000000;s.mono+=1000000;}]
+])test('ticket settlement stays unconfirmed on '+label,async()=>{const f=await ready({ticket:true}),{after,reply}=await settle(f,mutate);assert.equal(verifyFreeRecruit(f.operation,f.facts,after,reply).confirmed,false);});
+for(const mutate of [f=>f.client.factContext.accountId='B',f=>f.options.player.playerId='9007199254740997',f=>f.options.player.worldId='18',f=>f.client.factContext.connectionId='new',f=>f.client.factContext.generation++,f=>f.client.connected=false])test('ticket facts remain isolated from identity changes '+String(mutate),async()=>{const f=await ready({ticket:true});mutate(f);assert.equal(planFreeRecruit(f.facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);});
+for(const apply of [true,false])test('ticket Service reserves resource and durable intent, preserves UNKNOWN on restart '+apply,async t=>{
+ const f=serviceFixture(t,{ticket:true,apply}),p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN');assert.deepEqual(f.state.writes,[{name:'RecruitStartRequest',body:{way:2}}]);assert.deepEqual(f.state.saved.runBudget.reserved.resources,[{id:'抽卡券',num:1}]);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');
+ if(!apply){const bytes=fs.readFileSync(f.file,'utf8'),next=serviceFixture(t,{file:f.file,ticket:true});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.deepEqual(next.durable.list('B'),[]);}
+});
+for(const mode of ['quota','ticket','state','clock'])test('ticket executor stops before dispatch when parent budget or facts change '+mode,async()=>{
+ const f=await ready({ticket:true}),b=budget(f);if(mode==='quota')b.runBudget=createRunBudgetContext({scope:b.scope,limits:{resources:[],quotas:[],uids:[]}});if(mode==='ticket')b.runBudget=createRunBudgetContext({scope:b.scope,limits:{...b.limits,resources:[]}});if(mode==='state')f.state.stock.find(r=>r.itemId==='抽卡券').num++;if(mode==='clock')f.state.onDispatch=()=>f.client.gameClock.reset();
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:freeRecruitModule,allowMutate:true,budget:b});assert.equal(result.dispatched,false);assert.equal(f.state.writes.length,0);
+});
+test('ticket late response cannot confirm after connection replacement',async()=>{
+ const f=await ready({ticket:true});let release;f.state.onWrite=()=>new Promise(r=>release=r);const pending=executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:freeRecruitModule,allowMutate:true,budget:budget(f)});for(let i=0;i<100&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.client.factContext.connectionId='new';release();assert.equal((await pending).status,'UNKNOWN');assert.equal(f.state.writes.length,1);
+});
+for(const change of ['connection','generation'])test('ticket refusal survives '+change+' without a new writer',async t=>{
+ const f=serviceFixture(t,{ticket:true,apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});};assert.equal((await f.run(await f.plan())).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file+'.memory.json','utf8'),next=serviceFixture(t,{ticket:true,file:f.file});next.session.connectionId=next.client.factContext.connectionId='next';if(change==='generation'){next.session.generation=next.client.factContext.generation=4;const c=trustedGameClock({accountId:'synthetic-A',generation:4,wallNow:()=>next.state.wall,monotonicNow:()=>next.state.mono});c.markPing(next.state.wall);c.observePong(wire('PingResponse',{clientTimestamp:next.state.wall,serverTimestamp:next.state.wall}));next.client.gameClock=c;}await assert.rejects(next.plan(),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file+'.memory.json','utf8'),bytes);
+});
+test('ticket Workflow uses the same registered Function, permit and durable history',async t=>{
+ const f=serviceFixture(t,{ticket:true}),read=await f.service.surveyModule(f.session,'free-recruit',f.options.parameters),row=read.view.candidates[0];const graph={version:1,id:'ticket-flow',name:'Single owned ticket',budget:row.budgetClaims,nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'free-recruit',parameters:f.options.parameters},{id:'a',type:'ACTION',module:'free-recruit',parameters:f.options.parameters,selection:row.actionId},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'a'},{from:'a',to:'z'}]};assert.equal(validateWorkflow(graph,{modules:GAMEPLAY_MODULES}).valid,true);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(()=>runner.stop());let result=await runner.start(f.session.id,graph);assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);await f.run(result.plan);result=await runner.resume();assert.equal(result.status,'COMPLETED');assert.equal(f.durable.list(f.session.id)[0].workflowNodeId,'a');assert.deepEqual(f.state.writes,[{name:'RecruitStartRequest',body:{way:2}}]);
+});
+
+test('legacy recruit preview and Function share the single exact cost source',async()=>{
+ for(const ticket of [false,true]){const f=await ready({ticket}),preview=DAILY_DRIVERS[1002].evaluate({task:{progress:0,targetProgress:1},probe:()=>({hero:f.state.recruit.hero}),items:new Map([['抽卡券',2]]),now:1000});assert.deepEqual(preview.actions[0].costs,heroRecruitCosts(ticket?2:1));assert.deepEqual(preview.actions[0].body,f.operation.action.body);assert.deepEqual(preview.actions[0].costs,f.operation.costs);assert.equal(f.state.writes.length,0);}for(const way of [0,3,4,5,'2',undefined])assert.throws(()=>heroRecruitCosts(way),{code:'INVALID_PARAMETERS'});
+});
+test('ticket forged mode cost or receipt cannot confirm',async()=>{const f=await ready({ticket:true}),{after,reply}=await settle(f);for(const mutate of [o=>o.parameters={},o=>o.action.body.way=1,o=>o.costs=[],o=>o.budgetClaims.resources=[]]){const op=clone(f.operation);mutate(op);assert.equal(verifyFreeRecruit(op,f.facts,after,reply).confirmed,false);}for(const receipt of [null,{}, {...reply,reward:[]},{...reply,recruitData:{...reply.recruitData,freeEndTimeSeconds:2001}}])assert.equal(verifyFreeRecruit(f.operation,f.facts,after,receipt).confirmed,false);});

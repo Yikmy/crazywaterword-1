@@ -67,10 +67,10 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyTrialChallenge','src/trial-challenge.mjs#verifyTrialChallenge','Exact typed raid/stage/config rewards and independent exact passedStage, unchanged sweep counters/heroes and complete net inventory'),
     dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.TrialRaidCfg','config.TrialRaidStageCfg','config.ItemCfg']),
   }),
-  'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
+  'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{payment:{type:'string',enum:['free','ticket']}},{
     inventoryRequirementIds:['BIZ-D02'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM'],blockedCapabilities:[blocked('TICKET_ADVANCED_AND_ANTIQUE','Only one free hero recruit way=1; ticket, bulk, advanced and antique recruit require separate contracts')]},
-    verification:verification('verifyFreeRecruit','src/free-recruit.mjs#verifyFreeRecruit','Single typed reward and future cooldown must match independent RecruitInfo, exact new hero ID or fragment net income, complete stock, unchanged other heroes and antique state'),
+    implementation:{mode:'CONTROLLED_WRITE',actions:['CLAIM','RECRUIT'],blockedCapabilities:[blocked('BULK_ADVANCED_AND_ANTIQUE','Only explicit single free way=1 or owned-ticket way=2; bulk, advanced, antique and purchase remain blocked')]},
+    verification:verification('verifyFreeRecruit','src/free-recruit.mjs#verifyFreeRecruit','Single typed reward and independent RecruitInfo: free creates a future cooldown; explicit ticket retains its known future marker and debits exactly one owned ticket. Exact new hero ID or fragment net income, complete stock, unchanged other heroes and antique state'),
     dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.HeroCfg','config.ItemCfg']),
   }),
   'free-gold': contract('free-gold',[],['P6-2'],['src/free-gold.mjs#freeGoldModule','src/dailies.mjs#DAILY_DRIVERS'],{},{

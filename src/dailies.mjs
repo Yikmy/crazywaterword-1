@@ -15,7 +15,7 @@
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
 import { freeGoldLimit, freeGoldRemaining } from './free-gold.mjs';
-import { freeRecruitReadiness } from './free-recruit.mjs';
+import { freeRecruitReadiness, heroRecruitCosts } from './free-recruit.mjs';
 import { nextTrialStage } from './trial-challenge.mjs';
 import { normalize } from './worlds.mjs';
 import { ACTIONS, buildBody, buildDailyDriverBody, FREE_DAILY_PACK_ID } from './actions.mjs';
@@ -42,7 +42,6 @@ export const TASK_TITLES = {
   1017: '参与积分赛',
 };
 
-const RECRUIT_ITEM = '抽卡券';
 const RESOURCE_RUBY = '钻石';
 
 export function describeDailyTask(task, config) {
@@ -255,16 +254,17 @@ export const DAILY_DRIVERS = {
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
       if (freeRecruitReadiness(freeEnd,{earliestMs:now*1000,latestMs:now*1000}) === 'READY_BY_CLOCK') {
-        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:1}), response: 'RecruitStartResponse', costs: [], cost: '免费次数', note: '免费招募' });
+        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:1}), response: 'RecruitStartResponse', costs: heroRecruitCosts(1), cost: '免费次数', note: '免费招募' });
       }
-      const tickets = items instanceof Map ? safeResourceQuantity(items.has(RECRUIT_ITEM) ? items.get(RECRUIT_ITEM) : 0) : null;
-      const singles = tickets === null ? 0 : Math.min(remaining - actions.length, tickets);
+      const ticketCosts = heroRecruitCosts(2), ticketCost = ticketCosts[0];
+      const tickets = items instanceof Map ? safeResourceQuantity(items.has(ticketCost.id) ? items.get(ticketCost.id) : 0) : null;
+      const singles = tickets === null ? 0 : Math.min(remaining - actions.length, Math.floor(tickets / ticketCost.num));
       for (let i = 0; i < singles; i += 1) {
-        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:2}), response: 'RecruitStartResponse', cost: `${RECRUIT_ITEM} x1`, note: '单抽' });
+        actions.push({ request: 'RecruitStartRequest', body: buildDailyDriverBody('RecruitStartRequest',{way:2}), response: 'RecruitStartResponse', costs: heroRecruitCosts(2), cost: `${ticketCost.id} x${ticketCost.num}`, note: '单抽' });
       }
       if (actions.length === 0) {
         if (tickets === null) return { status: 'unknown', reason: '招募券库存缺失或不可靠' };
-        return { status: 'blocked', reason: `免费次数未好，且没有${RECRUIT_ITEM}（需要 ${remaining} 次）` };
+        return { status: 'blocked', reason: `免费次数未好，且没有${ticketCost.id}（需要 ${remaining} 次）` };
       }
       if (actions.length < remaining) {
         return { status: 'partial', reason: `只有 ${actions.length}/${remaining} 次可做`, actions };
