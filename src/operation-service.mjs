@@ -634,6 +634,11 @@ function authorizeWorkflowPlan(session,payload){
     });
     return { runId: record.runId, status: 'EXECUTING' };
   }
+  function executeDailyRewards(session, payload) {
+    const entry = lookup(session, payload);
+    if (entry.public.module !== 'task-rewards' || !entry.operations.length || entry.operations.some(row => row.module !== 'task-rewards' || !['daily','daily-activity','daily-gift'].includes(row.parameters?.kind))) throw error('日常兼容入口仅接受原task-rewards的明确日常批次', 'INVALID_INPUT', 400);
+    return execute(session, payload);
+  }
   async function assertFormationReady(session, requested, { alreadyLocked = false } = {}) {
     if (requested?.enabled !== true) return null;
     const release = alreadyLocked ? () => {} : acquire(session, 'operations:FORMATION_PREFLIGHT'), generation = session.generation, client = session.client;
@@ -699,7 +704,7 @@ function authorizeWorkflowPlan(session,payload){
 
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
   function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, stop, status,
+  return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyRewards, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);

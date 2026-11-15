@@ -169,15 +169,17 @@ test('null/invalid progress, target, identity or missing claimed flag cannot cla
   }
   const env = rewardsFixture({ tasks: [roundtrip('DispDailyTask', valid)] });
   const result = await claimDailies(env.client, protocol, { allowMutate: true, sleep: async () => {} });
-  assert.deepEqual(env.writes, ['DrawDailyTaskRewardRequest']);
-  assert.equal(result[0].status, 'SUCCESS');
+  assert.deepEqual(env.writes, []);
+  assert.equal(result[0].status, 'NOT_EXECUTED');
+  assert.equal(result[0].code, 'AUTHORIZATION_REQUIRED');
 });
 
 test('malformed verification data cannot confirm or release an unresolved reward write', async () => {
   let giftReads = 0;
   const gift = rewardsFixture({ gift: () => ({ heroId: 'h', drawnPack: ++giftReads === 1 ? [] : '赠礼' }) });
   const giftResult = await claimDailies(gift.client, protocol, { allowMutate: true, sleep: async () => {} });
-  assert.equal(giftResult[0].status, 'UNKNOWN');
+  assert.equal(giftResult[0].status, 'NOT_EXECUTED');
+  assert.equal(giftResult[0].code, 'AUTHORIZATION_REQUIRED');
   assert.deepEqual(gift.confirmations, []);
   let dailyReads = 0;
   const chest = rewardsFixture({ activity: 20 });
@@ -188,8 +190,9 @@ test('malformed verification data cannot confirm or release an unresolved reward
     return response;
   };
   const chestResult = await claimDailies(chest.client, protocol, { allowMutate: true, config: chestConfig, sleep: async () => {} });
-  assert.equal(chestResult[0].status, 'UNKNOWN');
+  assert.equal(chestResult[0].status, 'NOT_EXECUTED');
+  assert.equal(chestResult[0].code, 'AUTHORIZATION_REQUIRED');
   assert.deepEqual(chest.confirmations, []);
-  assert.deepEqual(chest.writes, ['DrawDailyRewardRequest']);
+  assert.deepEqual(chest.writes, []);
   assert.equal(chest.reads.includes('DailyGiftPackRequest'), false);
 });

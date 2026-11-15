@@ -6,6 +6,7 @@ import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewTaskRewards,planTaskRewards,verifyTaskReward,taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
+import { claimDailies, activityRewardDefinition, dailyGiftDefinition, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
 import { DAILY_TASK_REWARD_EVIDENCE } from '../src/daily-task-rewards.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -937,4 +938,62 @@ for(const [label,mutate]of [
 test('chip task exact receipt and reread never confirm a tampered original operation',async()=>{
  const f=await ready({chipTask:true}),reply=await f.client.request('WeekChipGotTaskRequest',{round:1,taskId:1},'WeekChipGotTaskResponse',1000,{mutate:true}),after=await surveyTaskRewards(f.client,protocol,f.options);
  for(const mutate of[o=>o.target.round=2,o=>o.action.body.taskId=2,o=>o.rewards[0].num++,o=>o.expectedState.daily.score++,o=>o.budgetClaims.uids=[]]){const o=clone(f.operation);mutate(o);assert.equal(verifyTaskReward(o,f.facts,after,reply).confirmed,false);}
+});
+for(const worldId of ['1000001','2000001','5000001','9007199254740993'])test('shared daily rules preserve season, preview body and registered settlement '+worldId,async()=>{
+ const f=await readyActivity({tierId:5,worldId},f=>f.state.daily.dailyActivity=100);
+ const def=activityRewardDefinition(f.options.config,{worldId,tierId:5});
+ assert.equal(def.configuredSeason,f.operation.target.configuredSeason);assert.deepEqual(def.rewards,f.operation.rewards);
+ const preview=planChests(f.state.daily,f.options.config,{season:def.season});
+ assert.deepEqual(preview.daily.tiers.find(t=>t.id===5).reward,[def.rewards[0].id,def.rewards[0].num]);
+ assert.ok(preview.actions[0].body.index.includes(f.operation.action.body.index[0]));
+ const after=await settledActivity(f);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);
+});
+test('shared season selection never uses a later threshold or merges conflicting seasons',()=>{
+ const config={tables:{DailyActivityRewardCfg:{data:[{season:1,id:1,activity:20,reward:['RUBY',1]},{season:3,id:1,activity:80,reward:['RUBY',2]}]},ItemCfg:{data:[]}}};
+ assert.deepEqual(chestTiers(config,{season:2,activity:40}).map(r=>r.id),[1]);
+ assert.deepEqual(chestTiers(config,{season:3,activity:40}),[]);
+ assert.equal(activityRewardDefinition(config,{worldId:'2000001',tierId:1}).requiredActivity,20);
+ config.tables.DailyActivityRewardCfg.data.push(clone(config.tables.DailyActivityRewardCfg.data.at(-1)));
+ assert.equal(activityRewardDefinition(config,{worldId:'2000001',tierId:1}),null);assert.deepEqual(chestTiers(config,{season:2,activity:100}),[]);
+});
+for(const worldId of ['1000001','5000001'])test('shared gift preview and strict adapter use the same fixed free request '+worldId,async()=>{
+ const f=await ready({gift:true,worldId}),def=dailyGiftDefinition(f.options.config,{worldId});
+ assert.ok(f.operation);assert.deepEqual(def.rewards,f.operation.rewards);assert.equal(def.configuredSeason,f.operation.target.configuredSeason);
+ const preview=planDailyGift(f.state.gift);assert.equal(preview.freeAvailable,true);
+ assert.deepEqual({request:preview.actions[0].request,response:preview.actions[0].response,body:preview.actions[0].body},f.operation.action);
+ await f.client.sendWatch(f.operation.action.request,f.operation.action.body);const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);
+});
+
+const claimAuthorized=f=>claimDailies(f.client,protocol,{allowMutate:true,operationService:f.service,session:f.session,authorization:f.permit});
+for(const kind of ['daily','daily-activity','daily-gift'])for(const apply of [true,false])test('legacy claim delegates once to persistent Function '+kind+' '+apply,async t=>{
+ const f=serviceFixture(t,kind==='daily-gift'?{gift:true,apply}:kind==='daily-activity'?{tierId:2,apply}:{apply});
+ f.permit=f.authorize(await f.plan());let confirmations=0;const confirm=f.client.confirmWatchedWrite.bind(f.client);f.client.confirmWatchedWrite=(...args)=>{confirmations++;confirm(...args);};
+ const result=await claimAuthorized(f);
+ assert.equal(result.length,1);assert.equal(result[0].status,apply?'SUCCESS':'UNKNOWN');assert.equal(result[0].ok,apply?true:null);
+ assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].finalStatus,apply?'SUCCESS':'UNKNOWN');
+ assert.equal(result[0].runId,f.durable.list(f.session.id)[0].runId);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');
+ assert.equal(confirmations,apply?1:0);
+ assert.equal((await claimAuthorized(f))[0].status==='SUCCESS',false);assert.equal(f.state.writes.length,1);
+ if(!apply){const next=serviceFixture(t,{file:f.file,...(kind==='daily-gift'?{gift:true}:kind==='daily-activity'?{tierId:2}:{})});await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+for(const kind of ['daily-activity','daily-gift'])test('legacy claim cannot confirm only a claimed marker or malformed reread '+kind,async t=>{
+ for(const malformed of [false,true]){const f=serviceFixture(t,kind==='daily-gift'?{gift:true,codec:false}:{tierId:2,codec:false});
+ f.state.onWrite=()=>{if(kind==='daily-gift'){f.state.resources.find(row=>row.res===4).amount-=10;if(malformed)f.state.gift.drawnPack='赠礼';}else{const reward=actual.tables.DailyActivityRewardCfg.data.find(row=>row.season===1&&row.id===2).reward;f.state.stock=f.state.stock.filter(row=>row.itemId!==reward[0]);if(malformed)f.state.daily.dailyRewardClaimed='2';}};
+ f.permit=f.authorize(await f.plan());const result=await claimAuthorized(f);assert.equal(result[0].status,'UNKNOWN');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].actions[0].unresolvedWrite,true);
+ }
+});
+test('legacy claim keeps exact task receipt and independent EXP/activity verification',async t=>{
+ for(const receipt of [{activity:5},{activity:4}]){const f=serviceFixture(t,{receipt});f.permit=f.authorize(await f.plan());const result=await claimAuthorized(f);assert.equal(result[0].status,receipt.activity===5?'SUCCESS':'UNKNOWN');assert.deepEqual(f.state.writes,[{name:'DrawDailyTaskRewardRequest',body:{id:1001}}]);}
+});
+test('legacy claim rejection and late cancellation use shared durable history',async t=>{
+ for(const late of [false,true]){const f=serviceFixture(t,{gift:true,apply:false});f.permit=f.authorize(await f.plan());let release;
+ f.state.onWrite=late?()=>new Promise(resolve=>release=resolve):()=>{throw Object.assign(Error('synthetic rejection'),{code:'REJECTED'});};
+ const pending=claimAuthorized(f);if(late){for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();}
+ assert.equal((await pending)[0].status,late?'UNKNOWN':'REJECTED');assert.equal(f.state.writes.length,1);assert.equal(f.durable.list(f.session.id)[0].finalStatus,late?'UNKNOWN':'REJECTED');
+ }
+});
+test('legacy claim rejects missing permits, unrelated Function scopes and different session clients without dispatch',async t=>{
+ const f=serviceFixture(t,{weekly:true});f.permit=f.authorize(await f.plan());const blocked=await claimAuthorized(f);assert.equal(blocked[0].status,'NOT_EXECUTED');assert.equal(blocked[0].code,'INVALID_INPUT');assert.equal(f.state.writes.length,0);
+ const g=serviceFixture(t,{gift:true});g.permit=g.authorize(await g.plan());
+ const result=await claimDailies({},protocol,{allowMutate:true,operationService:g.service,session:g.session,authorization:g.permit});assert.equal(result[0].code,'AUTHORIZATION_REQUIRED');assert.equal(g.state.writes.length,0);
 });

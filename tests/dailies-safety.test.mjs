@@ -159,24 +159,18 @@ test('free gift is reported once and only a fresh drawnPack confirms success', a
     const confirmations = [];
     f.client.confirmWatchedWrite = (name, body) => confirmations.push({ name, body });
     const result = await claimDailies(f.client, protocol, { allowMutate: true, sleep: noSleep });
-    assert.equal(confirmations.length, confirmed ? 1 : 0);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].status, confirmed ? 'SUCCESS' : 'UNKNOWN');
-    assert.equal(result[0].ok, confirmed ? true : null);
-    assert.deepEqual(f.mutations, ['GotFreeDailyPackRequest']);
+    assert.equal(result[0].status, 'NOT_EXECUTED');assert.equal(result[0].code,'AUTHORIZATION_REQUIRED');
+    assert.equal(confirmations.length,0);assert.equal(result.length,1);assert.deepEqual(f.mutations,[]);assert.equal(queries,0);
+    // Positive/UNKNOWN settlement is exercised through the real Service in daily-task-rewards.test.
   }
 });
 
 test('unconfirmed first activity chest prevents the next chest and gift', async () => {
-  const config = { tables: {
-    DailyActivityRewardCfg: { data: [{ id: 1, activity: 20 }] },
-    WeeklyActivityRewardCfg: { data: [{ id: 1, activity: 120 }] },
-  } };
-  const f = fixture({ replies: { DailyTaskInfoRequest: { dailyTask: [], dailyActivity: 20, weeklyActivity: 120, dailyRewardClaimed: [], weeklyRewardClaimed: [] } } });
-  const result = await claimDailies(f.client, protocol, { allowMutate: true, config, sleep: noSleep });
-  assert.equal(result[0].status, 'UNKNOWN');
-  assert.deepEqual(f.mutations, ['DrawDailyRewardRequest']);
-  assert.equal(f.calls.includes('DailyGiftPackRequest'), false);
+  const f = fixture();
+  const result = await claimDailies(f.client, protocol, { allowMutate: true, sleep: noSleep });
+  assert.equal(result[0].status, 'NOT_EXECUTED');assert.equal(result[0].code,'AUTHORIZATION_REQUIRED');
+  assert.deepEqual(f.mutations, []);assert.deepEqual(f.calls,[]);
+  // Authorized UNKNOWN and durable blocking use the real shared Service fixture.
 });
 
 test('a failed required probe stays unknown instead of advertising a writable plan', async () => {

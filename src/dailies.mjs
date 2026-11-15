@@ -15,8 +15,8 @@
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
 import { normalize } from './worlds.mjs';
-import { FREE_DAILY_PACK_ID, assertPaymentAllowed } from './actions.mjs';
-import { safeResourceQuantity, stockFromResponses } from './resource-ledger.mjs';
+import { ACTIONS, buildBody, FREE_DAILY_PACK_ID, assertPaymentAllowed } from './actions.mjs';
+import { RESOURCE_NAMES, safeResourceQuantity, stockFromResponses } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome, operationResult, stopsExecution, executionDelay } from './execution.mjs';
 
 export const TASK_TITLES = {
@@ -55,30 +55,65 @@ export function describeDailyTask(task, config) {
 export const CHEST_TABLE = { daily: 'DailyActivityRewardCfg', weekly: 'WeeklyActivityRewardCfg' };
 
 // 哪几档现在能领：活跃度够了、而且服务端没记在已领列表里。
-// 四个季节的门槛与档位号完全一样（只有第 5 档的奖励不同），所以领哪几档不用挑季节；
-// 只有要显示「第 5 档给什么」时才需要知道季节，那一步交给界面，不在这里猜。
+// 无赛季的旧预览仅展示观察值；实际领取使用同一权威配置定义绑定赛季、单档和奖励。
+// Shared domain rules: observations may omit period/config, executable adapters may not.
+const rewardOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value');
+const rewardPositive=v=>Number.isInteger(v)&&v>0&&v<=2147483647;
+const rewardText=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
+const rewardDense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
+function configuredRewardSeason(rows,season,key) {
+ if(!rewardPositive(season)||!rewardDense(rows)||!rows.length)return null;
+ const seen=new Set();let last=0;
+ for(const row of rows){if(!rewardOwn(row,'season')||!rewardPositive(row.season)||row.season<last||!rewardOwn(row,key)||(key==='id'?!rewardPositive(row[key]):!rewardText(row[key]))||seen.has(row.season+':'+row[key]))return null;last=row.season;seen.add(row.season+':'+row[key]);}
+ const configuredSeason=Math.max(0,...rows.filter(row=>row.season<=season).map(row=>row.season));
+ return configuredSeason?{configuredSeason,rows:rows.filter(row=>row.season===configuredSeason)}:null;
+}
+export function activityRewardDefinition(config,{worldId,tierId}={}){
+ const rows=config?.tables?.DailyActivityRewardCfg?.data,itemRows=config?.tables?.ItemCfg?.data;
+ if(!rewardDense(rows)||!rows.length||!rewardDense(itemRows))return null;
+ let season;try{season=Number(BigInt(worldId)/1000000n%1000n);}catch{return null;}
+ if(!rewardPositive(season))return null;
+ const selected=configuredRewardSeason(rows,season,'id');if(!selected)return null;
+ const current=selected.configuredSeason,tiers=selected.rows,row=tiers.find(row=>row.id===tierId);
+ if(!row||!rewardOwn(row,'activity')||!rewardPositive(row.activity)||!rewardOwn(row,'reward')||!rewardDense(row.reward)||row.reward.length!==2||!rewardText(row.reward[0])||!Number.isSafeInteger(row.reward[1])||row.reward[1]<=0)return null;
+ const id=row.reward[0],items=itemRows.filter(r=>rewardOwn(r,'id')&&r.id===id);
+ if(!Object.values(RESOURCE_NAMES).includes(id)&&(items.length!==1||!rewardOwn(items[0],'type')||!rewardText(items[0].type)||!['通用','随机包'].includes(items[0].type)))return null;
+ return {season,configuredSeason:current,tierId,requiredActivity:row.activity,rewards:[{id,num:row.reward[1]}],tierIds:tiers.map(r=>r.id)};
+}
+export function dailyGiftDefinition(config,{worldId}={}){
+ const rows=config?.tables?.DailyChargeGiftPackCfg?.data;if(!rewardDense(rows)||!rows.length)return null;
+ let season;try{season=Number(BigInt(worldId)/1000000n%1000n);}catch{return null;}if(!rewardPositive(season))return null;
+ const selection=configuredRewardSeason(rows,season,'packId');if(!selection)return null;
+ const selected=selection.configuredSeason,row=selection.rows.find(r=>r.packId===FREE_DAILY_PACK_ID);
+ if(!row||!['price','fragNum'].every(k=>rewardOwn(row,k)&&row[k]===0)||!rewardOwn(row,'guildPack')||!rewardDense(row.guildPack)||row.guildPack.length||!rewardOwn(row,'reward')||!rewardDense(row.reward)||row.reward.length!==1||!rewardDense(row.reward[0])||row.reward[0].length!==2||row.reward[0][0]!=='RUBY'||!Number.isSafeInteger(row.reward[0][1])||row.reward[0][1]<=0)return null;
+ return {season,configuredSeason:selected,rewards:[{id:'RUBY',num:row.reward[0][1]}]};
+}
+
 function validClaimedTiers(claimed) {
   return Array.isArray(claimed) && claimed.every((id) => Number.isSafeInteger(id) && id > 0);
 }
 function validChestRow(row) {
   return Number.isSafeInteger(row?.id) && row.id > 0 && Number.isSafeInteger(row.activity) && row.activity >= 0;
 }
+export function activityTierAvailable(row,activity,claimed) {
+  return validChestRow(row) && Number.isSafeInteger(activity) && activity >= 0
+    && validClaimedTiers(claimed) && !claimed.includes(row.id) && activity >= row.activity;
+}
 export function chestTiers(config, { kind = 'daily', activity = null, claimed = [], season = null } = {}) {
   if (!['daily', 'weekly'].includes(kind) || !Number.isSafeInteger(activity) || activity < 0 || !validClaimedTiers(claimed)) return [];
   const rows = config?.tables?.[CHEST_TABLE[kind]]?.data ?? [];
   if (!Array.isArray(rows)) return [];
-  const use = season == null ? rows : rows.filter((row) => row.season === season);
-  const taken = new Set(claimed);
+  const use = season == null ? rows : configuredRewardSeason(rows,season,'id')?.rows ?? [];
   const byId = new Map();
   for (const row of use) {
-    if (!validChestRow(row) || taken.has(row.id) || activity < row.activity) continue;
+    if (!activityTierAvailable(row, activity, claimed)) continue;
     if (!byId.has(row.id)) byId.set(row.id, { id: row.id, activity: row.activity, reward: row.reward });
   }
   return [...byId.values()].sort((a, b) => a.activity - b.activity);
 }
 
 // 从一次 DailyTaskInfoResponse 算出要发的两个请求。两个都没有可领档位时返回空动作表。
-export function planChests(daily, config) {
+export function planChests(daily, config, { season = null } = {}) {
   const state = (activityField, claimedField) => {
     const activity = explicitCount(daily, activityField);
     const claimed = daily?.[claimedField];
@@ -87,14 +122,14 @@ export function planChests(daily, config) {
   };
   const day = state('dailyActivity', 'dailyRewardClaimed');
   const week = state('weeklyActivity', 'weeklyRewardClaimed');
-  const dailyTiers = day.status === 'known' ? chestTiers(config, { ...day, kind: 'daily' }) : [];
-  const weeklyTiers = week.status === 'known' ? chestTiers(config, { ...week, kind: 'weekly' }) : [];
+  const dailyTiers = day.status === 'known' ? chestTiers(config, { ...day, kind: 'daily', season }) : [];
+  const weeklyTiers = week.status === 'known' ? chestTiers(config, { ...week, kind: 'weekly', season }) : [];
   const actions = [];
   if (dailyTiers.length > 0) {
     actions.push({
-      request: 'DrawDailyRewardRequest',
+      request: ACTIONS.dailyRewardDraw.request,
       costs: [],
-      body: { index: dailyTiers.map((tier) => tier.id) },
+      body: buildBody(ACTIONS.dailyRewardDraw, { index: dailyTiers.map((tier) => tier.id) }),
       response: null,
       cost: '无',
       note: `领日常活跃宝箱 第 ${dailyTiers.map((tier) => tier.id).join('/')} 档（活跃度 ${day.activity}）`,
@@ -102,26 +137,27 @@ export function planChests(daily, config) {
   }
   if (weeklyTiers.length > 0) {
     actions.push({
-      request: 'DrawWeeklyRewardRequest',
-      body: { index: weeklyTiers.map((tier) => tier.id) },
+      request: ACTIONS.weeklyRewardDraw.request,
+      body: buildBody(ACTIONS.weeklyRewardDraw, { index: weeklyTiers.map((tier) => tier.id) }),
       response: null,
       cost: '无',
       note: `领周活跃宝箱 第 ${weeklyTiers.map((tier) => tier.id).join('/')} 档（活跃度 ${week.activity}）`,
     });
   }
   return {
-    daily: { ...day, tiers: dailyTiers, nextAt: nextThreshold(config, 'daily', day) },
-    weekly: { ...week, tiers: weeklyTiers, nextAt: nextThreshold(config, 'weekly', week) },
+    daily: { ...day, tiers: dailyTiers, nextAt: nextThreshold(config, 'daily', { ...day, season }) },
+    weekly: { ...week, tiers: weeklyTiers, nextAt: nextThreshold(config, 'weekly', { ...week, season }) },
     actions,
   };
 }
 
 // 下一档的门槛，界面上用来解释「为什么现在没得领」。
-function nextThreshold(config, kind, { activity = null, claimed = [], status } = {}) {
+function nextThreshold(config, kind, { activity = null, claimed = [], status, season = null } = {}) {
   if (status === 'unknown' || !Number.isSafeInteger(activity) || activity < 0 || !validClaimedTiers(claimed)) return null;
   const rows = config?.tables?.[CHEST_TABLE[kind]]?.data ?? [];
   if (!Array.isArray(rows)) return null;
-  return rows
+  const use = season == null ? rows : configuredRewardSeason(rows,season,'id')?.rows ?? [];
+  return use
     .filter((row) => validChestRow(row) && !claimed.includes(row.id) && row.activity > activity)
     .reduce((min, row) => (min == null || row.activity < min ? row.activity : min), null);
 }
@@ -147,9 +183,9 @@ export function planDailyGift(response) {
     resetTime: response?.resetTime ?? null,
     actions: available
       ? [{
-        request: 'GotFreeDailyPackRequest',
+        request: ACTIONS.freeDailyPackDraw.request,
         costs: [],
-        body: { packId: FREE_DAILY_PACK_ID },
+        body: buildBody(ACTIONS.freeDailyPackDraw),
         response: null,
         cost: '无',
         note: '领每日精选的免费赠礼',
@@ -575,53 +611,30 @@ export async function runDailies(client, protocol, survey, options = {}) {
   return results;
 }
 
+// Compatibility entry: execution and final verification belong to the existing Service.
+// A legacy --yes flag or a preview is never a replacement for its exact single-use permit.
 export async function claimDailies(client, protocol, options = {}) {
-  const { config = null, onStep, rejected = new Set() } = options;
   if (!options.allowMutate) throw new Error('领取日常奖励会改变账号状态，需要 --yes');
-  const results = [];
-  if (!protocol.DailyTaskInfoRequest || !protocol.DailyTaskInfoResponse) return results;
-  const query = (name, body, response) => dailyQuery(client, name, body, response, options);
-  const report = (outcome) => { results.push(outcome); onStep?.(outcome); };
-  const perform = async (id, title, action, verify) => {
-    const key = actionKey(id, action);
-    if (rejected.has(key)) return false;
-    let outcome;
-    try { outcome = await sendAction(client, protocol, action, options, verify); }
-    catch (error) { outcome = failedOutcome(error); }
-    report({ id, title, request: action.request, note: action.note, ...outcome });
-    if (outcome.status === 'REJECTED') rejected.add(key);
-    return stopsExecution(outcome);
-  };
+  const { operationService: service, session, authorization, onStep } = options;
+  const report = outcome => { onStep?.(outcome); return [outcome]; };
+  if (!service?.executeDailyRewards || !session || session.client !== client || !authorization) return report(operationResult('NOT_EXECUTED', {
+    skipped: true, code: 'AUTHORIZATION_REQUIRED', reason: '日常领奖须使用原 task-rewards Function 的当前批次授权；预览不会派发',
+  }));
   try {
-    const after = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
-    const claimable = claimableDailyTasks(after);
-    for (const task of claimable) {
-      const title = TASK_TITLES[task.id] ?? String(task.id);
-      const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', costs: [], body: { id: task.id }, cost: '无', note: `领任务奖励（${title}）` };
-      if (await perform(task.id, title, action)) return results;
-      await executionDelay(300, options);
-    }
-    const fresh = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
-    for (const action of planChests(fresh, config).actions) {
-      const weekly = action.request === 'DrawWeeklyRewardRequest';
-      const title = weekly ? '周活跃宝箱' : '日常活跃宝箱';
-      const field = weekly ? 'weeklyRewardClaimed' : 'dailyRewardClaimed';
-      if (await perform('activityChest', title, action, async () => {
-        const latest = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
-        return validClaimedTiers(latest?.[field]) && action.body.index.every((index) => latest[field].includes(index));
-      })) return results;
-      await executionDelay(300, options);
-    }
-    if (protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
-      const before = await query('DailyGiftPackRequest', {}, 'DailyGiftPackResponse');
-      const action = planDailyGift(before).actions[0];
-      if (action) await perform('freeDailyPack', '每日免费赠礼', action, async () => {
-        const latest = await query('DailyGiftPackRequest', {}, 'DailyGiftPackResponse');
-        return planDailyGift(latest).status === 'done';
-      });
-    }
-  } catch (error) { report(failedOutcome(error)); }
-  return results;
+    assertExecutionActive(client, options);
+    const run = service.executeDailyRewards(session, authorization);
+    await service.settle(session.id);
+    const records = service.history(session.id, run.runId).runs;
+    if (records.length !== 1) return report(operationResult('UNKNOWN', { runId: run.runId, reason: '持久执行结果缺失或不唯一，禁止重放' }));
+    const record = records[0];
+    const results = record.actions.map(row => ({
+      ...operationResult(row.result ?? 'UNKNOWN'), actionId: row.actionId, runId: record.runId,
+      requestStatus: row.requestStatus, verification: row.verification, reason: row.reason,
+    }));
+    if (record.finalStatus !== 'SUCCESS' && results.every(row => row.status === 'SUCCESS')) results.push(operationResult(record.finalStatus ?? 'UNKNOWN', { runId: record.runId, reason: record.stopReason }));
+    results.forEach(row => onStep?.(row));
+    return results;
+  } catch (error) { return report(error.code === 'INVALID_INPUT' ? operationResult('NOT_EXECUTED', { code: error.code, reason: error.message }) : failedOutcome(error)); }
 }
 
 // 活跃奖励那两行：没得领的时候也要说清楚差多少，否则看不出是「领完了」还是「没在领」。
