@@ -1,5 +1,6 @@
 // W04 / BIZ-R14: explicitly chosen owned material packs; shared executor only.
 import { createHash } from 'node:crypto';
+import { packCoverPlan } from './production-planning.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -154,4 +155,27 @@ export function confirmedMaterialPackSequence(runs,context,identities,config){
   if(runs.some(run=>run?.accountId===context.accountId&&!ids.has(run.runId)&&same(run.executionContext&&{accountId:run.executionContext.accountId,generation:run.executionContext.generation,connectionId:run.executionContext.connectionId,playerId:roleId(run.executionContext.playerId),worldId:roleId(run.executionContext.worldId)},context)&&run.actions?.some(a=>a.dispatched===true)&&Date.parse(run.finishedAt??run.startedAt)>=start))return null;
   return {...settlements.at(-1),runIds:[...ids]};
  }catch{return null;}
+}
+
+export function qualifiedMaterialPackCoverage(f,costs,options={}){
+ const unavailable=reason=>({reliable:false,ok:false,status:'UNKNOWN',reason,gaps:[],needs:[],exchanges:[],executable:false,projectionOnly:true});
+ if(!authority(f))return unavailable('MATERIAL_PACK_AUTHORITY_UNKNOWN');
+ let projection;try{projection=packCoverPlan(options.config,{costs,stock:f.stock});}catch{return unavailable('PACK_CONFIG_UNKNOWN');}
+ const base={...projection,ok:false,projectionOnly:true,exchanges:[],status:'UNKNOWN'};
+ if(!projection.reliable)return {...base,reason:projection.reason??'PACK_FACT_UNKNOWN'};
+ if(!projection.gaps.length)return {...base,status:'IN_STOCK',reason:null};
+ const gaps=projection.gaps.map(gap=>{
+  if(!gap.pack)return {...gap,eligible:false,blockedReason:gap.reason??'NO_ALLOWED_PACK'};
+  const p={packId:gap.pack,itemId:gap.id,num:gap.packs};let row;
+  try{row=candidate(f,p,options);}catch{return {...gap,eligible:false,blockedReason:'MATERIAL_PACK_CONFIG_UNKNOWN'};}
+  return {...gap,eligible:row.executable===true,blockedReason:row.blockedReason};
+ });
+ const unknown=gaps.find(gap=>['MATERIAL_PACK_AUTHORITY_UNKNOWN','MATERIAL_PACK_CONFIG_UNKNOWN','MATERIAL_PACK_QUANTITY_OVERFLOW','INVENTORY_UNKNOWN','PACK_CONFIG_AMBIGUOUS'].includes(gap.blockedReason));
+ if(unknown)return {...base,gaps,reliable:false,reason:unknown.blockedReason};
+ const blocked=gaps.find(gap=>gap.blockedReason&&gap.blockedReason!=='MATERIAL_PACK_SHORTAGE');
+ if(blocked)return {...base,gaps,status:'BLOCKED',reason:blocked.blockedReason};
+ if(!projection.ok||gaps.some(gap=>!gap.eligible))return {...base,gaps,status:'INSUFFICIENT',reason:'MATERIAL_PACK_AGGREGATE_SHORTAGE'};
+ const exchanges=gaps.map(gap=>({packId:gap.pack,itemId:gap.id,num:gap.packs}));
+ try{projectMaterialPackPreparations(f,exchanges,options);}catch{return {...base,gaps,reliable:false,reason:'MATERIAL_PACK_PROJECTION_UNKNOWN'};}
+ return {...base,gaps,ok:true,status:'COVERED',reason:null,exchanges};
 }

@@ -2,7 +2,7 @@
 // authoritative verification, account locking and durable history stay with their owners.
 import { createHash } from 'node:crypto';
 import { stableBusinessValue } from './business-functions.mjs';
-import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPackSettlement, projectMaterialPackPreparations, confirmedMaterialPackSequence } from './material-packs.mjs';
+import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPackSettlement, projectMaterialPackPreparations, confirmedMaterialPackSequence, qualifiedMaterialPackCoverage } from './material-packs.mjs';
 import { resourceCosts } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView } from './order-execution.mjs';
@@ -342,4 +342,17 @@ export function validateMaterialExchangeProductionSource(f,state,parameters,iden
   const settled=confirmedMaterialPackSequence(runs.filter(run=>!(run.finalStatus==='EXECUTING'&&run.module==='material-packs'&&run.actions?.length===1&&run.actions[0].identity===identity)),live.context,ids.slice(0,index),options.config);
   return Boolean(settled&&productionSame(settled.state,state));
  }catch{return false;}
+}
+
+export function validateMaterialProductionCoverage(value){
+ if(!productionFields(value,['buildingId','productId'])||!['buildingId','productId'].every(k=>productionOwn(value,k)&&productionText(value[k])))throw invalid('覆盖建议只接受明确工厂与配方产品');
+ return {buildingId:value.buildingId,productId:value.productId};
+}
+export function materialProductionCoverage(f,packFacts,{config,moduleConfig,materialPackConfig,...input}){
+ const target=validateMaterialProductionCoverage(input),options={config,moduleConfig},live=productionAuthority(f,options),quote=productionQuote(f,options,target.buildingId,target.productId);
+ if(!live||!settings(moduleConfig).enabled||!quote)throw invalid('覆盖建议须有当前完整私有生产来源、可用工厂和精确配方');
+ const material=materialPackModule.view(packFacts,{config,moduleConfig:materialPackConfig,parameters:{}}),stock=[...f.stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
+ if(!productionSame(packFacts?.state,{context:live.context,inventory:stock}))throw invalid('生产与材料包必须为同五维完整实际库存');
+ const coverage=qualifiedMaterialPackCoverage(packFacts,quote.costs,{config,moduleConfig:materialPackConfig});
+ return {target,costs:structuredClone(quote.costs),productionIdentity:quote.identity,coverage,packs:material.packs,season:material.season,executable:false,projectionOnly:true,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'当前持有普通材料包覆盖建议，复用packCoverPlan及原材料包资格；只是缺口与合计包数投影。明确选择并填写期限后，原prepare重新调查完整实际来源并生成有限图；本读取不授权、不派发、不记收入或扩大预算，UNKNOWN不重放。'};
 }

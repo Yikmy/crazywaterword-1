@@ -238,6 +238,45 @@ function gpRenderFarmHarvest(id,s,box,view){
 }
 
 
+
+function gpMaterialCoverageResult(data,target,recipe,accountId){
+ const same=(a,b)=>gpJson(a)===gpJson(b),coverage=data?.coverage,covered=coverage?.status==='COVERED';
+ if(data?.accountId!==accountId||!same(data.target,target)||!same(data.costs,recipe.costs)||data.executable!==false||data.projectionOnly!==true||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||!/^[a-f0-9]{64}$/.test(data.productionIdentity)||!coverage||!['COVERED','IN_STOCK','INSUFFICIENT','BLOCKED','UNKNOWN'].includes(coverage.status)||coverage.executable!==false||coverage.projectionOnly!==true||coverage.ok!==covered||coverage.reliable!==(coverage.status!=='UNKNOWN')||!Array.isArray(coverage.gaps)||!Array.isArray(coverage.needs)||!Array.isArray(coverage.exchanges)||!Array.isArray(data.packs)||!Number.isInteger(data.season)||data.season<0||!covered&&coverage.exchanges.length)throw Error('覆盖建议的账号、目标、配方成本或只读边界不匹配');
+ if(!covered)return data;
+ const choices=coverage.exchanges,totals=new Map(),materials=new Set();
+ if(!choices.length||choices.length>23||choices.length!==coverage.gaps.length)throw Error('覆盖建议必须有有限、完整的缺口与明确选择');
+ for(let i=0;i<choices.length;i++){
+  const choice=choices[i],gap=coverage.gaps[i],cost=recipe.costs.find(row=>row.id===choice.itemId),pack=data.packs.find(row=>row.packId===choice.packId),item=pack?.targets?.find(row=>row.itemId===choice.itemId),total=(totals.get(choice.packId)||0)+choice.num;
+  if(!choice||Object.keys(choice).sort().join(',')!=='itemId,num,packId'||!['原料自选包','工事材料自选包'].includes(choice.packId)||!cost||materials.has(choice.itemId)||!Number.isInteger(choice.num)||choice.num<1||choice.num>2147483647||!Number.isSafeInteger(total)||!Number.isSafeInteger(pack?.have)||pack.have<total||!Number.isInteger(item?.perPack)||item.perPack<1||!Number.isInteger(item.requiredSeason)||item.requiredSeason<1||item.requiredSeason>data.season||!Number.isSafeInteger(item.have)||item.have<0||gap?.id!==choice.itemId||gap.num!==cost.num||gap.have!==item.have||gap.gap!==Math.max(0,cost.num-item.have)||gap.gap<1||gap.pack!==choice.packId||gap.per!==item.perPack||gap.packs!==choice.num||gap.packHave!==pack.have||choice.num!==Math.ceil(gap.gap/item.perPack)||gap.projectedGain!==choice.num*item.perPack||!Number.isSafeInteger(gap.projectedGain)||gap.eligible!==true||gap.blockedReason!==null)throw Error('覆盖建议的材料缺口、赛季、包资格或合计数量不匹配');
+  totals.set(choice.packId,total);materials.add(choice.itemId);
+ }
+ if(!same(coverage.needs,[...totals].map(([pack,num])=>({pack,num,have:data.packs.find(row=>row.packId===pack).have}))))throw Error('覆盖建议的合计持有包不匹配');
+ return data;
+}
+function gpRenderMaterialCoverage(id,s,box,view){
+ const scope=viewGuard.capture(),revision=gpRevision,select=gpEl('select');select.dataset.productionCoverageTarget='true';const empty=gpEl('option','请选择工厂与配方');empty.value='';select.appendChild(empty);
+ const recipes=[];for(const factory of view?.factories||[])for(const recipe of factory.recipes||[]){const target={buildingId:factory.buildingId,productId:recipe.productId};if(!target.buildingId||!target.productId||!gpBudget(recipe.costs))continue;recipes.push({target,recipe});const option=gpEl('option',target.buildingId+' → '+target.productId+' · '+operationCosts(recipe.costs));option.value=gpJson(target);select.appendChild(option);}
+ const read=gpEl('button','读取当前持有包覆盖建议');read.dataset.productionCoverageRead='true';const results=gpEl('div');results.dataset.productionCoverageResult='true';
+ const use=gpEl('input');use.type='checkbox';use.checked=false;use._blocked=true;use.dataset.productionCoverageUse='true';const useLabel=gpEl('label','使用上述有序材料与包数准备有限图');useLabel.appendChild(use);
+ const duration=gpEl('input');duration.type='number';duration.min='1';duration.max='86400';duration.step='1';duration.value='';duration.dataset.productionCoverageDuration='true';const durationLabel=gpEl('label','本次总时长（秒）');durationLabel.appendChild(duration);
+ const prepare=gpEl('button','准备覆盖后指定单份生产');prepare.dataset.productionCoveragePrepare='true';prepare._workflowPrepare=true;prepare._blocked=true;let suggestion=null;
+ const reset=()=>{suggestion=null;use.checked=false;use._blocked=true;prepare._blocked=true;gpClear(results);gpControls(id);};select.onchange=reset;use.onchange=()=>{prepare._blocked=!(suggestion?.coverage.status==='COVERED'&&use.checked);gpControls(id);};
+ read.onclick=async()=>{
+  if(read.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;reset();const choice=select.value,entry=recipes.find(row=>gpJson(row.target)===choice);if(!entry){$('gp-'+id+'-hint').textContent='请明确选择一个当前工厂与配方。';return;}
+  const requestScope=viewGuard.begin('production-coverage'),stateRevision=++s.revision,parameterText=$('gp-'+id+'-parameters').value,active=()=>gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===stateRevision&&s.data?.view===view&&select.value===choice&&$('gp-'+id+'-parameters').value===parameterText&&snapshot?.connected&&!snapshot?.busy;
+  s.pending=true;gpControls(id);try{const data=await operationMutation('/api/gameplay/production/material/coverage',entry.target,requestScope);if(!active())return;suggestion=gpMaterialCoverageResult(data,entry.target,entry.recipe,requestScope.account);results.appendChild(gpEl('p','覆盖状态：'+suggestion.coverage.status+' · '+(suggestion.coverage.reason||'当前只读投影')));for(const row of suggestion.coverage.gaps)results.appendChild(gpEl('p',row.id+' · 缺 '+row.gap+' · '+(row.pack||'无普通包')+' ×'+(row.packs??'未知')+' · '+(row.blockedReason||'仅建议')));use._blocked=suggestion.coverage.status!=='COVERED';$('gp-'+id+'-hint').textContent=data.limitation;}catch(error){if(gpSafe(requestScope,revision)&&gpGet(id)===s)$('gp-'+id+'-hint').textContent='覆盖建议未读取：'+error.message;}finally{if(gpSafe(requestScope,revision)&&gpGet(id)===s){s.pending=false;gpControls(id);}}
+ };
+ prepare.onclick=async()=>{
+  if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view||!wfEditorEditable()||!use.checked||suggestion?.coverage.status!=='COVERED')return;
+  const choice=select.value,entry=recipes.find(row=>gpJson(row.target)===choice),seconds=duration.value,selected=suggestion;if(!entry||!/^[1-9][0-9]*$/.test(seconds)||!Number.isInteger(Number(seconds))||Number(seconds)>86400){$('gp-'+id+'-hint').textContent='请明确填写1至86400秒总时长。';return;}
+  const exchanges=selected.coverage.exchanges,payload={...(exchanges.length===1?exchanges[0]:{exchanges}),...entry.target,maxDurationMs:Number(seconds)*1000},requestScope=viewGuard.begin('production-coverage-prepare'),stateRevision=++s.revision,editor=captureStageRecommendationEditor(),editorDraft=$('wf-json').value,parameterText=$('gp-'+id+'-parameters').value;
+  const active=()=>gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===stateRevision&&s.data?.view===view&&select.value===choice&&suggestion===selected&&use.checked&&duration.value===seconds&&$('gp-'+id+'-parameters').value===parameterText&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&$('wf-json').value===editorDraft;
+  s.plan=null;gpClear($('gp-'+id+'-plan-view'));s.pending=true;gpControls(id);try{const data=await operationMutation('/api/gameplay/production/material/prepare',payload,requestScope);if(!active())return;if(gpJson(data.costs)!==gpJson(selected.costs))throw Error('准备期间配方成本已变化，请重新读取建议');editor.accept(gpMaterialProductionGraph(data,payload,selected,requestScope.account));$('gp-'+id+'-hint').textContent=data.limitation;$('wf-hint').textContent='已载入明确覆盖后的有限生产图；核对每项材料、包数、配方成本与累计预算，再开始并授权。';}catch(error){if(gpSafe(requestScope,revision)&&gpGet(id)===s)$('gp-'+id+'-hint').textContent='覆盖生产图未准备：'+error.message;}finally{if(gpSafe(requestScope,revision)&&gpGet(id)===s){s.pending=false;gpControls(id);}}
+ };
+ box.appendChild(gpEl('h4','指定配方的当前普通材料包覆盖'));for(const node of [select,read,results,useLabel,durationLabel,prepare])box.appendChild(node);for(const control of [select,read,use,duration,prepare])s.actionControls.push(control);
+ box.appendChild(gpEl('p','先读取并核对缺口、赛季和合计持有包，再明确选择建议及总期限。建议不增加库存；准备会重新调查，有限图仍须原授权，每步独立确认，UNKNOWN停止。'));
+}
+
 function gpMaterialProductionGraph(data,payload,view,accountId){
  const canonical=v=>JSON.stringify(v,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])):item),same=(a,b)=>canonical(a)===canonical(b),multi=Array.isArray(payload.exchanges),choices=multi?payload.exchanges:[{packId:payload.packId,itemId:payload.itemId,num:payload.num}],exchanges=multi?data.exchanges:[data.exchange],graph=data.graph,source=graph?.nodes?.[2*choices.length+1]?.parameters?.materialSource,costs=data.costs,totals=new Map(),packTotals=new Map();
  if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||!same(data.source,payload)||!choices.length||choices.length>23||multi&&choices.length<2||!Array.isArray(exchanges)||exchanges.length!==choices.length||!Array.isArray(costs)||!costs.length||costs.length>100||costs.some(row=>!row||Object.keys(row).some(k=>!['id','num'].includes(k))||typeof row.id!=='string'||!row.id||row.id==='RUBY'||!Number.isSafeInteger(row.num)||row.num<=0)||new Set(costs.map(row=>row.id)).size!==costs.length||!source||Object.keys(source).length!==(multi?3:2)||!/^[a-f0-9]{64}$/.test(source.productionIdentity))throw Error('返回的账号、明确材料包来源、工厂、配方或成本不匹配');
@@ -642,10 +681,11 @@ function gpRenderDomain(id,view){
   const appointment=view?.appointment;box.appendChild(gpEl('h3','生产需求与时间规划'));
   box.appendChild(gpEl('p','委任减时：'+(appointment?.reliable===true?show(appointment.seconds)+' 秒':'未知')+' · 来源：'+(appointment?.source||appointment?.reason||'未知')));
   table('配方时间与持有物资包覆盖',['工厂','产品','原始秒数','委任调整秒数','覆盖缺料','范围'],(view?.factories||[]).flatMap(factory=>(factory.recipes||[]).map(recipe=>[factory.buildingId,recipe.productId,recipe.produceTime,recipe.appointmentAdjustedSeconds,recipe.packCoverage?.reliable===true?(recipe.packCoverage.ok?'持有包可覆盖（仅投影）':'不需兑换或不可覆盖'):'未知',recipe.timingScope])));
+  if(id==='production')gpRenderMaterialCoverage(id,s,box,view);
   table('作物策略水位',['作物','配方用途数','策略目标'],(view?.cropSupply?.waterlines||[]).map(row=>[row.cropId,row.uses,row.capDisabled?'未设上限':row.target]));
   table('种子储备缺口',['种子','持有','策略目标','缺少'],(view?.cropSupply?.seedDemand||[]).map(row=>[row.itemId,row.have,row.required,row.missing]));
   table('余料建议',['工厂','产品','最多份数'],(view?.cropSupply?.surplusDemand||[]).map(row=>[row.buildType,row.itemId,row.maximumUnits]));
-  box.appendChild(gpEl('p','水位、种子、余料和持有包覆盖均为规划投影；仅下方现有生产候选可以进入单次授权。完整速度加成、自动补料和整日产量尚待完成。'));
+  box.appendChild(gpEl('p','水位、种子、余料和持有包覆盖均为规划投影；现有生产候选可进入单次授权，明确选择覆盖建议可准备原有限兑换生产图。完整速度加成、自动补料和整日产量尚待完成。'));
  }
  for(const row of view?.candidates||[]){const card=gpEl('article');card.appendChild(gpEl('p',(row.label||row.actionType||row.actionId)+' · '+operationCosts(row.costs)+' · '+(row.costSource||'成本来源未知')));if(gpBlocked(row))card.appendChild(gpEl('p','禁止执行：'+(row.blockedReason||row.reason||'缺少可靠动作')));const button=gpEl('button','选择单项候选');button.dataset.domainAction=row.actionId;button._blocked=gpBlocked(row);button.disabled=button._blocked||!gpDomainSelectable(id);button.onclick=()=>{if(!button.disabled&&gpGet(id).data?.view===view)gpSelectDomainCandidate(id,row.actionId);};s.actionControls.push(button);card.appendChild(button);box.appendChild(card);}
  gpDetails(box,'事实、可靠性与完整规划详情',view);

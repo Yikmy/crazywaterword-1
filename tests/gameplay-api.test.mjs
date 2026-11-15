@@ -1551,3 +1551,31 @@ test('multiple material production HTTP preserves guards and rejects malformed o
   assert.equal((await app.call(materialProductionRoute+'?extra=1',{body:multipleMaterialHttpBody})).status,400);state.stock.set('原料自选包',2);assert.equal((await app.call(materialProductionRoute,{body:multipleMaterialHttpBody})).status,400);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);
  }finally{await app.close();}
 });
+
+const materialCoverageRoute='/api/gameplay/production/material/coverage',materialCoverageTarget={buildingId:'1材料厂',productId:'布匹'};
+for(const result of ['success','unknown','refused'])test('material coverage HTTP '+result+' reuses read-only projection and original authorized finite chain',async()=>{
+ const {app,state,client}=await multipleMaterialHttp();try{
+  const reply=await app.call(materialCoverageRoute,{body:materialCoverageTarget});assert.equal(reply.status,200,JSON.stringify(reply.data));assert.equal(reply.data.coverage.status,'COVERED');assert.equal(reply.data.coverage.ok,true);assert.deepEqual(reply.data.coverage.exchanges,multipleMaterialHttpBody.exchanges);assert.deepEqual(reply.data.coverage.needs,[{pack:'原料自选包',num:3,have:5}]);assert.equal(reply.data.executable,false);assert.equal(reply.data.projectionOnly,true);assert.equal(reply.data.requiresAuthorization,true);assert.equal(reply.data.graph,undefined);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.history.list('B'),[]);
+  const payload={...materialCoverageTarget,exchanges:reply.data.coverage.exchanges,maxDurationMs:60000},prepared=await app.call(materialProductionRoute,{body:payload});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal(state.writes.length,0);
+  const send=client.sendWatch.bind(client);client.sendWatch=async(n,b,o)=>{if(result==='refused'&&state.writes.length===1){o.beforeDispatch?.();state.writes.push({n,b:structuredClone(b)});throw Object.assign(Error('synthetic rejection'),{code:'REJECTED'});}const r=await send(n,b,o);if(result==='unknown'&&state.writes.length===2)state.stock.set('unrelated',999);return r;};
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;assert.equal(state.writes.length,0);assert.equal((await app.call('/api/workflows/authorize-run',{body:{offer:waiting.authorizationOffer,batchId:waiting.plan.batchId,planHash:waiting.plan.planHash,confirm:true}})).status,200);await waitForWorkflow(app,result==='success'?'COMPLETED':result==='unknown'?'UNKNOWN':'FAILED');assert.equal(state.writes.length,result==='success'?3:2);assert.equal(app.counts().clients,0);assert.equal(app.counts().collections,0);
+ }finally{await app.close();}
+});
+test('material coverage HTTP rejects guard, schema and account substitutions without writes',async()=>{
+ const {app,state}=await multipleMaterialHttp();try{
+  for(const[opts,status]of [[{body:materialCoverageTarget,authorized:false},403],[{body:materialCoverageTarget,headers:{'x-cw-csrf':'bad'}},403],[{body:materialCoverageTarget,id:null},400],[{body:{...materialCoverageTarget,maxDurationMs:60000}},400],[{body:{...materialCoverageTarget,exchanges:[]}},400],[{body:{buildingId:'1材料厂'}},400],[{body:{...materialCoverageTarget,buildingId:' 1材料厂'}},400]])assert.equal((await app.call(materialCoverageRoute,opts)).status,status);
+  assert.equal((await app.call(materialCoverageRoute+'?extra=1',{body:materialCoverageTarget})).status,400);assert.equal((await app.call(materialCoverageRoute+'?account=A&account=B',{body:materialCoverageTarget,id:null})).status,400);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);
+ }finally{await app.close();}
+});
+for(const condition of ['stock','shortage','season','type','disabled'])test('material coverage HTTP '+condition+' stays read-only and cannot imply executable qualification',async()=>{
+ const {app,state,config}=await multipleMaterialHttp();try{
+  if(condition==='stock'){state.stock.set('木材',2);state.stock.set('鱼',1);}if(condition==='shortage')state.stock.set('原料自选包',2);if(condition==='season')config.tables.SelectPackLibCfg.data.find(row=>row.selectItemId==='鱼').season=2;if(condition==='type')config.tables.ItemCfg.data.find(row=>row.id==='鱼').type='货币';if(condition==='disabled')assert.equal((await app.call('/api/gameplay/config',{body:{module:'material-packs',config:{enabled:false}}})).status,200);
+  const reply=await app.call(materialCoverageRoute,{body:materialCoverageTarget});assert.equal(reply.status,200,JSON.stringify(reply.data));assert.equal(reply.data.coverage.status,{stock:'IN_STOCK',shortage:'INSUFFICIENT',season:'BLOCKED',type:'UNKNOWN',disabled:'BLOCKED'}[condition]);assert.equal(reply.data.coverage.ok,false);assert.deepEqual(reply.data.coverage.exchanges,[]);assert.equal(reply.data.executable,false);assert.equal(reply.data.coverage.executable,false);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);
+ }finally{await app.close();}
+});
+for(const change of ['account','player','world','connection','generation','config'])test('material coverage HTTP late '+change+' source is rejected',async()=>{
+ const {app,state,session,client,config}=await multipleMaterialHttp();try{
+  let changed=false;state.onRead=()=>{if(changed)return;changed=true;if(change==='account')client.factContext.accountId='B';if(change==='player')session.player.playerId='2';if(change==='world')session.player.worldId=2000001;if(change==='connection')session.connectionId=client.factContext.connectionId='changed';if(change==='generation'){client.factContext.generation=++session.generation;session.busy='successor';}if(change==='config')config.tables.ItemCfg.revision=2;};
+  const reply=await app.call(materialCoverageRoute,{body:materialCoverageTarget});assert.notEqual(reply.status,200);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);if(change==='generation')assert.equal(session.busy,'successor');
+ }finally{await app.close();}
+});
