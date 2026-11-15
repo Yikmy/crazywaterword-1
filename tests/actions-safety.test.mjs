@@ -1,3 +1,4 @@
+import { planFieldGiveUp } from '../src/world.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
@@ -303,4 +304,8 @@ test('initial equipment D6 requires own exact free-first metadata and leaves gen
 test('resource field give-up D6 requires exact own zero cost and one nonnegative int32 grid',()=>{
  const valid={request:'GiveUpResFieldRequest',body:{resFieldGridIdx:0},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(valid));
  for(const patch of [{body:{}},{body:{resFieldGridIdx:-1}},{body:{resFieldGridIdx:'0'}},{body:{resFieldGridIdx:2147483648}},{body:{resFieldGridIdx:0,buy:true}},{costs:undefined},{costs:[{id:'RUBY',num:1}]},{costs:[{id:'GOLD',num:1}]}])assert.throws(()=>assertPaymentAllowed({...valid,...patch}));
+});
+
+test('resource field release preview reuses the catalog builder including exact grid zero',()=>{
+ for(const gridIdx of [0,7,2147483647]){const planned=planFieldGiveUp({resFields:{fields:[{gridIdx}]}},gridIdx).action;assert.deepEqual(planned.body,buildBody(ACTIONS.giveUpField,{gridIdx}));assert.equal(planned.request,ACTIONS.giveUpField.request);assert.throws(()=>assertPaymentAllowed(planned),{code:'COST_UNKNOWN'});}
 });

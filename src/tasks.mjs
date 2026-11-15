@@ -8,6 +8,7 @@
 // 这四条领取请求在协议表里都没有配套的 *Response：成功时服务端一声不吭，被拒时只推
 // PromptResponse，所以一律走 client.sendWatch()，见 docs/gameplay.md 第 11.3 节。
 
+import { ACTIONS, buildBody } from './actions.mjs';
 import { normalize } from './worlds.mjs';
 import { observeOrderProgress } from './order-execution.mjs';
 import { safeResourceQuantity } from './resource-ledger.mjs';
@@ -105,8 +106,8 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       plan.push({
         kind: 'main',
         id: mainView.taskId,
-        request: 'DrawMainTaskRewardRequest',
-        body: { taskId: mainView.taskId },
+        request: ACTIONS.taskDrawMain.request,
+        body: buildBody(ACTIONS.taskDrawMain,{taskId:mainView.taskId}),
         label: `主线 ${mainView.taskId} ${mainView.desc}`,
         reward: row?.reward ?? null,
       });
@@ -133,8 +134,8 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       plan.push({
         kind: 'branch',
         id: task.taskId,
-        request: 'GotBranchTaskRewardRequest',
-        body: { taskId: task.taskId },
+        request: ACTIONS.taskDrawBranch.request,
+        body: buildBody(ACTIONS.taskDrawBranch,{taskId:task.taskId}),
         label: `支线 ${task.taskId} ${view.desc}`,
         reward: row?.reward ?? null,
       });
@@ -159,8 +160,8 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
       plan.push({
         kind: 'achievement',
         id: task.id,
-        request: 'GotAchievementRewardRequest',
-        body: { id: task.id },
+        request: ACTIONS.achievementDraw.request,
+        body: buildBody(ACTIONS.achievementDraw,{id:task.id}),
         label: `成就 ${task.id}`,
         reward: null,
       });

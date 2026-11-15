@@ -1,3 +1,4 @@
+import { ACTIONS, buildBody } from './actions.mjs';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Fleet/cargo adapters. Existing GameClient, Session and shared executor own execution.
 import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
@@ -173,7 +174,7 @@ function resourceFieldCandidate(f,parameters,opts,settlement=false){
  const valid=settlement?owner&&owner.digest===fieldDigest(f)&&stable(owner.context)===stable(fieldContext(owner.client,owner.player)):fieldCurrent(f);
  const reason=!opts.enabled||!opts.giveUpResourceField?'MODULE_DISABLED':!valid||!f.resourceFields||!f.stockReliable?'RESOURCE_FIELD_FACTS_UNKNOWN':!field?'RESOURCE_FIELD_NOT_OWNED':!f.protocolReady?.GiveUpResFieldRequest?'PROTOCOL_UNAVAILABLE':null;
  const beforeState={context:context??null,resourceFields:f.resourceFields??null,inventory:[...(cargoInventory(f)??[])].sort(([a],[b])=>a.localeCompare(b))},expectedState=f.resourceFields?{...beforeState,resourceFields:{maxNum:f.resourceFields.maxNum,fields:f.resourceFields.fields.filter(row=>row.gridIdx!==parameters.resourceFieldGridIdx)}}:null;
- const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,'GiveUpResFieldRequest',null,{resFieldGridIdx:parameters.resourceFieldGridIdx},parameters,reason);
+ const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,ACTIONS.giveUpField.request,ACTIONS.giveUpField.response,buildBody(ACTIONS.giveUpField,{gridIdx:parameters.resourceFieldGridIdx}),parameters,reason);
  row.executable=reason===null;row.budgetClaims={resources:[],quotas:[],uids:context?[{type:'resource-field',id:context.worldId+':'+parameters.resourceFieldGridIdx}]:[]};return row;
 }
 function verifyResourceField(operation,before,after){

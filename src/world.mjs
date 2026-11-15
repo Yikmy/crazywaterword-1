@@ -17,7 +17,7 @@ import { readRuntimeAsset } from './asset-readiness.mjs';
 import path from 'node:path';
 import { normalize } from './worlds.mjs';
 import { productionRecipeCosts } from './production-planning.mjs';
-import { assertPaymentAllowed } from './actions.mjs';
+import { ACTIONS, buildBody, assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, validateResources } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
 
@@ -626,9 +626,9 @@ export function planFieldGiveUp(survey, gridIdx) {
   return {
     action: {
       kind: 'giveUpField',
-      request: 'GiveUpResFieldRequest',
-      response: null,
-      body: { resFieldGridIdx: Number(gridIdx) },
+      request: ACTIONS.giveUpField.request,
+      response: ACTIONS.giveUpField.response,
+      body: buildBody(ACTIONS.giveUpField,{gridIdx}),
       label: `放弃资源田 gridIdx=${gridIdx}`,
     },
   };

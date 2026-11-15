@@ -1,5 +1,6 @@
 // W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
+import { ACTIONS, buildBody } from './actions.mjs';
 import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions } from './daily-task-rewards.mjs';
 import { taskTarget } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
@@ -47,7 +48,8 @@ function parseAchievements(raw) {
   return rows.some(row=>row===null)||new Set(rows.map(row=>row.taskId)).size!==rows.length?null:{achievements:rows.sort((a,b)=>a.taskId-b.taskId)};
 }
 const parseFor = (raw,parameters) => parameters?.kind==='achievement'?parseAchievements(raw):parseTasks(raw);
-const requestOf = kind => kind==='achievement'?'GotAchievementRewardRequest':kind === 'main' ? 'DrawMainTaskRewardRequest' : 'GotBranchTaskRewardRequest';
+const rewardActionFor = kind => kind==='achievement'?ACTIONS.achievementDraw:kind==='main'?ACTIONS.taskDrawMain:ACTIONS.taskDrawBranch;
+const requestOf = kind => rewardActionFor(kind).request;
 const costSource = 'Existing taskTarget and fixed v76 achievement ID mapping; MainTaskCfg/BranchTaskCfg/AchievementTaskCfg.reward; one exact task ID, no resource debit or purchase';
 export const TASK_REWARDS_DEFAULT_CONFIG = Object.freeze({enabled:false});
 export function validateTaskRewardsConfig(v={}) {
@@ -160,7 +162,7 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
   const beforeState=copy(f?.state??null),identity=hash({p,beforeState,def}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:p.kind+':'+p.taskId}]};
   return {module:moduleId,capabilityId:'C503',actionId:moduleId+':'+p.kind+':'+p.taskId+':'+identity,actionType:'CLAIM',target:copy(p),parameters:copy(p),identity,beforeState,expectedState:after,
     costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,
-    ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId}}}:{})};
+    ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:buildBody(rewardActionFor(p.kind),p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId})}}:{})};
 }
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{});
