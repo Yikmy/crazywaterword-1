@@ -124,6 +124,7 @@ test('construction that remains in progress verifies using new authoritative tim
 
 for (const immediate of [false, true]) test(`production start verifies ${immediate ? 'immediate output' : 'the new queue job'}`, async () => {
   const client = fake([rawFactory()], undefined, { write(name, body, c) {
+    c.stock.set('木材', c.stock.get('木材') - 2);
     if (immediate) c.buildings[0].factory.finishedProducts.push({ id: body.productId, num: 1 });
     else c.buildings[0].factory.factoryQ.push({ idx: 0, productId: body.productId, finishTime: Math.floor(Date.now() / 1000) + 30 });
   } });
@@ -272,4 +273,43 @@ test('authorization revoked after dispatch remains UNKNOWN with retained fingerp
   assert.equal(result.status, 'UNKNOWN'); assert.equal(result.unresolvedWrite, true); assert.equal(result.dispatched, true);
   assert.equal(result.verification.status, 'UNCONFIRMED'); assert.equal(client.pending.length, 1); assert.equal(client.confirmations.length, 0);
   assert.deepEqual(result.resourceReservation, [{ id: '木材', num: 2 }]); assert.equal(budget.ledger.available('木材'), 2);
+});
+
+for (const immediate of [false,true]) for (const fault of ['no-debit','under-debit','over-debit','wrong-material','incoming','new-item','ruby','missing-items','missing-num','duplicate-item','missing-resources','wrong-product','two-results','old-queue','old-finished','level','auto']) test('production exact settlement '+(immediate?'immediate':'queue')+' rejects '+fault,async()=>{
+ const oldJob={idx:7,productId:'燃料',finishTime:Math.floor(Date.now()/1000)+10000};
+ const client=fake([rawFactory({factory:{autoProductId:'',factoryQ:[oldJob],finishedProducts:[{id:'燃料',num:3}]}})],undefined,{
+  write(_name,body,c){
+   c.stock.set('木材',c.stock.get('木材')-2);const factory=c.buildings[0].factory;
+   if(immediate)factory.finishedProducts.push({id:body.productId,num:1});else factory.factoryQ.push({idx:8,productId:body.productId,finishTime:Math.floor(Date.now()/1000)+30});
+   if(fault==='no-debit')c.stock.set('木材',4);if(fault==='under-debit')c.stock.set('木材',3);if(fault==='over-debit')c.stock.set('木材',1);
+   if(fault==='wrong-material'){c.stock.set('木材',4);c.stock.set('加速器',1);}if(fault==='incoming')c.stock.set('加速器',4);if(fault==='new-item')c.stock.set('unexpected',1);
+   const result=immediate?factory.finishedProducts.at(-1):factory.factoryQ.at(-1);
+   if(fault==='wrong-product'){if(immediate)result.id='错误产品';else result.productId='错误产品';}
+   if(fault==='two-results'){if(immediate)result.num=2;else factory.factoryQ.push({idx:9,productId:body.productId,finishTime:Math.floor(Date.now()/1000)+60});}
+   if(fault==='old-queue')factory.factoryQ[0].finishTime++;if(fault==='old-finished')factory.finishedProducts[0].num++;
+   if(fault==='level')c.buildings[0].level++;if(fault==='auto')factory.autoProductId='燃料';
+  },
+  read(name,c){if(name==='AllResourceRequest'&&fault==='ruby')return {list:[{res:4,amount:c.writes.length?49:50}]};if(!c.writes.length)return;
+   if(name==='AllItemRequest'&&['missing-items','missing-num','duplicate-item'].includes(fault)){if(fault==='missing-items')return {};const items=[...c.stock].map(([itemId,num])=>({itemId,num}));if(fault==='missing-num')delete items[0].num;else items.push({...items[0]});return {items};}
+   if(name==='AllResourceRequest'&&fault==='missing-resources')return {};
+  }
+ });
+ const planned=await select(client,'startProduce',{productId:'布匹'}),budget={ledger:null},result=await execute(client,planned,{budget});
+ assert.equal(result.status,'UNKNOWN',JSON.stringify(result));assert.equal(result.dispatched,true);assert.equal(result.unresolvedWrite,true);assert.equal(result.verification.status,'UNCONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.confirmations.length,0);assert.equal(client.pending.length,1);assert.equal(budget.ledger.available('木材'),2);
+ if(fault==='new-item'){assert.deepEqual(result.beforeInventory.find(r=>r.id==='unexpected'),{id:'unexpected',num:0});assert.deepEqual(result.afterInventory.find(r=>r.id==='unexpected'),{id:'unexpected',num:1});}
+});
+for(const immediate of [false,true])test('production exact settlement preserves existing queue and finished balances '+immediate,async()=>{
+ const original={autoProductId:'',factoryQ:[{idx:7,productId:'燃料',finishTime:Math.floor(Date.now()/1000)+10000}],finishedProducts:[{id:'燃料',num:3}]};
+ const client=fake([rawFactory({factory:original})],undefined,{write(_name,body,c){c.stock.set('木材',c.stock.get('木材')-2);if(immediate)c.buildings[0].factory.finishedProducts.push({id:body.productId,num:1});else c.buildings[0].factory.factoryQ.push({idx:8,productId:body.productId,finishTime:Math.floor(Date.now()/1000)+30});}});
+ const result=await execute(client,await select(client,'startProduce',{productId:'布匹'}));assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.confirmations.length,1);assert.equal(result.beforeInventory.find(r=>r.id==='木材').num-result.afterInventory.find(r=>r.id==='木材').num,2);assert.deepEqual(result.afterState.factory.factoryQ[0],original.factoryQ[0]);assert.deepEqual(result.afterState.factory.finishedProducts[0],original.finishedProducts[0]);
+});
+for(const fault of ['duplicate-item','missing-item-id','missing-num','resource-collision','duplicate-resource','missing-amount'])test('production exact inventory '+fault+' cannot create a start candidate',async()=>{
+ const client=fake([rawFactory()],undefined,{read(name){if(name==='AllItemRequest'){if(fault==='duplicate-item')return {items:[{itemId:'木材',num:2},{itemId:'木材',num:2}]};if(fault==='missing-item-id')return {items:[{num:4}]};if(fault==='missing-num')return {items:[{itemId:'木材'}]};if(fault==='resource-collision')return {items:[{itemId:'木材',num:4},{itemId:'GOLD',num:2}]};}if(name==='AllResourceRequest'){if(fault==='resource-collision')return {list:[{res:3,amount:2}]};if(fault==='duplicate-resource')return {list:[{res:3,amount:2},{res:3,amount:2}]};if(fault==='missing-amount')return {list:[{res:3}]};}}});
+ assert.equal(cityView(await read(client),{config}).candidates.some(row=>row.actionType==='startProduce'),false);assert.equal(client.writes.length,0);
+});
+for(const debit of [0,2,3,4])test('production exact mixed recipe confirms only full ordinary item and GOLD debits '+debit,async()=>{
+ const cfg=structuredClone(config);cfg.tables.BuildingProduceCfg.data[0].costItem=[['木材',2],['GOLD',3]];let gold=50;
+ const client=fake([rawFactory()],undefined,{read(name){if(name==='AllResourceRequest')return {list:[{res:3,amount:gold}]};},write(_name,body,c){c.stock.set('木材',c.stock.get('木材')-2);gold-=debit;c.buildings[0].factory.factoryQ.push({idx:0,productId:body.productId,finishTime:Math.floor(Date.now()/1000)+30});}});
+ const facts=await read(client,{config:cfg}),candidate=cityView(facts,{config:cfg}).candidates.find(row=>row.actionType==='startProduce'&&row.target.productId==='布匹');assert.deepEqual(candidate.costs,[{id:'木材',num:2},{id:'GOLD',num:3}]);
+ const result=await execute(client,candidate,{config:cfg});assert.equal(result.status,debit===3?'SUCCESS':'UNKNOWN');assert.equal(result.unresolvedWrite,debit!==3);assert.equal(client.confirmations.length,debit===3?1:0);assert.equal(client.writes.length,1);
 });

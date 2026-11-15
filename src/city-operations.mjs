@@ -1,6 +1,7 @@
 // City integration: existing survey/planner/executor with target-bound selections.
 // The server owns authorization, the account lock, and durable execution history.
 import { toSnapshotJson } from './game.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 import { surveyWorld, planWorld, runWorld, upgradeRow } from './world.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, executionOutcome, operationResult } from './execution.mjs';
@@ -34,7 +35,8 @@ export function decorateCitySurvey(survey, capturedResponses) {
     };
   }
   const captured = name => capturedResponses instanceof Map ? capturedResponses.get(name) : capturedResponses?.[name];
-  return { ...survey, rawOnWater: toSnapshotJson(raw ?? null), rawAllItem: toSnapshotJson(captured('AllItemRequest') ?? null), rawAllResource: toSnapshotJson(captured('AllResourceRequest') ?? null), cityReliability: { buildings, byBuilding } };
+  const inventory = parseOperationInventory(captured('AllItemRequest'), captured('AllResourceRequest'));
+  return { ...survey, productionInventoryReliable: inventory.stockReliable, rawOnWater: toSnapshotJson(raw ?? null), rawAllItem: toSnapshotJson(captured('AllItemRequest') ?? null), rawAllResource: toSnapshotJson(captured('AllResourceRequest') ?? null), cityReliability: { buildings, byBuilding } };
 }
 
 export async function surveyCityOperations(client, protocol, options = {}) {
@@ -108,6 +110,7 @@ function candidatesFor(survey, config, ledger) {
     for (const [kind, detail] of choices) {
       if (!isReliable(survey, building, kind)) continue;
       if (['gainFactory', 'collectProduct'].includes(kind) && survey.stockReliable !== true) continue;
+      if (kind === 'startProduce' && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
       const action = plannedAction(survey, config, building, kind, detail, ledger);
       if (!action) continue;
       const costs = costsOf(action.costs ?? []);
@@ -199,10 +202,32 @@ function verified(operation, before, after, beforeSurvey, afterSurvey) {
   if (kind === 'speedUpUpgrade') return after.level > before.level
     || after.buildFinishTime < before.buildFinishTime && after.buildFinishTime > 0;
   if (kind === 'startProduce') {
-    const productId = operation.target.productId;
-    const oldQueue = new Set(before.factory.factoryQ.map((q) => `${q.idx}:${q.productId}:${q.finishTime}`));
-    return after.factory.factoryQ.some((q) => q.productId === productId && !oldQueue.has(`${q.idx}:${q.productId}:${q.finishTime}`))
-      || (assetTotals(after.factory.finishedProducts).get(productId) ?? 0) > (assetTotals(before.factory.finishedProducts).get(productId) ?? 0);
+    const productId = operation.target.productId, costs = costsOf(operation.costs);
+    if (beforeSurvey.stockReliable !== true || afterSurvey.stockReliable !== true
+      || beforeSurvey.productionInventoryReliable !== true || afterSurvey.productionInventoryReliable !== true || costs === null
+      || !(beforeSurvey.stock instanceof Map) || !(afterSurvey.stock instanceof Map)) return false;
+    const spent = new Map(costs.map(row => [row.id, row.num]));
+    for (const id of new Set([...beforeSurvey.stock.keys(), ...afterSurvey.stock.keys(), ...spent.keys()])) {
+      const previous = beforeSurvey.have(id), current = afterSurvey.have(id), expected = previous - (spent.get(id) ?? 0);
+      if (!quantity(previous) || !quantity(current) || !Number.isSafeInteger(expected) || expected < 0 || current !== expected) return false;
+    }
+    if (['level', 'buildStartTime', 'buildFinishTime', 'product'].some(key => stable(before[key]) !== stable(after[key]))
+      || before.factory.autoProductId !== after.factory.autoProductId) return false;
+    const oldQueue = before.factory.factoryQ, newQueue = after.factory.factoryQ;
+    const sameAssets = (previous, current, gain = null) => {
+      const a = assetTotals(previous), b = assetTotals(current);
+      return [...new Set([...a.keys(), ...b.keys(), ...(gain ? [gain] : [])])].every(id => {
+        const expected = (a.get(id) ?? 0) + (id === gain ? 1 : 0);
+        return Number.isSafeInteger(expected) && expected >= 0 && (b.get(id) ?? 0) === expected;
+      });
+    };
+    const added = newQueue.filter(row => !oldQueue.some(old => old.idx === row.idx));
+    const queued = newQueue.length === oldQueue.length + 1 && added.length === 1 && added[0].productId === productId
+      && oldQueue.every((row, index) => stable(row) === stable(newQueue[index]))
+      && added[0] === newQueue.at(-1) && sameAssets(before.factory.finishedProducts, after.factory.finishedProducts);
+    const immediate = stable(oldQueue) === stable(newQueue)
+      && sameAssets(before.factory.finishedProducts, after.factory.finishedProducts, productId);
+    return queued || immediate;
   }
   if (kind === 'speedUpProduce') {
     const previous = before.factory.factoryQ.find((q) => q.idx === operation.target.index);
@@ -280,12 +305,14 @@ export async function executeCityAction(client, protocol, planned, {
     active();
     const after = afterSurvey.buildings.find((b) => b.buildingId === candidate.target.buildingId);
     if (after) detail.afterState = stateOf(after);
+    for (const id of afterSurvey.stock.keys()) evidenceIds.add(id);
+    detail.beforeInventory = [...evidenceIds].map((id) => ({ id, num: beforeSurvey.have(id) }));
     detail.afterInventory = [...evidenceIds].map((id) => ({ id, num: afterSurvey.have(id) }));
     detail.afterInventoryReliable = afterSurvey.stockReliable === true;
     if (!after || !isReliable(afterSurvey, after, candidate.actionType)
       || !verified(candidate, candidate.beforeState, detail.afterState, beforeSurvey, afterSurvey)) return finish('UNKNOWN', { error: '权威复读尚未确认预期状态变化，保留预算及未决指纹' });
     active(); client.confirmWatchedWrite?.(candidate.action.request, candidate.action.body);
-    detail.verification = { status: 'CONFIRMED', reason: '权威复读确认预期城市状态变化' };
+    detail.verification = { status: 'CONFIRMED', reason: candidate.actionType === 'startProduce' ? '权威复读确认指定单份队列或成品、完整库存精确配方净扣及其他余额不变' : '权威复读确认预期城市状态变化' };
     if (['gainFactory', 'collectProduct'].includes(candidate.actionType)) {
       const remaining = assetTotals(candidate.actionType === 'gainFactory' ? detail.afterState.factory.finishedProducts : detail.afterState.product);
       detail.collectedProducts = [...assetTotals(output)].map(([id, num]) => ({ id, num: num - (remaining.get(id) ?? 0) }))
