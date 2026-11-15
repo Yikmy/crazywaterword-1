@@ -1,3 +1,4 @@
+import { productionRecipeCosts } from '../src/production-planning.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observeProductionQueueClocks, validateProductionQueueClockObservation, appointEffectValue, appointProduceReduce, produceFinalTime, orderProductionWait, packCoverPlan, cropSupplyPlan, MATERIAL_PACKS, CROP_SUPPLY_POLICY } from '../src/production-planning.mjs';
@@ -205,4 +206,13 @@ for(const fault of ['missing-id','duplicate-building','sparse-building','auto','
 });
 test('production clock historical validator rejects wrong scope, timing and write or collection authority',()=>{
  const base=observeProductionQueueClocks(queueClockInput())[0];for(const change of [v=>v.executable=true,v=>v.collectionConfirmed=true,v=>v.eligibility=true,v=>v.autoResume=true,v=>v.source='local clock',v=>v.readiness='READY_BY_CLOCK',v=>v.target.finishTime=0,v=>v.target.finishTime='101',v=>v.target.index=-1,v=>v.target.index=2147483648,v=>v.target.uid='invented',v=>v.serverBounds.earliestMs=102000,v=>delete v.sourceAt]){const bad=structuredClone(base);change(bad);assert.throws(()=>validateProductionQueueClockObservation(bad),{code:'WORKFLOW_INVALID'});}
+});
+
+test('shared recipe costs keep the original ledger sums, zero costs and exact unknown rejection',()=>{
+ assert.deepEqual(productionRecipeCosts({costItem:[['木材',2],['木材',3],['铁',0]]}),[{id:'木材',num:5}]);
+ assert.deepEqual(productionRecipeCosts({costItem:[]}),[]);
+ for(const row of [{},null,{costItem:null},{costItem:[['木材',-1]]},{costItem:[['木材',Number.MAX_SAFE_INTEGER],['木材',1]]},Object.create({costItem:[]})])assert.throws(()=>productionRecipeCosts(row));
+ let touched=false;const accessor=Object.defineProperty({},'costItem',{get(){touched=true;return [];}});assert.throws(()=>productionRecipeCosts(accessor));assert.equal(touched,false);
+ const row={costItem:[['RUBY',1]]};assert.deepEqual(productionRecipeCosts(row),[{id:'RUBY',num:1}]);
+ // Extraction preserves prices; D6 remains the executor/quote responsibility.
 });

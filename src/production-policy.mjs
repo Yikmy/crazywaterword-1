@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR } from './accounts.mjs';
 import { resourceCosts, safeResourceQuantity } from './resource-ledger.mjs';
-import { cropSupplyPlan, validateCropSupplyPolicy } from './production-planning.mjs';
+import { productionRecipeCosts, cropSupplyPlan, validateCropSupplyPolicy } from './production-planning.mjs';
 
 export const PRODUCTION_POLICY_PATH = path.join(DATA_DIR, 'production-policy.json');
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -187,7 +187,7 @@ export function selectProductionCandidates(survey, { policy, candidates = [], co
       const surplus=crop.surplusDemand.find(row=>row.itemId===productId&&row.buildType===type);
       if (!seed && (!surplus || count>=demand.surplusTargetMissing)) continue;
       const recipes=gameConfig?.tables?.BuildingProduceCfg?.data?.filter(row=>row.itemId===productId&&row.buildType===type) ?? [];
-      let expected;try{expected=recipes.length===1?resourceCosts(recipes[0].costItem):null;}catch{expected=null;}
+      let expected;try{expected=recipes.length===1?productionRecipeCosts(recipes[0]):null;}catch{expected=null;}
       const costKey=rows=>JSON.stringify([...rows].sort((a,b)=>a.id.localeCompare(b.id)));
       if (!expected || costKey(costs)!==costKey(expected) || costs.some(row=>['RUBY','钻石','4'].includes(row.id))) continue;
       if (costs.some(row=>safeResourceQuantity(remaining.get(row.id) ?? 0)===null || (remaining.get(row.id) ?? 0)<row.num)) continue;

@@ -10,6 +10,13 @@ const unknown=reason=>({reliable:false,reason,source:'LOCAL_CONFIGURATION_AND_EX
 function unique(values,key){return Array.isArray(values)&&values.every(row=>own(row,key))&&new Set(values.map(row=>row[key])).size===values.length;}
 function balance(stock,key){return stock instanceof Map?quantity(stock.has(key)?stock.get(key):0):null;}
 
+// All recipe consumers use the original ledger normalization; no separate price formula.
+export function productionRecipeCosts(recipe) {
+ const cost=recipe&&Object.getOwnPropertyDescriptor(recipe,'costItem');
+ if(!cost||!Object.hasOwn(cost,'value'))throw new Error('配方成本缺失，无法安全执行');
+ return resourceCosts(cost.value);
+}
+
 // AppointUtil.getAppointEffect: quality base plus per-star contribution.
 export function appointEffectValue(effect,hero,star){
  if(!effect||!hero||effect.viewType!=='数值'||!Number.isInteger(hero.qualityIndex)||hero.qualityIndex<1||hero.qualityIndex>4||quantity(star)===null)return null;
@@ -74,7 +81,7 @@ export function cropSupplyPlan(config,{stock,buildings,farmsReliable=false,polic
  if(!(stock instanceof Map)||!farmsReliable||!Array.isArray(buildings)||!unique(crops,'id')||!Array.isArray(recipes))return {...unknown('CROP_FACT_UNKNOWN'),waterlines:[],seedDemand:[],surplusDemand:[],projectionOnly:true};
  const types=new Set(crops.map(row=>row.id)),uses=new Map([...types].map(key=>[key,0])),normalized=[];
  for(const recipe of recipes){
-  let costs;try{costs=resourceCosts(recipe.costItem);}catch{return {...unknown('RECIPE_COST_UNKNOWN'),waterlines:[],seedDemand:[],surplusDemand:[],projectionOnly:true};}
+  let costs;try{costs=productionRecipeCosts(recipe);}catch{return {...unknown('RECIPE_COST_UNKNOWN'),waterlines:[],seedDemand:[],surplusDemand:[],projectionOnly:true};}
   if(!id(recipe.buildType)||!id(recipe.itemId)||quantity(recipe.unlockLevel)===null)return {...unknown('RECIPE_IDENTITY_UNKNOWN'),waterlines:[],seedDemand:[],surplusDemand:[],projectionOnly:true};
   normalized.push({...recipe,costs});for(const cost of costs)if(types.has(cost.id))uses.set(cost.id,uses.get(cost.id)+1);
  }
@@ -121,7 +128,7 @@ export function orderProductionWait(config,{requirements,stock,buildings,effects
  const speed=effects.effects.find(r=>r.id===1),reduce=effects.effects.find(r=>r.id===2);
  if(!own(speed,'value')||typeof speed.value!=='number'||!Number.isFinite(speed.value)||speed.value<0||!own(reduce,'value')||quantity(reduce.value)===null)return fail('PRODUCTION_EFFECT_UNKNOWN',items);
  const recipeKeys=new Set(),catalog=[];
- for(const r of recipes){let costs;try{costs=resourceCosts(r.costItem);}catch{return fail('FACTORY_OR_RECIPE_UNKNOWN',items);}const key=JSON.stringify([r.buildType,r.itemId]);
+ for(const r of recipes){let costs;try{costs=productionRecipeCosts(r);}catch{return fail('FACTORY_OR_RECIPE_UNKNOWN',items);}const key=JSON.stringify([r.buildType,r.itemId]);
   if(!id(r.buildType)||!id(r.itemId)||quantity(r.unlockLevel)===null||quantity(r.produceTime)===null||recipeKeys.has(key))return fail('FACTORY_OR_RECIPE_UNKNOWN',items);
   recipeKeys.add(key);catalog.push({...r,costs,seconds:produceFinalTime(r.produceTime,reduce.value,speed.value)});
  }

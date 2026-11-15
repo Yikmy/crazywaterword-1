@@ -11,7 +11,7 @@ import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
 import { operationResult, assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
-import { appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, observeProductionQueueClocks } from './production-planning.mjs';
+import { productionRecipeCosts, appointProduceReduce, produceFinalTime, cropSupplyPlan, packCoverPlan, observeProductionQueueClocks } from './production-planning.mjs';
 
 import { readGameTime } from './state-facts.mjs';
 import { makeTypeResolver } from './world.mjs';
@@ -280,7 +280,7 @@ function productionQuote(f,options,buildingId,productId){
  const view=cityView(f,options),factory=view.factories.find(row=>row.buildingId===buildingId),raw=f.rawOnWater?.building?.filter(row=>row.buildingId===buildingId),recipes=options.config?.tables?.BuildingProduceCfg?.data?.filter(row=>row.buildType===factory?.type&&row.itemId===productId);
  if(!factory?.reliable||factory.status==='AUTO'||!Number.isSafeInteger(factory.freeSlots)||factory.freeSlots<1||raw?.length!==1||recipes?.length!==1||factory.queue.some(row=>row.productId===productId)||!Number.isSafeInteger(f.stockCap)||f.stockCap<=0||(f.stock.get(productId)??0)>=f.stockCap)return null;
  const recipe=recipes[0];if(!['buildType','itemId','unlockLevel','produceTime','costItem'].every(k=>productionOwn(recipe,k))||!Number.isSafeInteger(recipe.unlockLevel)||recipe.unlockLevel<0||factory.level<recipe.unlockLevel||!Number.isSafeInteger(recipe.produceTime)||recipe.produceTime<0)return null;
- let costs;try{costs=resourceCosts(recipe.costItem);assertPaymentAllowed({request:'StartFactoryProduceRequest',body:{buildingId,productId},costs});}catch{return null;}
+ let costs;try{costs=productionRecipeCosts(recipe);assertPaymentAllowed({request:'StartFactoryProduceRequest',body:{buildingId,productId},costs});}catch{return null;}
  const identity=productionHash({context:live.context,factory:raw[0],recipe,dependencies:live.dependencies});return {identity,costs,factory,recipe};
 }
 function boundProductionCandidates(f,options,rows){

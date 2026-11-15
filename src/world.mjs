@@ -16,6 +16,7 @@
 import { readRuntimeAsset } from './asset-readiness.mjs';
 import path from 'node:path';
 import { normalize } from './worlds.mjs';
+import { productionRecipeCosts } from './production-planning.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, validateResources } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
@@ -362,16 +363,17 @@ export function planWorld(survey, {
       .filter((row) => row.buildType === b.type && row.unlockLevel <= b.level)
       .filter((row) => !queue.some((job) => job.productId === row.itemId))
       .filter((row) => ledger.available(row.itemId) !== null && have(row.itemId) < survey.stockCap)
-      .filter((row) => ledger.canReserve(row.costItem));
+      .filter((row) => { try { return ledger.canReserve(productionRecipeCosts(row)); } catch { return false; } });
     if (cand.length === 0) continue;
     // 订单缺口的先产，其余按产出时间短的先产（早点回本）。
     const score = (row) => (demand.get(row.itemId) ?? 0) * 1e6 - row.produceTime;
     const best = cand.sort((a, b2) => score(b2) - score(a))[0];
-    if (!ledger.reserve(best.costItem)) continue;
+    const costs = productionRecipeCosts(best);
+    if (!ledger.reserve(costs)) continue;
     const need = demand.get(best.itemId) ?? 0;
     actions.push({
       kind: 'startProduce',
-      costs: resourceCosts(best.costItem),
+      costs,
       request: 'StartFactoryProduceRequest',
       response: null,
       body: { buildingId: b.buildingId, productId: best.itemId },
