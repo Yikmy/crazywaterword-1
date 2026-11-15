@@ -1,3 +1,4 @@
+import {assertPaymentAllowed} from '../src/actions.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { museumModule, surveyMuseum, museumView, planMuseum, verifyMuseum, MUSEUM_SPEED_ITEM, MUSEUM_DEFAULT_CONFIG, validateMuseumConfig } from '../src/museum.mjs';
@@ -105,4 +106,15 @@ test('daily exploration selection requires exact stage team and factor with no i
   assert.throws(()=>museumStartExploreSelection(input));
  }
  assert.deepEqual(museumStartExploreSelection({stageId:1,heroIds:['合法0英雄','9007199254740993'],factor:2}),{actionId:'museum:startExplore:'+encodeURIComponent(JSON.stringify({factor:2,heroIds:['合法0英雄','9007199254740993'],stageId:1}))});
+});
+
+test('C144 actual codec requires stageId for both requests, but no settlement identity survives in independent info',async()=>{
+ const wire=loadProtocol(),round=(name,body)=>wire[name].decode(wire[name].encode(body).finish());
+ for(const name of ['MuseumCompleteExploreRequest','MuseumRewardRequest']){assert.deepEqual({...round(name,{stageId:7})},{stageId:7});assert.throws(()=>wire[name].decode(Buffer.alloc(0)),/stageId/);assert.throws(()=>assertPaymentAllowed({request:name,body:{stageId:7},costs:[]}));}
+ const complete=round('MuseumCompleteExploreResponse',{grade:1,progressGain:10,factor:1,stageId:7,settlementId:'invented'});assert.equal(Object.hasOwn(complete,'stageId'),false);assert.equal(Object.hasOwn(complete,'settlementId'),false);
+ const stage={stageId:7,progress:10,expedition:{startTime:100,endTime:200,heroIds:['A'],cost:{asset:[]},conditionId:100,factor:1}},info=round('MuseumInfoResponse',{popularity:0,topPopularity:0,uncollectedRevenue:0,revenueLastSettleTime:0,exhibitions:[],claimedAchievements:[],exploreStages:[stage],pendingRewards:[{stageId:7,settlementId:'invented'}]});
+ assert.equal(Object.hasOwn(info,'pendingRewards'),false);assert.deepEqual(Object.keys(info.exploreStages[0]).sort(),['expedition','progress','stageId']);assert.deepEqual(Object.keys(info.exploreStages[0].expedition).sort(),['conditionId','cost','endTime','factor','heroIds','startTime']);
+ const f=working(await read(fake()));f.stages[0].expedition.endTime=now-1;const changed={...f,stages:[{...f.stages[0],progress:10,expedition:null}],stock:new Map(f.stock)};changed.stock.set('小麦',999);
+ for(const actionType of ['completeExplore','claimExplore']){const op={actionType,target:{stageId:1},costs:[]};assert.equal(verifyMuseum(op,f,changed,{...complete,reward:{asset:[{id:'小麦',num:989}]},exploreStage:stage}),false);}
+ assert.equal(view(f).candidates.some(row=>['completeExplore','claimExplore'].includes(row.actionType)),false);
 });

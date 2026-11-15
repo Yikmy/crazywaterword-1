@@ -296,6 +296,7 @@ function gpRenderDomain(id,view){
   for(const row of emails){const read=row.read===false&&row.attachment?.hasAttachment===false&&typeof row.got==='boolean';if(!read&&(row.got!==false||row.attachment?.hasAttachment!==true))continue;const button=gpEl('button',(read?'准备单封已读 ':'准备单封附件 ')+row.emailId);if(read)button.dataset.mailReadPrepare=row.emailId;else button.dataset.mailClaimPrepare=row.emailId;button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!viewGuard.current(scope)||gpGet(id).data?.view!==view)return;$('gp-mail-parameters').value=gpJson({pageNo:row.pageNo??page.pageNo,action:read?'read':'claim',emailId:row.emailId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-mail-hint').textContent='已准备精确单封邮件；请重新探测附件与库存，预览后单独授权。';};s.actionControls.push(button);box.appendChild(button);}
   box.appendChild(gpEl('p','普通分页只展示本页；明确枚举在页数上限内检查分页覆盖，不证明原子快照。单封普通道具/资源附件及完整空附件未读邮件可以独立探测、预览和授权；批量及实例附件继续冻结。'));
  }else if(id==='museum'){
+  box.appendChild(gpEl('p','探险结算与领奖仍缺同次结算身份和可恢复的待领奖/到账凭证。到期只表示等待结算，不证明奖励已生成或到账；收益和成就领取独立。'));
   const materials=view?.explorationMaterials;
   const reasons={PLAYER_IDENTITY_UNKNOWN:'玩家身份未知',EXPEDITION_STATE_UNKNOWN:'远征列表未知',STAGE_NOT_OBSERVED:'未读到所选远征',EXPEDITION_ALREADY_STARTED:'本次远征已开始',STAGE_LOCKED:'远征未解锁',STAGE_UNLOCK_UNKNOWN:'远征解锁状态未知',TIME_FACTOR_LOCKED_OR_UNKNOWN:'倍率未解锁或无法确认',AUTHORITATIVE_EXPEDITION_COST_UNKNOWN:'本次材料需求未知',INVENTORY_UNKNOWN:'持有量未知'};
   const status={AVAILABLE:'材料足够',SHORTAGE:'材料不足',UNKNOWN:'未知',NOT_APPLICABLE:'不适用'};

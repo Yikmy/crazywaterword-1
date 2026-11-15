@@ -1,6 +1,6 @@
 # PHASE 4 — Roadmap Reconciliation & System Integration（历史报告）
 
-日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文保留当时版本的历史增量；不改写原Master、原Inventory或历史验收。当前唯一进度基线为[ROADMAP_RECONCILIATION](ROADMAP_RECONCILIATION.md)，本报告旧状态表和审批表不覆盖其当前状态。以下§2–7及附录中的“当前”“本轮”“下一步”均限定2026-11-11历史版本；旧NOT_STARTED、NEEDS_OWNER_DECISION和阶段审批措辞不构成现行施工指令。2026-11-15的完整对账已由9a85396提交，后续源码、测试及Git状态随ROADMAP当前表维护（2026-11-15本次对照已提交源码4046f04；4个在途src/tests及其未通过页面用例仅在ROADMAP登记，不计交付）；1495e48等固定版本引用仅说明当时复核起点，不是现行HEAD。
+日期：2026-11-11。对账起点：codex/phase-3-advanced-gameplay@a50501910e8308771d3b6899cd4d48992e8c4012。本文保留当时版本的历史增量；不改写原Master、原Inventory或历史验收。当前唯一进度基线为[ROADMAP_RECONCILIATION](ROADMAP_RECONCILIATION.md)，本报告旧状态表和审批表不覆盖其当前状态。以下§2–7及附录中的“当前”“本轮”“下一步”均限定2026-11-11历史版本；旧NOT_STARTED、NEEDS_OWNER_DECISION和阶段审批措辞不构成现行施工指令。2026-11-15的完整对账已由9a85396提交，后续源码、测试及Git状态随ROADMAP当前表维护（a93acb8对照源码4046f04时尚有4个在途src/tests；其后收口结果仅由ROADMAP当前表维护）；1495e48等固定版本引用仅说明当时复核起点，不是现行HEAD。
 
 ## 1. 权威路线图与Git基线
 
