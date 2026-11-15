@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { FORGE_DEFAULT_CONFIG, equipmentForgeModule, validateForgeConfig, validateForgeParameters, parseForgeQueue, parseForgeEquipment, surveyEquipmentForge, viewEquipmentForge, planEquipmentForge, verifyEquipmentForge, forgeDependencyVersions } from '../src/equipment-forge.mjs';
+import { FORGE_DEFAULT_CONFIG, equipmentForgeModule, validateForgeConfig, validateForgeParameters, parseForgeQueue, parseForgeEquipment, surveyEquipmentForge, viewEquipmentForge, planEquipmentForge, verifyEquipmentForge, forgeDependencyVersions, prepareEquipmentForgeWorkflow, validateForgePreparation } from '../src/equipment-forge.mjs';
 import { ResourceLedger, createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { loadProtocol } from '../src/proto.mjs';
@@ -226,4 +226,67 @@ test('newly picked equipment must remain idle and every old complete pool instan
   for(const mutate of [c=>c.heroes[0].equips.push(structuredClone(c.bag.at(-1))),c=>c.heroes[0].equips=[structuredClone(c.bag.at(-1))],c=>c.bag.splice(1,1),c=>{c.bag[0]=structuredClone(c.bag.at(-1));}]){
     const p=params('pick'),{client,operation}=await prepared(p,{queue:making(),afterWrite:mutate});const result=await run(client,operation,p);assert.equal(result.status,'UNKNOWN');assert.equal(client.writes.length,1);assert.equal(client.uncertainWrites.size,1);
   }
+});
+
+function prepConfig(){
+ const c=cfg();for(const row of c.tables.EquipCfg.data)Object.assign(row,{qualityIndex:row.id.startsWith('红')?4:1,qualityName:row.id.startsWith('红')?'红色':'蓝色'});
+ for(const [i,type]of [[2,'防具'],[3,'饰品']]){
+  c.tables.BuildingEquipMakeCfg.data.push({makeId:1000+i,type,libId:i,seconds:1800,season:1,costItem:[['材料',4],['GOLD',20]]});c.tables.EquipMakeLibCfg.data.push({libId:i,equipId:'蓝'+type+'1',rate:100});c.tables.EquipCfg.data.push({id:'蓝'+type+'1',type,qualityIndex:1,qualityName:'蓝色'});
+ }
+ return c;
+}
+const prepInput=(extra={})=>({buildingId:'1装备厂',makeIds:[1001,1002,1003,1004],maxDurationMs:60000,...extra});
+const prepareForge=(facts,c=prepConfig(),input=prepInput())=>prepareEquipmentForgeWorkflow(facts,{config:c,moduleConfig:enabled,...input});
+
+test('forge preparation strictly requires explicit bounded allowlist and duration without authority defaults',()=>{
+ assert.deepEqual(validateForgePreparation(prepInput()),prepInput());
+ for(const payload of [{},prepInput({makeIds:[]}),prepInput({makeIds:[1001,1001]}),prepInput({makeIds:[0]}),prepInput({makeIds:Array(1)}),prepInput({makeIds:['1001']}),prepInput({makeIds:Array.from({length:51},(_,i)=>i+1)}),prepInput({maxDurationMs:0}),prepInput({maxDurationMs:86400001}),prepInput({allowUniversal:false}),Object.create(prepInput())])assert.throws(()=>validateForgePreparation(payload),{code:'INVALID_PARAMETERS'});
+ const accessor=prepInput();Object.defineProperty(accessor,'buildingId',{get(){throw Error('getter evaluated');},enumerable:true});assert.throws(()=>validateForgePreparation(accessor),{code:'INVALID_PARAMETERS'});
+ for(const payload of [{...params(),expectedEquipmentCounts:{武器:0}}, {...params(),expectedEquipmentCounts:{武器:0,防具:0,饰品:-1}}, {...params(),expectedQueue:{...idle(),extra:true}}, {...params('pick'),expectedQueue:idle()}, {...params(),expectedQueue:making()}])assert.throws(()=>validateForgeParameters(payload),{code:'INVALID_PARAMETERS'});
+});
+
+test('forge preparation counts idle pool plus every explicit queue once, excludes worn mirrors and uses stable type ties',async()=>{
+ const c=prepConfig(),client=fake({queue:making(),buildings:[building('1装备厂',making()),building('2装备厂',making({makeId:1002,equipId:'蓝防具1'}))]}),facts=await survey(client,{},c),out=prepareForge(facts,c);
+ assert.deepEqual(out.counts,{武器:2,防具:1,饰品:0});assert.deepEqual(out.order,['饰品','防具','武器']);assert.equal(out.selected.makeId,1003);assert.deepEqual(out.graph.nodes.filter(n=>n.type==='ACTION').map(n=>n.parameters.action),['pick','make']);assert.deepEqual(out.graph.budget,{resources:[{id:'材料',num:4},{id:'GOLD',num:20}],quotas:[],uids:[]});assert.equal(client.writes.length,0);assert.equal(out.resumable,false);assert.equal(out.requiresAuthorization,true);
+ const tied=await survey(fake({bag:[equip('9007199254740994')]}),{},c),tie=prepareForge(tied,c);assert.deepEqual(tie.counts,{武器:0,防具:0,饰品:0});assert.deepEqual(tie.order,['武器','防具','饰品']);assert.equal(tie.selected.makeId,1001);assert.equal(tie.graph.runPolicy.maxActions,1);
+});
+
+test('forge preparation prefers quality only within least-count types and explicit affordable allowlist',async()=>{
+ const c=prepConfig(),cl=fake({bag:[equip('9007199254740994')]}),p={...player(),worldId:2000001};let f=await survey(cl,{},c,{player:p});assert.equal(prepareForge(f,c).selected.makeId,1004);
+ cl.stock.set('红材料',7);f=await survey(cl,{},c,{player:p});const out=prepareForge(f,c);assert.equal(out.selected.makeId,1001);assert.equal(out.candidates[0].blockedReason,'MATERIAL_STOCK_INSUFFICIENT');assert.deepEqual(out.graph.nodes[1].parameters.makeId,1001);
+ assert.equal(prepareForge(f,c,prepInput({makeIds:[1003]})).selected.makeId,1003);assert.throws(()=>prepareForge(f,c,prepInput({makeIds:[1004]})),{code:'INVALID_PARAMETERS'});
+ cl.stock.set('材料',3);const poor=await survey(cl,{},c,{player:p});assert.throws(()=>prepareForge(poor,c,prepInput({makeIds:[1001,1002,1003]})),{code:'INVALID_PARAMETERS'});
+});
+
+test('forge preparation missing ownership types, queue, quality, maturity, trusted clock, season, protocol or fresh provenance remains local blocked',async()=>{
+ const c=prepConfig();for(const mutate of [cl=>{delete cl.buildings[0].equipMaking;},cl=>{cl.buildings[0].equipMaking=making({finishTime:1001});},cl=>{cl.gameClock.read=()=>null;},cl=>{cl.bag[0].equipId='unknown';}]){const client=fake();mutate(client);const facts=await survey(client,{},c);assert.throws(()=>prepareForge(facts,c),{code:'INVALID_PARAMETERS'});}
+ for(const mutate of [v=>delete v.tables.EquipCfg.data[0].qualityIndex,v=>v.tables.EquipCfg.data[1].qualityIndex=2]){const bad=structuredClone(c);mutate(bad);const facts=await survey(fake(),{},bad);assert.throws(()=>prepareForge(facts,bad),{code:'INVALID_PARAMETERS'});}
+ const f=await survey(fake(),{},c);for(const mutate of [v=>v.available.splice(v.available.indexOf('MakeEquipRequest'),1),v=>v.sourceFacts.water.provenance.sourceAt=0,v=>v.season=null]){const bad=structuredClone(f);mutate(bad);assert.throws(()=>prepareForge(bad,c),{code:'INVALID_PARAMETERS'});}
+ assert.throws(()=>prepareEquipmentForgeWorkflow(f,{config:c,moduleConfig:FORGE_DEFAULT_CONFIG,...prepInput()}),{code:'INVALID_PARAMETERS'});
+});
+
+test('forge preparation isolates D6 recipes without weakening manual actions or inventing costs',async()=>{
+ const c=prepConfig();c.tables.BuildingEquipMakeCfg.data[1].season=1;c.tables.BuildingEquipMakeCfg.data[1].costItem=[['RUBY',1]];const cl=fake({bag:[equip('9007199254740994')],stock:{材料:20,GOLD:100,RUBY:100}}),f=await survey(cl,{},c),out=prepareForge(f,c);
+ assert.equal(out.selected.makeId,1001);assert.notEqual(out.candidates[0].blockedReason,null);assert.throws(()=>prepareForge(f,c,prepInput({makeIds:[1004]})),{code:'INVALID_PARAMETERS'});assert.equal(cl.writes.length,0);
+});
+
+test('prepared counts and original queue are exact fresh-plan guards, including view candidates',async()=>{
+ const c=prepConfig(),cl=fake({queue:making()}),f=await survey(cl,{},c),out=prepareForge(f,c),pick=out.graph.nodes.find(n=>n.id==='pick').parameters;
+ assert.equal(plan(f,pick,c).actions.length,1);assert.equal(viewEquipmentForge(f,options(pick,c)).candidates[0].executable,true);
+ cl.buildings[0].equipMaking.star++;const changed=await survey(cl,pick,c);assert.equal(plan(changed,pick,c).actions.length,0);assert.equal(viewEquipmentForge(changed,options(pick,c)).candidates[0].blockedReason,'PREPARED_QUEUE_CHANGED');
+ cl.buildings[0].equipMaking=idle();const make=out.graph.nodes.find(n=>n.id==='make').parameters;assert.equal(plan(await survey(cl,make,c),make,c).actions.length,0,'a disappeared queue did not become an owned item');cl.bag.push(equip('8'));assert.equal(plan(await survey(cl,make,c),make,c).actions.length,1);cl.bag.push(equip('9'));assert.equal(plan(await survey(cl,make,c),make,c).actions.length,0);
+});
+
+test('prepared pick confirms before new single make, preserving guards, finite cost and wire payloads',async()=>{
+ const c=prepConfig(),cl=fake({queue:making(),wireMode:true}),out=prepareForge(await survey(cl,{},c),c,prepInput({makeIds:[1001]})),actions=out.graph.nodes.filter(n=>n.type==='ACTION');
+ for(const node of actions){const facts=await survey(cl,node.parameters,c),operation=plan(facts,node.parameters,c).actions[0];assert.ok(operation);const result=await executeBusinessOperation(cl,wireProtocol,operation,{adapter:equipmentForgeModule,...options(node.parameters,c),allowMutate:true});assert.equal(result.status,'SUCCESS',JSON.stringify(result));}
+ assert.deepEqual(cl.writes.map(row=>row.request),['PickMadeEquipRequest','MakeEquipRequest']);assert.deepEqual(cl.writes[1].body,{buildingId:'1装备厂',makeId:1001,universal:false});assert.equal(cl.stock.get('材料'),16);assert.equal(cl.stock.get('GOLD'),80);
+});
+
+
+test('fixed retained configuration supplies real output quality and exact affordable recipe without material guesses',async()=>{
+ const config={tables:extractTables(JSON.parse(fs.readFileSync(new URL('../work/cdn/config_cn_pack.json',import.meta.url),'utf8')))},stock={};
+ for(const row of config.tables.BuildingEquipMakeCfg.data)for(const [id,num]of row.costItem)stock[id]=Math.max(stock[id]??0,num);
+ const client=fake({stock}),facts=await survey(client,{},config),out=prepareForge(facts,config,prepInput({makeIds:config.tables.BuildingEquipMakeCfg.data.map(row=>row.makeId)}));
+ assert.equal(out.candidates.length,12);assert.equal(out.selected.type,'防具');assert.equal(out.selected.makeId,2003);assert.equal(out.selected.qualityName,'橙');assert.deepEqual(out.graph.budget.resources,out.selected.costs);assert.equal(out.candidates.find(row=>row.makeId===2004).blockedReason,'RECIPE_SEASON_UNAVAILABLE');assert.equal(client.writes.length,0);
 });

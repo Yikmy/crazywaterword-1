@@ -123,9 +123,9 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyFormationUnlock','src/formation-unlock.mjs#verifyFormationUnlock','Exact preset set addition, unchanged full formation and exact owned blueprint inventory debit; no typed response exists'),
     dependencyVersions:dependencies(['moduleConfig','config.FormationTypeUnlockCfg','config.ItemCfg','config.FormationTypePositionCfg']),
   }),
-  'equipment-forge': contract('equipment-forge', [], ['P3-6','P3-7'], ['src/equipment-forge.mjs#equipmentForgeModule','src/equipment-forge.mjs#planEquipmentForge'], {buildingId:string,action:{type:'string',enum:['make','pick']},makeId:integer,allowUniversal:boolean}, {
+  'equipment-forge': contract('equipment-forge', [], ['P3-6','P3-7'], ['src/equipment-forge.mjs#equipmentForgeModule','src/equipment-forge.mjs#planEquipmentForge'], {buildingId:string,action:{type:'string',enum:['make','pick']},makeId:integer,allowUniversal:boolean,expectedEquipmentCounts:object({'武器':integer,'防具':integer,'饰品':integer},['武器','防具','饰品']),expectedQueue:object({makeId:integer,finishTime:integer,equipId:string,star:integer},['makeId','finishTime','equipId','star'])}, {
     inventoryRequirementIds:['BIZ-R07'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['MAKE','PICK'],blockedCapabilities:[blocked('UNIVERSAL_EXCHANGE','Universal material consumption is not proven'),blocked('IMPLICIT_IDLE_QUEUE','Missing equipMaking does not prove an idle queue'),blocked('QUALITY_FALLBACK','Automatic lower-quality fallback is excluded')]},
+    implementation:{mode:'CONTROLLED_WRITE',actions:['MAKE','PICK'],blockedCapabilities:[blocked('UNIVERSAL_EXCHANGE','Universal material consumption is not proven'),blocked('IMPLICIT_IDLE_QUEUE','Missing equipMaking does not prove an idle queue'),blocked('DYNAMIC_QUALITY_FALLBACK','Reviewed finite preparation freezes a recipe from an explicit allowlist; execution never changes it')]},
     verification:verification('verifyEquipmentForge','src/equipment-forge.mjs#verifyEquipmentForge','Exact original batch, queue, typed pick equipId, one new owned UID and full inventory net change'),
     dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.BuildingEquipMakeCfg','config.EquipMakeLibCfg','config.EquipCfg']),
   }),

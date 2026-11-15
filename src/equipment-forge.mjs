@@ -1,5 +1,5 @@
 // Equipment forge semantics only. Shared execution owns permits, transport,
-// cancellation, finite budgets and durable UNKNOWN. No automatic quality fallback.
+// cancellation, finite budgets and durable UNKNOWN. Preparation freezes a reviewed recipe.
 import { createHash } from 'node:crypto';
 import { surveyCityOperations } from './city-operations.mjs';
 import { makeTypeResolver } from './world.mjs';
@@ -24,16 +24,18 @@ const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETER
 const source='local reference C:/Users/zyk-o/Documents/crazywaterword/src/equip.mjs#planEquip MakeEquip/PickMadeEquip; BuildingEquipMakeCfg.costItem; EquipMakeLibCfg legal result set; universal=false';
 const tableNames=['BuildingCfg','BuildingEquipMakeCfg','EquipMakeLibCfg','EquipCfg'];
 export const FORGE_DEFAULT_CONFIG=Object.freeze({enabled:false});
-export const FORGE_EVIDENCE=Object.freeze({missingQueueMeansIdle:'BLOCKED_EVIDENCE',qualityFallback:'EXCLUDED',universalExchange:'BLOCKED_EVIDENCE',exactDuration:'BLOCKED_EVIDENCE_APPOINTMENT_ADJUSTMENT',outputStar:'SERVER_QUEUE_AUTHORITY_ONLY',realGame:'REAL_UNVERIFIED'});
+export const FORGE_EVIDENCE=Object.freeze({missingQueueMeansIdle:'BLOCKED_EVIDENCE',qualityFallback:'EXPLICIT_PREPARATION_ONLY',universalExchange:'BLOCKED_EVIDENCE',exactDuration:'BLOCKED_EVIDENCE_APPOINTMENT_ADJUSTMENT',outputStar:'SERVER_QUEUE_AUTHORITY_ONLY',realGame:'REAL_UNVERIFIED'});
 function fields(v,keys){return object(v)&&[Object.prototype,null].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).every(k=>typeof k==='string'&&keys.includes(k)&&own(Object.getOwnPropertyDescriptor(v,k),'value')&&Object.getOwnPropertyDescriptor(v,k).enumerable);}
 export function validateForgeConfig(v={}){if(!fields(v,['enabled'])||own(v,'enabled')&&typeof v.enabled!=='boolean')throw invalid('装备制造配置仅允许 enabled 布尔值');return {enabled:v.enabled??false};}
 export function validateForgeParameters(v={}){
-  if(!fields(v,['buildingId','action','makeId','allowUniversal']))throw invalid('装备制造参数仅允许 buildingId、action、makeId、allowUniversal');
+  if(!fields(v,['buildingId','action','makeId','allowUniversal','expectedEquipmentCounts','expectedQueue']))throw invalid('装备制造参数包含不支持的字段');
   const out={};
   if(own(v,'buildingId')){if(!id(v.buildingId))throw invalid('buildingId 必须为明确建筑 ID');out.buildingId=v.buildingId;}
   if(own(v,'action')){if(!['make','pick'].includes(v.action))throw invalid('action 仅允许 make 或 pick');out.action=v.action;}
   if(own(v,'makeId')){if(v.action!=='make'||!positive(v.makeId))throw invalid('makeId 仅用于 make，且必须为正 int32');out.makeId=v.makeId;}
   if(own(v,'allowUniversal')&&(v.action!=='make'||typeof v.allowUniversal!=='boolean'))throw invalid('allowUniversal 仅用于 make 且必须为布尔值');
+  if(own(v,'expectedEquipmentCounts')){if(!validCounts(v.expectedEquipmentCounts)||!['make','pick'].includes(v.action))throw invalid('预期部位数量须完整且明确');out.expectedEquipmentCounts=copy(v.expectedEquipmentCounts);}
+  if(own(v,'expectedQueue')){const q=fields(v.expectedQueue,['makeId','finishTime','equipId','star'])?parseForgeQueue(v.expectedQueue):null;if(!q||q.state!==(v.action==='pick'?'MAKING':v.action==='make'?'IDLE':null))throw invalid('预期队列须匹配明确单次动作');out.expectedQueue={makeId:q.makeId,finishTime:q.finishTime,equipId:q.equipId,star:q.star};}
   if(v.action==='make')out.allowUniversal=v.allowUniversal??false;
   return out;
 }
@@ -142,6 +144,8 @@ function candidate(f,p,{config,moduleConfig=FORGE_DEFAULT_CONFIG}={}){
   else if(!authority(f,config))reason='FORGE_AUTHORITY_OR_CONTEXT_UNKNOWN';
   else if(b?.type!=='装备厂'||!baseBuilding(b))reason='FORGE_BUILDING_UNAVAILABLE';
   else if(!b.queue)reason='QUEUE_IDLE_BLOCKED_EVIDENCE';
+  else if(own(p,'expectedQueue')&&!same(p.expectedQueue,{makeId:b.queue.makeId,finishTime:b.queue.finishTime,equipId:b.queue.equipId,star:b.queue.star}))reason='PREPARED_QUEUE_CHANGED';
+  else if(own(p,'expectedEquipmentCounts')&&!same(equipmentCounts(f,config).counts,p.expectedEquipmentCounts))reason='PREPARED_EQUIPMENT_COUNTS_CHANGED';
   else if(t.earliest===null)reason='TRUSTED_GAME_CLOCK_UNKNOWN';
   else if(p.allowUniversal===true)reason='UNIVERSAL_EXCHANGE_BLOCKED_EVIDENCE';
   else if(!r)reason='RECIPE_OR_RESULT_LIBRARY_UNKNOWN';
@@ -161,11 +165,11 @@ function candidate(f,p,{config,moduleConfig=FORGE_DEFAULT_CONFIG}={}){
 export function viewEquipmentForge(f,{config,moduleConfig=FORGE_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
   parameters=validateForgeParameters(parameters);moduleConfig=validateForgeConfig(moduleConfig);const choices=[];
   for(const b of f?.buildings??[]){if(b.type!=='装备厂'||parameters.buildingId&&parameters.buildingId!==b.buildingId)continue;
-    if(!parameters.action||parameters.action==='pick')choices.push({buildingId:b.buildingId,action:'pick'});
-    if(!parameters.action||parameters.action==='make')for(const r of f?.catalog?.recipes??[])if(!parameters.makeId||parameters.makeId===r.makeId)choices.push({buildingId:b.buildingId,action:'make',makeId:r.makeId,allowUniversal:parameters.allowUniversal??false});
+    if(!parameters.action||parameters.action==='pick')choices.push({buildingId:b.buildingId,action:'pick',...(own(parameters,'expectedQueue')?{expectedQueue:parameters.expectedQueue}:{}),...(own(parameters,'expectedEquipmentCounts')?{expectedEquipmentCounts:parameters.expectedEquipmentCounts}:{})});
+    if(!parameters.action||parameters.action==='make')for(const r of f?.catalog?.recipes??[])if(!parameters.makeId||parameters.makeId===r.makeId)choices.push({buildingId:b.buildingId,action:'make',makeId:r.makeId,allowUniversal:parameters.allowUniversal??false,...(own(parameters,'expectedQueue')?{expectedQueue:parameters.expectedQueue}:{}),...(own(parameters,'expectedEquipmentCounts')?{expectedEquipmentCounts:parameters.expectedEquipmentCounts}:{})});
   }
   if(!choices.length)choices.push(parameters);const candidates=choices.map(p=>candidate(f,p,{config,moduleConfig}));
-  return {module:'equipment-forge',forges:(f?.buildings??[]).filter(b=>b.type==='装备厂').map(b=>({buildingId:b.buildingId,queue:copy(b.queue),level:b.raw.level})),recipes:copy(f?.catalog?.recipes??[]),bag:copy(f?.ownership?.bag??[]),season:f?.season??null,candidates,blocked:candidates.filter(v=>!v.executable),notes:[...(f?.notes??[])],evidence:FORGE_EVIDENCE};
+  return {module:'equipment-forge',forges:(f?.buildings??[]).filter(b=>b.type==='装备厂').map(b=>({buildingId:b.buildingId,queue:copy(b.queue),level:b.raw.level})),recipes:copy(f?.catalog?.recipes??[]),bag:copy(f?.ownership?.bag??[]),season:f?.season??null,preparation:{...equipmentCounts(f,config),recipes:preparationRecipes(f,config)},candidates,blocked:candidates.filter(v=>!v.executable),notes:[...(f?.notes??[])],evidence:FORGE_EVIDENCE};
 }
 export function planEquipmentForge(f,{config,moduleConfig=FORGE_DEFAULT_CONFIG,parameters={},selections,ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null)}={}){
   if(selections!==undefined&&(!dense(selections)||selections.some(v=>!id(v))||new Set(selections).size!==selections.length))throw invalid('selections 必须为唯一 actionId 数组');
@@ -197,5 +201,59 @@ export function verifyEquipmentForge(op,b,a,response){
     ||!same(b.ownership.pool,a.ownership.pool.filter(v=>v.uid!==fresh[0].uid))||!same(b.ownership.bag,a.ownership.bag.filter(v=>v.uid!==fresh[0].uid)))return fail('EXACT_ONE_NEW_EQUIPMENT_UID_NOT_CONFIRMED');
   return {confirmed:true,reason:'原精确批次、typed equipId、新唯一UID及完整权威复读共同确认收取',afterState:copy(after.raw),responseEvidence:{equipId:response.equipId,uid:fresh[0].uid,star:fresh[0].star}};
 }
+
+const equipmentTypes=Object.freeze(['武器','防具','饰品']);
+const validCounts=value=>fields(value,equipmentTypes)&&equipmentTypes.every(type=>own(value,type)&&uint(value[type]));
+function equipmentCounts(f,config){
+  const bad=reason=>({reliable:false,counts:null,order:[],reason});
+  if(!authority(f,config))return bad('FORGE_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  const counts=Object.fromEntries(equipmentTypes.map(type=>[type,0])),equips=config.tables.EquipCfg.data;
+  for(const row of f.ownership.bag){const type=equips.find(e=>e.id===row.equipId)?.type;if(!equipmentTypes.includes(type))return bad('OWNED_EQUIPMENT_TYPE_UNKNOWN');counts[type]++;}
+  for(const b of f.buildings.filter(row=>row.type==='装备厂')){
+    if(!b.queue)return bad('QUEUE_IDLE_BLOCKED_EVIDENCE');
+    if(b.queue.state==='IDLE')continue;
+    const recipe=f.catalog.recipes.find(row=>row.makeId===b.queue.makeId);
+    if(!allowedQueue(b.queue,recipe))return bad('FORGE_BATCH_IDENTITY_UNKNOWN');counts[recipe.type]++;
+  }
+  return {reliable:true,counts,order:[...equipmentTypes].sort((a,b)=>counts[a]-counts[b]||equipmentTypes.indexOf(a)-equipmentTypes.indexOf(b)),reason:null};
+}
+function preparationRecipes(f,config){
+  return (f?.catalog?.recipes??[]).map(recipe=>{
+    const outputs=recipe.equipIds.map(equipId=>config?.tables?.EquipCfg?.data?.find(row=>row.id===equipId)),first=outputs[0];
+    const reliable=outputs.length>0&&outputs.every(row=>own(row,'qualityIndex')&&uint(row.qualityIndex)&&own(row,'qualityName')&&id(row.qualityName)&&row.qualityIndex===first.qualityIndex&&row.qualityName===first.qualityName);
+    return {...copy(recipe),qualityIndex:reliable?first.qualityIndex:null,qualityName:reliable?first.qualityName:null,qualityReliable:reliable};
+  });
+}
+export function validateForgePreparation(value){
+  if(!fields(value,['buildingId','makeIds','maxDurationMs'])||!own(value,'buildingId')||!id(value.buildingId)||!own(value,'makeIds')||!dense(value.makeIds)||Object.getPrototypeOf(value.makeIds)!==Array.prototype||value.makeIds.length<1||value.makeIds.length>50||Reflect.ownKeys(value.makeIds).length!==value.makeIds.length+1||!Array.from({length:value.makeIds.length},(_,i)=>own(Object.getOwnPropertyDescriptor(value.makeIds,String(i)),'value')).every(Boolean)||!value.makeIds.every(positive)||new Set(value.makeIds).size!==value.makeIds.length||!own(value,'maxDurationMs')||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('准备须明确装备厂、1至50个不同允许配方和1至86400000毫秒总时长');
+  return {buildingId:value.buildingId,makeIds:[...value.makeIds],maxDurationMs:value.maxDurationMs};
+}
+export function prepareEquipmentForgeWorkflow(f,{config,moduleConfig=FORGE_DEFAULT_CONFIG,...input}={}){
+  const payload=validateForgePreparation(input),counted=equipmentCounts(f,config),b=f?.buildings?.find(row=>row.buildingId===payload.buildingId);
+  if(!validateForgeConfig(moduleConfig).enabled||!counted.reliable||b?.type!=='装备厂'||!baseBuilding(b)||!b.queue||clock(f).earliest===null||f.season===null)throw invalid('准备缺少完整部位数量、装备厂、开启配置、赛季或可信时钟');
+  const recipes=preparationRecipes(f,config),allowed=payload.makeIds.map(makeId=>recipes.find(row=>row.makeId===makeId));
+  if(allowed.some(row=>!row?.qualityReliable))throw invalid('允许配方缺少明确产物或同一品质依据');
+  const candidates=allowed.sort((a,b)=>counted.order.indexOf(a.type)-counted.order.indexOf(b.type)||b.qualityIndex-a.qualityIndex||a.makeId-b.makeId).map(row=>{
+    let reason=null;if(row.season>f.season)reason='RECIPE_SEASON_UNAVAILABLE';
+    else if(!new ResourceLedger(f.stock).reserve(row.costs))reason='MATERIAL_STOCK_INSUFFICIENT';
+    else try{assertPaymentAllowed({...requestFor('make',b.buildingId,row.makeId),costs:row.costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}
+    return {...row,blockedReason:reason};
+  }),selected=candidates.find(row=>row.blockedReason===null);
+  if(!selected||!f.available?.includes('MakeEquipRequest'))throw invalid('允许配方均不能按自有材料与D6成本制造，或制造协议不可用');
+  const {state,...expectedQueue}=b.queue,guards={expectedEquipmentCounts:counted.counts},nodes=[{id:'start',type:'START'}];
+  if(state==='MAKING'){
+    const parameters={buildingId:b.buildingId,action:'pick',...guards,expectedQueue};
+    if(!planEquipmentForge(f,{config,moduleConfig,parameters}).actions.length)throw invalid('原精确批次尚不能完整确认收取；不准备后续制造');
+    nodes.push({id:'pick',type:'ACTION',module:'equipment-forge',parameters,selection:{unique:true}},{id:'verify-pick',type:'VERIFY',module:'equipment-forge'});
+  }
+  const parameters={buildingId:b.buildingId,action:'make',makeId:selected.makeId,allowUniversal:false,...guards,expectedQueue:{makeId:0,finishTime:0,equipId:'',star:0}};
+  if(state==='IDLE'&&!planEquipmentForge(f,{config,moduleConfig,parameters}).actions.length)throw invalid('当前单次制造不能通过原装备厂合同');
+  nodes.push({id:'make',type:'ACTION',module:'equipment-forge',parameters,selection:{unique:true}},{id:'verify-make',type:'VERIFY',module:'equipment-forge'},{id:'stop',type:'STOP'});
+  const budget={resources:copy(selected.costs),quotas:[],uids:[]},suffix=hash({payload,counts:counted.counts,queue:expectedQueue,makeId:selected.makeId,budget}).slice(0,20);
+  return {buildingId:b.buildingId,makeIds:payload.makeIds,counts:counted.counts,order:counted.order,queue:expectedQueue,selected:copy(selected),candidates,
+    graph:{version:1,id:'equipment-forge-'+suffix,name:b.buildingId+' 按部位数量准备单次制造',budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:state==='MAKING'?2:1,modules:['equipment-forge']},nodes,edges:nodes.slice(1).map((node,index)=>({from:nodes[index].id,to:node.id}))},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+    limitation:'仅统计完整闲置背包与在产队列，不计佩戴镜像；数量少的部位优先，同量按武器、防具、饰品顺序，在明确允许配方内按品质从高到低选择当前付得起的一份。结果冻结供审核，每步重新探测；原批次或数量变化、拒绝、UNKNOWN即停止且不重放。准备不执行、不授权、不随未来收入扩大预算；通用材料缺证仍冻结。'};
+}
+
 export function forgeDependencyVersions({config,moduleConfig=FORGE_DEFAULT_CONFIG}={}){return {moduleConfig:copy(moduleConfig),...Object.fromEntries(tableNames.map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};}
 export const equipmentForgeModule=Object.freeze({id:'equipment-forge',label:'装备制造',capabilities:Object.freeze(['BIZ-R07']),defaultConfig:FORGE_DEFAULT_CONFIG,validateConfig:validateForgeConfig,validateParameters:validateForgeParameters,survey:surveyEquipmentForge,view:viewEquipmentForge,plan:planEquipmentForge,verify:verifyEquipmentForge,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:forgeDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...tableNames.map(n=>'config.'+n)])});
