@@ -424,3 +424,11 @@ for(const key of ['accountId','generation','connectionId','playerId','worldId'])
 test('production clock binds Session role/world when real client context only supplies account generation and connection',async()=>{const f=productionClockFixture(),original=f.client.request;f.client.request=async(name,...args)=>{if(name==='AppointInfoRequest'){f.player.worldId=10;return {heroes:[]};}return original(name,...args);};await assert.rejects(productionModule.survey(f.client,{...protocol,AppointInfoRequest:{},AppointInfoResponse:{},AllHeroRequest:{},AllHeroResponse:{}},options({player:f.player})),{code:'CANCELLED'});assert.equal(f.reads.includes('AllHeroRequest'),false);assert.equal(f.writes.length,0);});
 
 test('production survey stops after a failed appointment read changes Session identity',async()=>{const f=productionClockFixture(),original=f.client.request;f.client.request=async(name,...args)=>{if(name==='AppointInfoRequest'){f.player.worldId=10;throw Error('synthetic appointment failure');}return original(name,...args);};await assert.rejects(productionModule.survey(f.client,{...protocol,AppointInfoRequest:{},AppointInfoResponse:{},AllHeroRequest:{},AllHeroResponse:{}},options({player:f.player})),{code:'CANCELLED'});assert.equal(f.reads.includes('AllHeroRequest'),false);assert.equal(f.writes.length,0);});
+
+test('production view exposes complete inventory reliability without promoting absent or partial sources',async()=>{
+ const f=fixture(),facts=await read(productionModule,f);assert.equal(productionModule.view(facts,options()).stockReliable,true);
+ for(const change of [value=>{delete value.stockReliable;},value=>{value.stockReliable=false;},value=>{delete value.productionInventoryReliable;},value=>{value.productionInventoryReliable=false;}]){
+  const partial={...facts};change(partial);assert.equal(productionModule.view(partial,options()).stockReliable,false);
+ }
+ assert.equal(f.writes.length,0);
+});
