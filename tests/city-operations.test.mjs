@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cityView, planCityOperations, executeCityAction, surveyCityOperations } from '../src/city-operations.mjs';
+import { planWorld } from '../src/world.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { evaluateOrders } from '../src/order-rules.mjs';
 
@@ -171,6 +172,47 @@ for (const kind of ['speedUpUpgrade', 'speedUpProduce']) test(`${kind} uses only
   assert.deepEqual(planned.action.body.speedUp, { type: 2, useNum: 3 });
   assert.equal((await execute(client, planned)).status, 'SUCCESS');
 });
+
+test('world collection plan preserves the exact response ID list and does not write', async () => {
+  const ids = [' one,民居 ', 'two民居', ' 三民居 '];
+  const client = fake(ids.map(id => rawBuilding(id, { product: { asset: [{ id: '布匹', num: 1 }] } })));
+  const state = await read(client);
+  const plan = planWorld(state, { config, maxBuilds: 0, maxUpgrades: 0 });
+  const collect = plan.actions.find(action => action.kind === 'collectProduct');
+  assert.equal(collect.request, 'CollectBuildingProductRequest');
+  assert.equal(collect.response, 'CollectBuildingProductResponse');
+  assert.deepEqual(collect.body, { buildingId: ids });
+  assert.deepEqual(plan.reserved, []); assert.deepEqual(client.writes, []);
+});
+
+for (const kind of ['speedUpUpgrade', 'speedUpProduce']) test(
+  kind + ' overflow is skipped before reservation and preserves independent accelerator plans', async () => {
+    const now = 1000, overflow = now + 2147483648 * 60;
+    const invalid = kind === 'speedUpUpgrade'
+      ? rawBuilding('1民居', { buildStartTime: 1, buildFinishTime: overflow })
+      : rawFactory({ factory: { autoProductId: '', factoryQ: [
+        { idx: 0, productId: '布匹', finishTime: overflow },
+        { idx: 1, productId: '布匹', finishTime: now + 120 },
+      ], finishedProducts: [] } });
+    const buildings = kind === 'speedUpUpgrade' ? [invalid, rawFactory({ factory: {
+      autoProductId: '', factoryQ: [{ idx: 1, productId: '布匹', finishTime: now + 120 }], finishedProducts: [],
+    } })] : [invalid];
+    const client = fake(buildings, new Map([['加速器', 2147483648]]));
+    const state = { ...await read(client), now }, ledger = new ResourceLedger(state.stock);
+    const plan = planWorld(state, { config, ledger, allowSpeedUp: true, maxBuilds: 0, maxUpgrades: 0 });
+    assert.deepEqual(plan.actions.map(action => action.kind), ['speedUpProduce']);
+    const action = plan.actions[0];
+    assert.equal(action.request, 'SpeedUpFactoryProduceRequest'); assert.equal(action.response, null);
+    assert.deepEqual(action.body, { buildingId: '1材料厂', index: 1, speedUp: { type: 2, useNum: 2 } });
+    assert.deepEqual(action.costs, [{ id: '加速器', num: 2 }]);
+    assert.deepEqual(plan.reserved, [['加速器', 2]]); assert.equal(ledger.available('加速器'), 2147483646);
+    assert.equal(plan.notes.some(note => note.includes('参数超出协议范围')), true);
+    assert.deepEqual(client.writes, []);
+    const onlyInvalid = { ...state, buildings: [state.buildings[0]], factories: kind === 'speedUpProduce'
+      ? [{ ...state.factories[0], factory: { ...state.factories[0].factory, factoryQ: state.factories[0].factory.factoryQ.slice(0, 1) } }] : [] };
+    const rejected = planWorld(onlyInvalid, { config, allowSpeedUp: true, maxBuilds: 0, maxUpgrades: 0 });
+    assert.deepEqual(rejected.actions, []); assert.deepEqual(rejected.reserved, []);
+  });
 
 test('resource drop, stale target state and tampered requests are rejected before dispatch', async () => {
   for (const change of [(c) => c.stock.set('木材', 1), (c) => { c.buildings[0].level = 2; },

@@ -48,6 +48,13 @@ function stringList(value, { required = false } = {}) {
   return strings;
 }
 
+// Exact response IDs are already a list; CLI normalization remains in ACTIONS.
+// This only constructs the protocol body and cannot grant eligibility or execute.
+export function buildBuildingCollectBody(buildingIds) {
+  if (!Array.isArray(buildingIds)) throw new Error('building IDs must be an array');
+  return { buildingId: [...buildingIds] };
+}
+
 // Pure shared bodies for legacy observations and registered adapters.
 // Eligibility, debit and transport remain with their existing domain contracts.
 export function buildDailyDriverBody(request,params={}) {
@@ -99,7 +106,7 @@ export const ACTIONS = {
     mutate: true,
     desc: '收取指定建筑的产物',
     params: ['buildingId'],
-    body: ({ buildingId }) => ({ buildingId: stringList(buildingId, { required: true }) }),
+    body: ({ buildingId }) => buildBuildingCollectBody(stringList(buildingId, { required: true })),
   },
   buildingFinish: {
     request: 'FinishUpgradeBuildingRequest',

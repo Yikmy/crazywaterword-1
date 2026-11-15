@@ -2,7 +2,7 @@ import { planFieldGiveUp } from '../src/world.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
-import { ACTIONS, buildBody, runAction, assertPaymentAllowed } from '../src/actions.mjs';
+import { ACTIONS, buildBody, buildBuildingCollectBody, runAction, assertPaymentAllowed } from '../src/actions.mjs';
 
 // Recovered generated codecs only: no account store, GameClient or game network.
 const protocol = loadProtocol();
@@ -17,10 +17,22 @@ test('buildingCollect scalar, CSV and array survive actual repeated-string proto
     ['fixture-building', ['fixture-building']],
     ['one, two', ['one', 'two']],
     [['one', 'two'], ['one', 'two']],
+    [[' one ', 'two,three'], ['one', 'two,three']],
     [42, ['42']],
   ]) assert.deepEqual([...roundtrip('buildingCollect', { buildingId: input }).buildingId], expected);
   assert.throws(() => buildBody(ACTIONS.buildingCollect, { buildingId: [] }), /missing parameter/);
   assert.throws(() => buildBody(ACTIONS.buildingCollect, { buildingId: [{}] }), /IDs/);
+});
+
+test('building collection body preserves exact response IDs without CLI normalization or execution', () => {
+  const ids = [' two,three ', 'one', ' 四 '], expected = [...ids];
+  const body = buildBuildingCollectBody(ids);
+  ids.push('later');
+  assert.deepEqual(body, { buildingId: expected });
+  const type = protocol[ACTIONS.buildingCollect.request];
+  assert.deepEqual([...type.decode(type.encode(body).finish()).buildingId], expected);
+  assert.deepEqual(buildBuildingCollectBody([]), { buildingId: [] });
+  for (const invalid of [undefined, null, 'a,b', {}]) assert.throws(() => buildBuildingCollectBody(invalid), /array/);
 });
 
 test('challengeField missing fleet stays empty and supplied scalar/array roundtrip intact', () => {
@@ -51,6 +63,8 @@ test('accelerator quantities reject negative, empty, fractional and overflowing 
       assert.throws(() => buildBody(ACTIONS[id], { buildingId: 'b', index: 1, useNum }), /positive int32|missing parameter/);
     }
     assert.equal(roundtrip(id, { buildingId: 'b', index: 1, useNum: '2' }).speedUp.type, 2);
+    const upper = roundtrip(id, { buildingId: 'b', index: 1, useNum: 2147483647 });
+    assert.equal(upper.speedUp.type, 2); assert.equal(upper.speedUp.useNum, 2147483647);
   }
 });
 

@@ -17,12 +17,12 @@ import { readRuntimeAsset } from './asset-readiness.mjs';
 import path from 'node:path';
 import { normalize } from './worlds.mjs';
 import { productionRecipeCosts } from './production-planning.mjs';
-import { ACTIONS, buildBody, assertPaymentAllowed } from './actions.mjs';
+import { ACTIONS, buildBody, buildBuildingCollectBody, assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, validateResources } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, operationResult, stopsExecution } from './execution.mjs';
 
 export const SPEED_UP_ITEM = '加速器';
-export const SPEED_UP_ITEM_TYPE = 2;
+export { SPEED_UP_ITEM_TYPE } from './actions.mjs';
 const STOCK_PARAM = '产品存量初始上限';
 const SLOTS_PARAM = '制造位上限';
 const POPULATION_PARAM = '初始人口上限';
@@ -238,9 +238,9 @@ export function planWorld(survey, {
   if (collectible.length > 0) {
     actions.push({
       kind: 'collectProduct',
-      request: 'CollectBuildingProductRequest',
-      response: 'CollectBuildingProductResponse',
-      body: { buildingId: collectible },
+      request: ACTIONS.buildingCollect.request,
+      response: ACTIONS.buildingCollect.response,
+      body: buildBuildingCollectBody(collectible),
       label: `收建筑产物 ${collectible.join(',')}`,
     });
   }
@@ -426,14 +426,21 @@ export function planWorld(survey, {
       const minutes = Math.ceil((b.buildFinishTime - now) / 60);
       if (minutes <= 0 || left <= 0) continue;
       const useNum = Math.max(1, Math.min(minutes, left));
+      let body;
+      try {
+        body = buildBody(ACTIONS.speedUpUpgrade, { buildingId: b.buildingId, useNum });
+      } catch {
+        notes.push('加速建造参数超出协议范围：' + b.buildingId);
+        continue;
+      }
       if (!ledger.reserve([{ id: SPEED_UP_ITEM, num: useNum }])) continue;
       left -= useNum;
       actions.push({
         costs: [{ id: SPEED_UP_ITEM, num: useNum }],
         kind: 'speedUpUpgrade',
-        request: 'SpeedUpUpgradeBuildingRequest',
-        response: null,
-        body: { buildingId: b.buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
+        request: ACTIONS.speedUpUpgrade.request,
+        response: ACTIONS.speedUpUpgrade.response,
+        body,
         label: `加速建造 ${b.buildingId} 用 ${useNum} 个${SPEED_UP_ITEM}`,
       });
     }
@@ -443,14 +450,21 @@ export function planWorld(survey, {
         const minutes = Math.ceil((job.finishTime - now) / 60);
         if (minutes <= 0) continue;
         const useNum = Math.max(1, Math.min(minutes, left));
+        let body;
+        try {
+          body = buildBody(ACTIONS.speedUpProduce, { buildingId: b.buildingId, index: job.idx, useNum });
+        } catch {
+          notes.push('加速生产参数超出协议范围：' + b.buildingId);
+          continue;
+        }
         if (!ledger.reserve([{ id: SPEED_UP_ITEM, num: useNum }])) continue;
         left -= useNum;
         actions.push({
           costs: [{ id: SPEED_UP_ITEM, num: useNum }],
           kind: 'speedUpProduce',
-          request: 'SpeedUpFactoryProduceRequest',
-          response: null,
-          body: { buildingId: b.buildingId, index: job.idx, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
+          request: ACTIONS.speedUpProduce.request,
+          response: ACTIONS.speedUpProduce.response,
+          body,
           label: `加速生产 ${b.buildingId} 用 ${useNum} 个${SPEED_UP_ITEM}`,
         });
       }
