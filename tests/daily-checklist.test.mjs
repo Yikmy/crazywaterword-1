@@ -235,3 +235,7 @@ test('cached daily rows expose original unified drivers without inventing execut
  for(const row of rows){assert.equal(row.status,'INCOMPLETE');assert.equal(row.eligible,false);assert.equal(row.executable,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily',taskId:row.taskId});assert.equal(Object.hasOwn(row,'action'),false);assert.equal(Object.hasOwn(row,'parameters'),false);}
  assert.equal(state.raw.DailyTaskInfoRequest.dailyTask[0].progress,0);
 });
+
+test('ordinary AFK daily1004 cache points to original Function without interval defaults or execution eligibility',()=>{
+ const state={raw:{DailyTaskInfoRequest:typed('DailyTaskInfoRequest',{dailyTask:[{id:1004,progress:0,targetProgress:1,rewardClaimed:false}]})},outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}},row=dailyChecklist(state,{config}).tasks.rows[0];assert.equal(row.functionId,'afk-level-rewards');assert.equal(row.executable,false);assert.equal(row.eligible,false);assert.equal(row.claimFunctionId,'task-rewards');assert.deepEqual(row.claimParameters,{kind:'daily',taskId:1004});assert.equal(Object.hasOwn(row,'parameters'),false);assert.equal(Object.hasOwn(row,'afkStartTime'),false);
+});

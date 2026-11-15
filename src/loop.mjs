@@ -163,6 +163,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateTaskRewardsParameters({kind,taskId:row.taskId});}catch{invalid('只读任务观察须明确正int32任务ID');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
       }
+      if(phase==='tasks'&&row?.kind==='afk-income'){
+        exact(row,['kind','level','afkStartTime','afkFinishTime']);
+        try{parameters=validateAfkLevelRewardsParameters({action:'income',level:row.level,afkStartTime:row.afkStartTime,afkFinishTime:row.afkFinishTime});}catch{invalid('Tasks普通挂机收益须明确等级和完整区间');}
+        steps.push({phase,index,module:'afk-level-rewards',parameters,selection});continue;
+      }
       if(phase==='tasks'&&row?.kind==='afk-level-reward'){
         exact(row,['kind','level']);
         try{parameters=validateAfkLevelRewardsParameters({level:row.level});}catch{invalid('Tasks挂机等级奖励须明确正int32等级');}
@@ -212,9 +217,12 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确任务或档位ID，不接受驱动或协议参数');
           module='task-rewards';parameters=gift?{kind:row.kind,packId:row.packId}:activity?{kind:'daily-activity',tierId:row.tierId}:{kind:'daily',taskId:row.taskId};
         }else{
-          module=({1002:'free-recruit',1003:'stage',1006:'free-gold',1008:'fleet',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
+          // Preserve legacy missing-target declarations as blocked; never infer today's interval.
+          if(row.taskId===1004&&!Object.hasOwn(row,'parameters')){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
+          module=({1002:'free-recruit',1003:'stage',1004:'afk-level-rewards',1006:'free-gold',1008:'fleet',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
+          if(module==='afk-level-rewards')try{parameters=validateAfkLevelRewardsParameters(row.parameters);if(parameters.action!=='income')invalid('必须明确income');}catch{invalid('日常1004普通挂机收益须明确action=income、当前等级和完整区间');}
           if(module==='fleet')try{selection=fleetCargoFillSelection(parameters);}catch{invalid('日常1008仅支持明确货轮和货格的单次装货；任务进度需独立观察');}
           if(module==='alliance')try{selection=allianceOrderSelection(parameters);}catch{invalid('日常1012仅支持明确城市的联盟订单');}
           if(module==='museum')try{selection=museumStartExploreSelection(parameters);}catch{invalid('日常1016仅支持明确关卡、英雄队伍及时间倍率的探险出发');}
