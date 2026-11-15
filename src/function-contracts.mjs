@@ -55,11 +55,11 @@ export const FUNCTION_CONTRACTS = freeze({
     verification:verification('verifyMaterialPack','src/material-packs.mjs#verifyMaterialPack','Independent complete inventory must debit exactly the owned packs, credit the configured selected material and preserve all other balances; season from exact bound worldId'),
     dependencyVersions:dependencies(['moduleConfig','config.ItemCfg','config.SelectPackLibCfg']),
   }),
-  pet: contract('pet',[],['P3-6','P3-7'],['src/pet-operations.mjs#petModule','src/pet-operations.mjs#planPet'],{action:{type:'string',enum:['feed']},buildingId:string,jobIdx:integer},{
+  pet: contract('pet',[],['P3-6','P3-7'],['src/pet-operations.mjs#petModule','src/pet-operations.mjs#planPet'],{action:{type:'string',enum:['feed','level']},buildingId:string,jobIdx:integer,uid:string},{
     inventoryRequirementIds:['BIZ-R08'],
-    implementation:{mode:'CONTROLLED_WRITE',actions:['FEED'],blockedCapabilities:[blocked('BREED','Breeding needs a separately recoverable assigned queue and result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},
-    verification:verification('verifyPet','src/pet-operations.mjs#verifyPet','Full OnWater queue identity and AllPet plus exact material debits prove a single configured time reduction or precise transition to mature list; no new owned pet or automatic claim'),
-    dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.PetParamCfg','config.PetBaseCfg','config.ItemCfg']),
+    implementation:{mode:'CONTROLLED_WRITE',actions:['FEED','LEVEL'],blockedCapabilities:[blocked('BREED','Breeding needs a separately recoverable assigned queue and result contract'),blocked('MATURE_CLAIM','GetMaturePet is targetless; no recoverable exact claim identity or automatic claim')]},
+    verification:verification('verifyPet','src/pet-operations.mjs#verifyPet','Full OnWater queue identity and AllPet plus exact material debits prove a single configured time reduction or precise transition to mature list; LEVEL binds unique serving building and UID, trusted player level, exact next-level config attributes and owned pet experience debit; preserve peers and all other state; no new owned pet or automatic claim'),
+    dependencyVersions:dependencies(['moduleConfig','config.BuildingCfg','config.PetParamCfg','config.PetBaseCfg','config.ItemCfg'],[{when:'parameters.action=level',keys:['config.PetLevelCfg','config.PetAdvancedCfg']}]),
   }),
   'trial-challenge': contract('trial-challenge',[],['P6-2'],['src/trial-challenge.mjs#trialChallengeModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D09'],

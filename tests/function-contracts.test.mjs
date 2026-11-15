@@ -225,3 +225,7 @@ test('equipment initial-level is explicit within C229 with the same level config
   for(const key of ['expectedStar','expectedFragmentBalance','expectedStarCost'])assert.equal(c.inputSchema.properties[key].type,'integer');
   assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.expectedStar=present').keys,['config.HeroStarCfg']);
  });
+
+test('Pet original contract covers exact serving instance single-level action with conditional config dependencies',async()=>{
+ const {petModule}=await import('../src/pet-operations.mjs');const c=validateFunctionContract('pet',petModule),p={action:'level',buildingId:'1宠物',uid:'9007199254740993'};assert.deepEqual(validateFunctionParameters('pet',petModule,p),p);assert.deepEqual(c.implementation.actions,['FEED','LEVEL']);assert.deepEqual(c.inventoryRequirementIds,['BIZ-R08']);assert.ok(c.dependencyVersions.conditional[0].keys.includes('config.PetLevelCfg'));const d=petModule.dependencyVersions({config:{tables:{}},parameters:p});assert.ok(Object.hasOwn(d,'config.PetAdvancedCfg'));assert.ok(!Object.hasOwn(petModule.dependencyVersions({config:{tables:{}},parameters:{action:'feed'}}),'config.PetLevelCfg'));invalid(()=>validateFunctionParameters('pet',petModule,{...p,jobIdx:0}));
+});

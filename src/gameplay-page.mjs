@@ -392,9 +392,23 @@ function gpRenderDomain(id,view){
   apply.onclick=()=>{if(!valid(apply))return;const old=gpParse('gp-'+id+'-parameters'),quantity=Number(num.value);if(!old.antiqueId||!Number.isInteger(quantity)||quantity<1||quantity>2147483647){$('gp-'+id+'-hint').textContent='先选择藏品，并输入本次兑换的正整数数量。';return;}draft({action:'exchange',antiqueId:old.antiqueId,num:quantity});};
   numLabel.appendChild(num);box.appendChild(numLabel);box.appendChild(apply);s.actionControls.push(num,apply);
  }else if(id==='pet'){
+  const scope=viewGuard.capture(),revision=gpRevision;
+  const valid=control=>!control.disabled&&gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id).data?.view===view;
+  const draft=parameters=>{$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已更新海兽操作；请重新探测，再选择明确实例并预览。';};
+  for(const mode of [{action:'feed',label:'单次投喂'},{action:'level',label:'服役海兽升一级'}]){
+   const button=gpEl('button',mode.label);button.dataset.petMode=mode.action;button.disabled=!gpDomainSelectable(id);
+   button.onclick=()=>{if(valid(button))draft({action:mode.action});};box.appendChild(button);s.actionControls.push(button);
+  }
+  table('服役海兽',['建筑','海兽 UID'],(view?.serving||[]).map(row=>[row.buildingId,row.uid]));
+  if(view?.mode==='level'){
+   box.appendChild(gpEl('p','玩家等级 '+show(view.playerLevel)+'；每次仅升级明确建筑正在服役的同一海兽一级，按下级配置扣自有海兽经验。'));
+   table('单级升级',['建筑','海兽 UID','当前等级','目标等级','成本','状态'],(view?.candidates||[]).filter(row=>row.actionType==='LEVEL').map(row=>[row.target.buildingId,row.target.uid,row.target.fromLevel,row.target.toLevel,operationCosts(row.costs),row.executable?'可以预览':row.blockedReason]));
+  }
+  if(view?.mode!=='level'){
   table('培育队列',['培育室','任务idx','海兽','星级','开始时间','完成时间'],(view?.rooms||[]).flatMap(room=>(room.queue?.breedQ||[]).map(job=>[room.buildingId,job.idx,job.petId,job.star,job.startTime,job.finishTime])));
   table('单次投喂',['培育室','任务idx','海兽','材料成本','状态'],(view?.candidates||[]).filter(row=>row.actionType==='FEED').map(row=>[row.target.buildingId,row.target.jobIdx,row.target.petId,operationCosts(row.costs),row.executable?'可以预览':row.blockedReason]));
   box.appendChild(gpEl('p','每次只投喂指定培育批次一次，减时 '+String(view?.secondsReduced??'未知')+' 秒；只用自有材料。成熟列表变化须独立复读，不自动领取或补料。'));
+  }
  }else if(id==='badge-growth'){
   const scope=viewGuard.capture(),revision=gpRevision,rows=view?.candidates||[];
   const putOn=view?.mode==='put-on'||rows.some(row=>row.actionType==='PUT-ON'),star=view?.mode==='star'||rows.some(row=>row.actionType==='STAR');

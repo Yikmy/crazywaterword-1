@@ -7,15 +7,18 @@ import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, safeResourceQuantity, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { createStateFact, factsFreshnessPolicy, readGameTime, gameTimeBounds } from './state-facts.mjs';
+import { readPetRevision, readPlayerLevelEvent } from './client.mjs';
 import { makeTypeResolver } from './world.mjs';
 
 const moduleId='pet',type='宠物培育室';
 const tables=['BuildingCfg','PetParamCfg','PetBaseCfg','ItemCfg'];
+const levelTables=['PetLevelCfg','PetAdvancedCfg'];
+const levelSource='v76 PetLevelUpPanel._initPet/_refreshUI/_toUpRequest; PetUtil.curMaxLevel/petBaseAttr/buildExtraAttrArr; PetModel.SCPetsUpdate; PetLevelCfg and PetAdvancedCfg';
 const queries=[['water','OnWaterRequest','OnWaterResponse'],['pets','AllPetRequest','AllPetResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse']];
 const source='v76 PetFeedView._onBtnFood; PetUtil.breedSpeedSeconds; local reference pet.mjs#planPet; DispPetBreedJob and PetParamCfg[投喂减少培育时间]';
 export const PET_DEFAULT_CONFIG=Object.freeze({enabled:false});
 export const PET_EVIDENCE=Object.freeze({source,requirement:'BIZ-R08',request:'PetFeedRequest',response:'NO_DEDICATED_RESPONSE',
-  breed:'BLOCKED_EVIDENCE',claim:'BLOCKED_EVIDENCE_TARGETLESS_RECOVERY_IDENTITY',universal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
+  level:Object.freeze({request:'PetLevelUpRequest',response:'NO_DEDICATED_RESPONSE',source:levelSource}),breed:'BLOCKED_EVIDENCE',claim:'BLOCKED_EVIDENCE_TARGETLESS_RECOVERY_IDENTITY',universal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const dense=v=>Array.isArray(v)&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
@@ -43,21 +46,23 @@ export function validatePetConfig(v={}){
   return {enabled:v.enabled??false};
 }
 export function validatePetParameters(v={}){
-  if(!fields(v,['action','buildingId','jobIdx']))throw invalid('海兽投喂仅允许 action、buildingId、jobIdx');
-  if(own(v,'action')&&v.action!=='feed')throw invalid('当前仅支持明确的单次 action=feed');
+  if(!fields(v,['action','buildingId','jobIdx','uid']))throw invalid('海兽仅允许 action、buildingId、jobIdx、uid');
+  if(own(v,'action')&&!['feed','level'].includes(v.action))throw invalid('当前仅支持单次 action=feed 或 level');
   if(own(v,'buildingId')&&!id(v.buildingId))throw invalid('buildingId 必须为明确培育室 ID');
   if(own(v,'jobIdx')&&!uint(v.jobIdx))throw invalid('jobIdx 必须为明确的非负 int32，不能使用显示槽位代替');
+  if(own(v,'uid')&&(typeof v.uid!=='string'||exactUid(v.uid)!==v.uid))throw invalid('uid 必须为明确十进制海兽 UID');
+  if(v.action==='level'&&own(v,'jobIdx')||v.action!=='level'&&own(v,'uid'))throw invalid('升级 UID 与投喂 jobIdx 不得混用');
   return {...v};
 }
-function catalog(config){
+function catalog(config,action='feed'){
   const t=Object.fromEntries(tables.map(n=>[n,config?.tables?.[n]?.data])),b=t.BuildingCfg,p=t.PetParamCfg,base=t.PetBaseCfg,items=t.ItemCfg;
   if(![b,p,base,items].every(dense)||!b.length||!base.length||!items.length
     ||!b.every(r=>own(r,'buildingType')&&id(r.buildingType))||!unique(b,r=>r.buildingType)||!b.some(r=>r.buildingType===type)
     ||!base.every(r=>own(r,'petId')&&id(r.petId)&&own(r,'star')&&uint(r.star))||!unique(base,r=>r.petId+':'+r.star)
     ||!items.every(r=>own(r,'id')&&id(r.id))||!unique(items,r=>r.id))return null;
   const speed=p.filter(r=>own(r,'paramName')&&r.paramName==='投喂减少培育时间');
-  if(speed.length!==1||!own(speed[0],'paramValue')||!positive(speed[0].paramValue))return null;
-  return {seconds:speed[0].paramValue,types:b.map(r=>r.buildingType),pets:base.map(({petId,star})=>({petId,star})),itemIds:items.map(r=>r.id)};
+  if(action!=='level'&&(speed.length!==1||!own(speed[0],'paramValue')||!positive(speed[0].paramValue)))return null;
+  return {seconds:action==='level'?null:speed[0].paramValue,types:b.map(r=>r.buildingType),pets:base.map(({petId,star})=>({petId,star})),itemIds:items.map(r=>r.id)};
 }
 function costsOf(raw,cat){
   if(!dense(raw)||!raw.length||!cat)return null;
@@ -105,34 +110,81 @@ function clockOf(client,context){
   return time.gameTime.accountId===context.accountId&&time.gameTime.generation===context.generation&&bounds.earliest!==null?bounds:null;
 }
 const digest=f=>hash({...f,stock:[...(f.stock??[])]});
+function levelSourceOf(client,context){
+  const revision=readPetRevision(client,context),level=readPlayerLevelEvent(client);
+  return revision&&level.reliable&&positive(level.playerLevel)&&Object.keys(context).every(k=>level[k]===context[k])?{revision,playerLevel:level.playerLevel}:null;
+}
 export async function surveyPet(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}){
-  parameters=validatePetParameters(parameters);const active=()=>assertExecutionActive(client,{signal,stop}),context=contextOf(client,player),notes=[],startClock=clockOf(client,context);active();
+  parameters=validatePetParameters(parameters);const active=()=>assertExecutionActive(client,{signal,stop}),context=contextOf(client,player),notes=[],startClock=clockOf(client,context),levelSourceBefore=parameters.action==='level'?levelSourceOf(client,context):null;active();
   const results=await Promise.all(queries.map(async([key,request,response])=>{
     active();if(!protocol?.[request]||!protocol?.[response]){notes.push(request+': PROTOCOL_UNAVAILABLE');return [key,null,null];}
     try{const raw=await awaitExecution(client.request(request,{},response,timeout,{signal}),client,{signal,stop});return [key,raw,Date.now()];}
     catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push(request+': STATE_UNKNOWN');return [key,null,null];}
   }));active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('海兽调查期间账号或连接改变'),{code:'CANCELLED'});
-  const raw=Object.fromEntries(results.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),cat=catalog(config);
+  const raw=Object.fromEntries(results.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),cat=catalog(config,parameters.action);
   const buildings=parseWater(raw.water,config,cat)&&parseWater(inputs.water,config,cat),pets=parsePets(raw.pets,cat)&&parsePets(inputs.pets,cat);
   const inventory=parseOperationInventory(raw.items,raw.resources).stockReliable?parseOperationInventory(inputs.items,inputs.resources):{stock:new Map(),stockReliable:false};
   const sourceFacts=Object.fromEntries(results.map(([key,,sourceAt],i)=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,scope:{kind:'ACCOUNT'},source:queries[i][2],sourceAt,reliable:i===0?buildings!==null:i===1?pets!==null:inventory.stockReliable})]));
-  const facts={module:moduleId,parameters,context,catalog:cat,inputs,buildings,pets,...inventory,sourceFacts,startClock,endClock:clockOf(client,context),available:Object.keys(protocol??{}),notes,state:{context,buildings,pets}};
+  const levelSourceAfter=parameters.action==='level'?levelSourceOf(client,context):null;
+  const facts={levelSource:levelSourceBefore&&same(levelSourceBefore,levelSourceAfter)?levelSourceAfter:null,module:moduleId,parameters,context,catalog:cat,inputs,buildings,pets,...inventory,sourceFacts,startClock,endClock:clockOf(client,context),available:Object.keys(protocol??{}).filter(name=>protocol[name]?.encode&&protocol[name]?.decode),notes,state:{context,buildings,pets}};
   liveFacts.set(facts,{client,player,digest:digest(facts)});return facts;
 }
-function authority(f,config){
+function authority(f,config,{settlement=false}={}){
   const live=liveFacts.get(f),c=f?.context;
-  if(!live||live.digest!==digest(f)||!same(c,contextOf(live.client,live.player))||!id(c.accountId)||!id(c.connectionId)||!uint(c.generation)||!c.playerId||!c.worldId||!same(f.catalog,catalog(config))||!f.catalog||!f.buildings||!f.pets||!f.stockReliable||!(f.stock instanceof Map))return false;
+  if(!live||live.digest!==digest(f)||!same(c,contextOf(live.client,live.player))||!id(c.accountId)||!id(c.connectionId)||!uint(c.generation)||!c.playerId||!c.worldId||!same(f.catalog,catalog(config,f.parameters?.action))||!f.catalog||!f.buildings||!f.pets||!f.stockReliable||!(f.stock instanceof Map))return false;
+  if(f.parameters?.action==='level'){const current=levelSourceOf(live.client,c);if(!f.levelSource||!current||current.playerLevel!==f.levelSource.playerLevel||current.revision.revision<f.levelSource.revision.revision||!settlement&&!same(current,f.levelSource))return false;}
   return queries.every(([key,,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,scope:{kind:'ACCOUNT'},maxAgeMs:30000}).status==='FRESH');
 }
 function currentClock(f){
   const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
   return clock&&f.startClock&&f.endClock&&f.startClock.earliest<=f.endClock.earliest&&f.endClock.earliest<=clock.earliest?clock:null;
 }
-export function petDependencyVersions({config,moduleConfig=PET_DEFAULT_CONFIG}={}){
-  return {moduleConfig:validatePetConfig(moduleConfig),...Object.fromEntries(tables.map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};
+export function petDependencyVersions({config,moduleConfig=PET_DEFAULT_CONFIG,parameters={}}={}){
+  return {moduleConfig:validatePetConfig(moduleConfig),...Object.fromEntries([...tables,...(parameters.action==='level'?levelTables:[])].map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};
 }
-function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
+// Level effects are the fixed client's preview formula, never inferred from rewards.
+function levelPolicy(config,pet,playerLevel){
+  const levels=config?.tables?.PetLevelCfg?.data,grades=config?.tables?.PetAdvancedCfg?.data,base=config?.tables?.PetBaseCfg?.data?.find(r=>r.petId===pet?.petId&&r.star===pet?.star);
+  if(!pet||!positive(playerLevel)||!dense(levels)||!levels.length||!levels.every((r,i)=>['level','playerLevel','extraAttrNum','baseAttrAdd','cost'].every(k=>own(r,k))&&r.level===i+1&&positive(r.playerLevel)&&uint(r.extraAttrNum)&&typeof r.baseAttrAdd==='number'&&Number.isFinite(r.baseAttrAdd)&&r.baseAttrAdd>=0&&(i===0||r.playerLevel>=levels[i-1].playerLevel)&&dense(r.cost))||!dense(grades)||!unique(grades,r=>r.grade)||!grades.every(r=>own(r,'grade')&&uint(r.grade)&&own(r,'attrs')&&dense(r.attrs)&&r.attrs.length<=3&&r.attrs.every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0))||!base||!own(pet,'grade')||!uint(pet.grade))return null;
+  const grade=grades.find(r=>r.grade===pet.grade),current=levels.find(r=>r.level===pet.level),next=levels.find(r=>r.level===pet.level+1),maxLevel=levels.filter(r=>r.playerLevel<=playerLevel).at(-1)?.level;
+  const attrs=(row)=>{
+    if(!row||!grade||!own(pet,'baseAttrs')||!dense(pet.baseAttrs)||pet.baseAttrs.length!==3||!unique(pet.baseAttrs,r=>r.attr))return null;
+    const result=[];
+    for(const a of pet.baseAttrs){const names={1:['hp','hpGrowth',0],2:['ad','adGrowth',1],3:['ap','apGrowth',2]}[a.attr];if(!names||!own(a,'attr')||!own(a,'value')||!Number.isSafeInteger(a.value)||a.value<0)return null;const [start,growth,index]=names;
+      if(![start,growth].every(k=>own(base,k)&&typeof base[k]==='number'&&Number.isFinite(base[k])&&base[k]>=0))return null;
+      const value=Math.floor((base[start]+row.baseAttrAdd*base[growth])*(1+(grade.attrs[index]??0)));if(!Number.isSafeInteger(value))return null;result.push({...a,value});}
+    return result;
+  };
+  const before=attrs(current),after=attrs(next),selected=pet.extAttrIdx===1?pet.extAttrs:pet.extAttrs2;
+  if(!before||!same(before,pet.baseAttrs)||!after||!own(pet,'extAttrIdx')||![1,2].includes(pet.extAttrIdx)||!dense(selected)||selected.length<next.extraAttrNum||!dense(pet.extAttrs)||!dense(pet.extAttrs2))return null;
+  return {next,maxLevel,pet:{...copy(pet),level:next.level,baseAttrs:after}};
+}
+function levelCandidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG,settlement=false}={}){
+  const valid=authority(f,config,{settlement}),resolve=makeTypeResolver(config),building=valid?f.buildings.find(b=>b.buildingId===p.buildingId):null;
+  const serves=valid?f.buildings.filter(b=>['宠物','宠物B','宠物C'].includes(resolve(b.buildingId))):[],servesKnown=serves.every(b=>own(b,'petServe')&&own(b.petServe,'petUid')&&(b.petServe.petUid===0||b.petServe.petUid==='0'||exactUid(b.petServe.petUid)!==null));
+  const pet=valid?f.pets.find(r=>r.uid===p.uid):null,policy=valid?levelPolicy(config,pet,f.levelSource?.playerLevel):null;
+  const raw=policy?.next.cost,costs=dense(raw)&&raw.length===2&&raw[0]==='宠物经验'&&positive(raw[1])&&f.catalog?.itemIds.includes(raw[0])?[{id:raw[0],num:raw[1]}]:[];
+  let reason=null;const action={request:'PetLevelUpRequest',response:null,body:{buildingId:p.buildingId}};
+  if(!p.buildingId||!p.uid)reason='EXPLICIT_SERVING_BUILDING_AND_PET_UID_REQUIRED';
+  else if(!moduleConfig.enabled)reason='PET_MODULE_DISABLED';
+  else if(!valid)reason='PET_AUTHORITY_OR_CONTEXT_UNKNOWN';
+  else if(!servesKnown||!building||!serves.includes(building)||!own(building,'petServe')||exactUid(building.petServe.petUid)!==p.uid||serves.filter(b=>exactUid(b.petServe.petUid)===p.uid).length!==1||!pet)reason='EXACT_UNIQUE_SERVING_PET_REQUIRED';
+  else if(building.level<1||!own(building,'buildFinishTime')||building.buildFinishTime!==0)reason='AVAILABLE_SERVING_BUILDING_REQUIRED';
+  else if(!policy||!costs.length)reason='PET_LEVEL_CONFIG_OR_EFFECT_UNKNOWN';
+  else if(policy.next.level>policy.maxLevel)reason='PET_PLAYER_LEVEL_LIMIT';
+  else if(!f.available.includes(action.request)||f.available.includes('PetLevelUpResponse'))reason='PROTOCOL_UNAVAILABLE';
+  else if(costs.some(r=>(f.stock.get(r.id)??0)<r.num))reason='PET_LEVEL_STOCK_INSUFFICIENT';
+  else{try{assertPaymentAllowed({...action,costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}}
+  const target={buildingId:p.buildingId??null,uid:p.uid??null,petId:pet?.petId??null,fromLevel:pet?.level??null,toLevel:policy?.next.level??null};
+  const configEvidence=Object.fromEntries([...tables,...levelTables].map(n=>[n,copy(config?.tables?.[n]??null)]));
+  return {module:moduleId,actionId:'pet:LEVEL:'+hash(target),actionType:'LEVEL',parameters:p,target,executable:reason===null,blockedReason:reason,
+    identity:valid&&pet?hash({context:f.context,buildings:f.buildings,pets:f.pets,levelSource:f.levelSource,dependencies:petDependencyVersions({config,moduleConfig,parameters:p})}):null,
+    configEvidence,beforeState:pet&&building?{building:copy(building),pet:copy(pet)}:null,expectedState:policy?{pet:policy.pet}:null,costs,costSource:levelSource,
+    budgetClaims:{resources:copy(costs),quotas:[],uids:pet?[{type:'pet',id:pet.uid},{type:'pet-serving-building',id:p.buildingId}]:[]},label:'海兽单级升级 '+(p.buildingId??'')+' '+(p.uid??''),...(reason===null?{action}:{})};
+}
+function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG,settlement=false}={}){
   p=validatePetParameters(p);moduleConfig=validatePetConfig(moduleConfig);
+  if(p.action==='level')return levelCandidate(f,p,{config,moduleConfig,settlement});
   const valid=authority(f,config),building=valid?f.buildings.find(b=>b.buildingId===p.buildingId&&makeTypeResolver(config)(b.buildingId)===type):null,job=building?.petBreed?.breedQ.find(j=>j.idx===p.jobIdx);
   const clock=valid?currentClock(f):null,costs=job?costsOf(job.feedRequirements,f.catalog):[],duplicates=valid?f.buildings.flatMap(b=>b.petBreed?.breedQ??[]).filter(j=>j.idx===p.jobIdx).length:0;
   const action={request:'PetFeedRequest',response:null,body:{jobIdx:p.jobIdx}};let reason=null;
@@ -158,11 +210,12 @@ function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
 }
 export function viewPet(f,{config,moduleConfig,parameters=f?.parameters??{}}={}){
   const p=validatePetParameters(parameters),valid=authority(f,config),rooms=valid?f.buildings.filter(b=>makeTypeResolver(config)(b.buildingId)===type&&own(b,'petBreed')):[],choices=[];
-  for(const b of rooms)if(!p.buildingId||p.buildingId===b.buildingId)for(const job of b.petBreed.breedQ)if(!own(p,'jobIdx')||p.jobIdx===job.idx)choices.push({action:'feed',buildingId:b.buildingId,jobIdx:job.idx});
+  if(p.action==='level'){for(const b of valid?f.buildings:[]){const uid=b.petServe&&exactUid(b.petServe.petUid);if(uid&&(!p.buildingId||p.buildingId===b.buildingId)&&(!p.uid||p.uid===uid))choices.push({action:'level',buildingId:b.buildingId,uid});}}
+  else for(const b of rooms)if(!p.buildingId||p.buildingId===b.buildingId)for(const job of b.petBreed.breedQ)if(!own(p,'jobIdx')||p.jobIdx===job.idx)choices.push({action:'feed',buildingId:b.buildingId,jobIdx:job.idx});
   const candidates=(choices.length?choices:[p]).map(choice=>{
     const c=candidate(f,choice,{config,moduleConfig});return without(c,['identity','configEvidence']);
   });
-  return {module:moduleId,rooms:rooms.map(b=>({buildingId:b.buildingId,level:b.level,queue:copy(b.petBreed)})),pets:valid?copy(f.pets):[],secondsReduced:valid?f.catalog.seconds:null,
+  return {module:moduleId,mode:p.action??'feed',serving:valid?f.buildings.filter(b=>['宠物','宠物B','宠物C'].includes(makeTypeResolver(config)(b.buildingId))).map(b=>({buildingId:b.buildingId,uid:b.petServe?.petUid??null})):[],playerLevel:f?.levelSource?.playerLevel??null,rooms:rooms.map(b=>({buildingId:b.buildingId,level:b.level,queue:copy(b.petBreed)})),pets:valid?copy(f.pets):[],secondsReduced:valid?f.catalog.seconds:null,
     candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
 }
 export function planPet(f,{config,moduleConfig,parameters={},selections,ledger=new ResourceLedger(f?.stockReliable?f.stock:null)}={}){
@@ -172,12 +225,20 @@ export function planPet(f,{config,moduleConfig,parameters={},selections,ledger=n
 export function verifyPet(op,b,a){
   const fail=reason=>({confirmed:false,reason});let p;try{p=validatePetParameters(op?.parameters);}catch{return fail('PET_OPERATION_CONTRACT_INVALID');}
   const config={tables:op?.configEvidence??{}};
-  if(!authority(b,config)||!authority(a,config)||!same(b.context,a.context))return fail('PET_AUTHORITY_OR_CONTEXT_UNKNOWN');
+  if(!authority(b,config,{settlement:p.action==='level'})||!authority(a,config)||!same(b.context,a.context))return fail('PET_AUTHORITY_OR_CONTEXT_UNKNOWN');
   if(queries.some(([key])=>a.sourceFacts[key].provenance.sourceAt<b.sourceFacts[key].provenance.sourceAt))return fail('PET_POST_READ_PREDATES_BASELINE');
   // Reconstruct with the original queue and costs. A late read must still prove
   // the original job could not have matured naturally without this feed.
-  const contract=candidate(b,p,{config,moduleConfig:{enabled:true}});
+  const contract=candidate(b,p,{config,moduleConfig:{enabled:true},settlement:p.action==='level'});
   if(!contract.executable||['module','actionId','actionType','target','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','configEvidence'].some(k=>!same(op[k],contract[k])))return fail('PET_OPERATION_CONTRACT_MISMATCH');
+  if(p.action==='level'){
+    const after=a.pets.find(row=>row.uid===p.uid),expected=contract.expectedState.pet;
+    if(!same(b.buildings,a.buildings)||!same(after,expected)||!same(b.pets.filter(row=>row.uid!==p.uid),a.pets.filter(row=>row.uid!==p.uid)))return fail('PET_EXACT_LEVEL_OR_NON_TARGET_STATE_NOT_CONFIRMED');
+    const debits=new Map(contract.costs.map(r=>[r.id,r.num]));
+    if([...new Set([...b.stock.keys(),...a.stock.keys(),...debits.keys()])].some(k=>(a.stock.get(k)??0)!==(b.stock.get(k)??0)-(debits.get(k)??0)))return fail('PET_EXACT_MATERIAL_DEBITS_NOT_CONFIRMED');
+    if(!authority(b,config,{settlement:true})||!authority(a,config))return fail('PET_AUTHORITY_EXPIRED_DURING_VERIFICATION');
+    return {confirmed:true,reason:'完整OnWater确认同一服役建筑与UID，独立AllPet及库存确认单级、配置属性和精确海兽经验净扣',afterState:{pet:copy(after),buildingId:p.buildingId}};
+  }
   const before=contract.beforeState.building,after=a.buildings.find(v=>v.buildingId===p.buildingId),job=contract.beforeState.job,clock=currentClock(a);
   if(!after||!clock||!b.endClock||clock.earliest<b.endClock.earliest||clock.latest>=job.finishTime)return fail('PET_SETTLEMENT_CLOCK_OR_NATURAL_COMPLETION_AMBIGUOUS');
   if(!same(b.buildings.filter(v=>v.buildingId!==p.buildingId),a.buildings.filter(v=>v.buildingId!==p.buildingId))||!same(without(before,['petBreed']),without(after,['petBreed']))||!same(b.pets,a.pets))return fail('PET_NON_TARGET_STATE_CHANGED');
@@ -199,4 +260,4 @@ export function verifyPet(op,b,a){
   return {confirmed:true,reason:'完整OnWater与AllPet及库存确认同批队列单次投喂、精确材料净扣和减时/成熟转移；未自动领取',afterState:{building:copy(after),effect}};
 }
 export const petModule=Object.freeze({id:moduleId,label:'海兽培育与投喂',capabilities:Object.freeze(['BIZ-R08']),defaultConfig:PET_DEFAULT_CONFIG,validateConfig:validatePetConfig,validateParameters:validatePetParameters,
-  survey:surveyPet,view:viewPet,plan:planPet,verify:verifyPet,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:petDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...tables.map(n=>'config.'+n)])});
+  survey:surveyPet,view:viewPet,plan:planPet,verify:verifyPet,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:petDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...[...tables,...levelTables].map(n=>'config.'+n)])});

@@ -62,7 +62,7 @@ export const EQUIPMENT_PUT_ON_EVIDENCE=Object.freeze({
   scope:'EXPLICIT_OWNED_IDLE_SINGLE_EMPTY_SLOT_ONLY',replace:'BLOCKED_EVIDENCE',realGame:'REAL_UNVERIFIED',
 });
 export const EQUIPMENT_GROWTH_DEFAULT_CONFIG=Object.freeze({enabled:false});
-export const EQUIPMENT_GROWTH_EVIDENCE=Object.freeze({source,request:'EnhanceEquipRequest',response:'NO_DEDICATED_RESPONSE',heroDerived:'SERVER_ALL_HERO_POWER_ATTRIBUTES_ONLY',levelZero:'EXPLICIT_WORN_ZERO_TO_ONE_CONFIGURED_FREE_ONLY',initialLevel:Object.freeze({parameter:'initial-level',fromLevel:0,toLevel:1,costTable:'EquipUpDecomposeCfg',costKey:1,upgradeCost:0,inventory:'UNCHANGED'}),refine:EQUIPMENT_REFINE_EVIDENCE,star:'EXPLICIT_RED_SINGLE_STAR',replace:'EXCLUDED',universal:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
+export const EQUIPMENT_GROWTH_EVIDENCE=Object.freeze({source,request:'EnhanceEquipRequest',response:'NO_DEDICATED_RESPONSE',heroDerived:'SERVER_ALL_HERO_POWER_ATTRIBUTES_ONLY',levelZero:'EXPLICIT_WORN_ZERO_TO_ONE_CONFIGURED_FREE_ONLY',initialLevel:Object.freeze({parameter:'initial-level',fromLevel:0,toLevel:1,costTable:'EquipUpDecomposeCfg',costKey:1,upgradeCost:0,inventory:'UNCHANGED'}),refine:EQUIPMENT_REFINE_EVIDENCE,star:'EXPLICIT_RED_SINGLE_STAR',replace:'BLOCKED_EVIDENCE',universal:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
 function exactPositive(v){
   if(typeof v==='number'&&!Number.isSafeInteger(v))return null;const n=toSnapshotJson(v);
   if(!(typeof n==='number'&&Number.isSafeInteger(n))&&!(typeof n==='string'&&/^[1-9]\d*$/.test(n)))return null;
