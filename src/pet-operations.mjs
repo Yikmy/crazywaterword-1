@@ -5,6 +5,7 @@ import { stableBusinessValue, businessRejectionIdentityFromHistory } from './bus
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 import { ResourceLedger, safeResourceQuantity, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { createStateFact, factsFreshnessPolicy, readGameTime, gameTimeBounds } from './state-facts.mjs';
 import { readPetRevision, readPlayerLevelEvent } from './client.mjs';
@@ -234,8 +235,7 @@ export function verifyPet(op,b,a){
   if(p.action==='level'){
     const after=a.pets.find(row=>row.uid===p.uid),expected=contract.expectedState.pet;
     if(!same(b.buildings,a.buildings)||!same(after,expected)||!same(b.pets.filter(row=>row.uid!==p.uid),a.pets.filter(row=>row.uid!==p.uid)))return fail('PET_EXACT_LEVEL_OR_NON_TARGET_STATE_NOT_CONFIRMED');
-    const debits=new Map(contract.costs.map(r=>[r.id,r.num]));
-    if([...new Set([...b.stock.keys(),...a.stock.keys(),...debits.keys()])].some(k=>(a.stock.get(k)??0)!==(b.stock.get(k)??0)-(debits.get(k)??0)))return fail('PET_EXACT_MATERIAL_DEBITS_NOT_CONFIRMED');
+    if(!stockMatchesDelta(b.stock,a.stock,contract.costs,[]))return fail('PET_EXACT_MATERIAL_DEBITS_NOT_CONFIRMED');
     if(!authority(b,config,{settlement:true})||!authority(a,config))return fail('PET_AUTHORITY_EXPIRED_DURING_VERIFICATION');
     return {confirmed:true,reason:'完整OnWater确认同一服役建筑与UID，独立AllPet及库存确认单级、配置属性和精确海兽经验净扣',afterState:{pet:copy(after),buildingId:p.buildingId}};
   }
@@ -254,8 +254,7 @@ export function verifyPet(op,b,a){
     if(reduced>clock.earliest||!same(sorted([...beforeQ.maturePets,{petId:job.petId,star:job.star}]),sorted(afterQ.maturePets)))return fail('PET_EXACT_MATURITY_NOT_CONFIRMED');
     effect='MATURE';
   }
-  const debits=new Map(contract.costs.map(r=>[r.id,r.num]));
-  if([...new Set([...b.stock.keys(),...a.stock.keys(),...debits.keys()])].some(k=>(a.stock.get(k)??0)!==(b.stock.get(k)??0)-(debits.get(k)??0)))return fail('PET_EXACT_MATERIAL_DEBITS_NOT_CONFIRMED');
+  if(!stockMatchesDelta(b.stock,a.stock,contract.costs,[]))return fail('PET_EXACT_MATERIAL_DEBITS_NOT_CONFIRMED');
   if(!authority(b,config)||!authority(a,config))return fail('PET_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {confirmed:true,reason:'完整OnWater与AllPet及库存确认同批队列单次投喂、精确材料净扣和减时/成熟转移；未自动领取',afterState:{building:copy(after),effect}};
 }

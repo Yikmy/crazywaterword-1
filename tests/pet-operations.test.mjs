@@ -374,3 +374,22 @@ test('Pet LEVEL player-level stream and changed next-level config invalidate ori
  const f=await levelPrepared(t);f.push('SCPlayerExpUpdate',{level:31});assert.equal(f.plan(f.before).actions.length,0);assert.equal((await f.run(f.operation)).status,'NOT_EXECUTED');assert.equal(f.state.writes.length,0);
  const g=await levelPrepared(t);g.config.tables.PetLevelCfg.data[1].cost[1]++;assert.equal((await g.run(g.operation)).status,'NOT_EXECUTED');assert.equal(g.state.writes.length,0);
 });
+
+for(const level of [false,true])for(const balance of ['explicit-zero','omitted-zero','new-unrelated'])
+ test('Pet shared net debit '+(level?'LEVEL':'FEED')+' preserves '+balance+' through original durable execution',async t=>{
+  const f=fixture(t,{shared:true,level});await f.ready;
+  for(const row of f.claims.resources)f.state.stock.set(row.id,row.num);
+  f.state.onResponse=(name,value)=>{
+   if(name==='AllItemRequest'&&f.state.writes.length&&balance==='omitted-zero')value.items=value.items.filter(row=>!f.claims.resources.some(cost=>cost.id===row.itemId));
+   return value;
+  };
+  f.state.afterWrite=()=>{if(balance==='new-unrelated')f.state.stock.set('new-unrelated',1);};
+  const p=await f.displayed(),{record,permit}=await f.execute(p),known=balance!=='new-unrelated';
+  assert.equal(record.finalStatus,known?'SUCCESS':'UNKNOWN');assert.deepEqual(record.runBudget.reserved,f.claims);
+  assert.equal(f.state.writes.length,1);for(const row of f.claims.resources)assert.equal(f.state.stock.get(row.id),0);
+  assert.equal(record.actions[0].verification.status,known?'CONFIRMED':'UNCONFIRMED');assert.throws(()=>f.service.execute(f.session,permit));
+  if(!known){
+   assert.equal(record.actions[0].unresolvedWrite,true);const next=f.newService(),fresh={...f.session,generation:2,connectionId:'shared-delta-restart',client:{...f.client,connected:true,pending:[],watchers:[],lateResponses:new Map(),uncertainWrites:new Map(),factContext:{...f.client.factContext,generation:2,connectionId:'shared-delta-restart'}}};
+   await assert.rejects(next.surveyModule(fresh,'pet',f.parameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);
+  }
+ });
