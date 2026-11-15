@@ -1,4 +1,7 @@
 import { runTasks } from '../src/tasks.mjs';
+import { GameClient, readOpenRankActivitySnapshot } from '../src/client.mjs';
+import { createCodec } from '../src/codec.mjs';
+import { buildOpenRankWarRewardBody } from '../src/actions.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -58,7 +61,7 @@ function fixture({codec=true,apply=true,receipt={activity:5},tierId=null,worldId
  const options={config:{tables:chip?{WeekChipPackCfg:clone(actual.tables.WeekChipPackCfg)}:unique?{WeekUniquePackCfg:clone(actual.tables.WeekUniquePackCfg)}:weekly?{WeekLotteryPackCfg:clone(actual.tables.WeekLotteryPackCfg)}:gift?{DailyChargeGiftPackCfg:clone(actual.tables.DailyChargeGiftPackCfg)}:tierId===null?{DailyTaskCfg:clone(actual.tables.DailyTaskCfg)}:{DailyActivityRewardCfg:clone(actual.tables.DailyActivityRewardCfg),ItemCfg:clone(actual.tables.ItemCfg)}},moduleConfig:{enabled:true},parameters:chip?{kind:'weekly-chip-gift',packId:'1000'}:unique?{kind:'weekly-unique-lottery-gift',packId:'1000'}:weekly?{kind:'weekly-lottery-gift',packId:'1000'}:gift?{kind:'daily-gift',packId:'赠礼'}:tierId===null?clone(parameters):{kind:'daily-activity',tierId},player:{playerId:'9007199254740993',worldId:worldId??(tierId===null&&!gift?'17':'1000001')}};
  return {state,client,options};
 }
-async function ready(input={},mutate){const f=input.chipTask?chipTaskFixture(input):fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
+async function ready(input={},mutate){const f=input.war?warFixture(input):input.chipTask?chipTaskFixture(input):fixture(input);mutate?.(f);const facts=await surveyTaskRewards(f.client,protocol,f.options),row=viewTaskRewards(facts,f.options).candidates[0],operation=planTaskRewards(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,row,operation};}
 const budget=f=>{const scope={accountId:'synthetic-A',generation:3,connectionId:'offline-daily',runId:'run'},limits=f.operation.budgetClaims;return {ledger:null,runBudget:createRunBudgetContext({scope,limits}),scope,limits,batchId:'batch'};};
 async function settled(f,mutate){const reply=await f.client.request('DrawDailyTaskRewardRequest',{id:1001},'DrawDailyTaskRewardResponse',1000,{mutate:true});mutate?.(f);return {reply,after:await surveyTaskRewards(f.client,protocol,f.options)};}
 
@@ -183,7 +186,7 @@ test('shared executor freshly samples and holds UNKNOWN on absent settlement or 
 
 function serviceFixture(t,{file=null,...input}={}){
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-daily-reward-')):null;file??=path.join(dir,'history.json');
- const durable=createExecutionHistory({file}),history={...durable,put(row){return durable.put(row);}},f=input.chipTask?chipTaskFixture(input):fixture(input);
+ const durable=createExecutionHistory({file}),history={...durable,put(row){return durable.put(row);}},f=input.war?warFixture(input):input.chipTask?chipTaskFixture(input):fixture(input);
  const session={id:'synthetic-A',client:f.client,player:f.options.player,generation:3,connectionId:'offline-daily',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:f.options.moduleConfig})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  f.state.onDispatch=()=>{f.state.saved=clone(durable.list(session.id)[0]);};
@@ -1019,4 +1022,95 @@ test('daily Function reuses original progress observation and keeps period and r
   if(mode==='period-unknown')assert.equal(row.blockedReason,'DAILY_TASK_PERIOD_UNKNOWN');
   assert.equal(f.state.writes.length,0);
  }
+});
+
+function warFixture(input={}){
+ const f=fixture(input),{state,options}=f,old=f.client,codec=createCodec(protocol);let socket;
+ options.player.worldId=input.worldId??'1000001';options.parameters={kind:'open-rank-war',tierId:500};options.config={tables:Object.fromEntries(['OpenRankWarTaskCfg','ItemCfg'].map(n=>[n,clone(actual.tables[n])]))};
+ class Socket{constructor(){socket=this;this.readyState=0;}send(){}close(){this.readyState=3;}receive(n,b,seq=0){this.onmessage?.({data:codec.encode(n,seq,b)});}}
+ const client=new GameClient({protocol,accountId:'synthetic-A',generation:3,WebSocketImpl:Socket,gameClock:old.gameClock});client.factContext={...old.factContext};client.on('error',()=>{});
+ const pending=client.connect({});socket.readyState=1;socket.onopen();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:options.player});assert.equal(client.connected,true);pending.catch(()=>{});clearInterval(client.tickTimer);client.tickTimer=null;
+ old.gameClock.markPing(state.wall);old.gameClock.observePong(wire('PingResponse',{clientTimestamp:state.wall,serverTimestamp:state.wall}));
+ state.openRank={endTime:2000,progress:1000,gotRewardId:[]};state.window={type:4,startTime:900,endTime:2000};let seq=0;
+ state.pushWindow=window=>{socket.receive('SCAllActivity',{openRankActivity:{activityTime:window===null?[]:[window]}},++seq);};state.pushWindow(state.window);
+ const request=old.request.bind(old);client.request=async(n,b,r,timeout,opts)=>{
+  if(n!=='OpenRankInfoRequest')return request(n,b,r,timeout,opts);
+  assert.deepEqual(b,{type:4});state.reads.push(n);await state.onRead?.(n);let value=Object.hasOwn(state.overrides,n)?state.overrides[n]:state.openRank;if(value instanceof Error)throw value;return input.codec===false?clone(value):wire(r,value);
+ };
+ client.sendWatch=async(n,b,opts)=>{
+  assert.equal(n,'GotOpenRankRewardRequest');assert.deepEqual(b,buildOpenRankWarRewardBody(options.parameters.tierId));if(input.codec!==false)wire(n,b);state.onDispatch?.();opts?.beforeDispatch?.();state.writes.push({name:n,body:clone(b)});
+  if(input.apply!==false){state.openRank.gotRewardId.push(b.id);const season=Number(BigInt(options.player.worldId)/1000000n%1000n),rows=options.config.tables.OpenRankWarTaskCfg.data,configured=rows.some(r=>r.season===season)?season:Math.max(...rows.map(r=>r.season)),row=rows.find(r=>r.season===configured&&r.score===b.id);assert.ok(row);for(const [id,num]of row.reward){const resource=Object.entries(RESOURCE_NAMES).find(([,name])=>name===id)?.[0];if(resource)state.resources.find(r=>String(r.res)===resource).amount+=num;else{const item=state.stock.find(r=>r.itemId===id);if(item)item.num+=num;else state.stock.push({itemId:id,num});}}}
+  await state.onWrite?.();return {status:'UNKNOWN'};
+ };
+ f.client=client;f.socket=socket;return f;
+}
+
+test('open-rank war exact score settles through original Function with private window and independent full inventory',async()=>{
+ const f=await ready({war:true});assert.ok(f.operation,JSON.stringify(f.row));assert.deepEqual(f.state.reads,['OpenRankInfoRequest','AllItemRequest','AllResourceRequest']);assert.equal(f.state.writes.length,0);
+ assert.equal(f.operation.capabilityId,'C517');assert.deepEqual(f.operation.action,{request:'GotOpenRankRewardRequest',response:null,body:{type:4,id:500}});assert.equal(f.operation.target.type,4);assert.equal(f.operation.target.season,1);assert.equal(f.operation.target.configuredSeason,1);assert.deepEqual(f.operation.rewards,[{id:'RUBY',num:50},{id:'蓝装材料自选包',num:10},{id:'抽卡券',num:1}]);assert.deepEqual(f.operation.costs,[]);
+ const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'SUCCESS',result.error);assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.openRank.gotRewardId,[500]);assert.equal(f.state.resources.find(r=>r.res===4).amount,100);assert.equal(f.state.stock.find(r=>r.itemId==='蓝装材料自选包').num,10);assert.equal(f.state.stock.find(r=>r.itemId==='抽卡券').num,1);assert.equal(f.state.stock.find(r=>r.itemId==='unrelated').num,9);f.client.stop();
+});
+for(const [season,tierId,configured]of [[1,500,1],[3,2000,3],[7,2000,7],[8,2000,7]])test('open-rank war selects exact season or maximum configured season: '+season,async()=>{
+ const f=await ready({war:true,worldId:String(season*1000000+1)},f=>{f.options.parameters.tierId=tierId;f.state.openRank.progress=tierId;});assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.target.configuredSeason,configured);assert.equal(f.operation.target.season,season);f.client.stop();
+});
+test('open-rank war gaps use maximum season rather than daily highest-less-than-or-equal selection',async()=>{
+ const f=await ready({war:true,worldId:'2000001'},f=>{f.options.config.tables.OpenRankWarTaskCfg.data=f.options.config.tables.OpenRankWarTaskCfg.data.filter(r=>[1,3].includes(r.season));f.options.parameters.tierId=2000;f.state.openRank.progress=2000;});assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.target.configuredSeason,3);f.client.stop();
+});
+test('open-rank war parameters, sole request constructor, D6 and dependencies are exact',async()=>{
+ assert.deepEqual(validateTaskRewardsParameters({kind:'open-rank-war',tierId:500}),{kind:'open-rank-war',tierId:500});
+ for(const p of[{kind:'open-rank-war'},{kind:'open-rank-war',taskId:500},{kind:'open-rank-war',tierId:0},{kind:'open-rank-war',tierId:'500'},{kind:'open-rank-war',tierId:500,type:4},{kind:'open-rank-war',tierId:500,round:1},{kind:'open-rank-war',tierId:500,packId:'1000'}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
+ for(const score of [0,-1,'500',1.5,2147483648])assert.throws(()=>buildOpenRankWarRewardBody(score));
+ const a={request:'GotOpenRankRewardRequest',body:{type:4,id:500},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(a));
+ for(const body of [{},{type:1,id:500},{type:4,id:0},{type:4,id:'500'},{type:4,id:500,buy:false},Object.create({type:4,id:500})])assert.throws(()=>assertPaymentAllowed({...a,body}));
+ for(const costs of [undefined,[{id:'GOLD',num:1}],[{id:'RUBY',num:1}],Array(1)])assert.throws(()=>assertPaymentAllowed({...a,costs}));
+ const f=await ready({war:true});assert.deepEqual(Object.keys(taskRewardsDependencyVersions(f.options).tables),['OpenRankWarTaskCfg','ItemCfg']);assert.equal(taskRewardsModule.execute,undefined);f.client.stop();
+});
+for(const [label,mutate]of [
+ ['missing progress',f=>delete f.state.openRank.progress],['missing end',f=>delete f.state.openRank.endTime],['missing claims raw',f=>delete f.state.openRank.gotRewardId],['negative progress',f=>f.state.openRank.progress=-1],['duplicate claims',f=>f.state.openRank.gotRewardId=[1000,1000]],['unknown claim',f=>f.state.openRank.gotRewardId=[999]],['already claimed',f=>f.state.openRank.gotRewardId=[500]],['incomplete',f=>f.state.openRank.progress=499],['no active window',f=>f.state.pushWindow(null)],['end mismatch',f=>f.state.openRank.endTime=2001],['expired',f=>f.state.mono+=1000001],['future',f=>f.state.pushWindow({...f.state.window,startTime:1001})],['unknown clock',f=>f.client.gameClock={reset(){},read:()=>({status:'UNKNOWN'})}],['unknown season',f=>f.options.player.worldId='17'],['unknown config',f=>delete f.options.config.tables.OpenRankWarTaskCfg],['duplicate config',f=>f.options.config.tables.OpenRankWarTaskCfg.data.push(clone(f.options.config.tables.OpenRankWarTaskCfg.data[0]))],['unknown item',f=>f.options.config.tables.ItemCfg.data=f.options.config.tables.ItemCfg.data.filter(r=>r.id!=='抽卡券')],['instance reward',f=>f.options.config.tables.OpenRankWarTaskCfg.data[0].reward.push(['蓝卡1',1])],['missing RUBY balance',f=>f.state.resources=f.state.resources.filter(r=>r.res!==4)],['read failed',f=>f.state.overrides.OpenRankInfoRequest=Error('synthetic unavailable')],
+])test('open-rank war does not grant eligibility for '+label,async()=>{
+ const f=await ready({war:true,codec:label==='missing claims raw'?false:true},mutate);assert.equal(f.operation,undefined,JSON.stringify(f.row));assert.equal(f.state.writes.length,0);f.client.stop();
+});
+for(const [label,mutate]of [
+ ['not claimed',f=>f.state.openRank.gotRewardId=[]],['other claim',f=>f.state.openRank.gotRewardId.push(1000)],['progress changed',f=>f.state.openRank.progress++],['end changed',f=>f.state.openRank.endTime++],['window changed',f=>f.state.pushWindow({...f.state.window,startTime:901})],['ruby short',f=>f.state.resources.find(r=>r.res===4).amount--],['missing item',f=>f.state.stock=f.state.stock.filter(r=>r.itemId!=='抽卡券')],['other stock',f=>f.state.stock.find(r=>r.itemId==='unrelated').num++],['expired',f=>f.state.mono+=1000001],['config changed',f=>f.options.config.tables.OpenRankWarTaskCfg.revision=1],
+])test('open-rank war conflicting postread remains UNKNOWN for '+label,async()=>{
+ const f=await ready({war:true});f.state.onWrite=()=>mutate(f);const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.status,'UNKNOWN',result.error);assert.equal(f.state.writes.length,1);f.client.stop();
+});
+for(const apply of [true,false])test('open-rank war Service preserves original durable budget and '+(apply?'success':'restart UNKNOWN'),async t=>{
+ const f=serviceFixture(t,{war:true,apply});t.after(()=>f.client.stop());const p=await f.plan(),{record}=await f.run(p);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN',record.stopReason);assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.equal(f.state.saved.runBudget.reserved.uids[0].type,'open-rank-war-task-reward');
+ if(!apply){const next=serviceFixture(t,{war:true,file:f.file});t.after(()=>next.client.stop());await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+
+for(const mode of ['parent','disk','cancel','late'])test('open-rank war existing Service retains '+mode+' protection',async t=>{
+ const f=serviceFixture(t,{war:true});t.after(()=>f.client.stop());
+ if(mode==='parent'){f.service.claimWorkflow(f.session,'war-parent',{limits:{resources:[],quotas:[],uids:[]}});await assert.rejects(f.plan());assert.equal(f.state.writes.length,0);return;}
+ const p=await f.plan(),permit=f.authorize(p);let release;
+ if(mode==='disk'){const put=f.history.put;f.history.put=row=>{if(row.actions?.some(a=>a.stages?.at(-1)?.stage==='DISPATCH_INTENT'))throw Error('synthetic disk failure');return put(row);};}else if(mode==='cancel')f.session.abort.abort();else f.state.onWrite=()=>new Promise(r=>release=r);
+ try{f.service.execute(f.session,permit);if(mode==='late'){for(let i=0;i<200&&!release;i++)await new Promise(setImmediate);assert.ok(release);f.session.abort.abort();release();}await f.service.settle(f.session.id);}catch{}
+ assert.equal(f.state.writes.length,mode==='late'?1:0);if(mode==='late'){assert.equal(f.durable.list(f.session.id)[0].finalStatus,'UNKNOWN');const next=serviceFixture(t,{war:true,file:f.file});t.after(()=>next.client.stop());await assert.rejects(next.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(next.state.writes.length,0);}
+});
+for(const apply of [true,false])test('open-rank war Tasks and Dailies share original Workflow authorization, budget and '+(apply?'single settlement':'UNKNOWN stop'),async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{war:true,apply});t.after(()=>f.client.stop());const read=await f.service.surveyModule(f.session,'task-rewards',f.options.parameters),compiled=compileUnifiedExecution({entry:'loop',tasks:[f.options.parameters],dailies:[{...f.options.parameters,action:'claim'}],rounds:2,budget:read.view.candidates[0].budgetClaims},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:()=>f.session});t.after(()=>runner.stop());let run=await runner.start(f.session.id,compiled.graph);assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const {record}=await f.run(run.plan);assert.equal(record.finalStatus,apply?'SUCCESS':'UNKNOWN',record.stopReason);run=await runner.resume();assert.equal(run.status,apply?'COMPLETED':'UNKNOWN');assert.equal(f.state.writes.length,1);assert.deepEqual(record.runBudget.reserved.uids,read.view.candidates[0].budgetClaims.uids);
+});
+test('open-rank war rejection is shared across Tasks/Dailies aliases, reconnection and Service restart',async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=serviceFixture(t,{war:true,apply:false});t.after(()=>f.client.stop());f.state.onWrite=()=>{throw Object.assign(Error('synthetic refused'),{code:'REJECTED'});};const p=await f.plan();assert.equal((await f.run(p)).record.finalStatus,'REJECTED');
+ for(const phase of ['tasks','dailies']){const x=serviceFixture(t,{war:true,file:f.file});t.after(()=>x.client.stop());const compiled=compileUnifiedExecution({entry:phase,[phase]:[{...x.options.parameters,...(phase==='dailies'?{action:'claim'}:{})}],budget:p.budgetClaims},{modules:GAMEPLAY_MODULES}),runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:x.service,claim:(_id,runId,options)=>x.service.claimWorkflow(x.session,runId,options),getSession:()=>x.session});t.after(()=>runner.stop());const run=await runner.start(x.session.id,compiled.graph);assert.equal(run.status,'COMPLETED');assert.ok(run.trace.some(r=>r.result==='BLOCKED_REJECTION_MEMORY'));assert.equal(x.state.writes.length,0);}
+});
+test('open-rank war compiler rejects mixed fields and implicit Dailies claims',async()=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs');for(const phase of ['tasks','dailies'])for(const row of [{kind:'open-rank-war'},{kind:'open-rank-war',tierId:0},{kind:'open-rank-war',tierId:'500'},{kind:'open-rank-war',tierId:500,taskId:1},{kind:'open-rank-war',tierId:500,type:4},{kind:'open-rank-war',tierId:500,parameters:{}}])assert.throws(()=>compileUnifiedExecution({entry:phase,[phase]:[{...row,...(phase==='dailies'?{action:'claim'}:{})}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ for(const action of [undefined,'perform'])assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[{kind:'open-rank-war',tierId:500,...(action?{action}:{})}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});
+test('open-rank war pre-dispatch window or identity changes produce zero writes and public copies grant nothing',async()=>{
+ for(const mode of ['accountId','generation','connectionId','playerId','worldId','window','expiry']){
+  const f=await ready({war:true});f.state.onDispatch=()=>{if(mode==='window')f.state.pushWindow({...f.state.window,startTime:901});else if(mode==='expiry')f.state.mono+=1000001;else if(mode==='playerId'||mode==='worldId')f.options.player[mode]='2';else f.client.factContext[mode]=mode==='generation'?4:'changed';};
+  const result=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(result.dispatched,false,mode);assert.equal(f.state.writes.length,0,mode);f.client.stop();
+ }
+ const f=warFixture();f.state.pushWindow(null);const observed={status:'OBSERVED',reliable:true,activityTime:[f.state.window]};f.client.readOpenRankActivitySnapshot=()=>observed;f.client.emit('message',{name:'SCAllActivity',body:{openRankActivity:observed}});const facts=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(planTaskRewards(facts,{...f.options,selections:['fake']}).actions.length,0);assert.equal(viewTaskRewards(facts,f.options).candidates[0].executable,false);f.client.stop();
+});
+test('open-rank war forged actions or generic reward receipts cannot confirm even exact postreads',async()=>{
+ const f=await ready({war:true});await f.client.sendWatch('GotOpenRankRewardRequest',{type:4,id:500});const after=await surveyTaskRewards(f.client,protocol,f.options);assert.equal(verifyTaskReward(f.operation,f.facts,after,null).confirmed,true);
+ for(const response of [{},{reward:{asset:f.operation.rewards}},{type:4,id:500}])assert.equal(verifyTaskReward(f.operation,f.facts,after,response).confirmed,false);
+ for(const mutate of [o=>o.action.body.type=1,o=>o.action.body.id=1000,o=>o.identity='fake',o=>o.budgetClaims.uids=[],o=>o.rewards=[],o=>o.expectedState.inventory=[],o=>o.target.startTime++,o=>o.costs=[{id:'GOLD',num:1}]]){const op=clone(f.operation);mutate(op);assert.equal(verifyTaskReward(op,f.facts,after,null).confirmed,false);}
+ for(const mutate of [x=>x.context.playerId='2',x=>x.inputs.window.endTime++,x=>x.stock.set('RUBY',10000)]){const facts=clone(f.facts);mutate(facts);assert.equal(planTaskRewards(facts,{...f.options,selections:[f.operation.actionId]}).actions.length,0);}
+ f.client.stop();
 });

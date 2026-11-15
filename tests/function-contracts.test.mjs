@@ -212,7 +212,7 @@ test('equipment STAR contract is explicit RED single growth and keeps replacemen
 });
 
 test('task rewards retain C capability identity with explicit daily inventory references and a blocked weekly contract',()=>{
- const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C513','C516']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
+ const c=FUNCTION_CONTRACTS['task-rewards'];assert.deepEqual(c.requirementIds.C,['C502','C503','C513','C516','C517']);assert.deepEqual(c.additionalRequirementIds,['BIZ-D18','BIZ-D19']);assert.equal(Object.hasOwn(c,'inventoryRequirementIds'),false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='WEEKLY_ACTIVITY_REWARD'&&r.executable===false));
  assert.ok(c.dependencyVersions.conditional.some(r=>r.when==='parameters.kind=daily-activity'&&JSON.stringify(r.keys)===JSON.stringify(['config.DailyActivityRewardCfg','config.ItemCfg'])));
 });
 
@@ -231,3 +231,8 @@ test('Pet original contract covers exact serving instance single-level action wi
 });
 
 test('multi-exchange production contract records conditional original production dependencies',()=>{assert.deepEqual(FUNCTION_CONTRACTS['material-packs'].dependencyVersions.conditional,[{when:'workflow.materialProduction',keys:['production']}]);assert.deepEqual(FUNCTION_CONTRACTS.production.inputSchema.properties.materialSource.properties.exchangeIdentities,{type:'array',items:{type:'string'}});});
+
+test('open-rank war contract pins original score subset and conditional configuration without rank payouts',async()=>{
+ const {taskRewardsModule}=await import('../src/task-rewards.mjs'),c=validateFunctionContract('task-rewards',taskRewardsModule),p={kind:'open-rank-war',tierId:500};assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,p),p);assert.ok(c.requirementIds.C.includes('C517'));assert.ok(c.inputSchema.properties.kind.enum.includes('open-rank-war'));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.kind=open-rank-war').keys,['config.OpenRankWarTaskCfg','config.ItemCfg']);assert.match(c.verification.scope,/private continuous-stream type4 window/);assert.match(c.verification.scope,/no dedicated response alias or rank payout/);
+ for(const parameters of [{...p,type:4},{...p,taskId:500},{kind:'open-rank-order',tierId:500},{kind:'open-rank-war-rank',tierId:1}])invalid(()=>validateFunctionParameters('task-rewards',taskRewardsModule,parameters));
+});

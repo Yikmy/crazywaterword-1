@@ -3041,3 +3041,21 @@ test('assembled overview renders the same read-only open-rank projection and cle
  h.run('renderActivityAlliance('+JSON.stringify(data)+')');const text=h.node('overview-activity-alliance').textContent;assert.match(text,/开服排行窗口原值/);assert.ok(text.includes('战争 / 4'));assert.match(text,/窗口不证明当前开放/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  h.run("selectAccount('B')");assert.equal(h.node('overview-activity-alliance').textContent,'');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
+
+const warPageSpec={module:'task-rewards',actionId:'task-rewards:open-rank-war:synthetic',actionType:'CLAIM',parameters:{kind:'open-rank-war',tierId:500},target:{kind:'open-rank-war',tierId:500,type:4,startTime:900,endTime:2000,season:1,configuredSeason:1},costs:[],facts:{daily:{endTime:2000,progress:1000,gotRewardId:[100]}},blockedReason:'OPEN_RANK_INCOMPLETE'};
+test('open-rank war complete PAGE prepares only exact score and requires fresh survey and authorization',async()=>{
+ const h=await loaded(warPageSpec),controls=descendants(h.node('gp-task-rewards-facts')),kind=controls.find(n=>n.dataset.dailyRewardKind),input=controls.find(n=>n.dataset.dailyRewardId),prepare=controls.find(n=>n.dataset.dailyRewardPrepare),before=h.requests.length;
+ assert.equal(kind.children.filter(n=>n.value==='open-rank-war').length,1);kind.value='open-rank-war';
+ for(const value of ['','0','-1','0.5','2147483648']){input.value=value;prepare.click();assert.equal(h.requests.length,before);assert.equal(h.node('gp-task-rewards-parameters').value,'{}');}
+ input.value='500';prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),warPageSpec.parameters);assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
+ const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:warPageSpec.parameters});h.respond('/api/gameplay/survey',data(warPageSpec));await survey;
+ assert.match(h.node('gp-task-rewards-facts').textContent,/type 4.*score档位 500.*已领score 100.*进度 1000.*当前季\/配置季 1 \/ 1.*900 至 2000/);assert.match(h.node('gp-task-rewards-facts').textContent,/窗口观察不能代替领取资格或结算/);
+ await preview(h,warPageSpec);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(h.confirmations.length,0);
+ h.run("selectAccount('B');selectAccount('A');snapshot={connected:true,state:'READY'}");prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+test('open-rank war unified complete PAGE keeps exact score distinct from chip and Loop rounds',async()=>{
+ const h=await unifiedForm('loop');unifiedLoad(h,{entry:'loop',tasks:[],dailies:[],world:[],rounds:3,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});const before=h.requests.length;
+ for(const value of ['','0','-1','1.5','1e3','2147483648',' 500','500 ']){const source=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','open-rank-war',value);assert.equal(h.node('wf-unified-intent').value,source);}
+ unifiedAdd(h,'tasks','open-rank-war','500');unifiedAdd(h,'dailies','open-rank-war','500');const draft=unifiedDraft(h);assert.deepEqual(draft.tasks,[{kind:'open-rank-war',tierId:500}]);assert.deepEqual(draft.dailies,[{kind:'open-rank-war',tierId:500,action:'claim'}]);assert.equal(draft.rounds,3);assert.equal(h.node('wf-unified-target').disabled,false);assert.equal(h.node('wf-unified-chip-round').disabled,true);assert.match(h.node('wf-unified-target-label').textContent,/score.*非行号/);
+ const compiled=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES});assert.equal(compiled.blocked.length,0);assert.equal(compiled.graph.nodes.filter(n=>n.type==='ACTION').length,6);for(const node of compiled.graph.nodes.filter(n=>n.type==='ACTION'))assert.deepEqual(node.parameters,warPageSpec.parameters);assert.deepEqual(compiled.graph.budget,draft.budget);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});

@@ -55,6 +55,12 @@ export function buildBuildingCollectBody(buildingIds) {
   return { buildingId: [...buildingIds] };
 }
 
+// Open-rank task rewards use a score as the protocol id, never a row index.
+export function buildOpenRankWarRewardBody(score) {
+  if(typeof score!=='number'||!Number.isInteger(score)||score<=0||score>2147483647)throw new Error('Open-rank war score must be a positive int32');
+  return {type:4,id:score};
+}
+
 // Pure shared bodies for legacy observations and registered adapters.
 // Eligibility, debit and transport remain with their existing domain contracts.
 export function buildDailyDriverBody(request,params={}) {
@@ -353,6 +359,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(request==='RecruitStartRequest'&&body.way===1&&(!fields(body,['way'])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','免费英雄招募仅允许明确 way=1 与零支出');
   if(request==='RecruitStartRequest'&&body.way===2&&(!fields(body,['way'])||!exactCosts(Object.getOwnPropertyDescriptor(action,'costs')?.value)||costs.length!==1||costs[0].id!=='抽卡券'||costs[0].num!==1))fail('COST_UNKNOWN','单券英雄招募仅允许明确way=2及自有抽卡券1张');
   if(request==='ClickGoldRequest'&&(!fields(body,['times','free'])||body.times!==1||body.free!==true||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','普通免费点金仅允许 times=1、free=true 与明确零支出');
+  if(request==='GotOpenRankRewardRequest'&&(!fields(body,['type','id'])||body.type!==4||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','开服战争档位仅允许明确type=4与score ID、零支出');
   if(request==='WeekChipGotTaskRequest'&&(!fields(body,['round','taskId'])||!positiveInt32(body.round)||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','周芯片任务仅允许精确round/taskId与明确零支出');
   if(['WeekLotteryFreePackRequest','GotUniqueLotteryFreeRequest','WeekChipGotFreeRequest'].includes(request)&&(!fields(Object.getOwnPropertyDescriptor(action,'body')?.value,[])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','周活动免费礼包仅允许明确空请求与零支出');
   if(request==='GotFreeDailyPackRequest'&&(!fields(body,['packId'])||body.packId!=='赠礼'||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','仅明确免费赠礼packId与零支出允许领取');
@@ -414,7 +421,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(speedTrade&&(!fields(body,['useNum'])||!positiveInt32(body.useNum)||!exactCosts(costs)||costs.length!==1||costs[0].id!=='海商王加速'||costs[0].num!==body.useNum))fail('COST_UNKNOWN','贸易加速仅允许明确useNum及等量自有海商王加速道具，不允许补购、免费推定或钻石');
   // ArenaChallenge remains a legacy read-only suggestion: the fixed client only
   // checks positive points, without an exact debit or recoverable result identity.
-  const known = speedTrade || moveTrade || buyTrade || sellTrade || request==='WeekChipGotTaskRequest' || ['WeekLotteryFreePackRequest','GotUniqueLotteryFreeRequest','WeekChipGotFreeRequest'].includes(request) || shipOrder || shipSeek || selectMaterialPack || saveExpedition || levelPet || feedPet || starBadge || starEquip || exchangeHero || sweepPirate || activateAntique || starAntique || suitAntique || masterAntique || exchangeAntique || exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || putOnEquip || enhanceBadge || putOnBadge || unlockPreset || farmHarvest || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
+  const known = speedTrade || moveTrade || buyTrade || sellTrade || request==='GotOpenRankRewardRequest' || request==='WeekChipGotTaskRequest' || ['WeekLotteryFreePackRequest','GotUniqueLotteryFreeRequest','WeekChipGotFreeRequest'].includes(request) || shipOrder || shipSeek || selectMaterialPack || saveExpedition || levelPet || feedPet || starBadge || starEquip || exchangeHero || sweepPirate || activateAntique || starAntique || suitAntique || masterAntique || exchangeAntique || exclusiveLevel || exclusiveStar || donateFort || refineEquip || enhanceEquip || putOnEquip || enhanceBadge || putOnBadge || unlockPreset || farmHarvest || farmPlant || forgeMake || forgePick || Object.values(ACTIONS).some((entry) => entry.request === request)
     || ['SaveFormationRequest','GuildAidHelpRequest','CancelMyGuildAidRequest','GotMyGuildAidRequest','GotGuildWelfarePackRequest','FinishGuildOrderRequest','UpgradeGuildTechRequest','MuseumStartExploreRequest','MuseumSpeedUpExploreRequest','MuseumSpeedUpCaseRequest','MuseumCollectRevenueRequest','MuseumClaimAchievementRequest','MuseumUpgradeExhibitionRequest','MuseumExhibitRequest','MuseumUpgradeKeywordRequest','MuseumUpgradeCaseRequest','MuseumFinishCaseUpgradeRequest','TreasureLootSendFleetsRequest','RepairFleetRequest','StopRepairingRequest','SetFleetAutoFightRequest','FleetSaveFormationRequest','MoveFleetsToCityRequest','FillCargoShipRequest','DrawShipRewardRequest'].includes(request)
     || ['RecruitStartRequest', 'ChallengeStageRequest', 'ClickGoldRequest', 'TrialRaidChallengeRequest', 'HeroLevelUpRequest', 'HeroSkillLevelUpRequest', 'HeroStarUpRequest'].includes(request);
   if (!known || (request === 'RecruitStartRequest' && ![1, 2].includes(body.way))) {

@@ -185,6 +185,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateMailParameters({pageNo:row.pageNo,emailId:row.emailId,action:row.action});}catch{invalid('Tasks邮件须明确来源页和精确正int64邮件ID');}
         steps.push({phase,index,module:'mail',parameters,selection});continue;
       }
+      if(['tasks','dailies'].includes(phase)&&row?.kind==='open-rank-war'){
+        exact(row,phase==='tasks'?['kind','tierId']:['kind','tierId','action']);
+        if(!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647||phase==='dailies'&&row.action!=='claim')invalid('开服战争须明确score档位tierId及日常action=claim');
+        steps.push({phase,index,module:'task-rewards',parameters:{kind:row.kind,tierId:row.tierId},selection});continue;
+      }
       if(['tasks','dailies'].includes(phase)&&row?.kind==='weekly-chip-task'){
         exact(row,phase==='tasks'?['kind','round','taskId']:['kind','round','taskId','action']);
         if(!['round','taskId'].every(k=>Number.isSafeInteger(row[k])&&row[k]>=1&&row[k]<=2147483647)||phase==='dailies'&&row.action!=='claim')invalid('周芯片任务须明确当前轮次、任务ID及日常action=claim');

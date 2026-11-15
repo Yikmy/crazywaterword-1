@@ -1,6 +1,7 @@
 // W16 / BIZ-D18 / BIZ-D19 sub-contract of the existing task-rewards Function.
 import { createHash } from 'node:crypto';
-import { ACTIONS, buildBody, FREE_DAILY_PACK_ID } from './actions.mjs';
+import { readOpenRankActivitySnapshot } from './client.mjs';
+import { ACTIONS, buildBody, buildOpenRankWarRewardBody, FREE_DAILY_PACK_ID } from './actions.mjs';
 import { activityRewardDefinition, activityTierAvailable, dailyGiftDefinition, planDailyGift, dailyTaskRows, parseDailyTaskObservation } from './dailies.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
@@ -18,8 +19,8 @@ const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.l
 const sources={daily:'DailyTaskInfoResponse',items:'AllItemResponse',resources:'AllResourceResponse'},configNames=['DailyTaskCfg'],liveFacts=new WeakMap();
 const weeklyKinds=['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task'];
 const weekSpec=p=>p?.kind==='weekly-unique-lottery-gift'?{type:7,table:'WeekUniquePackCfg',info:'WeekUniqueLotteryResponse',request:'GotUniqueLotteryFreeRequest',coin:'周翻牌币',label:'周翻牌',unique:true}:['weekly-chip-gift','weekly-chip-task'].includes(p?.kind)?{type:6,table:'WeekChipPackCfg',info:'WeekChipInfoResponse',request:'WeekChipGotFreeRequest',coin:'白芯片宝箱',label:'周芯片',unique:false,chip:true}:{type:4,table:'WeekLotteryPackCfg',info:'WeekLotteryInfoResponse',request:'WeekLotteryFreePackRequest',coin:'周转盘币',label:'周转盘',unique:false};
-const configNamesFor=p=>p?.kind==='weekly-chip-task'?['WeekChipPointsCfg','WeekChipPeriodCfg','ItemCfg']:weeklyKinds.includes(p?.kind)?[weekSpec(p).table]:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
-const sourcesFor=p=>weeklyKinds.includes(p?.kind)?{daily:weekSpec(p).info,week:'WeekInfoResponse',items:sources.items,resources:sources.resources}:p?.kind==='daily-gift'?{daily:'DailyGiftPackResponse',items:sources.items,resources:sources.resources}:sources;
+const configNamesFor=p=>p?.kind==='open-rank-war'?['OpenRankWarTaskCfg','ItemCfg']:p?.kind==='weekly-chip-task'?['WeekChipPointsCfg','WeekChipPeriodCfg','ItemCfg']:weeklyKinds.includes(p?.kind)?[weekSpec(p).table]:p?.kind==='daily-gift'?['DailyChargeGiftPackCfg']:p?.kind==='daily-activity'?['DailyActivityRewardCfg','ItemCfg']:configNames;
+const sourcesFor=p=>p?.kind==='open-rank-war'?{daily:'OpenRankInfoResponse',items:sources.items,resources:sources.resources}:weeklyKinds.includes(p?.kind)?{daily:weekSpec(p).info,week:'WeekInfoResponse',items:sources.items,resources:sources.resources}:p?.kind==='daily-gift'?{daily:'DailyGiftPackResponse',items:sources.items,resources:sources.resources}:sources;
 const costSource='Fixed v76 DailyTaskItem._gotReward/_buildExpReward and DailyTaskModel.increaseActivity: exact task id, configured EXP and typed activity delta to both daily and weekly counters';
 export const DAILY_TASK_REWARD_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js DailyTaskItem.ts / DailyTaskModel.ts / DailyTaskPanel.ts',itemByte:1642263,itemSha256:'322c2df607970618ba59f1f29f53a86cfa219c292c89870604eeb4bdce2bbd65',modelByte:1646749,modelSha256:'8cd26d52987707fbf81ff6f5513728f6bcccbcf604ee54c1fd59965acb868075',semantics:'dailyResetTime is server seconds; activity response is an increment for both daily and weekly; EXP from DailyTaskCfg.exp',realGame:'REAL_UNVERIFIED'});
 function roleId(v) {
@@ -50,19 +51,20 @@ function parseDaily(raw){
  return {resetTime:raw.dailyResetTime,dailyActivity:raw.dailyActivity,weeklyActivity:raw.weeklyActivity,...claims,tasks:tasks.sort((a,b)=>a.taskId-b.taskId)};
 }
 const stockState=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
-const parseFor=(inputs,p)=>weeklyKinds.includes(p?.kind)?parseWeekly(inputs?.daily,inputs?.week,p):p?.kind==='daily-gift'?parseGift(inputs?.daily):parseDaily(inputs?.daily);
-const snapshot=(inputs,context,p)=>{const daily=parseFor(inputs,p),i=parseOperationInventory(inputs?.items,inputs?.resources);return daily&&i.stockReliable?{context,daily,inventory:stockState(i.stock)}:null;};
+const parseFor=(inputs,p)=>p?.kind==='open-rank-war'?parseOpenRankInfo(inputs?.daily):weeklyKinds.includes(p?.kind)?parseWeekly(inputs?.daily,inputs?.week,p):p?.kind==='daily-gift'?parseGift(inputs?.daily):parseDaily(inputs?.daily);
+const snapshot=(inputs,context,p)=>{const daily=parseFor(inputs,p),i=parseOperationInventory(inputs?.items,inputs?.resources);return daily&&i.stockReliable?{context,daily,...(p?.kind==='open-rank-war'?{window:copy(inputs?.window??null)}:{}),inventory:stockState(i.stock)}:null;};
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout=15000}={}){
- const opts={signal,stop},context=contextOf(client,player),notes=[],startClock=clockOf(client,context);const active=()=>assertExecutionActive(client,opts);active();
- const observations=await Promise.all(Object.entries(sourcesFor(parameters)).map(async([key,response])=>{const name=response.replace(/Response$/,'Request');active();if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return[key,null,null];}try{const value=await awaitExecution(client.request(name,{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return[key,null,null];}}));
+ const opts={signal,stop},context=contextOf(client,player),notes=[],startClock=clockOf(client,context),startWindow=parameters?.kind==='open-rank-war'?openRankWindow(client,context):null;const active=()=>assertExecutionActive(client,opts);active();
+ const observations=await Promise.all(Object.entries(sourcesFor(parameters)).map(async([key,response])=>{const name=response.replace(/Response$/,'Request');active();if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return[key,null,null];}try{const value=await awaitExecution(client.request(name,parameters?.kind==='open-rank-war'&&key==='daily'?{type:4}:{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return[key,null,null];}}));
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('日常领取采集期间账号或连接变化'),{code:'CANCELLED'});
- const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),daily=parseFor(raw,parameters),inventory=parseOperationInventory(raw.items,raw.resources);
+ const endClock=clockOf(client,context),raw={...Object.fromEntries(observations.map(([k,v])=>[k,v])),...(parameters?.kind==='open-rank-war'?{window:same(startWindow,openRankWindow(client,context))?startWindow:null}:{})},inputs=toSnapshotJson(raw),daily=parseFor(raw,parameters),inventory=parseOperationInventory(raw.items,raw.resources);
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sourcesFor(parameters)[k],sourceAt,scope,reliable:['daily','week'].includes(k)?daily!==null:inventory.stockReliable})]));
  const f={module:moduleId,parameters:copy(parameters),context,configEvidence:{tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,daily,...inventory,state:daily&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes,startClock,endClock};liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 function authority(f){
  const live=liveFacts.get(f),c=f?.context;if(!live||live.digest!==digest(f)||live.client.connected!==true||!same(c,contextOf(live.client,live.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map)||!same(snapshot(f.inputs,c,f.parameters),f.state)||!same(f.daily,f.state.daily))return false;
+ if(f.parameters?.kind==='open-rank-war'&&(!f.state.window||!same(openRankWindow(live.client,c),f.state.window)))return false;
  return Object.entries(sourcesFor(f.parameters)).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 function currentPeriod(f){const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null,expiry=f?.daily?.resetTime*1000;return clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs&&[f.startClock,f.endClock,clock].every(c=>c.latestMs<expiry)?clock:null;}
@@ -75,13 +77,17 @@ function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.paramete
  const reset=f?.daily?.resetTime??null,identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:'daily:'+reset+':'+taskId}]};
  return {module:moduleId,capabilityId:'C503',actionId:moduleId+':daily:'+reset+':'+taskId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset},parameters:p,identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'日常任务 '+taskId+' 奖励',rewards:def?[{id:'EXP',num:def.exp}]:null,activityGain:def?.point??null,progress:task?.progress??null,requiredProgress:task?.targetProgress??null,...(blockedReason===null?{action:{request,response,body:buildBody(ACTIONS.dailyTaskDraw,{id:taskId})}}:{})};
 }
-const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (kind==='weekly-chip-task'?chipTaskCandidate:weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
-export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
+const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (kind==='open-rank-war'?openRankWarCandidate:kind==='weekly-chip-task'?chipTaskCandidate:weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
+export function viewDailyTaskReward(f,options={}){const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),row.parameters.kind==='open-rank-war'?'仅领取当前可信type4窗口中的明确score档位；当前季精确配置否则取最大配置季，进度与已领分离；独立OpenRankInfo及完整库存净入共同确认，不将通用奖励包当同次回执。':row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
 export function planDailyTaskReward(f,{parameters,selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){const row=viewDailyTaskReward(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 export function verifyDailyTaskReward(operation,before,after,result){const no=reason=>({confirmed:false,reason});
- if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence)||(weeklyKinds.includes(before.parameters?.kind)?(!currentWeek(before)||!currentWeek(after)):before.parameters?.kind!=='daily-gift'&&(!currentPeriod(before)||!currentPeriod(after))))return no('日常任务前后身份、周期、配置或完整库存不可靠');
+ if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence)||(before.parameters?.kind==='open-rank-war'?(!currentOpenRankWindow(before)||!currentOpenRankWindow(after)):weeklyKinds.includes(before.parameters?.kind)?(!currentWeek(before)||!currentWeek(after)):before.parameters?.kind!=='daily-gift'&&(!currentPeriod(before)||!currentPeriod(after))))return no('日常任务前后身份、周期、配置或完整库存不可靠');
  const canonical=candidateFor(before,{config:before.configEvidence,moduleConfig:{enabled:true},parameters:before.parameters});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards','activityGain'].some(k=>!same(operation?.[k],canonical[k])))return no('日常领取合同与写前明确任务不一致');
+ if(canonical.parameters.kind==='open-rank-war'){
+  if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('开服战争同一窗口、唯一score已领新增及完整库存净入未同时确认');
+  return {confirmed:true,afterState:copy(after.state),reason:'独立type4排行复读确认同窗口、同进度且仅明确score档位新增；完整库存按固定配置精确净入，其他库存保持，不打开所得包'};
+ }
  if(canonical.parameters.kind==='weekly-chip-task'){
   if(!chipTaskReceipt(result,canonical)||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周芯片任务同轮次回执、唯一已领ID新增及完整库存净入未同时确认');
   return {confirmed:true,afterState:copy(after.state),reason:'精确round/taskId请求，typed轮次与完整已领列表/奖励包和独立复读共同确认；积分/礼包/其他活动不变，不打开所得宝箱'};
@@ -228,4 +234,43 @@ function chipTaskReceipt(raw,op){
  const rows=[];
  for(const a of raw.reward.asset){const num=own(a,'num')?safeResourceQuantity(a.num):null;if(!own(a,'type')||a.type!==0||!own(a,'id')||!text(a.id)||num===null||num<=0)return false;rows.push({id:a.id,num});}
  return same(rows,op.rewards);
+}
+
+// C517 subset: opening war task milestones; other rankings and rank payouts are distinct.
+export const OPEN_RANK_WAR_REWARD_EVIDENCE=Object.freeze({source:'Fixed v76 OpenRankTaskItem / OpenRankWarPanel / OpenRankUtil / AllActivityModel',itemByte:5068559,itemSha256:'6975e69626117c1735c0fbf472096bde6e3b4cf334b538351e3a5bc355475928',warByte:5075868,warSha256:'70be7be0cdc04e11e2be3d4a044c6087041055fd68aa57b9c26f4a34eb2242a2',utilByte:5071461,utilSha256:'46ddbaeda9eb0ab75d3d4b6f4325d7d8027dd2fb987a550d6d8087e693b0c040',semantics:'type4/id=cfg.score; exact current-season group or maximum configured season; explicit progress and gotRewardId, current continuous-stream window and matching OpenRankInfo.endTime; no dedicated reward response is assumed',realGame:'REAL_UNVERIFIED'});
+function openRankWindow(client,context){
+ const s=readOpenRankActivitySnapshot(client,context);return s.status==='OBSERVED'&&s.reliable===true?s.activityTime.find(r=>r.type===4)??null:null;
+}
+function parseOpenRankInfo(raw){
+ if(!['endTime','progress'].every(k=>own(raw,k)&&uint(raw[k]))||!positive(raw.endTime)||!own(raw,'gotRewardId')||!dense(raw.gotRewardId)||raw.gotRewardId.some(id=>!positive(id))||new Set(raw.gotRewardId).size!==raw.gotRewardId.length)return null;
+ return {endTime:raw.endTime,progress:raw.progress,gotRewardId:[...raw.gotRewardId].sort((a,b)=>a-b)};
+}
+function currentOpenRankWindow(f){
+ const live=liveFacts.get(f),window=f?.state?.window,clock=live?clockOf(live.client,f.context):null;
+ return window&&window.type===4&&window.endTime===f?.daily?.endTime&&clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs&&[f.startClock,f.endClock,clock].every(c=>c.earliestMs>=window.startTime*1000&&c.latestMs<window.endTime*1000)?window:null;
+}
+function openRankWarDefinition(f,config){
+ if(!same(configNamesFor(f?.parameters).map(n=>config?.tables?.[n]??null),configNamesFor(f?.parameters).map(n=>f?.configEvidence?.tables?.[n]??null)))return null;
+ const rows=f?.configEvidence?.tables?.OpenRankWarTaskCfg?.data,items=f?.configEvidence?.tables?.ItemCfg?.data,world=roleId(f?.context?.worldId);if(!world||!dense(rows)||!rows.length||!dense(items))return null;
+ const season=Number(BigInt(world)/1000000n%1000n);if(!positive(season)||rows.some(r=>!own(r,'season')||!positive(r.season)||!own(r,'score')||!positive(r.score))||new Set(rows.map(r=>r.season+':'+r.score)).size!==rows.length)return null;
+ const configuredSeason=rows.some(r=>r.season===season)?season:Math.max(...rows.map(r=>r.season)),selected=rows.filter(r=>r.season===configuredSeason),row=selected.find(r=>r.score===f.parameters.tierId);if(!row||!own(row,'reward')||!dense(row.reward)||!row.reward.length)return null;
+ const rewards=[];
+ for(const pair of row.reward){
+  if(!dense(pair)||pair.length!==2||!text(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0)return null;
+  const [id,num]=pair,matches=items.filter(r=>own(r,'id')&&r.id===id);
+  if(!Object.values(RESOURCE_NAMES).includes(id)&&(matches.length!==1||!own(matches[0],'type')||!['通用','自选包','专武经验','藏品万能碎片','英雄万能碎片'].includes(matches[0].type)))return null;
+  rewards.push({id,num});
+ }
+ return new Set(rewards.map(r=>r.id)).size===rewards.length?{season,configuredSeason,ids:selected.map(r=>r.score),rewards}:null;
+}
+function openRankWarCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
+ const p=copy(parameters),valid=authority(f)&&same(p,f.parameters),def=openRankWarDefinition(f,config),window=currentOpenRankWindow(f),beforeState=copy(f?.state??null),claimed=f?.daily?.gotRewardId,known=def&&claimed?.every(id=>def.ids.includes(id));let expectedState=null;
+ if(valid&&known){
+  const next=copy(beforeState),stock=new Map(f.stock);let safe=true;
+  for(const {id,num}of def.rewards){const start=stock.get(id),total=(start??0)+num;if(Object.values(RESOURCE_NAMES).includes(id)&&start===undefined||!Number.isSafeInteger(total))safe=false;stock.set(id,total);}
+  if(safe){next.inventory=stockState(stock);next.daily.gotRewardId=[...claimed,p.tierId].sort((a,b)=>a-b);expectedState=next;}
+ }
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'OPEN_RANK_AUTHORITY_UNKNOWN':!def||!known?'OPEN_RANK_CONFIG_OR_CLAIMS_UNKNOWN':claimed.includes(p.tierId)?'OPEN_RANK_ALREADY_CLAIMED':f.daily.progress<p.tierId?'OPEN_RANK_INCOMPLETE':!window?'OPEN_RANK_WINDOW_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('GotOpenRankRewardRequest')?'PROTOCOL_UNAVAILABLE':null;
+ const target={...p,type:4,startTime:window?.startTime??null,endTime:window?.endTime??null,season:def?.season??null,configuredSeason:def?.configuredSeason??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence});
+ return {module:moduleId,capabilityId:'C517',actionId:moduleId+':open-rank-war:'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 OpenRankTaskItem type/id=cfg.score, no debit; OpenRankUtil exact season otherwise maximum configured season; current private type4 window and independent OpenRankInfo',budgetClaims:{resources:[],quotas:[],uids:[{type:'open-rank-war-task-reward',id:hash({playerId:f?.context?.playerId,worldId:f?.context?.worldId,target})}]},executable:blockedReason===null,blockedReason,label:'开服战争档位 '+p.tierId,rewards:copy(def?.rewards??null),activityGain:0,progress:f?.daily?.progress??null,requiredProgress:p.tierId,...(blockedReason===null?{action:{request:'GotOpenRankRewardRequest',response:null,body:buildOpenRankWarRewardBody(p.tierId)}}:{})};
 }
