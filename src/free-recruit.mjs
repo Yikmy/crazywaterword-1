@@ -167,7 +167,7 @@ function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters
  return {module:moduleId,actionId:moduleId+':'+prefix+(ticket?'ticket:':'')+marker+':'+identity,actionType:ticket?'RECRUIT':'CLAIM',target:{freeEndTimeSeconds:marker,way,...(antique?{recruit:'antique',type:1}:{})},parameters,identity,beforeState,expectedState,costs,costSource:antique?'Fixed v76 AntiqueRecruitItem/RecruitUtil: type=RECRUIT_ANTIQUE(1), ways 1/2/3/4 cost zero/1/10/50 owned 藏品券':ticket?ticketCostSource:costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:ticket?'自有'+ticketId+'招募 ×'+count:'免费'+(antique?'古董':'英雄')+'招募 ×1',requiredLevel:defs?.requiredLevel??null,
  ...(blockedReason===null?{action:{request:writeRequest,response:writeResponse,body:buildDailyDriverBody(writeRequest,{way,...(antique?{type:1}:{})})}}:{})};
 }
-const cooldownSource='RecruitInfoResponse.hero.freeEndTimeSeconds';
+export const freeRecruitCooldownSource=(parameters={})=>'RecruitInfoResponse.'+(parameters.recruit==='antique'?'antique':'hero')+'.freeEndTimeSeconds';
 export function freeRecruitReadiness(marker,bounds) {
  return !uint(marker)||!bounds||!['earliestMs','latestMs'].every(k=>typeof bounds[k]==='number'&&Number.isFinite(bounds[k])&&bounds[k]>=0)||bounds.earliestMs>bounds.latestMs?'UNKNOWN':marker===0||bounds.earliestMs>=marker*1000?'READY_BY_CLOCK':bounds.latestMs<marker*1000?'COOLDOWN':'UNKNOWN';
 }
@@ -177,7 +177,7 @@ export function validateFreeRecruitCooldownObservation(v) {
  const keys=['status','source','freeEndTimeSeconds','sourceAt','serverBounds','readiness','eligibility','executable','autoResume'];
  const finite=n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER;
  const bounds=v?.serverBounds;
- if(!fields(v,keys)||Reflect.ownKeys(v).length!==keys.length||!['OBSERVED','UNKNOWN'].includes(v.status)||v.source!==cooldownSource||
+ if(!fields(v,keys)||Reflect.ownKeys(v).length!==keys.length||!['OBSERVED','UNKNOWN'].includes(v.status)||!['hero','antique'].some(recruit=>v.source===freeRecruitCooldownSource({recruit}))||
     v.eligibility!==null||v.executable!==false||v.autoResume!==false||
     (v.status==='UNKNOWN'?(v.freeEndTimeSeconds!==null||v.sourceAt!==null||bounds!==null||v.readiness!=='UNKNOWN'):
      !uint(v.freeEndTimeSeconds)||!Number.isSafeInteger(v.sourceAt)||v.sourceAt<0||
@@ -186,9 +186,9 @@ export function validateFreeRecruitCooldownObservation(v) {
  return copy(v);
 }
 function recruitCooldownObservation(f) {
- const valid=f?.parameters?.recruit!=='antique'&&authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit.hero.freeEndTimeSeconds:null;
+ const recruit=f?.parameters?.recruit==='antique'?'antique':'hero',valid=authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit[recruit].freeEndTimeSeconds:null;
  const bounds=clock?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
- return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:cooldownSource,freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
+ return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:freeRecruitCooldownSource({recruit}),freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
   serverBounds:bounds,readiness:valid?freeRecruitReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
 }
 

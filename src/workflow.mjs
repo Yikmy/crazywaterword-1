@@ -5,7 +5,7 @@ import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { validateTaskRewardsParameters, validateTaskQualificationObservation } from './task-rewards.mjs';
-import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
+import {validateFreeRecruitCooldownObservation,freeRecruitCooldownSource} from './free-recruit.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent } from './client.mjs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -148,20 +148,20 @@ function validateEventTriggerHistory(run){
  }
 }
 function validateCooldownWaitPolicy(value){
- const trade=value?.kind==='TRADE_LEG_END',factory=value?.kind==='FACTORY_QUEUE_CLOCK';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId']:factory?['kind','maxWaitMs','buildingId','index']:['kind','maxWaitMs'],'具名冷却等待');
- if(!['FREE_RECRUIT','TRADE_LEG_END','FACTORY_QUEUE_CLOCK'].includes(value.kind)||!Number.isSafeInteger(value.maxWaitMs)||value.maxWaitMs<1||value.maxWaitMs>WORKFLOW_LIMITS.waitMs||trade&&(!['cityId','mvToCityId'].every(k=>Number.isInteger(value[k])&&value[k]>0&&value[k]<=2147483647)||value.cityId===value.mvToCityId)||factory&&(!text(value.buildingId)||value.buildingId!==value.buildingId.trim()||value.buildingId.length>100||!Number.isInteger(value.index)||value.index<0||value.index>2147483647))throw fail('具名等待须明确原Function目标及1–60000毫秒上限');return copy(value);
+ const trade=value?.kind==='TRADE_LEG_END',factory=value?.kind==='FACTORY_QUEUE_CLOCK';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId']:factory?['kind','maxWaitMs','buildingId','index']:['kind','maxWaitMs','recruit'],'具名冷却等待');
+ if(value.kind==='FREE_RECRUIT'&&Object.hasOwn(value,'recruit')&&!['hero','antique'].includes(value.recruit)||!['FREE_RECRUIT','TRADE_LEG_END','FACTORY_QUEUE_CLOCK'].includes(value.kind)||!Number.isSafeInteger(value.maxWaitMs)||value.maxWaitMs<1||value.maxWaitMs>WORKFLOW_LIMITS.waitMs||trade&&(!['cityId','mvToCityId'].every(k=>Number.isInteger(value[k])&&value[k]>0&&value[k]<=2147483647)||value.cityId===value.mvToCityId)||factory&&(!text(value.buildingId)||value.buildingId!==value.buildingId.trim()||value.buildingId.length>100||!Number.isInteger(value.index)||value.index<0||value.index>2147483647))throw fail('具名等待须明确原Function目标及1–60000毫秒上限');return copy(value);
 }
 const cooldownModule=policy=>policy.kind==='FACTORY_QUEUE_CLOCK'?'production':policy.kind==='TRADE_LEG_END'?'trade':'free-recruit';
 const cooldownMarker=observation=>observation.target?observation.target.finishTime:observation.source==='TradeInfoResponse.cargo/TradeInfoResponse.cargo/PingResponse.serverTimestamp'?observation.leg.moveEndTime:observation.freeEndTimeSeconds;
-const cooldownTarget=observation=>observation.target??observation.leg??observation.freeEndTimeSeconds;
+const cooldownTarget=observation=>observation.target??observation.leg??{source:observation.source,freeEndTimeSeconds:observation.freeEndTimeSeconds};
 function cooldownViewObservation(view,policy){if(policy.kind!=='FACTORY_QUEUE_CLOCK')return view?.cooldownObservation;const rows=Array.isArray(view?.queueClocks)?view.queueClocks.filter(r=>r.target?.buildingId===policy.buildingId&&r.target?.index===policy.index):[];return rows.length===1?rows[0]:undefined;}
 function cooldownWaitObservation(value,policy){
  if(policy?.kind==='FACTORY_QUEUE_CLOCK'&&value===undefined)throw fail('精确生产队列目标缺失或不唯一','WORKFLOW_UNKNOWN');
  const trade=policy?.kind==='TRADE_LEG_END',factory=policy?.kind==='FACTORY_QUEUE_CLOCK',observation=factory?validateProductionQueueClockObservation(value):trade?validateTradeLegClockObservation(value):validateFreeRecruitCooldownObservation(value);
- if(observation.status!=='OBSERVED'||!observation.serverBounds||trade&&(observation.leg.cityId!==policy.cityId||observation.leg.moveToCityId!==policy.mvToCityId)||factory&&(observation.target.buildingId!==policy.buildingId||observation.target.index!==policy.index))throw fail('具名等待缺少当前原Function权威来源、精确目标或可信时钟','WORKFLOW_UNKNOWN');return observation;
+ if(observation.status!=='OBSERVED'||!observation.serverBounds||!trade&&!factory&&observation.source!==freeRecruitCooldownSource(policy)||trade&&(observation.leg.cityId!==policy.cityId||observation.leg.moveToCityId!==policy.mvToCityId)||factory&&(observation.target.buildingId!==policy.buildingId||observation.target.index!==policy.index))throw fail('具名等待缺少当前原Function权威来源、精确目标或可信时钟','WORKFLOW_UNKNOWN');return observation;
 }
 function cooldownWaitHistoryRow(row){
- const value=row.cooldownWait,trade=value?.kind==='TRADE_LEG_END',factory=value?.kind==='FACTORY_QUEUE_CLOCK';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId','observation']:factory?['kind','maxWaitMs','buildingId','index','observation']:['kind','maxWaitMs','observation'],'冷却等待历史');const {observation:raw,...declaration}=value,policy=validateCooldownWaitPolicy(declaration),observation=cooldownWaitObservation(raw,policy);
+ const value=row.cooldownWait,trade=value?.kind==='TRADE_LEG_END',factory=value?.kind==='FACTORY_QUEUE_CLOCK';exact(value,trade?['kind','maxWaitMs','cityId','mvToCityId','observation']:factory?['kind','maxWaitMs','buildingId','index','observation']:['kind','maxWaitMs','recruit','observation'],'冷却等待历史');const {observation:raw,...declaration}=value,policy=validateCooldownWaitPolicy(declaration),observation=cooldownWaitObservation(raw,policy);
  if(row.type!=='WAIT'||!['WAIT_STARTED','WAITED'].includes(row.result)||!Number.isSafeInteger(row.durationMs)||row.durationMs<0||row.durationMs>policy.maxWaitMs)throw fail('冷却等待历史节点或时长无效');
  if(row.result==='WAIT_STARTED'&&Math.max(0,Math.ceil(cooldownMarker(observation)*1000-observation.serverBounds.earliestMs))!==row.durationMs||row.result==='WAITED'&&observation.readiness!=='READY_BY_CLOCK')throw fail('冷却等待历史缺少原时钟计算或到期复读');
  return {policy,observation};
@@ -460,7 +460,7 @@ function repeatAfterStop(ctx,node){
         }
         if (node.type === 'WAIT') {
           let durationMs=node.durationMs,initial;
-          const readCooldown=async()=>{const policy=node.cooldown,module=cooldownModule(policy),parameters=policy.kind==='TRADE_LEG_END'?{action:'move',cityId:policy.cityId,mvToCityId:policy.mvToCityId}:{};const surveyed=await cancelled(ctx,operations.surveyModule(ctx.session,module,parameters,{workflowId:ctx.runId,signal:ctx.cancel.signal}));current(ctx);if(surveyed?.accountId!==ctx.accountId||surveyed.module!==module)throw fail('冷却调查账号或原Function不一致','WORKFLOW_UNKNOWN');return {surveyed,observation:cooldownWaitObservation(cooldownViewObservation(surveyed.view,policy),policy)};};
+          const readCooldown=async()=>{const policy=node.cooldown,module=cooldownModule(policy),parameters=policy.kind==='TRADE_LEG_END'?{action:'move',cityId:policy.cityId,mvToCityId:policy.mvToCityId}:policy.kind==='FREE_RECRUIT'&&policy.recruit==='antique'?{recruit:'antique'}:{};const surveyed=await cancelled(ctx,operations.surveyModule(ctx.session,module,parameters,{workflowId:ctx.runId,signal:ctx.cancel.signal}));current(ctx);if(surveyed?.accountId!==ctx.accountId||surveyed.module!==module)throw fail('冷却调查账号或原Function不一致','WORKFLOW_UNKNOWN');return {surveyed,observation:cooldownWaitObservation(cooldownViewObservation(surveyed.view,policy),policy)};};
           if(node.cooldown){initial=await readCooldown();durationMs=Math.max(0,Math.ceil(cooldownMarker(initial.observation)*1000-initial.observation.serverBounds.earliestMs));if(durationMs>node.cooldown.maxWaitMs)throw fail('权威冷却超出本节点明确等待上限','WORKFLOW_LIMIT');}
           ctx.status='WAITING';await trace(ctx,node,'WAIT_STARTED',{durationMs,...(initial?{cooldownWait:{...copy(node.cooldown),observation:initial.observation}}:{})});current(ctx);
           let timer;try{await cancelled(ctx,new Promise(resolve=>{timer=setTimeout(resolve,durationMs);}));}finally{clearTimeout(timer);}ctx.status='RUNNING';current(ctx);
