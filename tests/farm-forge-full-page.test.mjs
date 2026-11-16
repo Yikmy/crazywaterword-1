@@ -3176,3 +3176,20 @@ test('water floater page separates species counts and types without pickup contr
  delete state.raw.OnWaterRequest.floater;h.run('renderDailies('+JSON.stringify({checklist:dailyChecklist(state,{config}),tasks:[]})+')');text=h.node('dailies-table').textContent;assert.match(text,/漂浮物列表未知/);assert.doesNotMatch(text,/塑料垃圾1|深海宝箱1/);
  h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');
 });
+
+// Deferred with the owner's consolidated offline regression, not executed yet.
+for(const id of ['fleet','treasure','museum','alliance','heroes','farm','compass-wheel','naval'])test(id+' safe defaults share registry metadata and only edit an account draft',async()=>{
+ const defaults=structuredClone(GAMEPLAY_MODULES[id].defaultConfig),data=numberConfigData(id);data.config={...defaults,enabled:true};data.source='account';data.functions=[{id,defaultConfig:structuredClone(defaults)}];const h=await numberConfigPage(id,data),requests=h.requests.length;
+ assert.match(h.node('gp-'+id+'-config-source').textContent,/账号独立配置/);assert.equal(h.node('gp-'+id+'-config-default').disabled,false);h.node('gp-'+id+'-config-default').click();assert.equal(h.requests.length,requests);assert.deepEqual(JSON.parse(h.node('gp-'+id+'-config').value),defaults);assert.equal(data.config.enabled,true);assert.equal(h.node('gp-'+id+'-plan').disabled,true);assert.equal(h.node('gp-'+id+'-authorize').disabled,true);
+ const saving=h.node('gp-'+id+'-config-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:id,config:defaults});h.respond('/api/gameplay/config',{accountId:'A',module:id,config:defaults,source:'account'});await saving;assert.equal(writes(h).length,1);assert.match(h.node('gp-'+id+'-config-source').textContent,/账号独立配置/);
+ h.run("selectAccount('B');selectAccount('A');");h.node('gp-'+id+'-config-default').click();assert.equal(h.node('gp-'+id+'-config').value,'{}');assert.equal(h.node('gp-'+id+'-config-source').textContent,'');assert.equal(writes(h).length,1);
+});
+for(const mode of ['missing','duplicate','enabled','running','unknown'])test('safe default drafts block unavailable registry or runtime state '+mode,async()=>{
+ const id='fleet',data=numberConfigData(id),metadata={id,defaultConfig:structuredClone(GAMEPLAY_MODULES[id].defaultConfig)};data.functions=mode==='missing'?[]:mode==='duplicate'?[metadata,metadata]:[metadata];if(mode==='enabled')metadata.defaultConfig.enabled=true;if(mode==='running')data.status.running=true;if(mode==='unknown')data.status.blocked=true;
+ const h=await numberConfigPage(id,data),before=h.node('gp-'+id+'-config').value,requests=h.requests.length;assert.equal(h.node('gp-'+id+'-config-default').disabled,true);h.node('gp-'+id+'-config-default').click();assert.equal(h.node('gp-'+id+'-config').value,before);assert.equal(h.requests.length,requests);
+});
+
+for(const id of ['orders','city','production'])test(id+' Workflow settings reuse registry defaults without an implicit save or run',async()=>{
+ const h=await boot(),data={accountId:'A',module:id,config:{enabled:true},source:'account',csrfToken:'synthetic-csrf-A',functions:[{id,defaultConfig:{enabled:false}}]};const loading=h.node('wf-'+id+'-load').click();h.respond('/api/gameplay',data,{module:id});await loading;assert.match(h.node('wf-'+id+'-source').textContent,/账号独立配置/);const before=h.requests.length;assert.equal(h.node('wf-'+id+'-default').disabled,false);h.node('wf-'+id+'-default').click();assert.equal(h.node('wf-'+id+'-enabled').checked,false);assert.equal(h.requests.length,before);assert.equal(writes(h).length,0);
+ const saving=h.node('wf-'+id+'-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:id,config:{enabled:false}});h.respond('/api/gameplay/config',{accountId:'A',module:id,config:{enabled:false},source:'account'});await saving;assert.equal(writes(h).length,1);h.run("selectAccount('B');selectAccount('A');");h.node('wf-'+id+'-default').click();assert.equal(h.node('wf-'+id+'-source').textContent,'');assert.equal(writes(h).length,1);
+});
