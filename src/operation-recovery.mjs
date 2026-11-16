@@ -7,6 +7,7 @@ import { fleetFacts, stable, worldObservationQuery } from './naval-facts.mjs';
 import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFreeGoldSources, parseFreeGoldState, verifyFreeGold, verifyFreeGoldOutcome } from './free-gold.mjs';
 import { taskRewardAction, parseTaskRewardState, parseTaskRewardSources, verifyTaskReward, verifyTaskRewardOutcome } from './task-rewards.mjs';
 import { compassWheelAction, parseCompassWheelState, parseCompassWheelSources, compassWheelRecoveryWindow, compassWheelExpectedState, compassWheelReceipt, verifyCompassWheel, verifyCompassWheelOutcome } from './compass-wheel.mjs';
+import { validateFreeRecruitParameters, parseFreeRecruitState, freeRecruitReadSources, parseFreeRecruitSources, freeRecruitRecoveryClock, freeRecruitVerificationClock, freeRecruitContractParts, freeRecruitSettlement, verifyFreeRecruit, verifyFreeRecruitOutcome } from './free-recruit.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 
@@ -301,6 +302,33 @@ function buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,
  if(!before||!after||!same(scope(before.context),executionContext)||verifyFreeGoldOutcome(candidate,before,after,responseEvidence,goldBefore).confirmed!==true)return null;
  return {version:1,verified:true,module:'free-gold',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,goldBefore,responseEvidence,executionContext};
 }
+function freeRecruitContract(row) {
+ if(row?.module!=='free-recruit'||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity))return null;
+ let parameters;try{parameters=validateFreeRecruitParameters(row.parameters);}catch{return null;}
+ if(stable(parameters)!==stable(row.parameters))return null;
+ const before=parseFreeRecruitState(row.beforeState,parameters);if(!before)return null;
+ const antique=parameters.recruit==='antique',ticket=parameters.payment==='ticket',key=antique?'antique':'hero',prefix=antique?'antique:':'',marker=before.recruit[key].freeEndTimeSeconds,parts=freeRecruitContractParts(before,parameters);
+ if(row.actionType!==(ticket?'RECRUIT':'CLAIM')||row.actionId!=='free-recruit:'+prefix+(ticket?'ticket:':'')+marker+':'+row.identity||stable(row.target)!==stable(parts.target)||stable(row.costs)!==stable(parts.costs)||row.costSource!==parts.costSource||stable(row.expectedState)!==stable(parts.expectedState))return null;
+ if(ticket){const claims=row.budgetClaims,uid=claims?.uids?.[0];if(!object(claims)||Object.keys(claims).length!==3||stable(claims.resources)!==stable(parts.costs)||!same(claims.quotas,[])||!Array.isArray(claims.uids)||claims.uids.length!==1||!object(uid)||Object.keys(uid).length!==2||uid.type!=='free-recruit'||typeof uid.id!=='string'||!uid.id.startsWith(prefix+'ticket:')||!/^[0-9a-f]{64}$/.test(uid.id.slice((prefix+'ticket:').length)))return null;}
+ else if(stable(row.budgetClaims)!==stable({resources:[],quotas:[{id:'free-recruit:'+prefix+'cooldown:'+marker,num:1}],uids:[{type:'free-recruit',id:prefix+marker}]}))return null;
+ try{assertPaymentAllowed({...parts.action,costs:parts.costs});}catch{return null;}
+ return {before,parameters,key,action:parts.action,identityHash:businessReceiptIdentityHash(row)};
+}
+function freeRecruitReceiptProblem(row,contract,originalScope) {
+ const receipt=row.verifiedReceipt;
+ if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='free-recruit'||receipt.request!==contract.action.request||receipt.response!==contract.action.response)return 'MISSING_VERIFIED_RECEIPT';
+ if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+ const before=parseFreeRecruitState(receipt.beforeFacts,contract.parameters),after=parseFreeRecruitState(receipt.afterFacts,contract.parameters);
+ if(!before||!after||stable(before)!==stable(contract.before)||!same(scope(before.context),originalScope)||receipt.identityHash!==contract.identityHash||verifyFreeRecruitOutcome(row,before,after,receipt.settlement,receipt.verifiedClock).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+ return null;
+}
+function buildFreeRecruitVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context) {
+ const executionContext=scope(context),contract=freeRecruitContract(candidate);
+ if(!executionContext||!contract||stable(candidate.action)!==stable(contract.action)||verifyFreeRecruit(candidate,beforeFacts,afterFacts,response).confirmed!==true)return null;
+ const before=parseFreeRecruitState(beforeFacts.state,contract.parameters),after=parseFreeRecruitState(afterFacts.state,contract.parameters),settlement=freeRecruitSettlement(response,beforeFacts,afterFacts),verifiedClock=freeRecruitVerificationClock(afterFacts);
+ if(!before||!after||!same(scope(before.context),executionContext)||verifyFreeRecruitOutcome(candidate,before,after,settlement,verifiedClock).confirmed!==true)return null;
+ return {version:1,verified:true,module:'free-recruit',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,settlement,verifiedClock,executionContext};
+}
 function compassWheelContract(row) {
  if(row?.module!=='compass-wheel'||row.actionType!=='SPIN'||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||row.actionId!=='compass-wheel:'+row.identity||!text(row.costSource))return null;
  let action;try{action=compassWheelAction(row.parameters);}catch{return null;}
@@ -360,6 +388,7 @@ export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, respons
   if(candidate?.module==='free-gold')return buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='task-rewards')return buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='compass-wheel')return buildCompassWheelVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
+  if(candidate?.module==='free-recruit')return buildFreeRecruitVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='fleet'){
     if(candidate.actionType==='giveUpField')return buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(candidate.actionType==='fleetFormation')return buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
@@ -404,6 +433,7 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
+  const freeRecruit=freeRecruitContract(row);if(freeRecruit)readMethod='READ_ONLY_RECRUIT_V1';
   const compassWheel=compassWheelContract(row);if(compassWheel)readMethod='READ_ONLY_COMPASS_WHEEL_V1';
   const taskReward=taskRewardContract(row);if(taskReward)readMethod='READ_ONLY_TASK_REWARD_V1';
   const freeGold=freeGoldContract(row);
@@ -415,10 +445,31 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
   if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
-  if (!compassWheel && !taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励及罗盘单批抽取；均须原持久验证凭据');
+  if (!freeRecruit && !compassWheel && !taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励、罗盘单批抽取及明确英雄/古董招募；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
+  if(freeRecruit){
+    const problem=freeRecruitReceiptProblem(row,freeRecruit,originalScope),readSources=freeRecruitReadSources(freeRecruit.parameters),reads=Object.entries(readSources).map(([key,response])=>({key,response,request:response.replace(/Response$/,'Request')}));
+    if(reads.some(read=>!protocol?.[read.request]||!protocol?.[read.response]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原招募、英雄、广播站、完整库存或古董只读协议');
+    try{
+      const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
+      current();const start=freeRecruitRecoveryClock(client,freeRecruit.before.context);
+      if(!start)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','缺少原招募来源的可信Ping时钟');
+      readRequest={request:'RecruitInfoRequest',response:'RecruitInfoResponse',additionalRequests:reads.filter(read=>read.key!=='recruit').map(read=>read.request),bracketRequest:'RecruitInfoRequest'};
+      const inputs={};for(const read of reads){current();inputs[read.key]=await awaitExecution(client.request(read.request,{},read.response,15000,{signal}),client,{signal});current();}
+      current();const repeated=await awaitExecution(client.request('RecruitInfoRequest',{},'RecruitInfoResponse',15000,{signal}),client,{signal});current();
+      const end=freeRecruitRecoveryClock(client,freeRecruit.before.context);
+      if(!end||end.earliestMs<start.earliestMs)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','招募复读期间可信时钟失效或回退');
+      const after=parseFreeRecruitSources(inputs,freeRecruit.before.context,freeRecruit.parameters),bracket=parseFreeRecruitSources({...inputs,recruit:repeated},freeRecruit.before.context,freeRecruit.parameters);
+      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','招募前后双读不一致，或原完整英雄/广播站/库存/古董来源不可靠');
+      const verification=verifyFreeRecruitOutcome(row,freeRecruit.before,after,row.verifiedReceipt?.settlement,end),hash=value=>createHash('sha256').update(stable(value)).digest('hex');
+      observation={recruit:freeRecruit.key,count:freeRecruit.parameters.count??1,recruitData:after.recruit[freeRecruit.key],heroes:{entries:after.heroes.length,hash:hash(after.heroes)},...(freeRecruit.key==='antique'?{antiques:{entries:after.antiques.antiques.length,hash:hash(after.antiques)}}:{}),inventory:{status:'COMPLETE',entries:after.inventory.length,hash:hash(after.inventory)},desiredStateMatches:verification.confirmed===true,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前招募状态仅供观察，缺少原同身份完整typed成功凭据');
+      if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
+      current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；不重招、不续权、不恢复执行或累计领奖');
+    }catch(error){const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','招募只读复核未完成；保持原UNKNOWN保护');}
+  }
   if(compassWheel){
     const problem=compassWheelReceiptProblem(row,compassWheel,originalScope);
     if(['CompassWheelInfoRequest','CompassWheelInfoResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原罗盘及完整库存只读协议');
