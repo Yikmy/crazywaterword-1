@@ -103,6 +103,37 @@ export function nextTrialStage(rows,passedStage) {
  const index=passedStage===0?-1:rows.findIndex(row=>row.stageId===passedStage);
  return passedStage!==0&&index===-1?{known:false,stage:null}:{known:true,stage:rows[index+1]??null};
 }
+export function trialChallengeAction(target) {
+ if(!fields(target,['raidId','stageId','passedStage'])||Reflect.ownKeys(target).length!==3||target.raidId!==1||!positive(target.stageId)||!uint(target.passedStage)||target.stageId===target.passedStage)throw invalid('经验试炼复核仅支持原raid1精确下一首通目标');
+ return {request,response,body:buildDailyDriverBody(request,{raidId:1,stageId:target.stageId})};
+}
+export function parseTrialChallengeState(value) {
+ const keys=['context','raid','heroes','inventory'],c=value?.context,contextKeys=['accountId','generation','connectionId','playerId','worldId','playerLevel'];
+ if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||!fields(c,contextKeys)||Reflect.ownKeys(c).length!==contextKeys.length||!text(c.accountId)||!text(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId||!positive(c.playerLevel))return null;
+ const raid=parseRaid({raid:value.raid}),heroes=parseHeroes({heroes:value.heroes});
+ if(!raid||!heroes||!same(raid,value.raid)||!same(heroes,value.heroes)||!dense(value.inventory)||value.inventory.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!text(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||new Set(value.inventory.map(row=>row.id)).size!==value.inventory.length)return null;
+ const inventory=stockState(new Map(value.inventory.map(row=>[row.id,row.num])));return same(inventory,value.inventory)?{context:copy(c),raid,heroes,inventory}:null;
+}
+export function parseTrialChallengeSources(inputs,context) {const state=snapshot(toSnapshotJson(inputs),context);return state?parseTrialChallengeState(state):null;}
+export function trialChallengeExpectedState(before,stageId,rewards) {
+ const state=parseTrialChallengeState(before);if(!state||!positive(stageId)||stageId===state.raid.passedStage||!dense(rewards)||!rewards.length||rewards.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!text(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||new Set(rewards.map(row=>row.id)).size!==rewards.length)return null;
+ const stock=new Map(state.inventory.map(row=>[row.id,row.num]));for(const reward of rewards){const next=(stock.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(next))return null;stock.set(reward.id,next);}
+ return {...state,raid:{...state.raid,passedStage:stageId},inventory:stockState(stock)};
+}
+export function trialChallengeReceipt(result,target) {
+ const no=reason=>({confirmed:false,reason});
+ if(!own(result,'raidId')||result.raidId!==1||!own(result,'stageId')||result.stageId!==target?.stageId||!own(result,'reward')||!own(result.reward,'asset')||!dense(result.reward.asset))return no('缺少相同副本、关卡及明确奖励回执');
+ const assets=[];for(const a of result.reward.asset){const n=own(a,'num')?safeResourceQuantity(a.num):null;if(!own(a,'type')||a.type!==0||!own(a,'id')||!text(a.id)||n===null||n<=0)return no('奖励身份或数量不明确');assets.push({id:a.id,num:n});}
+ let rewards;try{rewards=resourceCosts(assets).sort((a,b)=>a.id.localeCompare(b.id));}catch{return no('奖励数值无效');}
+ return {raidId:1,stageId:target.stageId,rewards};
+}
+export function verifyTrialChallengeOutcome(operation,before,after,receipt) {
+ const no=reason=>({confirmed:false,reason}),b=parseTrialChallengeState(before),a=parseTrialChallengeState(after);try{trialChallengeAction(operation?.target);validateTrialChallengeParameters(operation?.parameters);}catch{return no('试炼原精确首通目标未知');}
+ if(!b||!a||!same(b.context,a.context)||!same(operation.beforeState,b)||operation.target.passedStage!==b.raid.passedStage||!fields(receipt,['raidId','stageId','rewards'])||Reflect.ownKeys(receipt).length!==3||receipt.raidId!==1||receipt.stageId!==operation.target.stageId)return no('缺少原副本、关卡及完整typed结算凭据');
+ const expected=trialChallengeExpectedState(b,receipt.stageId,receipt.rewards);
+ if(!expected||!same(operation.expectedState,expected)||!same(a,expected))return no('独立首通进度、完整净入或无关英雄/次数未精确确认');
+ return {confirmed:true,afterState:copy(a),reason:'精确关卡回执、独立首通进度与配置奖励净入共同确认',responseEvidence:copy(receipt)};
+}
 function candidate(f,{config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {
  const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
  const valid=authority(f),beforeState=copy(f?.state??null),passed=f?.state?.raid?.passedStage??null;
@@ -110,11 +141,9 @@ function candidate(f,{config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {
  let blockedReason=!validateTrialChallengeConfig(moduleConfig).enabled?'TRIAL_CHALLENGE_DISABLED':!valid?'TRIAL_CHALLENGE_AUTHORITY_UNKNOWN':!defs?'TRIAL_CHALLENGE_CONFIG_UNKNOWN':!next.known?'TRIAL_CHALLENGE_PROGRESS_UNKNOWN':!row?'TRIAL_CHALLENGE_COMPLETE':!positive(f.context.playerLevel)?'TRIAL_CHALLENGE_LEVEL_UNKNOWN':f.context.playerLevel<Math.max(defs.requiredLevel,row.openLevel)?'TRIAL_CHALLENGE_LEVEL_LOCKED':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const identity=hash({beforeState,defs}),stageId=row?.stageId??null;
  const budgetClaims={resources:[],quotas:[{id:moduleId+':first-clear:1:'+stageId,num:1}],uids:[{type:moduleId,id:'1:'+stageId}]};
- const stock=new Map(f?.stock??[]);let expectedState=null;
- if(beforeState&&row){for(const r of row.rewards){const n=(stock.get(r.id)??0)+r.num;if(!Number.isSafeInteger(n)){blockedReason='TRIAL_CHALLENGE_REWARD_OVERFLOW';break;}stock.set(r.id,n);}
- expectedState={...copy(beforeState),raid:{...beforeState.raid,passedStage:stageId},inventory:stockState(stock)};}
+ const expectedState=beforeState&&row?trialChallengeExpectedState(beforeState,stageId,row.rewards):null;if(valid&&positive(f.context.playerLevel)&&row&&!expectedState)blockedReason='TRIAL_CHALLENGE_REWARD_OVERFLOW';
  return {module:moduleId,actionId:moduleId+':1:'+stageId+':'+identity,actionType:'CHALLENGE',target:{raidId:1,stageId,passedStage:passed},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'英雄经验试炼首通 '+stageId,requiredLevel:row?Math.max(defs.requiredLevel,row.openLevel):null,rewards:copy(row?.rewards??[]),
- ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('TrialRaidChallengeRequest',{raidId:1,stageId})}}:{})};
+ ...(blockedReason===null?{action:trialChallengeAction({raidId:1,stageId,passedStage:passed})}:{})};
 }
 export function viewTrialChallenge(f,options={}) {
  validateTrialChallengeParameters(options.parameters??{});
@@ -131,11 +160,9 @@ export function verifyTrialChallenge(operation,before,after,result) {
  if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence))return no('试炼前后账号、配置或库存不可靠');
  const canonical=candidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards'].some(k=>!same(operation?.[k],canonical[k])))return no('试炼合同与写前事实不一致');
- if(!own(result,'raidId')||result.raidId!==1||!own(result,'stageId')||result.stageId!==canonical.target.stageId||!own(result,'reward')||!own(result.reward,'asset')||!dense(result.reward.asset))return no('缺少相同副本、关卡及明确奖励回执');
- const assets=[];for(const a of result.reward.asset){const n=own(a,'num')?safeResourceQuantity(a.num):null;if(!own(a,'type')||a.type!==0||!own(a,'id')||!text(a.id)||n===null||n<=0)return no('奖励身份或数量不明确');assets.push({id:a.id,num:n});}
- let rewards;try{rewards=resourceCosts(assets).sort((a,b)=>a.id.localeCompare(b.id));}catch{return no('奖励数值无效');}
- if(!same(rewards,canonical.rewards)||!same(after.state,canonical.expectedState)||Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt))return no('独立首通进度、完整净入或无关英雄/次数未精确确认');
- return {confirmed:true,afterState:copy(after.state),reason:'精确关卡回执、独立首通进度与配置奖励净入共同确认',responseEvidence:{raidId:1,stageId:canonical.target.stageId,rewards}};
+ const receipt=trialChallengeReceipt(result,canonical.target);if(receipt.confirmed===false)return receipt;
+ if(!same(receipt.rewards,canonical.rewards)||Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt))return no('独立首通进度、完整净入或无关英雄/次数未精确确认');
+ return verifyTrialChallengeOutcome(operation,before.state,after.state,receipt);
 }
 export function trialChallengeDependencyVersions({config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {return {moduleConfig:validateTrialChallengeConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const trialChallengeModule=Object.freeze({id:moduleId,label:'英雄经验试炼首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:businessRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});

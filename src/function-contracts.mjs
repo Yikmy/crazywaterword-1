@@ -70,7 +70,7 @@ export const FUNCTION_CONTRACTS = freeze({
   'trial-challenge': contract('trial-challenge',[],['P6-2'],['src/trial-challenge.mjs#trialChallengeModule','src/dailies.mjs#DAILY_DRIVERS'],{},{
     inventoryRequirementIds:['BIZ-D09'],
     implementation:{mode:'CONTROLLED_WRITE',actions:['CHALLENGE'],blockedCapabilities:[blocked('SWEEP_OTHER_RAIDS','Only raid1 next first-clear stage; sweep, buy, ads and other raids need distinct contracts')]},
-    verification:verification('verifyTrialChallenge','src/trial-challenge.mjs#verifyTrialChallenge','Exact typed raid/stage/config rewards and independent exact passedStage, unchanged sweep counters/heroes and complete net inventory'),
+    verification:verification('verifyTrialChallenge','src/trial-challenge.mjs#verifyTrialChallenge','Exact typed raid/stage/config rewards and independent exact passedStage, unchanged sweep counters/heroes and complete net inventory. Original live verification persists a bounded same-scope receipt; read-only recovery shares the original raid/hero/inventory parsers and settlement comparison, bracketing complete reads with TrialRaidInfo. Current progress alone or missing original receipt remains UNKNOWN; no replay, permit restoration or sweep'),
     dependencyVersions:dependencies(['moduleConfig','config.ModuleOpenCfg','config.TrialRaidCfg','config.TrialRaidStageCfg','config.ItemCfg']),
   }),
   'free-recruit': contract('free-recruit',[],['P6-2'],['src/free-recruit.mjs#freeRecruitModule','src/dailies.mjs#DAILY_DRIVERS'],{payment:{type:'string',enum:['free','ticket']},count:{type:'integer',enum:[1,10,50]},recruit:{type:'string',enum:['hero','antique']}},{
