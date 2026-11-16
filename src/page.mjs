@@ -740,6 +740,18 @@ function renderFleetWorld(box,data,scope,draw,known,labels){
  box.appendChild(el('p','dim',own.note||'缓存不证明实时位置或移动/攻击资格。'));
 }
 
+function festivalSubActivityRows(festival){
+ const known=v=>v===null||v===undefined?'未知':String(v),rows=[];
+ for(const activity of festival?.rows||[])for(const sub of activity.subActivities?.rows||[]){
+  const d=sub.detail||{};let summary='详情未知';
+  if(sub.subActivityType===11)summary='签到 '+(d.checkInId===null||d.checkInId===undefined?'未知':d.checkInId.length?d.checkInId.join('、'):'服务器报告空列表')+'；活跃 '+known(d.activeScore)+'；已报奖励 ID '+known(d.claimedRewardId);
+  if(sub.subActivityType===28)summary='积分 '+known(d.score)+'；已报奖励 ID '+known(d.claimedId)+'；次数/成本未知';
+  if(sub.subActivityType===30)summary='累计击杀 '+known(d.killTotal)+'；已报累计档位 '+known(d.claimed)+'；存活 '+known(d.alive)+'；今日击杀未知';
+  if(sub.subActivityType===29)summary='会话/成本/答案/结算未知';
+  rows.push([known(activity.activityId)+' / '+known(activity.season),known(sub.label)+' / '+known(sub.subActivityType),'open '+known(sub.openTime)+'；close '+known(sub.closeTime),summary,known(sub.status)+' / '+known(d.status),'未知']);
+ }
+ return rows;
+}
 function renderActivityAlliance(data){
  const box=clear($('overview-activity-alliance')),scope=viewGuard.capture(),view=data?.activityAlliance,known=v=>v===null||v===undefined?'未知':String(v);
  const valid=()=>Boolean(data?.account?.id===scope.account&&view?.accountId===scope.account&&view?.context?.accountId===scope.account&&['accountId','generation','connectionId','playerId','worldId'].every(k=>view.context[k]!==undefined&&view.context[k]===data?.dataContext?.[k])&&view.readOnly===true&&view.executable===false&&view.complete===false&&view.coverage==='CURRENT_CACHE_ONLY'&&Array.isArray(view.sources));
@@ -752,6 +764,7 @@ function renderActivityAlliance(data){
  box.appendChild(el('p','dim','达到门槛不等于可领取；日界、周期与实际奖励仍由原业务合同核验。'));
  const festival=daily?.festival;draw('活动推送片段',['活动ID','观察状态','开始原值','开放原值','关闭原值','结束原值','签到记录'],(festival?.rows||[]).map(row=>[known(row.activityId),labels[row.status]||'未知',known(row.startTime),known(row.openTime),known(row.closeTime),known(row.endTime),row.checkInRecord?.status==='OBSERVED'?row.checkInRecord.checkInId.join('、'):'未知']));
  box.appendChild(el('p','dim','推送来源：'+(labels[festival?.source?.status]||'未知')+' · '+(festival?.source?.observedAt?when(festival.source.observedAt):'未知')+'。未出现不证明不存在，窗口不证明当前开放或签到资格。'));
+ draw('活动子项原值',['活动 ID / 赛季','子活动 / 类型','窗口原值（秒）','状态原值','身份 / 详情观察','当前资格'],festivalSubActivityRows(festival));
  const openRank=daily?.openRank;draw('开服排行窗口原值',['类型','开始原值','结束原值','当前领取资格'],(openRank?.rows||[]).map(row=>[row.label+' / '+known(row.type),known(row.startTime),known(row.endTime),'未知']));
  box.appendChild(el('p','dim','开服排行来源：'+(labels[openRank?.source?.status]||'未知')+' · '+(openRank?.source?.observedAt?when(openRank.source.observedAt):'未知')+'。'+(openRank?.note||'窗口不构成领奖资格。')));
  draw('周活动窗口原值',['类型','周期','开始原值','结束原值'],(view.weekly?.rows||[]).map(row=>[known(row.type),known(row.period),known(row.startTime),known(row.endTime)]));
@@ -2282,7 +2295,7 @@ function renderDailyChecklist(data) {
       'start '+known(row.startTime)+'；open '+known(row.openTime)+'；close '+known(row.closeTime)+'；end '+known(row.endTime),
       row.checkInRecord.checkInId===null?'未知':row.checkInRecord.checkInId.length?row.checkInRecord.checkInId.join('、'):'服务器报告空列表',
       known(row.checkInRecord.activeScore)+' / '+known(row.checkInRecord.claimedRewardId)+' / '+known(row.checkInRecord.checkRuby),row.status+(row.reason?'：'+row.reason:''),'未知：签到资格及独立复读缺证'
-    ])));box.appendChild(el('p','dim',activity.note));
+    ])));box.appendChild(el('h3','','活动子项 · 最近推送原值'));box.appendChild(table(['活动 ID / 赛季','子活动 / 类型','窗口原值（秒）','状态原值','身份 / 详情观察','当前资格'],festivalSubActivityRows(activity)));box.appendChild(el('p','dim',activity.note));
   }
   if(view.openRank){
     const activity=view.openRank;box.appendChild(el('h3','','开服排行 · 最近窗口观察'));

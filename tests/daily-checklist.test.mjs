@@ -277,3 +277,50 @@ test('open-rank cached windows require current five-dimensional identity without
  const s=withOpenRank(),context={accountId:'synthetic-A',generation:2,connectionId:'festival-connection',playerId:'9007199254740993',worldId:17};assert.equal(dailyChecklist(s,{context}).openRank.status,'OBSERVED');
  for(const key of Object.keys(context)){const c={...context,[key]:key==='generation'?3:'other'},v=dailyChecklist(s,{context:c});assert.equal(v.openRank.status,'UNKNOWN');assert.deepEqual(v.openRank.rows,[]);assert.equal(v.openRank.source.reason,'OPEN_RANK_CURRENT_CONTEXT_MISMATCH');assert.equal(v.tasks.counts.total,3);}
 });
+
+const festivalSubObservation=()=>{const s=festivalObservation();s.activities[0].season=3;s.activities[0].subActivity.push(
+ {subActivityType:28,openTime:950,closeTime:1800,compassWheel:{score:0,claimedId:0}},
+ {subActivityType:29,openTime:950,closeTime:1800},
+ {subActivityType:30,openTime:950,closeTime:1800,evilExpel:{killTotal:10,claimed:5,alive:0}},
+ {subActivityType:99,openTime:1000,closeTime:1700,param1:0,param2:2,unknown:{eligible:true,cost:0}});return s;};
+const festivalSubView=s=>dailyChecklist(withFestival(fixture(),s)).festival.rows[0];
+test('seasonal subactivity catalog shares original check-in parsing and separates progress from claimed markers',()=>{
+ const s=festivalSubObservation(),row=festivalSubView(s),sub=row.subActivities;assert.equal(row.season,3);assert.equal(sub.status,'OBSERVED');assert.deepEqual(sub.rows.map(r=>r.subActivityType),[11,28,29,30,99]);
+ assert.equal(row.checkInRecord,sub.rows[0].detail);assert.deepEqual(sub.rows[1].detail,{status:'OBSERVED',reason:null,score:0,claimedId:0});assert.deepEqual(sub.rows[3].detail,{status:'OBSERVED',reason:null,killTotal:10,claimed:5,alive:0});
+ assert.deepEqual(sub.rows[2].detail,{status:'UNKNOWN',reason:'EDICT_SESSION_NOT_IN_PUSH'});assert.equal(sub.rows[4].detail.reason,'FESTIVAL_SUBACTIVITY_DETAIL_UNSUPPORTED');assert.equal(sub.rows[4].param1,0);assert.equal(sub.rows[4].param2,2);
+ for(const child of sub.rows){assert.equal(child.eligible,null);assert.equal(child.claimStatus,'UNKNOWN');assert.equal(child.executable,false);assert.equal(Object.hasOwn(child,'action'),false);assert.equal(Object.hasOwn(child,'claimParameters'),false);}
+ assert.doesNotMatch(JSON.stringify(sub),/unknown|cost|session|rune|rewardReceipt/);assert.equal(row.eligible,null);assert.equal(row.claimStatus,'UNKNOWN');
+ sub.rows[0].detail.checkInId.push(99);sub.rows[3].detail.alive=99;assert.equal(s.activities[0].subActivity[3].evilExpel.alive,0);assert.deepEqual(s.activities[0].subActivity[0].dailyActive.checkInId,[0,2]);
+});
+for(const [label,mutate,type,key]of[
+ ['missing wheel score',s=>delete s.activities[0].subActivity[1].compassWheel.score,28,'score'],
+ ['negative wheel claimed marker',s=>s.activities[0].subActivity[1].compassWheel.claimedId=-1,28,'claimedId'],
+ ['string wheel score',s=>s.activities[0].subActivity[1].compassWheel.score='0',28,'score'],
+ ['missing wheel detail',s=>delete s.activities[0].subActivity[1].compassWheel,28,'score'],
+ ['missing evil total',s=>delete s.activities[0].subActivity[3].evilExpel.killTotal,30,'killTotal'],
+ ['missing evil claims',s=>delete s.activities[0].subActivity[3].evilExpel.claimed,30,'claimed'],
+ ['unsafe evil alive',s=>s.activities[0].subActivity[3].evilExpel.alive=9007199254740992,30,'alive'],
+ ['inherited evil count',s=>s.activities[0].subActivity[3].evilExpel=Object.create({killTotal:10,claimed:5,alive:0}),30,'killTotal'],
+ ['wrong detail identity',s=>{s.activities[0].subActivity[1].evilExpel={killTotal:10,claimed:5,alive:0};delete s.activities[0].subActivity[1].compassWheel;},28,'score'],
+])test('seasonal subactivity '+label+' is unknown without suppressing independent sign or activity records',()=>{
+ const s=festivalSubObservation();mutate(s);const row=festivalSubView(s),sub=row.subActivities.rows.find(r=>r.subActivityType===type);assert.equal(sub.status,'OBSERVED');assert.equal(sub.detail.status,'UNKNOWN');assert.equal(sub.detail[key],null);assert.equal(sub.eligible,null);assert.equal(sub.executable,false);assert.equal(row.checkInRecord.status,'OBSERVED');assert.equal(row.subActivities.rows.find(r=>r.subActivityType===29).detail.reason,'EDICT_SESSION_NOT_IN_PUSH');
+});
+test('seasonal subactivity accessors and unknown future payloads are not evaluated or copied',()=>{
+ let reads=0;const s=festivalSubObservation();Object.defineProperty(s.activities[0].subActivity[3].evilExpel,'killTotal',{enumerable:true,get(){reads++;throw Error('not data');}});Object.defineProperty(s.activities[0].subActivity[4],'session',{enumerable:true,get(){reads++;throw Error('not data');}});const row=festivalSubView(s);assert.equal(reads,0);assert.equal(row.subActivities.rows[3].detail.killTotal,null);assert.equal(Object.hasOwn(row.subActivities.rows[4],'session'),false);
+});
+for(const type of [11,28,29,30,99])test('seasonal duplicate subactivity type cannot lend identity to another record '+type,()=>{
+ const s=festivalSubObservation();s.activities[0].subActivity.push(clone(s.activities[0].subActivity.find(r=>r.subActivityType===type)));const row=festivalSubView(s);assert.equal(row.subActivities.status,'PARTIAL');for(const sub of row.subActivities.rows.filter(r=>r.subActivityType===type)){assert.equal(sub.status,'UNKNOWN');assert.equal(sub.reason,'FESTIVAL_SUBACTIVITY_TYPE_AMBIGUOUS');assert.equal(sub.detail.status,'UNKNOWN');assert.equal(sub.eligible,null);assert.equal(sub.executable,false);}if(type===11)assert.equal(row.checkInRecord.checkInId,null);else assert.equal(row.checkInRecord.status,'OBSERVED');
+});
+for(const [label,mutate]of[['missing',r=>delete r.subActivity],['sparse',r=>r.subActivity=Array(2)],['not array',r=>r.subActivity={} ]])test('seasonal subactivity '+label+' list is unknown without inventing absence',()=>{const s=festivalSubObservation();mutate(s.activities[0]);const row=festivalSubView(s);assert.equal(row.subActivities.status,'UNKNOWN');assert.deepEqual(row.subActivities.rows,[]);assert.equal(row.status,'OBSERVED');assert.equal(row.eligible,null);});
+test('seasonal subactivity empty list, unknown type and missing type remain distinct observations',()=>{
+ const s=festivalSubObservation();s.activities[0].subActivity.push({openTime:0});let row=festivalSubView(s);assert.equal(row.subActivities.status,'PARTIAL');assert.equal(row.subActivities.rows.at(-1).subActivityType,null);assert.equal(row.subActivities.rows.at(-1).status,'UNKNOWN');assert.equal(row.subActivities.rows.find(r=>r.subActivityType===99).status,'OBSERVED');s.activities[0].subActivity=[];row=festivalSubView(s);assert.equal(row.subActivities.status,'OBSERVED');assert.deepEqual(row.subActivities.rows,[]);assert.equal(row.eligible,null);
+});
+test('seasonal duplicate parent identities do not expose child details or mix different seasons',()=>{
+ const s=festivalSubObservation();s.activities.push({...clone(s.activities[0]),season:4});const a=dailyChecklist(withFestival(fixture(),s)).festival;for(const row of a.rows){assert.equal(row.status,'UNKNOWN');assert.equal(row.subActivities.status,'UNKNOWN');assert.equal(row.subActivities.rows.find(r=>r.subActivityType===30).detail.killTotal,null);assert.equal(row.checkInRecord.checkInId,null);}
+ s.activities[1].activityId='9007199254740996';s.activities[1].subActivity[3].evilExpel.killTotal=20;const rows=dailyChecklist(withFestival(fixture(),s)).festival.rows;assert.deepEqual(rows.map(r=>[r.activityId,r.season,r.subActivities.rows[3].detail.killTotal]),[['9007199254740995',3,10],['9007199254740996',4,20]]);
+});
+test('seasonal subactivity actual Codec preserves zeros and exact parent IDs but cannot turn default fields into observations',()=>{
+ const s=festivalSubObservation(),decode=()=>toSnapshotJson(codec.decode(codec.encode('SCAllActivity',1,{festivalActivities:s.activities})).body.festivalActivities);s.activities=decode();let row=festivalSubView(s);assert.equal(row.activityId,'9007199254740995');assert.deepEqual(row.subActivities.rows[1].detail,{status:'OBSERVED',reason:null,score:0,claimedId:0});assert.equal(row.subActivities.rows[3].detail.alive,0);
+ s.activities[0].subActivity[1].compassWheel={};s.activities[0].subActivity[3].evilExpel={};s.activities=decode();row=festivalSubView(s);assert.equal(row.subActivities.rows[1].detail.score,null);assert.equal(row.subActivities.rows[3].detail.killTotal,null);assert.equal(row.checkInRecord.checkRuby,'9007199254740993');
+});
+for(const [label,mutate]of[['past',r=>{r.openTime=1;r.closeTime=2;}],['future',r=>{r.openTime=2147483600;r.closeTime=2147483601;}],['reversed',r=>{r.openTime=20;r.closeTime=10;}],['missing',r=>{delete r.openTime;delete r.closeTime;}]])test('seasonal subactivity '+label+' window or completed progress never grants a write',()=>{const s=festivalSubObservation();for(const r of s.activities[0].subActivity)mutate(r);s.activities[0].subActivity[3].evilExpel={killTotal:75,claimed:0,alive:6};const row=festivalSubView(s);for(const r of row.subActivities.rows){assert.equal(r.eligible,null);assert.equal(r.claimStatus,'UNKNOWN');assert.equal(r.executable,false);}assert.equal(row.eligible,null);});

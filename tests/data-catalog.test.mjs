@@ -1,3 +1,4 @@
+import { dailyChecklist } from '../src/daily-checklist.mjs';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -267,7 +268,8 @@ test('activity alliance overview legacy normalized cache records precision limit
 
 test('activity alliance overview reuses original festival private-context observation without inferring sign eligibility or completeness',()=>{
  const state=activityOverviewState();state.sessionFacts={festivalActivities:{...overviewContext,status:'OBSERVED',reliable:true,readOnly:true,executable:false,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',complete:false,independentRereadAvailable:false,seq:1,observedAt:overviewTime,activities:[{activityId:'9007199254740995',festival:0,type:'合成活动',season:0,startTime:100,openTime:110,closeTime:190,endTime:200,subActivity:[{subActivityType:11,dailyActive:{checkInId:[0,2],activeScore:0,claimedRewardId:0,checkRuby:'9007199254740993'}}]}]}};
- const result=activityOverview(state),festival=result.checklist.festival;assert.equal(festival.status,'OBSERVED');assert.equal(festival.rows[0].activityId,'9007199254740995');assert.deepEqual(festival.rows[0].checkInRecord.checkInId,[0,2]);assert.equal(festival.rows[0].eligible,null);assert.equal(festival.rows[0].executable,false);assert.equal(festival.complete,false);state.sessionFacts.festivalActivities.connectionId='another';assert.equal(activityOverview(state).checklist.festival.status,'UNKNOWN');assert.equal(activityOverview(state).weekly.status,'OBSERVED');
+ state.sessionFacts.festivalActivities.activities[0].subActivity.push({subActivityType:28,compassWheel:{score:50,claimedId:1}},{subActivityType:29},{subActivityType:30,evilExpel:{killTotal:10,claimed:5,alive:0}});
+ const result=activityOverview(state),festival=result.checklist.festival;assert.deepEqual(festival,dailyChecklist(state,{context:overviewContext}).festival);assert.equal(festival.rows[0].subActivities.rows[1].detail.score,50);assert.equal(festival.rows[0].subActivities.rows[3].detail.alive,0);for(const row of festival.rows[0].subActivities.rows){assert.equal(row.eligible,null);assert.equal(row.executable,false);}assert.equal(festival.status,'OBSERVED');assert.equal(festival.rows[0].activityId,'9007199254740995');assert.deepEqual(festival.rows[0].checkInRecord.checkInId,[0,2]);assert.equal(festival.rows[0].eligible,null);assert.equal(festival.rows[0].executable,false);assert.equal(festival.complete,false);state.sessionFacts.festivalActivities.connectionId='another';assert.equal(activityOverview(state).checklist.festival.status,'UNKNOWN');assert.equal(activityOverview(state).weekly.status,'OBSERVED');
 });
 
 test('activity alliance overview source time is unknown when its own outcome omitted time rather than borrowing snapshot collection time',()=>{

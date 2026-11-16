@@ -138,6 +138,30 @@ const festivalInteger = (value,positiveOnly=false) => {
   if(typeof value!=='string'||!(positiveOnly?/^[1-9][0-9]{0,18}$/:/^(0|[1-9][0-9]{0,18})$/).test(value))return null;
   return BigInt(value)<(1n<<63n)?value:null;
 };
+// Subactivity identities and values are observations from the same accepted push.
+// No local calendar, default cost, projected kills, reward or session is inferred.
+function festivalCheckInRecord(active,valid) {
+  const checkIn=valid?list(own(active,'checkInId'),uint):null;
+  return {status:checkIn!==null?'OBSERVED':'UNKNOWN',checkInId:checkIn,activeScore:valid?count(active,'activeScore'):null,
+    claimedRewardId:valid?count(active,'claimedRewardId'):null,checkRuby:valid?festivalInteger(own(active,'checkRuby')):null};
+}
+function festivalSubActivities(raw,parentKnown) {
+  if(!dense(raw))return {status:'UNKNOWN',reason:'FESTIVAL_SUBACTIVITY_LIST_UNKNOWN',rows:[]};
+  const types=raw.map(r=>count(r,'subActivityType')),counts=new Map();for(const type of types)if(type!==null)counts.set(type,(counts.get(type)??0)+1);
+  const rows=raw.map((r,index)=>{
+    const type=types[index],valid=parentKnown&&type!==null&&counts.get(type)===1;
+    const base={subActivityType:type,status:valid?'OBSERVED':'UNKNOWN',reason:!parentKnown?'FESTIVAL_ACTIVITY_ID_UNKNOWN_OR_AMBIGUOUS':type===null?'FESTIVAL_SUBACTIVITY_TYPE_UNKNOWN':!valid?'FESTIVAL_SUBACTIVITY_TYPE_AMBIGUOUS':null,
+      openTime:count(r,'openTime'),closeTime:count(r,'closeTime'),param1:count(r,'param1'),param2:count(r,'param2'),eligible:null,claimStatus:'UNKNOWN',executable:false};
+    if(type===11)return {...base,label:'签到与活跃',detail:festivalCheckInRecord(own(r,'dailyActive'),valid)};
+    if(type===28||type===30){
+      const field=type===28?'compassWheel':'evilExpel',keys=type===28?['score','claimedId']:['killTotal','claimed','alive'],detail=Object.fromEntries(keys.map(k=>[k,valid?count(own(r,field),k):null]));
+      const known=valid&&Object.values(detail).every(v=>v!==null);
+      return {...base,label:type===28?'龙王罗盘':'驱邪除祟',detail:{status:known?'OBSERVED':'UNKNOWN',reason:known?null:'FESTIVAL_SUBACTIVITY_DETAIL_UNKNOWN',...detail}};
+    }
+    return {...base,label:type===29?'酆都敕令':'未解析子活动',detail:{status:'UNKNOWN',reason:type===29?'EDICT_SESSION_NOT_IN_PUSH':'FESTIVAL_SUBACTIVITY_DETAIL_UNSUPPORTED'}};
+  });
+  return {status:!parentKnown?'UNKNOWN':rows.every(r=>r.status==='OBSERVED')?'OBSERVED':'PARTIAL',reason:!parentKnown?'FESTIVAL_ACTIVITY_ID_UNKNOWN_OR_AMBIGUOUS':rows.some(r=>r.status!=='OBSERVED')?'FESTIVAL_SUBACTIVITY_IDENTITY_UNKNOWN':null,rows};
+}
 function festivalView(state,context=null) {
   const s=own(own(state,'sessionFacts'),'festivalActivities'),raw=own(s,'activities');
   const matches=context===null||['accountId','generation','connectionId'].every(k=>own(context,k)!==undefined&&own(context,k)===own(s,k))&&['playerId','worldId'].every(k=>festivalInteger(own(context,k),true)!==null&&String(festivalInteger(own(context,k),true))===String(festivalInteger(own(s,k),true)));
@@ -148,15 +172,15 @@ function festivalView(state,context=null) {
   const ids=observed?raw.map(r=>festivalInteger(own(r,'activityId'),true)):[],counts=new Map();for(const id of ids)if(id!==null)counts.set(String(id),(counts.get(String(id))??0)+1);
   const rows=observed?raw.map((r,index)=>{
     const activityId=ids[index],duplicate=activityId!==null&&counts.get(String(activityId))!==1,sub=own(r,'subActivity');
-    const activeRows=dense(sub)?sub.filter(v=>own(v,'subActivityType')===11):null,active=activeRows?.length===1?own(activeRows[0],'dailyActive'):null,checkIn=list(own(active,'checkInId'),uint);
+    const subActivities=festivalSubActivities(sub,activityId!==null&&!duplicate),activeRows=subActivities.rows.filter(r=>r.subActivityType===11),checkInRecord=activeRows.length===1?activeRows[0].detail:festivalCheckInRecord(null,false);
     const times=Object.fromEntries(['startTime','openTime','closeTime','endTime'].map(k=>[k,count(r,k)]));
     const status=activityId!==null&&!duplicate?'OBSERVED':'UNKNOWN';
     return {activityId,status,reason:duplicate?'FESTIVAL_ACTIVITY_ID_AMBIGUOUS':activityId===null?'FESTIVAL_ACTIVITY_ID_UNKNOWN':null,festival:count(r,'festival'),type:text(own(r,'type'))?r.type:null,season:count(r,'season'),...times,
-      checkInRecord:{status:!duplicate&&activityId!==null&&checkIn!==null?'OBSERVED':'UNKNOWN',checkInId:!duplicate&&activityId!==null?checkIn:null,activeScore:count(active,'activeScore'),claimedRewardId:count(active,'claimedRewardId'),checkRuby:festivalInteger(own(active,'checkRuby'))},
+      checkInRecord,subActivities,
       eligible:null,claimStatus:'UNKNOWN',executable:false,blockedReason:'FESTIVAL_SIGN_ELIGIBILITY_AND_INDEPENDENT_REREAD_UNVERIFIED'};
   }):[];
   return {readOnly:true,status:source.status,source,rows,complete:false,eligible:null,executable:false,independentRereadAvailable:false,
-    note:'仅显示本连接最近一次已接受推送中的活动ID、窗口和签到记录。未报活动不推导为不存在；不据窗口/列表推算游戏日界、当前可领或领奖成功。签到写操作仍缺资格及独立复读合同。'};
+    note:'仅显示本连接最近一次已接受推送中的活动ID、赛季、子活动类型/窗口、签到活跃及驱邪/罗盘状态原值；列表不代表完整活动目录。敕令会话、罗盘成本/次数及驱邪今日次数不在该推送中，保持未知。未报活动不推导为不存在，不据窗口/进度/已报档位推算游戏日界、当前可领或实际到账；写操作仍须独立业务合同。'};
 }
 
 function openRankView(state,context=null) {
