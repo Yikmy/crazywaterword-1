@@ -1101,6 +1101,19 @@ function operationPlanIdentityText(plan) {
  const id=value=>{if(typeof value==='number')return Number.isSafeInteger(value)&&value>0?String(value):'未知';if(typeof value!=='string'||!/^\\d{1,19}$/.test(value))return '未知';const integer=BigInt(value);return integer>0n&&integer<=9223372036854775807n?integer.toString():'未知';};
  return '计划绑定：账号 '+text(context?.accountId)+' · 角色 '+id(context?.playerId)+' · 世界 '+id(context?.worldId)+' · 连接 '+text(context?.connectionId)+' · 代次 '+(Number.isSafeInteger(context?.generation)&&context.generation>=0?context.generation:'未知');
 }
+function operationPlanResourceRows(plan) {
+ const preview=plan?.resourcePreview,valid=preview?.readOnly===true&&preview.source==='PLAN_SURVEY_STOCK'&&preview.includesExpectedRewards===false&&Array.isArray(preview.rows),rows=Array.isArray(plan?.resourceBudget)?plan.resourceBudget:[];
+ return rows.map(cost=>{const matches=valid?preview.rows.filter(row=>row?.id===cost.id&&row.plannedCost===cost.num):[],row=matches.length===1?matches[0]:null,known=row?.status==='OBSERVED'&&Number.isSafeInteger(row.observed)&&row.observed>=0&&Number.isSafeInteger(row.projectedRemaining)&&row.projectedRemaining>=0&&Number.isSafeInteger(cost.num)&&cost.num>=0&&row.observed>=cost.num&&row.observed-cost.num===row.projectedRemaining;
+  return [typeof cost.id==='string'?cost.id:'未知',known?row.observed:'未知',Number.isSafeInteger(cost.num)&&cost.num>=0?cost.num:'未知',known?row.projectedRemaining:'未知'];});
+}
+function operationPlanResourceText(plan) {
+ const rows=operationPlanResourceRows(plan);return rows.length?'计划调查资源：'+rows.map(row=>row[0]+' 持有 '+row[1]+'，本批消耗 '+row[2]+'，预计余量 '+row[3]).join('；')+'。预计余量不是实际结算，不计预期奖励，执行前仍独立复读。':'';
+}
+function renderOperationResourcePreview(box,plan) {
+ const rows=operationPlanResourceRows(plan);if(!rows.length)return;
+ box.appendChild(el('h4','','调查时资源与计划余量'));box.appendChild(table(['材料','计划调查时持有','本批次消耗','预计余量（非结算）'],rows));
+ box.appendChild(el('p','dim','来源：本计划新鲜调查库存；缺失来源保持未知。预计余量不是实际结算，不计预期奖励，不改变保留线或父预算；执行前仍独立复读。'));
+}
 function operationCosts(costs) { return Array.isArray(costs) ? costs.length ? costs.map((cost) => cost.id + ' × ' + (cost.num ?? '未知')).join('；') : '无资源消耗' : '成本未知'; }
 function operationValidBudget(budget) { return Array.isArray(budget) && budget.every((cost) => typeof cost.id === 'string' && cost.id && Number.isSafeInteger(cost.num) && cost.num >= 0); }
 function operationPlanLive() {
@@ -1291,6 +1304,7 @@ function renderOperationPlan(plan) {
   for (const note of plan.notes || []) box.appendChild(el('div', 'warn', typeof note === 'string' ? note : JSON.stringify(note)));
   const budget = clear($('ops-budget'));
   budget.appendChild(table(['材料', '本批次总预留'], plan.resourceBudget.map((cost) => [cost.id, cost.num ?? '未知'])));
+  renderOperationResourcePreview(budget,plan);
   if (!plan.resourceBudget.length) budget.appendChild(el('div', 'dim', '本批次无资源消耗；状态修改仍需授权。'));
   if (!operationValidBudget(plan.resourceBudget)) budget.appendChild(el('div', 'warn', '存在未知资源成本，禁止授权。'));
   operationControls();
@@ -1326,7 +1340,7 @@ $('ops-plan').onclick = async () => {
 $('ops-authorize-execute').onclick = async () => {
   if ($('ops-authorize-execute').disabled || !operationPlanLive()) return;
   const plan = operationsPlan, scope = viewGuard.begin('operations');
-  const text = '为账号 ' + scope.account + ' 授权本批次 ' + plan.batchId + '（' + plan.mode + '）？' + String.fromCharCode(10) + operationPlanIdentityText(plan) + String.fromCharCode(10) + '计划标识：' + plan.planHash + ' · 有效至：' + plan.expiresAt + String.fromCharCode(10) + plan.actions.map(operationTitle).join(String.fromCharCode(10)) + String.fromCharCode(10) + '总资源消耗：' + operationCosts(plan.resourceBudget) + String.fromCharCode(10) + '只执行本批次具体列表；新订单或新计划需重新授权。未知结果立即停止。';
+  const text = '为账号 ' + scope.account + ' 授权本批次 ' + plan.batchId + '（' + plan.mode + '）？' + String.fromCharCode(10) + operationPlanIdentityText(plan) + String.fromCharCode(10) + '计划标识：' + plan.planHash + ' · 有效至：' + plan.expiresAt + String.fromCharCode(10) + plan.actions.map(operationTitle).join(String.fromCharCode(10)) + String.fromCharCode(10) + '总资源消耗：' + operationCosts(plan.resourceBudget) + String.fromCharCode(10) + operationPlanResourceText(plan) + String.fromCharCode(10) + '只执行本批次具体列表；新订单或新计划需重新授权。未知结果立即停止。';
   if (!window.confirm(text)) return;
   viewGuard.assert(scope); operationsPending = true; operationControls(); $('ops-hint').textContent = '正在授权此计划与总预算 ...';
   try {

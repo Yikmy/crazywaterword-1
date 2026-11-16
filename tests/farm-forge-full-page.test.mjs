@@ -3209,3 +3209,18 @@ for(const [name,context]of [
 ])test('plan identity PAGE never borrows snapshot values for '+name,async()=>{
  const h=await boot(),value={accountId:'A',executionContext:context};h.run('snapshot.player={playerId:"should-not-borrow",worldId:"should-not-borrow"}');const text=h.run('operationPlanIdentityText('+JSON.stringify(value)+')');assert.match(text,/角色 未知/);assert.doesNotMatch(text,/should-not-borrow/);assert.equal(writes(h).length,0);
 });
+
+
+test('plan resource balance table and confirmation share original totals without treating expected remainder as settlement',async()=>{
+ const spec=cases.find(row=>row.module==='farm'),h=await loaded(spec);domainButtons(h,spec)[0].click();const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);
+ expected.resourcePreview={readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:expected.resourceBudget.map(row=>({id:row.id,plannedCost:row.num,status:'OBSERVED',observed:row.num,projectedRemaining:0}))};h.respond('/api/operations/plan',expected);await pending;
+ const box=h.node('gp-'+spec.module+'-plan-view');assert.match(box.textContent,/计划调查时持有/);assert.match(box.textContent,/预计余量（非结算）/);assert.match(box.textContent,/不改变保留线或父预算/);
+ h.setConfirm(false);await h.node('gp-'+spec.module+'-authorize').onclick();assert.match(h.confirmations.at(-1),/预计余量 0/);assert.match(h.confirmations.at(-1),/不是实际结算/);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run('wfPlan='+JSON.stringify(expected)+';gpRenderPlan($("wf-plan"),wfPlan)');assert.match(h.node('wf-plan').textContent,/计划调查时持有/);
+});
+for(const [name,change]of [
+ ['missing preview',plan=>delete plan.resourcePreview],['wrong source',plan=>plan.resourcePreview.source='ESTIMATED_REWARDS'],['mutable',plan=>plan.resourcePreview.readOnly=false],['expected income',plan=>plan.resourcePreview.includesExpectedRewards=true],['duplicate',plan=>plan.resourcePreview.rows.push({...plan.resourcePreview.rows[0]})],['wrong cost',plan=>plan.resourcePreview.rows[0].plannedCost=39],['unsafe quantity',plan=>plan.resourcePreview.rows[0].observed=9007199254740992],['unknown',plan=>plan.resourcePreview.rows[0].status='UNKNOWN'],['contradictory remainder',plan=>plan.resourcePreview.rows[0].projectedRemaining=61]
+])test('plan balance PAGE retains unknown source rather than calculating a replacement: '+name,async()=>{
+ const h=await boot(),plan={resourceBudget:[{id:'wood',num:40}],resourcePreview:{readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:[{id:'wood',plannedCost:40,status:'OBSERVED',observed:100,projectedRemaining:60}]}};change(plan);
+ h.run('snapshot.resources=[{id:"wood",num:999}]');const rows=h.run('operationPlanResourceRows('+JSON.stringify(plan)+')');assert.equal(rows.length,1);assert.equal(rows[0][0],'wood');assert.equal(rows[0][1],'未知');assert.equal(rows[0][2],40);assert.equal(rows[0][3],'未知');assert.equal(writes(h).length,0);
+});

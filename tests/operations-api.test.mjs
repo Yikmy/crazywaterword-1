@@ -198,3 +198,14 @@ for(const kind of ['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK
   assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:0});assert.equal(app.writes.length,0);assert.equal(app.sessions.size,0);
  }finally{await app.close();}
 });
+
+
+test('original plan HTTP exposes same bound identity and inventory projection, hashes both and persists them without extra surveys',async()=>{
+ const app=await harness();try{
+  const session=app.ready('A');session.player={playerId:'9007199254740993',worldId:'9007199254740995'};session.connectionId='exact-plan-connection';await app.call();const response=await app.plan();assert.equal(response.status,200);const plan=response.data;
+  assert.deepEqual(plan.executionContext,{accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',generation:session.generation,connectionId:'exact-plan-connection'});
+  assert.deepEqual(plan.resourcePreview,{readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:[{id:'wood',plannedCost:2,status:'OBSERVED',observed:4,projectedRemaining:2}]});
+  const other=await app.call('/api/operations',{id:'B'});assert.equal(other.data.lastPlan,null);assert.deepEqual((await app.call()).data.lastPlan.resourcePreview,plan.resourcePreview);assert.equal(app.writes.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0,surveys:1});
+  const permit=await app.approve(plan);assert.equal(permit.status,200);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');const record=app.history.originalRecords('A')[0];assert.deepEqual(record.planSummary.resourcePreview,plan.resourcePreview);assert.deepEqual(record.planSummary.executionContext,plan.executionContext);assert.equal(record.planSummary.planHash,plan.planHash);assert.deepEqual(app.writes,['A']);
+ }finally{await app.close();}
+});

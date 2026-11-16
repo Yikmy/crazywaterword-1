@@ -368,3 +368,10 @@ test('core operation preview and cancelled confirmation show original exact plan
  h.run('operationsPlan='+JSON.stringify(plan)+';renderOperationPlan(operationsPlan);$("ops-authorize-execute").disabled=false;globalThis.planConfirmText="";window.confirm=text=>{planConfirmText=text;return false;}');assert.match(h.node('ops-plan-meta').textContent,/角色 9007199254740993.*世界 9007199254740995.*连接 original-core-connection.*代次 3/);
  const before=h.requests.length;await h.node('ops-authorize-execute').onclick();assert.equal(h.requests.length,before);assert.match(h.run('planConfirmText'),/角色 9007199254740993.*世界 9007199254740995/);assert.match(h.run('planConfirmText'),/original-hash/);
 });
+
+
+test('core operation resource view uses same batch balance projection and cancelled confirmation sends nothing',async()=>{
+ const h=await boot(),plan={accountId:'A',batchId:'balance-batch',planHash:'balance-hash',mode:'Manual',expiresAt:Date.now()+60000,actions:[{actionId:'order-a',module:'orders',actionType:'SUBMIT',target:{id:'order-a'},costs:[{id:'wood',num:40}],beforeState:{},expectedState:{}}],resourceBudget:[{id:'wood',num:40}],resourcePreview:{readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:[{id:'wood',plannedCost:40,status:'OBSERVED',observed:100,projectedRemaining:60}]}};
+ h.run('operationsPlan='+JSON.stringify(plan)+';renderOperationPlan(operationsPlan);$("ops-authorize-execute").disabled=false;globalThis.resourceConfirmText="";window.confirm=text=>{resourceConfirmText=text;return false;}');assert.match(h.node('ops-budget').textContent,/计划调查时持有/);assert.match(h.node('ops-budget').textContent,/预计余量（非结算）/);
+ const before=h.requests.length;await h.node('ops-authorize-execute').onclick();assert.equal(h.requests.length,before);assert.match(h.run('resourceConfirmText'),/wood 持有 100，本批消耗 40，预计余量 60/);assert.match(h.run('resourceConfirmText'),/不是实际结算/);
+});

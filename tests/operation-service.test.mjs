@@ -318,3 +318,21 @@ for(const key of ['playerId','worldId','connectionId','generation'])test('displa
   const plan=await createPlan(f,session);if(key==='generation')session.generation++;else if(key==='connectionId')session.connectionId='new-connection';else session.player[key]='99';assert.throws(()=>approve(f,session,plan));assert.equal(f.calls.length,0);assert.deepEqual(f.history.list('A'),[]);
  }finally{f.cleanup();}
 });
+
+
+for(const stock of [100,'100',{low:100,high:0,unsigned:false}])test('plan resource preview reuses normalized aggregate costs and common exact stock quantity '+JSON.stringify(stock),async()=>{
+ const f=fixture({stock}),session=f.session('A');try{
+  const plan=await createPlan(f,session,['order-a','order-b'],'Automatic');assert.deepEqual(plan.resourceBudget,[{id:'wood',num:80}]);assert.deepEqual(plan.resourcePreview,{readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:[{id:'wood',plannedCost:80,status:'OBSERVED',observed:100,projectedRemaining:20}]});
+  const {planHash,...summary}=plan;assert.equal(operationDigest(summary),planHash);const changed=structuredClone(summary);changed.resourcePreview.rows[0].observed=101;assert.notEqual(operationDigest(changed),planHash);
+  plan.resourcePreview.rows[0].observed=999;assert.equal(f.service.view('A').lastPlan.resourcePreview.rows[0].observed,100);assert.equal(f.surveys(),1);assert.equal(f.calls.length,0);assert.deepEqual(f.history.list('A'),[]);
+ }finally{f.cleanup();}
+});
+test('plan preview preserves exact zero remainder and history while every execution still uses original shared ledger',async()=>{
+ const f=fixture({stock:80}),session=f.session('A');try{
+  const plan=await createPlan(f,session,['order-a','order-b'],'Automatic');assert.equal(plan.resourcePreview.rows[0].projectedRemaining,0);start(f,session,plan);await f.service.settle('A');assert.equal(f.calls.length,2);assert.equal(f.calls[0].budget,f.calls[1].budget);assert.equal(f.calls[0].budget.ledger.reserved.get('wood'),80);
+  assert.deepEqual(f.history.originalRecords('A')[0].planSummary.resourcePreview,plan.resourcePreview);
+ }finally{f.cleanup();}
+});
+for(const stock of [null,'9007199254740992',-1])test('unknown or unsafe source never produces a plan or fabricated zero balance '+JSON.stringify(stock),async()=>{
+ const f=fixture({stock});try{await assert.rejects(createPlan(f,f.session('A')));assert.equal(f.service.view('A').lastPlan,null);assert.equal(f.calls.length,0);assert.deepEqual(f.history.list('A'),[]);}finally{f.cleanup();}
+});
