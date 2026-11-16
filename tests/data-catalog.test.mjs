@@ -318,3 +318,10 @@ test('task summary local Codec and public JSON preserve explicit flags, int64 co
   const v=assertTaskSummaryMatches(state);assert.equal(v.achievements.done,0);assert.equal(v.daily.claimable,1);delete state.raw.DailyTaskInfoRequest.dailyTask[0].rewardClaimed;assert.equal(assertTaskSummaryMatches(state).daily.claimable,null);
  }
 });
+
+
+test('activity overview consumes shared directory metadata and isolates borrowed context without rewriting the snapshot',()=>{
+ const state=activityOverviewState();state.sessionFacts={activityDirectory:{...overviewContext,status:'OBSERVED',reliable:true,readOnly:true,executable:false,complete:false,source:'SCAllActivity',scope:'ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY',seq:1,observedAt:overviewTime,fields:{trade:{period:7,startTime:0,endTime:100}}}};
+ const before=structuredClone(state),view=activityOverview(state);assert.deepEqual(view.checklist.activityDirectory,dailyChecklist(state,{context:overviewContext}).activityDirectory);assert.equal(view.checklist.activityDirectory.status,'OBSERVED');assert.deepEqual(state,before);
+ for(const key of ['accountId','generation','connectionId','playerId','worldId']){const result=activityOverview(state,{context:{...overviewContext,[key]:key==='generation'?99:'other'}});assert.equal(result.checklist.activityDirectory.status,'UNKNOWN');assert.equal(result.checklist.activityDirectory.eligible,null);}
+});

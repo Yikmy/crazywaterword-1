@@ -2,7 +2,7 @@ import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
 import { CHEST_TABLE, describeDailyTask, dailyGiftObservation, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
 import { achievementProgressCount, taskObservation, taskQualification, taskConfigurationRow, taskTarget } from './tasks.mjs';
-import { parseOpenRankActivity } from './client.mjs';
+import { parseOpenRankActivity, parseActivityDirectory } from './client.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const has = (v,k) => object(v) && Object.hasOwn(v,k);
@@ -222,6 +222,17 @@ function festivalView(state,context=null) {
     note:'仅显示本连接最近一次已接受推送中的活动ID、赛季、子活动类型/窗口、签到活跃及驱邪/罗盘状态原值；列表不代表完整活动目录。敕令会话、罗盘成本/次数及驱邪今日次数不在该推送中，保持未知。未报活动不推导为不存在，不据窗口/进度/已报档位推算游戏日界、当前可领或实际到账；写操作仍须独立业务合同。'};
 }
 
+function activityDirectoryView(state,context=null){
+  const s=own(own(state,'sessionFacts'),'activityDirectory');
+  const matches=context===null||['accountId','generation','connectionId'].every(k=>own(context,k)!==undefined&&own(context,k)===own(s,k))&&['playerId','worldId'].every(k=>festivalInteger(own(context,k),true)!==null&&String(festivalInteger(own(context,k),true))===String(festivalInteger(own(s,k),true)));
+  const observed=matches&&own(s,'status')==='OBSERVED'&&own(s,'reliable')===true&&own(s,'readOnly')===true&&own(s,'executable')===false&&own(s,'complete')===false&&own(s,'source')==='SCAllActivity'&&own(s,'scope')==='ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY'
+    &&text(own(s,'accountId'))&&Number.isSafeInteger(own(s,'generation'))&&own(s,'generation')>=0&&text(own(s,'connectionId'))&&festivalInteger(own(s,'playerId'),true)!==null&&festivalInteger(own(s,'worldId'),true)!==null
+    &&text(own(s,'observedAt'))&&Number.isFinite(Date.parse(own(s,'observedAt')))&&positive(own(s,'seq'))&&object(own(s,'fields'));
+  return {readOnly:true,status:observed?'OBSERVED':'UNKNOWN',source:{source:'SCAllActivity',status:observed?'OBSERVED':'UNKNOWN',observedAt:observed?s.observedAt:null,seq:observed?s.seq:null,reason:observed?null:!matches?'ACTIVITY_DIRECTORY_CONTEXT_MISMATCH':own(s,'reason')??'ACTIVITY_DIRECTORY_NOT_OBSERVED'},
+    sections:parseActivityDirectory(observed?s.fields:null),complete:false,eligible:null,executable:false,independentRereadAvailable:false,
+    note:'仅列当前连接最近一次已接受推送中的已知协议元数据；季节活动和开服排行复用下方专用视图。空数组可能由解码器初始化，不能证明线上的字段存在或服务器没有活动；未报字段保持未知。记录ID、窗口与列表不证明当前开放、游戏日界、可领、已领或到账。礼包仅显示元数据，不提供购买资格。'};
+}
+
 function openRankView(state,context=null) {
   const s=own(own(state,'sessionFacts'),'openRankActivity'),raw=parseOpenRankActivity(s);
   const matches=context===null||['accountId','generation','connectionId'].every(k=>own(context,k)!==undefined&&own(context,k)===own(s,k))&&['playerId','worldId'].every(k=>festivalInteger(own(context,k),true)!==null&&String(festivalInteger(own(context,k),true))===String(festivalInteger(own(s,k),true)));
@@ -243,7 +254,7 @@ export function taskProgressCounts(state,{config=null}={}) {
 }
 export function dailyChecklist(state,{config=null,context=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest'),water=source(state,'OnWaterRequest');
-  return {readOnly:true,waterFloaters:waterFloaterView(water.body,config),warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+  return {readOnly:true,activityDirectory:activityDirectoryView(state,context),waterFloaters:waterFloaterView(water.body,config),warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
     gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info,warOnlineReward:counters.info,waterFloaters:water.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
@@ -255,6 +266,7 @@ export function formatDailyChecklist(view) {
     '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',
     '漂浮物缓存 '+known(view.waterFloaters.speciesCount)+' 类 / '+known(view.waterFloaters.totalCount)+' 个；当前拾取资格未知',
     '城战在线奖缓存阶段 '+known(view.warOnlineReward.reportedStage)+'；当前领取资格未知',
+    '活动目录元数据：'+(view.activityDirectory?.status??'UNKNOWN')+'；当前领取资格未知',
     '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',
     '开服排行窗口：'+view.openRank.status+'，观察到 '+view.openRank.rows.length+' 类；当前领取资格未知',view.note].join('\n');
 }

@@ -741,6 +741,22 @@ function renderFleetWorld(box,data,scope,draw,known,labels){
  box.appendChild(el('p','dim',own.note||'缓存不证明实时位置或移动/攻击资格。'));
 }
 
+function renderActivityDirectory(box,directory){
+ if(!directory)return;
+ const known=v=>v===null||v===undefined?'未知':String(v),safe=directory.readOnly===true&&directory.executable===false&&directory.complete===false&&Array.isArray(directory.sections);
+ box.appendChild(el('h3','','活动目录 · 推送元数据'));
+ if(!safe){box.appendChild(el('p','dim','活动目录来源未知。'));return;}
+ const rows=[];
+ for(const section of directory.sections){
+  const prefix=known(section.label)+' / '+known(section.field),state=known(section.status);
+  if(section.kind==='ids'){rows.push([prefix,state,'记录 ID（不等于活动实例）',Array.isArray(section.reportedIds)?section.reportedIds.length?section.reportedIds.join('、'):'解码后为空（不证明不存在）':'未知','未知']);continue;}
+  if(section.kind==='time'){rows.push([prefix,state,'未提供实例身份','结束原值 '+known(section.endTime),'未知']);continue;}
+  if(!Array.isArray(section.rows)||!section.rows.length){rows.push([prefix,state,'未知',section.count===0?'解码后为空（不证明不存在）':'未知','未知']);continue;}
+  for(const row of section.rows)rows.push([prefix,state+' / '+known(row.status),row.identityKnown&&row.identity?Object.entries(row.identity).map(([key,value])=>key+' '+known(value)).join('；'):'未提供实例身份',row.windows&&Object.keys(row.windows).length?Object.entries(row.windows).map(([key,value])=>key+' '+known(value)).join('；'):'未提供窗口','未知']);
+ }
+ box.appendChild(table(['来源字段 / 类型','观察状态','身份原值','窗口 / 记录原值（秒）','当前资格'],rows));
+ box.appendChild(el('p','dim','来源 '+known(directory.source?.source)+' / '+known(directory.source?.status)+' · '+known(directory.source?.observedAt)+' · 序列 '+known(directory.source?.seq)+'。'+(directory.note||'')));
+}
 function festivalSubActivityRows(festival){
  const known=v=>v===null||v===undefined?'未知':String(v),rows=[];
  for(const activity of festival?.rows||[])for(const sub of activity.subActivities?.rows||[]){
@@ -763,6 +779,7 @@ function renderActivityAlliance(data){
  const daily=view.checklist,counts=daily?.tasks?.counts,source=daily?.sources?.daily;
  draw('日常与活跃度',['每日任务完成','已领取','达到门槛','日活跃原值','周活跃原值','每日来源','来源更新'],[[known(counts?.completed)+'/'+known(counts?.total),known(counts?.claimed),known(counts?.eligible),known(daily?.activity?.daily?.activity),known(daily?.activity?.weekly?.activity),labels[source?.status]||'未知',source?.observedAt?when(source.observedAt):'未知']]);
  box.appendChild(el('p','dim','达到门槛不等于可领取；日界、周期与实际奖励仍由原业务合同核验。'));
+ renderActivityDirectory(box,daily?.activityDirectory);
  const festival=daily?.festival;draw('活动推送片段',['活动ID','观察状态','开始原值','开放原值','关闭原值','结束原值','签到记录'],(festival?.rows||[]).map(row=>[known(row.activityId),labels[row.status]||'未知',known(row.startTime),known(row.openTime),known(row.closeTime),known(row.endTime),row.checkInRecord?.status==='OBSERVED'?row.checkInRecord.checkInId.join('、'):'未知']));
  box.appendChild(el('p','dim','推送来源：'+(labels[festival?.source?.status]||'未知')+' · '+(festival?.source?.observedAt?when(festival.source.observedAt):'未知')+'。未出现不证明不存在，窗口不证明当前开放或签到资格。'));
  draw('活动子项原值',['活动 ID / 赛季','子活动 / 类型','窗口原值（秒）','状态原值','身份 / 详情观察','当前资格'],festivalSubActivityRows(festival));
@@ -2304,6 +2321,7 @@ function renderDailyChecklist(data) {
       row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):'未知','未知'
     ])));box.appendChild(el('p','dim',view.vip.note));
   }
+  renderActivityDirectory(box,view.activityDirectory);
   if(view.festival){
     const activity=view.festival;box.appendChild(el('h3','','季节活动 · 最近推送观察'));
     box.appendChild(el('p','dim','来源 '+activity.source.source+' · '+activity.source.status+' · '+(activity.source.observedAt||'时间未知')+' · 序列 '+known(activity.source.seq)));

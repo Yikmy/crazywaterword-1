@@ -431,3 +431,32 @@ test('water floater unknown future species and payloads are isolated without rea
  const cfg={tables:{GarbageProductionCfg:{data:[{id:'未来种类',type:'拾取'}]}}};Object.defineProperty(cfg.tables.GarbageProductionCfg.data[0],'production',{enumerable:true,get(){reads++;throw Error('must not read config getter');}});
  const v=dailyChecklist(state,{config:cfg}).waterFloaters;assert.equal(v.totalCount,1);assert.equal(v.rows[0].configStatus,'UNKNOWN');assert.equal(reads,0);assert.equal(Object.hasOwn(v.rows[0],'reward'),false);assert.equal(state.raw.OnWaterRequest.floater[0].num,before.raw.OnWaterRequest.floater[0].num);
 });
+
+
+const directoryObservation=()=>({...festivalObservation(),source:'SCAllActivity',scope:'ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY',fields:{goldFish:{period:7,startTime:0,endTime:100},raid:[{raidId:8,startTime:0,finishTime:100}],firstCurrency:[0,2],seasonCatchupEndTime:0}});
+const directoryView=(observation=directoryObservation(),context=null)=>dailyChecklist({sessionFacts:{activityDirectory:observation}},{context}).activityDirectory;
+test('known activity directory is one readonly metadata projection and never completes, authorizes or mutates source',()=>{
+ const s=directoryObservation(),before=clone(s),v=directoryView(s);assert.equal(v.status,'OBSERVED');assert.equal(v.sections.length,19);assert.equal(v.eligible,null);assert.equal(v.executable,false);assert.equal(v.complete,false);assert.equal(v.independentRereadAvailable,false);
+ assert.deepEqual(v.sections.find(row=>row.field==='goldFish').rows[0],{identity:{period:7},identityKnown:true,windows:{startTime:0,endTime:100},status:'OBSERVED',reason:null,eligible:null,executable:false});
+ assert.equal(v.sections.find(row=>row.field==='trade').count,null);assert.equal(v.sections.find(row=>row.field==='trade').status,'UNKNOWN');assert.deepEqual(s,before);
+ assert.match(formatDailyChecklist(dailyChecklist({sessionFacts:{activityDirectory:s}})),/活动目录元数据：OBSERVED/);
+});
+for(const [name,change] of [
+ ['unknown',s=>s.status='UNKNOWN'],['unreliable',s=>s.reliable=false],['wrong source',s=>s.source='SCAllActivity.festivalActivities'],['public scope',s=>s.scope='PUBLIC_EVENT'],['write flag',s=>s.executable=true],['not read only',s=>s.readOnly=false],['complete',s=>s.complete=true],['missing account',s=>delete s.accountId],['generation',s=>s.generation=-1],['connection',s=>delete s.connectionId],['role',s=>s.playerId=0],['world',s=>s.worldId=0],['time',s=>s.observedAt='bad'],['sequence',s=>s.seq=0],['fields',s=>s.fields=[]]
+])test('directory rejects untrusted metadata provenance: '+name,()=>{const s=directoryObservation();change(s);const v=directoryView(s);assert.equal(v.status,'UNKNOWN');assert.ok(v.sections.every(row=>row.status==='UNKNOWN'));assert.equal(v.eligible,null);});
+for(const key of ['accountId','generation','connectionId','playerId','worldId'])test('directory current identity does not borrow '+key,()=>{
+ const s=directoryObservation(),context=Object.fromEntries(['accountId','generation','connectionId','playerId','worldId'].map(key=>[key,s[key]]));context[key]=key==='generation'?99:'other';const v=directoryView(s,context);assert.equal(v.status,'UNKNOWN');assert.ok(v.sections.every(row=>row.status==='UNKNOWN'));
+});
+for(const [name,fields,field] of [
+ ['duplicate IDs',{raid:[{raidId:7,startTime:0,finishTime:100},{raidId:7,startTime:0,finishTime:100}]},'raid'],
+ ['missing ID',{goldFish:{startTime:0,endTime:100}},'goldFish'],['zero ID',{goldFish:{period:0,startTime:0,endTime:100}},'goldFish'],
+ ['reversed',{goldFish:{period:7,startTime:101,endTime:100}},'goldFish'],['missing time',{goldFish:{period:7,startTime:0}},'goldFish'],
+ ['bad time',{goldFish:{period:7,startTime:0,endTime:'100'}},'goldFish'],['sparse',{raid:Array(1)},'raid'],
+ ['duplicate records',{firstCurrency:[0,0]},'firstCurrency'],['bad records',{finishQuest:[-1]},'finishQuest'],['bad end',{seasonCatchupEndTime:'0'},'seasonCatchupEndTime']
+])test('directory malformed field is local and never a claim: '+name,()=>{
+ const s=directoryObservation();s.fields={trade:{period:4,startTime:0,endTime:100},...fields};const v=directoryView(s),bad=v.sections.find(row=>row.field===field);assert.notEqual(bad.status,'OBSERVED');assert.equal(v.sections.find(row=>row.field==='trade').status,'OBSERVED');assert.equal(bad.eligible,null);assert.equal(bad.executable,false);
+});
+test('directory unknown fields, inherited defaults and accessors are not read or interpreted',()=>{
+ let called=0;const fields=Object.assign(Object.create({goldFish:{period:1,startTime:0,endTime:10}}),{unknownFutureActivity:{eligible:true},raid:[]});Object.defineProperty(fields,'trade',{enumerable:true,get(){called++;throw Error('getter');}});
+ const s=directoryObservation();s.fields=fields;const v=directoryView(s);assert.equal(called,0);assert.equal(v.sections.find(row=>row.field==='trade').status,'UNKNOWN');assert.equal(v.sections.find(row=>row.field==='goldFish').status,'UNKNOWN');assert.equal(v.sections.some(row=>row.field==='unknownFutureActivity'),false);assert.equal(v.sections.find(row=>row.field==='raid').count,0);
+});

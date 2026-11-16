@@ -12,7 +12,7 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-runtime-test-'));
 process.env.CW_DATA_DIR = sandbox;
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore, loadStore, ACCOUNTS_PATH } = await import('../src/accounts.mjs');
-const {GameClient}=await import('../src/client.mjs'),{loadProtocol}=await import('../src/proto.mjs'),{createCodec}=await import('../src/codec.mjs');
+const {GameClient,readActivityDirectorySnapshot}=await import('../src/client.mjs'),{loadProtocol}=await import('../src/proto.mjs'),{createCodec}=await import('../src/codec.mjs');
 const token = 'synthetic-token-never-use-in-game';
 const sign = 'synthetic-sign-never-use-in-game';
 const frame = 'feedface1234567890abcdef';
@@ -919,5 +919,35 @@ test('main task summary local Codec keeps explicit false distinct from omitted i
   await app.login();for(const flag of [false,true,undefined]){
    const task={taskId:1,progress:15,...(flag===undefined?{}:{rewardClaimed:flag})};state=mainSummaryRuntimeSnapshot(task);state.raw.MainTaskInfoRequest=codec.decode(codec.encode('MainTaskInfoResponse',1,{task,branch:[]})).body;state.ok.MainTaskInfoRequest={task:{taskId:1,progress:999,rewardClaimed:false}};await app.refresh();const sent=app.sent.length,result=(await app.call('/api/overview')).data;assert.equal(result.claimable.mainTask,flag===undefined?null:flag?0:1);assert.equal(app.sent.length,sent);
   }
+ }finally{await app.close();}
+});
+
+
+function directoryRuntimeSnapshot(client){const state=dailyRuntimeSnapshot();state.sessionFacts={activityDirectory:readActivityDirectorySnapshot(client)};return state;}
+test('directory HTTP shares collected private metadata across original pages without game reads or writes',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>directoryRuntimeSnapshot(client)});try{
+  for(const [account,period]of [['account-A',7],['account-B',8]]){const socket=await app.login(account);socket.receive('SCAllActivity',{trade:{period,startTime:0,endTime:100}},1);await app.refresh(account);}
+  const sent=app.sent.length,bytes=JSON.stringify(app.sessions.get('account-A').snapshot);
+  for(const [account,period]of [['account-A',7],['account-B',8]]){
+   const daily=(await app.call('/api/dailies',{account})).data.checklist.activityDirectory,overview=(await app.call('/api/overview',{account})).data.activityAlliance.checklist.activityDirectory;
+   assert.equal(daily.status,'OBSERVED');assert.deepEqual(overview,daily);assert.equal(daily.sections.find(row=>row.field==='trade').rows[0].identity.period,period);assert.equal(daily.eligible,null);assert.equal(daily.executable,false);assert.equal(daily.complete,false);
+  }
+  assert.equal(app.sent.length,sent);assert.equal(app.collects,2);assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),bytes);
+ }finally{await app.close();}
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId','client'])test('directory HTTP cache cannot revive after '+field+' changes',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>directoryRuntimeSnapshot(client)});try{
+  const socket=await app.login();socket.receive('SCAllActivity',{trade:{period:7,startTime:0,endTime:100}},1);await app.refresh();const session=app.sessions.get('account-A'),sent=app.sent.length;
+  assert.equal((await app.call('/api/dailies')).data.checklist.activityDirectory.status,'OBSERVED');
+  const target=['playerId','worldId'].includes(field)?session.player:session,key=field==='accountId'?'id':field,old=target[key];target[key]=field==='generation'?old+1:field==='client'?{...old,stop(){}}:'changed';
+  assert.equal((await app.call('/api/dailies')).data.checklist.activityDirectory.status,'UNKNOWN');assert.equal((await app.call('/api/overview')).data.activityAlliance.checklist.activityDirectory.status,'UNKNOWN');target[key]=old;
+  assert.equal((await app.call('/api/dailies')).data.checklist.activityDirectory.status,'UNKNOWN');assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+test('directory HTTP public snapshot restore cannot substitute for a current collection binding',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>directoryRuntimeSnapshot(client)});try{
+  const socket=await app.login();socket.receive('SCAllActivity',{trade:{period:7,startTime:0,endTime:100}},1);await app.refresh();const session=app.sessions.get('account-A');const restored=JSON.parse(JSON.stringify(session.snapshot));session.snapshot=restored;const sent=app.sent.length;
+  for(const route of ['/api/dailies','/api/overview']){const result=(await app.call(route)).data,view=route==='/api/dailies'?result.checklist.activityDirectory:result.activityAlliance.checklist.activityDirectory;assert.equal(view.status,'UNKNOWN');assert.equal(view.executable,false);assert.equal(view.eligible,null);}
+  assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
  }finally{await app.close();}
 });

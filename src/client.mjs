@@ -403,10 +403,10 @@ export const LIVE_MONTH_CARD_EVIDENCE = Object.freeze({
 const liveFestivalActivities = new WeakMap();
 function resetFestivalActivities(client, reason) {
   const previous=liveFestivalActivities.get(client);
-  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0,tradeSnapshot:null,tradeReason:reason,tradeRevision:0,openRankSnapshot:null,openRankReason:reason,resFieldRevision:0,petRevision:0});
+  liveFestivalActivities.set(client,{owner:previous?.owner??null,context:vipContext(client),socket:null,identity:null,seeded:false,invalid:false,reason,snapshot:null,directorySnapshot:null,directoryReason:reason,guildShipSnapshot:null,guildShipReason:reason,guildShipRevision:0,tradeSnapshot:null,tradeReason:reason,tradeRevision:0,openRankSnapshot:null,openRankReason:reason,resFieldRevision:0,petRevision:0});
 }
 function invalidateFestivalActivities(client, reason) {
-  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.guildShipSnapshot=null;state.guildShipReason=reason;state.tradeSnapshot=null;state.tradeReason=reason;state.openRankSnapshot=null;state.openRankReason=reason;}
+  const state=liveFestivalActivities.get(client);if(state){state.invalid=true;state.reason=reason;state.snapshot=null;state.directorySnapshot=null;state.directoryReason=reason;state.guildShipSnapshot=null;state.guildShipReason=reason;state.tradeSnapshot=null;state.tradeReason=reason;state.openRankSnapshot=null;state.openRankReason=reason;}
 }
 function festivalContextCurrent(client,state) {
   return vipCurrentContext(client,state)&&['playerId','worldId'].every(k=>!vipOwn(client.factContext,k)||vipIdentity(vipValue(client.factContext,k))===state.identity?.[k]);
@@ -433,6 +433,80 @@ export function readFestivalActivitySnapshot(client,expected=null) {
   const common={readOnly:true,executable:false,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',complete:false,independentRereadAvailable:false};
   if(!state||state.invalid||!state.seeded||!state.snapshot||expected&&['accountId','generation','connectionId'].some(k=>vipValue(expected,k)!==state.context[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.reason??'FESTIVAL_CONTEXT_OR_PUSH_UNKNOWN',activities:null,observedAt:null,seq:null};
   return {...common,status:'OBSERVED',reliable:true,reason:null,...state.context,...state.identity,...structuredClone(state.snapshot)};
+}
+
+// Known SCAllActivity fields only. This projection cannot authorize an operation.
+const ACTIVITY_DIRECTORY_FIELDS = Object.freeze([
+  ['firstCharge','首充记录','object',null,[]],['sevenDayLogin','七日登录','object',null,[]],
+  ['firstCurrency','首充币种记录','ids',null,[]],['finishQuest','活动任务记录','ids',null,[]],
+  ['raid','英雄突袭','list','raidId',['startTime','finishTime']],
+  ['limitTimePack','限时礼包','list','id',['finishTime']],
+  ['newbieActivity','新手活动','object',null,['startTime','finishTime']],
+  ['chainPack','连锁礼包','list','chainId',['finishTime']],
+  ['skinActive','皮肤活动','object','activeId',['startTime','endTime']],
+  ['goldFish','金鱼活动','object','period',['startTime','endTime']],
+  ['trade','商会活动','object','period',['startTime','endTime']],
+  ['spring','春季活动','object',null,['startTime','endTime']],
+  ['equinox','节气活动','object',null,['startTime','endTime','rwdEndTime']],
+  ['magicOcean','魔法海洋','object',null,['openTime','closeTime']],
+  ['backLTPack','回归限时礼包','list','id',['finishTime']],
+  ['cleanSea','净海活动','object','period',['startTime','endTime']],
+  ['beauty','佳人活动','object','period',['startTime','endTime','showEndTime']],
+  ['tierActivity','分档活动','object','period',['startTime','endTime']],
+  ['seasonCatchupEndTime','赛季追赶结束','time',null,[]],
+].map(([field,label,kind,id,times])=>Object.freeze({field,label,kind,id,times:Object.freeze(times)})));
+function directoryDense(v){return Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));}
+function directoryObject(v){return v!==null&&typeof v==='object'&&!Array.isArray(v);}
+function directoryUint(v){return Number.isInteger(v)&&v>=0&&v<=2147483647?v:null;}
+function captureActivityDirectory(body){
+  const out={};
+  for(const {field,kind,id,times} of ACTIVITY_DIRECTORY_FIELDS){
+    if(!vipOwn(body,field))continue;
+    const value=vipValue(body,field);
+    if(kind==='ids'){out[field]=directoryDense(value)?value.map(directoryUint):null;continue;}
+    if(kind==='time'){out[field]=directoryUint(value);continue;}
+    const pick=row=>{
+      if(!directoryObject(row))return null;
+      const result={};for(const key of [id,...times].filter(Boolean))if(vipOwn(row,key))result[key]=directoryUint(vipValue(row,key));
+      return result;
+    };
+    out[field]=kind==='list'?(directoryDense(value)?value.map(pick):null):pick(value);
+  }
+  return out;
+}
+export function parseActivityDirectory(body){
+  const fields=captureActivityDirectory(body);
+  return ACTIVITY_DIRECTORY_FIELDS.map(({field,label,kind,id,times})=>{
+    const value=vipValue(fields,field),present=vipOwn(fields,field),base={field,label,kind,readOnly:true,eligible:null,executable:false};
+    if(kind==='ids'){
+      const valid=directoryDense(value)&&value.every(v=>directoryUint(v)!==null)&&new Set(value).size===value.length;
+      return {...base,status:valid?'OBSERVED':'UNKNOWN',reason:valid?null:present?'ACTIVITY_REPORTED_IDS_INVALID':'ACTIVITY_FIELD_NOT_REPORTED',reportedIds:valid?[...value]:null,rows:[],count:valid?value.length:null};
+    }
+    if(kind==='time')return {...base,status:directoryUint(value)!==null?'OBSERVED':'UNKNOWN',reason:directoryUint(value)!==null?null:present?'ACTIVITY_TIME_UNKNOWN':'ACTIVITY_FIELD_NOT_REPORTED',endTime:directoryUint(value),rows:[],count:null};
+    const list=kind==='list'?(directoryDense(value)?value:null):directoryObject(value)?[value]:null;
+    const ids=list?.map(row=>id&&directoryUint(vipValue(row,id))>0?vipValue(row,id):null),counts=new Map();for(const identity of ids??[])if(identity!==null)counts.set(identity,(counts.get(identity)??0)+1);
+    const rows=(list??[]).map((row,index)=>{
+      const identity=ids[index],identityKnown=id!==null&&identity!==null&&counts.get(identity)===1;
+      const windows=Object.fromEntries(times.map(key=>[key,directoryUint(vipValue(row,key))]));
+      const start=windows.startTime??windows.openTime,end=windows.endTime??windows.closeTime??windows.finishTime;
+      const valid=directoryObject(row)&&(!id||identityKnown)&&times.every(key=>windows[key]!==null)&&(start===undefined||end===undefined||start<=end);
+      return {identity:identityKnown?{[id]:identity}:null,identityKnown,windows,status:valid?'OBSERVED':'UNKNOWN',reason:valid?null:id&&!identityKnown?'ACTIVITY_ID_UNKNOWN_OR_AMBIGUOUS':'ACTIVITY_WINDOW_UNKNOWN',eligible:null,executable:false};
+    });
+    return {...base,status:list===null?'UNKNOWN':rows.every(row=>row.status==='OBSERVED')?'OBSERVED':'PARTIAL',reason:list===null?(present?'ACTIVITY_FIELD_INVALID':'ACTIVITY_FIELD_NOT_REPORTED'):null,rows,count:list?.length??null};
+  });
+}
+function updateActivityDirectory(client,body,seq,receivedAt){
+  const state=liveFestivalActivities.get(client);if(!state||state.invalid)return;
+  if(!state.seeded||!client.connected||state.socket!==client.socket||!festivalContextCurrent(client,state)){invalidateFestivalActivities(client,'ACTIVITY_DIRECTORY_CONTEXT_CHANGED');return;}
+  state.directorySnapshot=null;state.directoryReason='ACTIVITY_DIRECTORY_SOURCE_UNKNOWN';
+  if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ)return;
+  try{state.directorySnapshot={seq,observedAt:new Date(receivedAt).toISOString(),fields:captureActivityDirectory(body)};state.directoryReason=null;}catch{state.directoryReason='ACTIVITY_DIRECTORY_NOT_COPYABLE';}
+}
+export function readActivityDirectorySnapshot(client,expected=null){
+  readFestivalActivitySnapshot(client);
+  const state=liveFestivalActivities.get(client),common={readOnly:true,executable:false,source:'SCAllActivity',scope:'ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY',complete:false,independentRereadAvailable:false};
+  if(!state||state.invalid||!state.seeded||!state.directorySnapshot||expected&&['accountId','generation','connectionId'].some(k=>vipValue(expected,k)!==state.context[k]))return {...common,status:'UNKNOWN',reliable:false,reason:state?.directoryReason??'ACTIVITY_DIRECTORY_NOT_OBSERVED',fields:null,observedAt:null,seq:null};
+  return {...common,status:'OBSERVED',reliable:true,reason:null,...state.context,...state.identity,...structuredClone(state.directorySnapshot)};
 }
 
 function updateGuildShipActivity(client,body,seq,receivedAt) {
@@ -1016,7 +1090,7 @@ export class GameClient extends EventEmitter {
     if(name==='SCBranchTaskUpdate')observeTaskProgress(this,'branch',body,seq,receivedAt);
     if(name==='SCAchievementUpdate')observeTaskProgress(this,'achievement',body,seq,receivedAt);
     if(name==='SCUpdateResource')observeResourceAmounts(this,body,seq,receivedAt);
-    if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);updateOpenRankActivity(this,body,seq,receivedAt);}
+    if (name === 'SCAllActivity') {updateActivityDirectory(this,body,seq,receivedAt);updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);updateOpenRankActivity(this,body,seq,receivedAt);}
     if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
       if(activity&&!activity.invalid&&activity.seeded&&festivalContextCurrent(this,activity)){

@@ -388,6 +388,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest','DailyTaskInfoRequest','DailyGiftPackRequest'];
     if(Object.hasOwn(session.snapshot?.raw??{},'CounterInfoRequest')||Object.hasOwn(session.snapshot?.ok??{},'CounterInfoRequest'))requests.push('CounterInfoRequest');
     const failures=taskSnapshotFailures(session,requests);
+    const binding=taskSnapshotBindings.get(session),directoryInvalid=!binding||binding.invalidated===true;
+    if(directoryInvalid)return {...session.snapshot,failed:{...session.snapshot?.failed,...failures},sessionFacts:{...session.snapshot?.sessionFacts,activityDirectory:null}};
     return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot?.failed,...failures}} : session.snapshot;
   }
 

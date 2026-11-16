@@ -352,3 +352,12 @@ test('activity alliance overview PAGE reuses original seasonal child observation
  const h=await boot(),reply=activityOverviewReply(),context=reply.dataContext,observation={...context,status:'OBSERVED',reliable:true,source:'SCAllActivity.festivalActivities',scope:'ACCEPTED_STREAM_OBSERVATION_ONLY',seq:1,observedAt:'2026-11-16T01:00:00.000Z',activities:[{activityId:'9007199254740993',season:3,subActivity:[{subActivityType:28,compassWheel:{score:50,claimedId:1}},{subActivityType:29},{subActivityType:30,evilExpel:{killTotal:10,claimed:5,alive:0}}]}]};reply.activityAlliance.checklist.festival=dailyChecklist({sessionFacts:{festivalActivities:observation}},{context}).festival;const box=await loadActivityOverview(h,reply);assert.match(box.textContent,/活动子项原值/);assert.match(box.textContent,/积分 50；已报奖励 ID 1/);assert.match(box.textContent,/累计击杀 10；已报累计档位 5；存活 0/);assert.ok(box.textContent.includes('会话/成本/答案/结算未知'));assert.equal(h.requests.some(row=>row.options.method==='POST'),false);
  h.run("selectAccount('B')");assert.equal(box.textContent,'');
 });
+
+
+test('directory PAGE shares overview and daily rendering without writes and clears observations on account switch',async()=>{
+ const h=await boot(),reply=activityOverviewReply(),context=reply.dataContext,observation={...context,status:'OBSERVED',reliable:true,readOnly:true,executable:false,complete:false,source:'SCAllActivity',scope:'ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY',seq:1,observedAt:'2026-11-16T01:00:00.000Z',fields:{trade:{period:7,startTime:0,endTime:100},raid:[],firstCurrency:[0,2]}};
+ const directory=dailyChecklist({sessionFacts:{activityDirectory:observation}},{context}).activityDirectory;reply.activityAlliance.checklist.activityDirectory=directory;const box=await loadActivityOverview(h,reply);
+ assert.match(box.textContent,/活动目录 · 推送元数据/);assert.match(box.textContent,/period 7/);assert.match(box.textContent,/startTime 0/);assert.match(box.textContent,/解码后为空（不证明不存在）/);assert.match(box.textContent,/记录 ID（不等于活动实例）/);
+ h.run('globalThis.directoryBox=document.createElement("div")');h.run('renderActivityDirectory(directoryBox,'+JSON.stringify(directory)+')');assert.ok(h.run('directoryBox.textContent').includes('period 7'));assert.equal(h.requests.some(row=>(row.options.method||'GET')==='POST'),false);
+ h.run("selectAccount('B')");assert.equal(box.textContent,'');
+});

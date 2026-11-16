@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent, readFestivalActivitySnapshot, readOpenRankActivitySnapshot, parseOpenRankActivity, readTradeActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent, readFestivalActivitySnapshot, readOpenRankActivitySnapshot, readActivityDirectorySnapshot, parseActivityDirectory, parseOpenRankActivity, readTradeActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -660,4 +660,36 @@ test('accepted seasonal subactivity push reaches original collector and checklis
  const reads=[];f.client.request=async name=>{reads.push(name);return {};};const state=await collectState(f.client,protocol),view=dailyChecklist(state),rows=view.festival.rows[0].subActivities.rows;assert.equal(reads.length,48);assert.deepEqual(rows.map(r=>r.subActivityType),[11,28,29,30]);assert.equal(rows[1].detail.score,50);assert.equal(rows[3].detail.alive,0);assert.equal(rows[2].detail.reason,'EDICT_SESSION_NOT_IN_PUSH');assert.ok(reads.every(name=>ENTRY_QUERIES.some(row=>row.name===name)));
  socket.receive('EvilExpelClaimResponse',{claimed:10,reward:{asset:[]}},2);socket.receive('ClaimCompassWheelRewardResponse',{claimedId:2,reward:{asset:[]}},3);const acknowledged=await collectState(f.client,protocol);let observed=dailyChecklist(acknowledged);assert.equal(observed.festival.rows[0].subActivities.rows[3].detail.claimed,5);assert.equal(observed.festival.rows[0].subActivities.rows[1].detail.claimedId,1);
  socket.receive('SCAllActivity',{festivalActivities:[]},4);const empty=await collectState(f.client,protocol);assert.deepEqual(dailyChecklist(empty).festival.rows,[]);assert.equal(view.festival.rows[0].subActivities.rows[3].eligible,null);assert.equal(rows[1].executable,false);
+});
+
+
+const directoryBody=()=>({firstCharge:{record:[]},sevenDayLogin:{day:0,isGot:false},firstCurrency:[0,2],finishQuest:[3],raid:[{raidId:7,startTime:0,finishTime:200}],limitTimePack:[{id:8,finishTime:200}],newbieActivity:{startTime:0,finishTime:200},chainPack:[{chainId:9,gotGiftId:0,finishTime:200}],skinActive:{activeId:10,startTime:0,endTime:200,gotDay:0,paid:false,gotFree:false},goldFish:{period:11,startTime:0,endTime:200},trade:{period:12,startTime:0,endTime:200},spring:{startTime:0,endTime:200},equinox:{startTime:0,endTime:200,rwdEndTime:210},magicOcean:{openTime:0,closeTime:200},backLTPack:[{id:8,finishTime:200}],cleanSea:{period:13,startTime:0,endTime:200},beauty:{period:14,startTime:0,endTime:200,showEndTime:210},tierActivity:{period:15,startTime:0,endTime:200},seasonCatchupEndTime:0});
+test('directory observes known Codec metadata without extra requests, payload leakage or write authority',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),before=socket.sent.length;
+ assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');
+ socket.receive('SCAllActivity',directoryBody(),1);
+ const snapshot=readActivityDirectorySnapshot(f.client),sections=parseActivityDirectory(snapshot.fields);
+ assert.equal(snapshot.status,'OBSERVED');assert.equal(snapshot.complete,false);assert.equal(snapshot.executable,false);assert.equal(snapshot.independentRereadAvailable,false);
+ assert.equal(sections.length,19);assert.ok(sections.every(section=>section.status==='OBSERVED'&&section.eligible===null&&section.executable===false));
+ assert.deepEqual(snapshot.fields.raid,[{raidId:7,startTime:0,finishTime:200}]);assert.deepEqual(snapshot.fields.firstCharge,{});assert.equal(snapshot.fields.skinActive.paid,undefined);
+ assert.deepEqual(sections.find(row=>row.field==='firstCurrency').reportedIds,[0,2]);assert.equal(sections.find(row=>row.field==='seasonCatchupEndTime').endTime,0);
+ assert.equal(sections.find(row=>row.field==='limitTimePack').rows[0].identity.id,8);assert.equal(sections.find(row=>row.field==='backLTPack').rows[0].identity.id,8);
+ snapshot.fields.raid[0].raidId=99;assert.equal(readActivityDirectorySnapshot(f.client).fields.raid[0].raidId,7);assert.equal(socket.sent.length,before);
+ const reads=[];f.client.request=async name=>{reads.push(name);return {};};const state=await collectState(f.client,protocol);assert.equal(reads.length,48);assert.equal(state.sessionFacts.activityDirectory.status,'OBSERVED');assert.equal(dailyChecklist(state).activityDirectory.sections.find(row=>row.field==='raid').rows[0].identity.raidId,7);
+});
+test('directory newest accepted message replaces prior metadata while absent scalars remain unknown and repeated defaults stay caveated',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',directoryBody(),1);socket.receive('SCAllActivity',{},2);
+ const result=readActivityDirectorySnapshot(f.client),sections=parseActivityDirectory(result.fields);
+ assert.equal(result.seq,2);assert.equal(sections.find(row=>row.field==='goldFish').status,'UNKNOWN');assert.equal(sections.find(row=>row.field==='seasonCatchupEndTime').endTime,null);assert.deepEqual(sections.find(row=>row.field==='raid').rows,[]);
+ const view=dailyChecklist({sessionFacts:{activityDirectory:result}}).activityDirectory;assert.match(view.note,/空数组可能由解码器初始化/);assert.equal(view.complete,false);assert.equal(view.eligible,null);
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId'])test('directory private ownership remains invalid after '+field+' changes and returns',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCAllActivity',directoryBody(),1);const original={...f.client.factContext};
+ f.client.factContext={...original,[field]:field==='generation'?99:'changed'};assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');
+ f.client.factContext=original;assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');socket.receive('SCAllActivity',directoryBody(),2);assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');
+});
+test('directory reconnect, stale socket and collection identity changes cannot revive old metadata',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),late=socket.onmessage;socket.receive('SCAllActivity',directoryBody(),MAX_SEQ);assert.equal(readActivityDirectorySnapshot(f.client).status,'OBSERVED');socket.receive('SCAllActivity',directoryBody(),1);assert.equal(readActivityDirectorySnapshot(f.client).seq,1);
+ f.client.stop();await f.ready();assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');late({data:codec.encode('SCAllActivity',2,directoryBody())});assert.equal(readActivityDirectorySnapshot(f.client).status,'UNKNOWN');
+ f.sockets.at(-1).receive('SCAllActivity',directoryBody(),1);f.client.request=async()=>{f.client.factContext.connectionId='changed-during-collection';return {};};assert.equal((await collectState(f.client,protocol)).sessionFacts.activityDirectory.status,'UNKNOWN');assert.equal(readActivityDirectorySnapshot({}).status,'UNKNOWN');
 });
