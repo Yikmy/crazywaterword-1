@@ -74,10 +74,13 @@ function clockOf(client,context) {
 function parseRecruitTask(task) {
  return ['times','gotId'].every(k=>own(task,k)&&uint(task[k]))?{times:task.times,gotId:task.gotId}:null;
 }
+function parseRecruitCooldown(data) {
+ return own(data,'freeEndTimeSeconds')&&uint(data.freeEndTimeSeconds)?{freeEndTimeSeconds:data.freeEndTimeSeconds}:null;
+}
 function parseRecruitData(data) {
- const keys=['freeEndTimeSeconds','nextLuck','recruitTimes'],task=own(data,'task')?parseRecruitTask(data.task):null;
- if(!keys.every(k=>own(data,k)&&uint(data[k]))||!task)return null;
- return {freeEndTimeSeconds:data.freeEndTimeSeconds,nextLuck:data.nextLuck,recruitTimes:data.recruitTimes,task};
+ const cooldown=parseRecruitCooldown(data),keys=['nextLuck','recruitTimes'],task=own(data,'task')?parseRecruitTask(data.task):null;
+ if(!cooldown||!keys.every(k=>own(data,k)&&uint(data[k]))||!task)return null;
+ return {...cooldown,nextLuck:data.nextLuck,recruitTimes:data.recruitTimes,task};
 }
 function parseRecruit(raw,parameters={}) {
  if(!own(raw,'hero'))return null;
@@ -127,16 +130,19 @@ function authority(f) {
  if(!liveAuthority(f)||!f.state||f.stockReliable!==true||!(f.stock instanceof Map)||!same(snapshot(f.inputs,c,f.parameters),f.state))return false;
  return Object.entries(sourcesFor(f.parameters)).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
-// A task observation needs its own explicit fields, not the unrelated hero,
-// broadcast or inventory prerequisites of recruitment. Retain the original
-// response provenance; this projection never makes the full source writable.
-function recruitTaskFact(f,kind) {
- if(!liveAuthority(f))return null;
+// Read-only fields retain the same explicit response, live seal and source time.
+// Unrelated recruitment prerequisites never promote or hide these observations;
+// the full source and all write candidates still require authority().
+function recruitObservationFact(f,kind,parse) {
+ if(!['hero','antique'].includes(kind)||!liveAuthority(f))return null;
  const source=f.sourceFacts?.recruit,input=f.inputs?.recruit;
- if(source?.provenance?.source!==sources.recruit||!same(source.value,input)||!own(input,kind)||!own(input[kind],'task'))return null;
- const task=parseRecruitTask(input[kind].task);if(!task)return null;
- const fact=createStateFact(task,{...source.provenance,reliable:true});
+ if(source?.provenance?.source!==sources.recruit||!same(source.value,input)||!own(input,kind))return null;
+ const value=parse(input[kind]);if(value===null)return null;
+ const fact=createStateFact(value,{...source.provenance,reliable:true});
  return factsFreshnessPolicy(fact,{accountId:f.context.accountId,generation:f.context.generation,maxAgeMs:30000,scope}).status==='FRESH'?fact:null;
+}
+function recruitTaskFact(f,kind) {
+ return recruitObservationFact(f,kind,data=>own(data,'task')?parseRecruitTask(data.task):null);
 }
 function currentClock(f) {
  const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
@@ -186,9 +192,9 @@ export function validateFreeRecruitCooldownObservation(v) {
  return copy(v);
 }
 function recruitCooldownObservation(f) {
- const recruit=f?.parameters?.recruit==='antique'?'antique':'hero',valid=authority(f),clock=valid?currentClock(f):null,marker=valid?f.state.recruit[recruit].freeEndTimeSeconds:null;
+ const recruit=f?.parameters?.recruit==='antique'?'antique':'hero',fact=recruitObservationFact(f,recruit,parseRecruitCooldown),valid=fact!==null,clock=valid?currentClock(f):null,marker=valid?fact.value.freeEndTimeSeconds:null;
  const bounds=clock?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
- return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:freeRecruitCooldownSource({recruit}),freeEndTimeSeconds:marker,sourceAt:valid?f.sourceFacts.recruit.provenance.sourceAt:null,
+ return validateFreeRecruitCooldownObservation({status:valid?'OBSERVED':'UNKNOWN',source:freeRecruitCooldownSource({recruit}),freeEndTimeSeconds:marker,sourceAt:valid?fact.provenance.sourceAt:null,
   serverBounds:bounds,readiness:valid?freeRecruitReadiness(marker,bounds):'UNKNOWN',eligibility:null,executable:false,autoResume:false});
 }
 
@@ -242,6 +248,28 @@ function recruitTaskObservations(f,{config}={}) {
   if(task.gotId!==0&&!tasks.some(row=>row.id===task.gotId)||tasks.some(row=>row.rewardState==='CLAIMED'&&row.completion!=='COMPLETE'))return base;
   return {...base,status:'OBSERVED',sourceAt:fact.provenance.sourceAt,season,configuredSeason:selected.configuredSeason,progress:task.times,claimedThroughId:task.gotId,nextRewardId:tasks.find(row=>row.rewardState==='UNCLAIMED')?.id??null,tasks};
  });
+}
+
+// Bounded history projection of the existing task view. Keep only observed
+// counters and season identity; never recalculate completion, rewards or claims.
+const recruitTaskSummaryKeys=['kind','status','source','sourceAt','season','configuredSeason','progress','claimedThroughId'];
+export function validateRecruitTaskObservationSummary(value) {
+ const keys=['version','entries','readOnly','eligibility','executable','settlement','autoResume'];
+ if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||value.version!==1||value.readOnly!==true||value.eligibility!==null||value.executable!==false||value.settlement!=='UNKNOWN'||value.autoResume!==false||!dense(value.entries)||value.entries.length!==2)throw invalid('招募任务历史仅接受原英雄/古董两种只读计数');
+ for(const [index,row]of value.entries.entries()){
+  const kind=['hero','antique'][index];
+  if(!fields(row,recruitTaskSummaryKeys)||Reflect.ownKeys(row).length!==recruitTaskSummaryKeys.length||row.kind!==kind||row.source!=='RecruitInfoResponse.'+kind+'.task'||!['OBSERVED','UNKNOWN'].includes(row.status))throw invalid('招募任务历史来源或种类不一致');
+  if(row.status==='UNKNOWN'){
+   if(['sourceAt','season','configuredSeason','progress','claimedThroughId'].some(key=>row[key]!==null))throw invalid('未知招募任务历史不得补入计数或季节');
+  }else if(!Number.isSafeInteger(row.sourceAt)||row.sourceAt<0||!positive(row.season)||row.season>999||!positive(row.configuredSeason)||row.configuredSeason>row.season||!parseRecruitTask({times:row.progress,gotId:row.claimedThroughId}))throw invalid('招募任务历史缺少原计数、时间或明确配置季');
+ }
+ return copy(value);
+}
+export function summarizeRecruitTaskObservations(view) {
+ if(view?.taskObservations===undefined)return null;
+ if(!dense(view.taskObservations)||view.taskObservations.length!==2)throw invalid('招募任务调查缺少原英雄/古董观察');
+ const entries=view.taskObservations.map(row=>Object.fromEntries(recruitTaskSummaryKeys.map(key=>[key,row?.[key]])));
+ return validateRecruitTaskObservationSummary({version:1,entries,readOnly:true,eligibility:null,executable:false,settlement:'UNKNOWN',autoResume:false});
 }
 
 export function viewFreeRecruit(f,options={}) {
