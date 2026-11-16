@@ -66,9 +66,9 @@ R7、R8 均未执行，新增能力仍为 REAL_UNVERIFIED；R8 维持 R7 后的�
 | 核对项 | 本轮实际结果 |
 |---|---|
 | 开发根目录 | //zhangnas/app/crazywaterword；初始aibot-crazywaterword为另一仓库，不在其中施工 |
-| 分支/HEAD | codex/phase-4-alliance-integration；本批父97f671f；本批为原W17/BIZ-R17c受控自有券罗盘切片，不修改main |
-| 远端关系 | 本地remote-tracking origin/codex/phase-4-alliance-integration=21771d35076fe53d4ab78a3b8339059a522814b5，为父97f671f祖先，父领先37/落后0；本批未fetch，不作为实时远端证据，未push/merge |
-| 工作区 | 本批仅罗盘Adapter及对应Contract/Registry/D6、原页面、定向测试和本表提交；五份原未跟踪输入保留且不暂存；Baseline指纹不变，未读真实Token或连接游戏 |
+| 分支/HEAD | codex/phase-4-alliance-integration；本次核对HEAD=8951f53，本次文档更新父提交。6467041补原计划调查资源对照，8951f53补原装备明确英雄/UID调查表单；均待集中离线验证，不修改main |
+| 远端关系 | 2026-11-16在8951f53安全fetch仅开发分支：origin/codex/phase-4-alliance-integration=3e50b42，为本地祖先；当次本地领先10/落后0。无push/merge/reset/rebase，之后提交不冒称该差值仍是即时值 |
+| 工作区 | 本轮6467041/8951f53已本地提交，fetch后已跟踪工作区干净；本次仅更新原Git基线行。五份原未跟踪输入保留且不暂存，Baseline指纹不变；未读真实Token或连接游戏 |
 | 历史/权限 | PHASE1–4原提交和证据保留；允许离线施工与本地提交；push/merge/reset/rebase/clean及真实游戏操作仍未授权 |
 | 目录约束 | 沿用既有src/tests/tools/docs/data/work；不新建仓库、worktree、目录或报告 |
 
