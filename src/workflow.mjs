@@ -293,13 +293,16 @@ export function simulateWorkflow(graph, options = {}) {
   return { status: 'SIMULATED', workflowId: graph.id, runtimeCreated: false, requestsSent: 0,...(validated.workflow.runPolicy?{runPolicy:copy(validated.workflow.runPolicy)}:{}),...(validated.workflow.runPolicy?.maxRounds!==undefined?{traceCoverage:'ONE_STATIC_DAG_PASS'}:{}),
     trace: validated.order.map(id => { const node = byId.get(id); return { nodeId: id, type: node.type, module: node.module ?? null, requiresAuthorization: node.type === 'ACTION', result: node.condition ? evaluateWorkflowCondition(node.condition, options.facts ?? {}).status : node.type === 'ACTION' ? 'AWAITING_AUTHORIZATION' : 'STATIC', durationMs: node.cooldown?null:node.durationMs??0,...(node.cooldown?{cooldown:copy(node.cooldown)}:{}) }; }) };
 }
+function matchingWorkflowBatchRuns(accountId,plan,runs) {
+  return (Array.isArray(runs)?runs:[]).filter(run=>run.accountId===accountId&&(run.planSummary?.batchId===plan.batchId||run.authorizationSummary?.batchId===plan.batchId));
+}
 function confirmedRun(run, plan, accountId, outcome = 'SUCCESS') {
-  if (!run || run.accountId !== accountId || run.finalStatus !== outcome || !text(run.finishedAt) || !Array.isArray(run.actions) || !Array.isArray(plan.actions) || !run.actions.length || run.actions.length !== plan.actions.length) return false;
+  if (!run || run.accountId !== accountId || run.finalStatus !== outcome || run.memoryPersistence?.status === 'FAILED' || !text(run.finishedAt) || !Array.isArray(run.actions) || !Array.isArray(plan.actions) || !run.actions.length || run.actions.length !== plan.actions.length) return false;
   const ids = plan.actions.map(action => action.actionId);
   if (new Set(ids).size !== ids.length || new Set(run.actions.map(action => action.actionId)).size !== run.actions.length) return false;
   if (run.planSummary?.batchId !== plan.batchId && run.authorizationSummary?.batchId !== plan.batchId) return false;
   if (run.planSummary?.batchId && run.planSummary.batchId !== plan.batchId || run.authorizationSummary?.batchId && run.authorizationSummary.batchId !== plan.batchId || run.planSummary?.planHash && run.planSummary.planHash !== plan.planHash) return false;
-  return run.actions.every(action => ids.includes(action.actionId) && action.result === outcome && (action.verification === 'CONFIRMED' || action.verification?.confirmed === true || action.verification?.status === 'CONFIRMED'));
+  return run.actions.every(action => ids.includes(action.actionId) && action.result === outcome && action.unresolvedWrite !== true && !actionNeedsReconciliation(run,action) && (action.verification === 'CONFIRMED' || action.verification?.confirmed === true || action.verification?.status === 'CONFIRMED'));
 }
 // A confirmed mainline defeat is a known failed action, never a success or a
 // permission to advance; the explicit graph and current authorization supply it.
@@ -333,6 +336,7 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
   function finish(ctx,status,reason){if(!ctx.finishTask)ctx.finishTask=finishWork(ctx,status,reason);return ctx.finishTask;}
   async function finishWork(ctx, status, reason) {
     clearTimeout(ctx.deadlineTimer);ctx.eventCleanup?.();finishing=true;
+    const pendingPlan=ctx.waitingPlan;
     ctx.status=status; ctx.reason=reason; ctx.finishedAt=now(); ctx.waitingPlan=null;
     signal?.removeEventListener('abort',ctx.externalAbort); ctx.sessionSignal?.removeEventListener('abort',ctx.externalAbort);
     // Close the parent immediately but retain the owner until its operation settles.
@@ -340,6 +344,20 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     const parent=operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,outcome); if(parent)ctx.runBudget=parent;
     if(operations.running?.(ctx.accountId)){operations.stop?.(ctx.accountId);await operations.settle(ctx.accountId);}
     const cleanupFailure=message=>{if(ctx.status!=='UNKNOWN')ctx.status='FAILED';ctx.reason=ctx.reason?ctx.reason+'；'+message:message;};
+    // Cancellation/deadline stops orchestration, but cannot turn an already
+    // dispatched unresolved batch into a known cancellation. Read only the
+    // original account/batch after Service settles; never resume or replay it.
+    if(pendingPlan&&ctx.status!=='UNKNOWN'){
+      try{
+        const result=await operations.history(ctx.accountId);
+        if(!Array.isArray(result?.runs))throw fail('当前批次历史不可读');
+        const matches=matchingWorkflowBatchRuns(ctx.accountId,pendingPlan,result.runs);
+        if(matches.length>1||matches.some(run=>!Array.isArray(run.actions)||run.finalStatus==='UNKNOWN'||['EXECUTING','VERIFY','RESOURCE_PREFLIGHT'].includes(run.finalStatus)||run.actions.some(action=>actionNeedsReconciliation(run,action)))){
+          ctx.status='UNKNOWN';ctx.reason=(ctx.reason?ctx.reason+'；':'')+'当前同批次存在未决执行证据；保留UNKNOWN，不恢复或重放';
+          if(matches.length===1)ctx.lastRun=copy(matches[0]);
+        }
+      }catch{ctx.status='UNKNOWN';ctx.reason=(ctx.reason?ctx.reason+'；':'')+'停止后无法核对当前批次执行历史；结果保持UNKNOWN';}
+    }
     try{await onUpdate(getStatus());}catch{cleanupFailure('工作流持久化失败；已停止所有后续节点');}
     try{await relinquish(ctx);}catch{cleanupFailure('账号工作流锁释放失败');}finally{finishing=false;}
   }
@@ -480,8 +498,7 @@ function repeatAfterStop(ctx,node){
   async function confirmBatch(ctx) {
       const result = await cancelled(ctx, Promise.resolve().then(() => operations.history(ctx.accountId)));
       current(ctx);
-      const runs = Array.isArray(result?.runs) ? result.runs : [];
-      const matches = runs.filter(run => run.accountId === ctx.accountId && (run.planSummary?.batchId === ctx.waitingPlan.batchId || run.authorizationSummary?.batchId === ctx.waitingPlan.batchId));
+      const matches = matchingWorkflowBatchRuns(ctx.accountId,ctx.waitingPlan,result?.runs);
       if (!matches.length || matches.length === 1 && !matches[0].finishedAt && ['EXECUTING','VERIFY','RESOURCE_PREFLIGHT'].includes(matches[0].finalStatus)) {
         ctx.reason = '当前批次尚无已完成执行历史；继续等待用户授权与执行';
         await onUpdate(getStatus());
