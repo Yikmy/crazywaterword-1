@@ -741,6 +741,7 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
     const node = nodes.get(nodeKey(run.workflowNodeId,run.workflowRound)), batchId = plan?.batchId;
     const actionIds = ids(run.actions, row => row?.actionId);
     if (!node || node.traceResult?.startsWith('BLOCKED_') ||
+        node.traceResult==='CONFIRMED_DEFEAT'&&(!plan||!confirmedStageDefeat(run,plan,accountId)) ||
         node.module !== undefined && node.module !== run.module ||
         node.batchId !== undefined && node.batchId !== batchId ||
         node.planHash !== undefined && node.planHash !== plan?.planHash ||

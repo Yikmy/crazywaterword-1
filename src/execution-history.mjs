@@ -42,10 +42,10 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     catch(cause){if(cause.code==='EEXIST'&&anchored())return;throw fail('执行历史存在锚保存失败；禁止新派发');}
     finally{if(fd!==undefined)fs.closeSync(fd);}
   }
-  function read() {
+  function read(allowInitialMissing = false) {
     let raw;
     try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); observed=true; }
-    catch (error) { if (error.code === 'ENOENT'&&!observed&&!anchored()) return { version: 1, accounts: Object.create(null) }; throw fail('执行历史无法读取或损坏；已禁止新执行，原证据未修改'); }
+    catch (error) { if (error.code === 'ENOENT'&&!observed&&(!anchored()||allowInitialMissing)) return { version: 1, accounts: Object.create(null) }; throw fail('执行历史无法读取或损坏；已禁止新执行，原证据未修改'); }
     anchored(); // A damaged existing anchor cannot be ignored even when History is readable.
     if (!object(raw) || raw.version !== 1 || !object(raw.accounts)) throw fail('执行历史版本或格式无效；原证据未修改');
     const validEvent = event => object(event) && recoveryStatuses.has(event.status) && typeof event.eventId === 'string' && Number.isFinite(Date.parse(event.timestamp)) && object(event.evidence);
@@ -88,10 +88,16 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
     try {
+      read();
+      const initialStore = !observed;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       ensureAnchor();
       const fd = fs.openSync(temporary, 'wx', 0o600);
       try { fs.writeFileSync(fd, JSON.stringify(raw, null, 2) + String.fromCharCode(10), 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      // The original evidence must still be readable after flushing. Only this
+      // first write may see its own existence anchor before creating the file.
+      assertWriter();
+      read(initialStore);
       fs.renameSync(temporary, file); observed=true;
     } catch { throw fail('执行历史原子保存失败；停止批次，不继续发送'); }
     finally { try { fs.unlinkSync(temporary); } catch {} }
