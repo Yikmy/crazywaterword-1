@@ -378,6 +378,38 @@ function gpHeroStarGraph(data,payload,view,accountId){
  return graph;
 }
 const GP_OPEN_RANK_LABELS={'open-rank-order':'开服订单','open-rank-stage':'开服闯关','open-rank-pirate':'开服剿匪','open-rank-war':'开服战争'};
+function gpRenderEquipmentTarget(box,view){
+ const id='equipment-growth',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision;
+ const dense=value=>Array.isArray(value)&&value.length<=10000&&Object.keys(value).length===value.length&&Array.from({length:value.length},(_,index)=>Object.hasOwn(value,index)).every(Boolean);
+ const text=value=>typeof value==='string'&&value.length>0&&value.length<=200&&value.trim()===value&&!/[ -]/.test(value);
+ const exactUid=value=>typeof value==='string'&&/^[1-9][0-9]{0,18}$/.test(value)&&BigInt(value)<(1n<<63n);
+ const heroes=dense(view?.heroes)&&view.heroes.every(row=>text(row?.heroId))&&new Set(view.heroes.map(row=>row.heroId)).size===view.heroes.length?view.heroes:null;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(!parameters||typeof parameters!=='object'||Array.isArray(parameters)||Object.keys(parameters).some(key=>!['heroId','uid','action'].includes(key))||parameters.action!==undefined&&!['initial-level','refine','put-on','star'].includes(parameters.action))throw Error('unknown parameters');}catch{box.appendChild(gpEl('p','目标参数格式未知；请保留并在高级参数中修正，再重新探测。'));return;}
+ box.appendChild(gpEl('h4','明确装备目标'));
+ const mode=gpEl('select'),hero=gpEl('select'),equipment=gpEl('select'),apply=gpEl('button','使用所选目标准备调查');
+ mode.dataset.equipmentTargetMode='true';hero.dataset.equipmentTargetHero='true';equipment.dataset.equipmentTargetUid='true';apply.dataset.equipmentTargetPrepare='true';
+ const add=(select,value,label)=>{const option=gpEl('option',label);option.value=value;select.appendChild(option);};
+ for(const [value,label]of [['level','单次等级'],['initial-level','首次升级（0→1）'],['refine','红装单次精炼'],['star','红装单次升星'],['put-on','自有闲置装备穿到空槽']])add(mode,value,label);
+ mode.value=parameters.action||'level';add(hero,'','请选择明确英雄');for(const row of heroes||[])add(hero,row.heroId,row.heroId);hero.value='';
+ const wrap=(label,control)=>{const node=gpEl('label',label);node.appendChild(control);box.appendChild(node);};wrap('原动作种类',mode);wrap('目标英雄',hero);wrap('精确装备 UID',equipment);box.appendChild(apply);
+ box.appendChild(gpEl('p','只使用本次观察到的英雄和装备；UID保持十进制文本。装备留空仅调查该英雄候选，不自动选择或执行。空槽穿戴仅从闲置列表选择，已有装备替换继续冻结；点击只更新草稿，之后仍需重新探测、预览和授权。'));
+ for(const control of [mode,hero,equipment,apply]){control._blocked=false;state.actionControls.push(control);}
+ let equipmentKnown=false,choices=[];
+ const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id).data?.view===view;
+ const redraw=()=>{
+  gpClear(equipment);add(equipment,'','仅调查所选英雄候选');equipment.value='';const target=heroes?.find(row=>row.heroId===hero.value),rows=mode.value==='put-on'?view?.bag:target?.equips;
+  equipmentKnown=Boolean(target&&dense(rows)&&rows.every(row=>exactUid(row?.uid))&&new Set(rows.map(row=>row.uid)).size===rows.length);choices=equipmentKnown?rows:[];
+  for(const row of choices)add(equipment,row.uid,(text(row.equipId)?row.equipId:'装备名未知')+' · UID '+row.uid);
+  equipment._blocked=!equipmentKnown;apply._blocked=!equipmentKnown;gpControls(id);
+ };
+ mode.onchange=hero.onchange=()=>{if(!live())return;redraw();};
+ apply.onclick=()=>{
+  if(apply.disabled||!live()||!equipmentKnown||!heroes.some(row=>row.heroId===hero.value)||!['level','initial-level','refine','star','put-on'].includes(mode.value)||equipment.value&&!choices.some(row=>row.uid===equipment.value))return;
+  const next={heroId:hero.value,...(equipment.value?{uid:equipment.value}:{}),...(mode.value!=='level'?{action:mode.value}:{})};$('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备明确英雄及装备目标；请重新探测归属、空槽与成本，再预览并单独授权。';
+ };
+ mode._blocked=hero._blocked=heroes===null;redraw();
+}
+
 function gpRenderDomain(id,view){
  const s=gpGet(id),box=gpClear($('gp-'+id+'-facts'));s.actionControls=[];s.mailPageControls=[];s.factoryViewControls=[];
  const show=value=>value===null||value===undefined?'未知':String(value);
@@ -657,6 +689,7 @@ function gpRenderDomain(id,view){
    box.appendChild(gpEl('p','给已佩戴徽章精确补足下一级经验，扣除对应金币；升级后经验余量须为零。只消耗自有材料，不消耗其他徽章；达到等级上限的升级仍待结算证据。'));
   }
  }else if(id==='equipment-growth'){
+  gpRenderEquipmentTarget(box,view);
   table('已佩戴装备单次成长',['英雄','UID','装备','等级','星级','精炼等级'],(view?.heroes||[]).flatMap(hero=>(hero.equips||[]).map(equip=>[hero.heroId,equip.uid,equip.equipId,equip.level,equip.star,equip.refineLv])));
   if(view?.candidates?.some(row=>row.actionType==='PUT-ON')){
    table('空槽穿戴候选',['英雄','装备种类','装备','UID','状态'],view.candidates.filter(row=>row.actionType==='PUT-ON'&&row.beforeState?.equipment).map(row=>[row.target.heroId,row.target.type,row.beforeState.equipment.equipId,row.target.uid,row.executable?'可以预览':row.blockedReason]));
