@@ -71,10 +71,13 @@ function clockOf(client,context) {
  if(c?.status!=='TRUSTED'||c.reliable!==true||c.source!=='PingResponse.serverTimestamp'||c.accountId!==context.accountId||c.generation!==context.generation||!['earliestMs','nowMs','latestMs'].every(k=>own(c,k)&&Number.isFinite(c[k])&&c[k]>=0&&c[k]<=Number.MAX_SAFE_INTEGER)||c.earliestMs>c.nowMs||c.nowMs>c.latestMs)return null;
  return {earliestMs:c.earliestMs,nowMs:c.nowMs,latestMs:c.latestMs};
 }
+function parseRecruitTask(task) {
+ return ['times','gotId'].every(k=>own(task,k)&&uint(task[k]))?{times:task.times,gotId:task.gotId}:null;
+}
 function parseRecruitData(data) {
- const keys=['freeEndTimeSeconds','nextLuck','recruitTimes'];
- if(!keys.every(k=>own(data,k)&&uint(data[k]))||!own(data,'task')||!['times','gotId'].every(k=>own(data.task,k)&&uint(data.task[k])))return null;
- return {freeEndTimeSeconds:data.freeEndTimeSeconds,nextLuck:data.nextLuck,recruitTimes:data.recruitTimes,task:{times:data.task.times,gotId:data.task.gotId}};
+ const keys=['freeEndTimeSeconds','nextLuck','recruitTimes'],task=own(data,'task')?parseRecruitTask(data.task):null;
+ if(!keys.every(k=>own(data,k)&&uint(data[k]))||!task)return null;
+ return {freeEndTimeSeconds:data.freeEndTimeSeconds,nextLuck:data.nextLuck,recruitTimes:data.recruitTimes,task};
 }
 function parseRecruit(raw,parameters={}) {
  if(!own(raw,'hero'))return null;
@@ -115,11 +118,25 @@ export async function surveyFreeRecruit(client,protocol,{config,player,parameter
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 
-function authority(f) {
+function liveAuthority(f) {
  const live=liveFacts.get(f),c=f?.context;
- if(!live||live.digest!==digest(f)||live.client.connected!==true||!same(c,contextOf(live.client,live.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
- if(!same(snapshot(f.inputs,c,f.parameters),f.state))return false;
+ return Boolean(live&&live.digest===digest(f)&&live.client.connected===true&&same(c,contextOf(live.client,live.player))&&text(c?.accountId)&&text(c?.connectionId)&&Number.isSafeInteger(c?.generation)&&c.generation>=0&&c.playerId&&c.worldId);
+}
+function authority(f) {
+ const c=f?.context;
+ if(!liveAuthority(f)||!f.state||f.stockReliable!==true||!(f.stock instanceof Map)||!same(snapshot(f.inputs,c,f.parameters),f.state))return false;
  return Object.entries(sourcesFor(f.parameters)).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
+}
+// A task observation needs its own explicit fields, not the unrelated hero,
+// broadcast or inventory prerequisites of recruitment. Retain the original
+// response provenance; this projection never makes the full source writable.
+function recruitTaskFact(f,kind) {
+ if(!liveAuthority(f))return null;
+ const source=f.sourceFacts?.recruit,input=f.inputs?.recruit;
+ if(source?.provenance?.source!==sources.recruit||!same(source.value,input)||!own(input,kind)||!own(input[kind],'task'))return null;
+ const task=parseRecruitTask(input[kind].task);if(!task)return null;
+ const fact=createStateFact(task,{...source.provenance,reliable:true});
+ return factsFreshnessPolicy(fact,{accountId:f.context.accountId,generation:f.context.generation,maxAgeMs:30000,scope}).status==='FRESH'?fact:null;
 }
 function currentClock(f) {
  const live=liveFacts.get(f),clock=live?clockOf(live.client,f.context):null;
@@ -195,19 +212,19 @@ function antiqueRecruitObservation(f,{config}={}) {
   })};
 }
 
-// Same read and RecruitData parser as recruitment. These rows describe the
-// client display conditions; empty claim requests cannot bind a tier or season.
+// Same read and task parser as recruitment. These rows describe the client
+// display conditions; empty claim requests cannot bind a tier or season.
 function recruitTaskObservations(f,{config}={}) {
- const valid=authority(f),world=valid?roleId(f.context.worldId):null;
+ const valid=liveAuthority(f),world=valid?roleId(f.context.worldId):null;
  const season=world?Number(BigInt(world)/1000000n%1000n):null;
  const items=f?.configEvidence?.tables?.ItemCfg?.data;
  return ['hero','antique'].map(kind=>{
   const table=kind==='hero'?'HeroRecruitTaskCfg':'AntiqueRecruitTaskCfg';
   const base={kind,status:'UNKNOWN',source:'RecruitInfoResponse.'+kind+'.task',sourceAt:null,season:null,configuredSeason:null,progress:null,claimedThroughId:null,nextRewardId:null,tasks:[],readOnly:true,eligibility:null,executable:false,autoResume:false,settlement:'UNKNOWN',blockedReason:'BLOCKED_EVIDENCE'};
-  const data=valid?parseRecruitData(f?.state?.recruit?.[kind]):null;
+  const fact=valid?recruitTaskFact(f,kind):null,task=fact?.value;
   const matches=same(config?.tables?.[table]??null,f?.taskConfigEvidence?.tables?.[table]??null)&&same(config?.tables?.ItemCfg??null,f?.configEvidence?.tables?.ItemCfg??null);
   const selected=matches?configuredRewardSeason(f?.taskConfigEvidence?.tables?.[table]?.data,season,'id'):null;
-  if(!data||!selected||!dense(items))return base;
+  if(!task||!selected||!dense(items))return base;
   const known=new Set(Object.values(RESOURCE_NAMES));
   for(const item of items)if(own(item,'id')&&text(item.id))known.add(item.id);
   const tasks=[];let lastId=0,lastTimes=0;
@@ -218,12 +235,12 @@ function recruitTaskObservations(f,{config}={}) {
     if(!dense(pair)||pair.length!==2||!known.has(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0||rewards.some(r=>r.id===pair[0]))return base;
     rewards.push({id:pair[0],num:pair[1]});
    }
-   const complete=data.task.times>=row.times,claimed=data.task.gotId>=row.id;
+   const complete=task.times>=row.times,claimed=task.gotId>=row.id;
    tasks.push({id:row.id,requiredProgress:row.times,completion:complete?'COMPLETE':'INCOMPLETE',rewardState:claimed?'CLAIMED':'UNCLAIMED',observedRequirementsMet:complete&&!claimed,rewards,executable:false,settlement:'UNKNOWN'});
    lastId=row.id;lastTimes=row.times;
   }
-  if(data.task.gotId!==0&&!tasks.some(row=>row.id===data.task.gotId)||tasks.some(row=>row.rewardState==='CLAIMED'&&row.completion!=='COMPLETE'))return base;
-  return {...base,status:'OBSERVED',sourceAt:f.sourceFacts.recruit.provenance.sourceAt,season,configuredSeason:selected.configuredSeason,progress:data.task.times,claimedThroughId:data.task.gotId,nextRewardId:tasks.find(row=>row.rewardState==='UNCLAIMED')?.id??null,tasks};
+  if(task.gotId!==0&&!tasks.some(row=>row.id===task.gotId)||tasks.some(row=>row.rewardState==='CLAIMED'&&row.completion!=='COMPLETE'))return base;
+  return {...base,status:'OBSERVED',sourceAt:fact.provenance.sourceAt,season,configuredSeason:selected.configuredSeason,progress:task.times,claimedThroughId:task.gotId,nextRewardId:tasks.find(row=>row.rewardState==='UNCLAIMED')?.id??null,tasks};
  });
 }
 

@@ -339,8 +339,9 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     const outcome={COMPLETED:'SUCCESS',UNKNOWN:'UNKNOWN',CANCELLED:'CANCELLED',FAILED:'FAILED'}[status]??'STOPPED';
     const parent=operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,outcome); if(parent)ctx.runBudget=parent;
     if(operations.running?.(ctx.accountId)){operations.stop?.(ctx.accountId);await operations.settle(ctx.accountId);}
-    try{await onUpdate(getStatus());}catch{ctx.status='FAILED';ctx.reason='工作流持久化失败；已停止所有后续节点';}
-    try{await relinquish(ctx);}catch{ctx.status='FAILED';ctx.reason='账号工作流锁释放失败';}finally{finishing=false;}
+    const cleanupFailure=message=>{if(ctx.status!=='UNKNOWN')ctx.status='FAILED';ctx.reason=ctx.reason?ctx.reason+'；'+message:message;};
+    try{await onUpdate(getStatus());}catch{cleanupFailure('工作流持久化失败；已停止所有后续节点');}
+    try{await relinquish(ctx);}catch{cleanupFailure('账号工作流锁释放失败');}finally{finishing=false;}
   }
   function cancelled(ctx, promise) {
     const observed = Promise.resolve(promise); let listener;

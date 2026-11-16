@@ -223,12 +223,19 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     }
     if(id==='production')return {...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,readExchangeHistory:()=>history.list(accountId)});},execute(client,protocol,operation,options){return adapter.execute(client,protocol,operation,{...options,readExchangeHistory:()=>history.list(accountId)});}};return ['afk-level-rewards','farm'].includes(id)?{...adapter,survey(client,protocol,options){return adapter.survey(client,protocol,{...options,[id==='farm'?'readHarvestHistory':'readIncomeHistory']:()=>history.list(accountId)});}}:adapter; }
   function moduleView(accountId, id) { adapterFor(id); return { accountId, module: id, ...moduleSettings.get(accountId, id), status: status(accountId), view: clone(moduleCache.get(accountId)?.[id]?.view ?? null), lastPlan: plans.get(accountId)?.public.module === id ? clone(plans.get(accountId).public) : null, functions: listBusinessFunctions(modules) }; }
+  // One existing eligibility rule for both the public survey and the fresh
+  // bounded-Workflow plan check. Older domains expose action/decision only.
+  function executableCandidate(row) { return Boolean(row?.action) && row.executable !== false && row.decision !== 'BLOCKED'; }
+  function projectModuleCandidate(candidate) {
+    const { action, ...row } = candidate, executable = executableCandidate(candidate);
+    return { ...row, executable, ...(!executable && !row.blockedReason && typeof row.reason === 'string' ? {blockedReason:row.reason} : {}) };
+  }
   function cacheModule(session, id, facts, options) {
     const accountId=session.id;
     // Fleet embeds the live config API; its historical projection only needs observed facts.
     const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([key,value])=>typeof value!=='function'&&!(id==='fleet'&&key==='config'))));
     const raw = adapterFor(id).view(facts, options);
-    const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(({ action, ...row }) => ({ ...row, executable: Boolean(action) && row.executable !== false && row.decision !== 'BLOCKED' })), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
+    const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(projectModuleCandidate), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     const observation={context:executionContext(session),identity:observationIdentity(session),client:session.client};
     moduleFacts.set(accountId,{...(moduleFacts.get(accountId)??{}),[id]:cachedFacts});
     moduleCache.set(accountId, { ...(moduleCache.get(accountId) ?? {}), [id]: {view:safe,observation} });
@@ -470,7 +477,7 @@ function authorizeWorkflowPlan(session,payload){
       current(session, generation, client);
       if((session.workflowOwner??null)!==workflowId || observationIdentity(session,client)!==sourceIdentity)throw error('工作流或账号角色、世界、连接来源身份已变化', 'CANCELLED');
       if (facts.stockReliable !== true || !(facts.stock instanceof Map)) throw error('库存来源不可靠，禁止计划');
-      if(strategy?.selection?.unique===true){const view=adapter.view(facts,options),executable=(view.candidates??[]).filter(row=>row.executable===true);if(executable.length!==1||executable[0].actionId!==selections[0])throw error('新鲜计划调查已不满足唯一可执行候选策略','STALE_PLAN');}
+      if(strategy?.selection?.unique===true){const view=adapter.view(facts,options),executable=(view.candidates??[]).filter(executableCandidate);if(executable.length!==1||executable[0].actionId!==selections[0])throw error('新鲜计划调查已不满足唯一可执行候选策略','STALE_PLAN');}
       // Both modules share this exact planning ledger. Execution starts a separate conservative ledger.
       const ledger = new ResourceLedger(facts.stock), operations = [];
       if (adapter) {
