@@ -5,6 +5,7 @@ import { parseFormation, verifyFormation, validateFormationParameters } from './
 import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, fleetResourceFieldAction, surveyFleetResourceFields, fleetResourceFieldObservation, parseFleetResourceFieldState, verifyFleetResourceFieldOutcome, verifyFleet } from './fleet.mjs';
 import { fleetFacts, stable, worldObservationQuery } from './naval-facts.mjs';
 import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFreeGoldSources, parseFreeGoldState, verifyFreeGold, verifyFreeGoldOutcome } from './free-gold.mjs';
+import { taskRewardAction, parseTaskRewardState, parseTaskRewardSources, verifyTaskReward, verifyTaskRewardOutcome } from './task-rewards.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 
@@ -271,7 +272,7 @@ function buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts
     target:structuredClone(candidate.target),parameters:structuredClone(candidate.parameters),costs:[],costSource:candidate.costSource,budgetClaims:structuredClone(candidate.budgetClaims),identityHash:fleetIdentityHash(candidate),
     beforeFacts:contract.before,afterFacts:after,expectedState:structuredClone(candidate.expectedState),executionContext};
 }
-function freeGoldIdentityHash(row) {
+function businessReceiptIdentityHash(row) {
  return createHash('sha256').update(stable(Object.fromEntries(['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims'].map(key=>[key,row[key]])))).digest('hex');
 }
 function freeGoldContract(row) {
@@ -281,7 +282,7 @@ function freeGoldContract(row) {
  const budgetClaims={resources:[],quotas:[{id:'free-gold:reset:'+before.gold.resetTime,num:1}],uids:[{type:'free-gold',id:before.gold.resetTime+':'+slot}]};
  if(!same(row.target,target)||row.actionId!=='free-gold:'+before.gold.resetTime+':'+slot+':'+row.identity||stable(row.expectedState)!==stable(freeGoldExpectedState(before))||stable(row.budgetClaims)!==stable(budgetClaims))return null;
  try{assertPaymentAllowed({...action,costs:[]});}catch{return null;}
- return {before,target,action,identityHash:freeGoldIdentityHash(row)};
+ return {before,target,action,identityHash:businessReceiptIdentityHash(row)};
 }
 function freeGoldReceiptProblem(row,contract,originalScope) {
  const receipt=row.verifiedReceipt;
@@ -299,10 +300,40 @@ function buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,
  if(!before||!after||!same(scope(before.context),executionContext)||verifyFreeGoldOutcome(candidate,before,after,responseEvidence,goldBefore).confirmed!==true)return null;
  return {version:1,verified:true,module:'free-gold',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,goldBefore,responseEvidence,executionContext};
 }
+function taskRewardContract(row) {
+ if(row?.module!=='task-rewards'||row.actionType!=='CLAIM'||!Array.isArray(row.costs)||row.costs.length!==0||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||!text(row.costSource))return null;
+ let action;try{action=taskRewardAction(row.parameters);}catch{return null;}
+ const p=row.parameters,before=parseTaskRewardState(row.beforeState,p),after=parseTaskRewardState(row.expectedState,p);
+ if(!before||!after||stable(before.context)!==stable(after.context)||stable(row.target)!==stable(p)||row.actionId!=='task-rewards:'+p.kind+':'+p.taskId+':'+row.identity||stable(row.budgetClaims)!==stable({resources:[],quotas:[],uids:[{type:'task-reward',id:p.kind+':'+p.taskId}]}))return null;
+ try{assertPaymentAllowed({...action,costs:[]});}catch{return null;}
+ return {before,action,identityHash:businessReceiptIdentityHash(row),source:p.kind==='achievement'?'AchievementInfoResponse':'MainTaskInfoResponse'};
+}
+function taskRewardReceiptBalances(value) {
+ if(!Array.isArray(value)||value.length>10000||Reflect.ownKeys(value).length!==value.length+1)return null;
+ const balances=new Map();
+ for(let i=0;i<value.length;i++){const pair=value[i];if(!Array.isArray(pair)||pair.length!==2||Reflect.ownKeys(pair).length!==3||!text(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<0||balances.has(pair[0]))return null;balances.set(pair[0],pair[1]);}
+ return balances;
+}
+function taskRewardReceiptProblem(row,contract,originalScope) {
+ const receipt=row.verifiedReceipt;
+ if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='task-rewards'||receipt.request!==contract.action.request||receipt.response!==null)return 'MISSING_VERIFIED_RECEIPT';
+ if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+ const before=parseTaskRewardState(receipt.beforeFacts,row.parameters),after=parseTaskRewardState(receipt.afterFacts,row.parameters),balances=taskRewardReceiptBalances(receipt.balancesBefore);
+ if(!before||!after||!balances||stable(before)!==stable(contract.before)||!same(scope(before.context),originalScope)||receipt.identityHash!==contract.identityHash||verifyTaskRewardOutcome(row,before,after,receipt.rewards,balances).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+ return null;
+}
+function buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context) {
+ const executionContext=scope(context),contract=taskRewardContract(candidate);
+ if(!executionContext||!contract||stable(candidate.action)!==stable(contract.action)||verifyTaskReward(candidate,beforeFacts,afterFacts,response).confirmed!==true)return null;
+ const before=parseTaskRewardState(beforeFacts.state,candidate.parameters),after=parseTaskRewardState(afterFacts.state,candidate.parameters);
+ if(!before||!after||!same(scope(before.context),executionContext)||verifyTaskRewardOutcome(candidate,before,after,candidate.rewards,beforeFacts.stock).confirmed!==true)return null;
+ return {version:1,verified:true,module:'task-rewards',request:contract.action.request,response:null,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,rewards:structuredClone(candidate.rewards),balancesBefore:[...beforeFacts.stock].sort(([a],[b])=>a.localeCompare(b)),executionContext};
+}
 // Only an already verified original execution may create this durable projection.
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
   if(candidate?.module==='free-gold')return buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
+  if(candidate?.module==='task-rewards')return buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='fleet'){
     if(candidate.actionType==='giveUpField')return buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(candidate.actionType==='fleetFormation')return buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
@@ -347,6 +378,7 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
+  const taskReward=taskRewardContract(row);if(taskReward)readMethod='READ_ONLY_TASK_REWARD_V1';
   const freeGold=freeGoldContract(row);
   if(freeGold)readMethod='READ_ONLY_FREE_GOLD_V1';
   const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row),fleetLifecycle=fleetLifecycleContract(row),fleetCargo=fleetCargoContract(row),fleetResourceField=fleetResourceFieldContract(row);
@@ -356,10 +388,27 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
   if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
-  if (!freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金；均须原持久验证凭据');
+  if (!taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金及明确主线/支线/成就任务奖励；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
+  if(taskReward){
+    const problem=taskRewardReceiptProblem(row,taskReward,originalScope),response=taskReward.source,request=response.replace(/Response$/,'Request');
+    if([request,response,'AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原任务及完整库存只读协议');
+    try{
+      const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
+      current();readRequest={request,response,inventoryRequests:['AllItemRequest','AllResourceRequest'],bracketRequest:request};
+      const inputs={};let repeated;
+      for(const [key,req,res]of [['tasks',request,response],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse'],['repeat',request,response]]){current();const body=await awaitExecution(client.request(req,{},res,15000,{signal}),client,{signal});current();if(key==='repeat')repeated=body;else inputs[key]=body;}
+      const after=parseTaskRewardSources(inputs,taskReward.before.context,row.parameters),bracket=parseTaskRewardSources({...inputs,tasks:repeated},taskReward.before.context,row.parameters);
+      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','任务前后双读不一致，或完整库存/任务身份不可靠');
+      const balances=taskRewardReceiptBalances(row.verifiedReceipt?.balancesBefore),verification=verifyTaskRewardOutcome(row,taskReward.before,after,row.verifiedReceipt?.rewards,balances);
+      observation={kind:row.parameters.kind,taskId:row.parameters.taskId,taskStateHash:createHash('sha256').update(stable(after.tasks)).digest('hex'),inventory:{status:'COMPLETE',entries:after.inventory.length,hash:createHash('sha256').update(stable(after.inventory)).digest('hex')},desiredStateMatches:verification.confirmed===true,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前任务与库存仅供观察，缺少原同身份完整成功凭据');
+      if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
+      current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；不重发、不续权、不恢复执行');
+    }catch(error){const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','任务奖励只读复核未完成；保持原UNKNOWN保护');}
+  }
   if(freeGold){
     const problem=freeGoldReceiptProblem(row,freeGold,originalScope);
     if(['ClickGoldInfoRequest','ClickGoldInfoResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少点金原周期与完整库存只读协议');

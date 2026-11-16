@@ -38,6 +38,12 @@ function parseAchievements(raw) {
 }
 const parseFor = (raw,parameters) => parameters?.kind==='achievement'?parseAchievements(raw):parseTasks(raw);
 const rewardActionFor = kind => kind==='achievement'?ACTIONS.achievementDraw:kind==='main'?ACTIONS.taskDrawMain:ACTIONS.taskDrawBranch;
+export function taskRewardAction(parameters) {
+ const p=validateTaskRewardsParameters(parameters);
+ if(!['main','branch','achievement'].includes(p.kind))throw invalid('复核仅支持原明确主线、支线或成就任务');
+ const action=rewardActionFor(p.kind);
+ return {request:action.request,response:null,body:buildBody(action,p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId})};
+}
 const requestOf = kind => rewardActionFor(kind).request;
 const costSource = 'Existing taskTarget and fixed v76 achievement ID mapping; MainTaskCfg/BranchTaskCfg/AchievementTaskCfg.reward; one exact task ID, no resource debit or purchase';
 export const TASK_REWARDS_DEFAULT_CONFIG = Object.freeze({enabled:false});
@@ -127,18 +133,46 @@ function definition(config,kind,taskId,task) {
   }
   return {kind,taskId,target,rewards:parsed,description:typeof row.desc==='string'?row.desc:''};
 }
-function expected(f,p,def) {
-  if(!f?.state||!def)return null;
-  const state=copy(f.state);
-  if(p.kind==='achievement')state.tasks.achievements.find(row=>row.taskId===p.taskId).rewardClaimed=true;
-  else if(p.kind==='main')state.tasks.main.rewardClaimed=true;
-  else state.tasks.branch=state.tasks.branch.filter(row=>row.taskId!==p.taskId);
-  const stock=new Map(f.stock);
-  for(const reward of def.rewards) {
-    if(Object.values(RESOURCE_NAMES).includes(reward.id)&&!stock.has(reward.id))return null;
-    const next=(stock.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(next))return null;stock.set(reward.id,next);
-  }
-  state.inventory=stockState(stock);return state;
+// Durable state uses the same normalized task rows and full-inventory projection.
+// It carries no eligibility, configuration, permit or replay authority.
+export function parseTaskRewardState(value,parameters) {
+ let p;try{p=validateTaskRewardsParameters(parameters);}catch{return null;}
+ if(!['main','branch','achievement'].includes(p.kind)||!fields(value,['context','tasks','inventory'])||Reflect.ownKeys(value).length!==3)return null;
+ const c=value.context,keys=['accountId','generation','connectionId','playerId','worldId'];
+ if(!fields(c,keys)||Reflect.ownKeys(c).length!==keys.length||!identifier(c.accountId)||!identifier(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId||!c.playerId||!c.worldId)return null;
+ const parseRow=(row,kind)=>{const keys=kind==='achievement'?['taskId','progress','targetProgress','rewardClaimed']:kind==='main'?['taskId','progress','rewardClaimed']:['taskId','progress'];if(!fields(row,keys)||Reflect.ownKeys(row).length!==keys.length)return null;const parsed=parseTaskObservation(kind==='achievement'?{id:row.taskId,progress:row.progress,targetProgress:row.targetProgress,rewardClaimed:row.rewardClaimed}:row,kind);return parsed&&same(parsed,row)?parsed:null;};
+ const list=(rows,kind)=>{if(!dense(rows))return null;const parsed=rows.map(row=>parseRow(row,kind));return parsed.some(row=>!row)||new Set(parsed.map(row=>row.taskId)).size!==parsed.length?null:parsed.sort((a,b)=>a.taskId-b.taskId);};
+ const t=value.tasks;let tasks;
+ if(p.kind==='achievement'){if(!fields(t,['achievements'])||Reflect.ownKeys(t).length!==1)return null;const achievements=list(t.achievements,'achievement');if(!achievements)return null;tasks={achievements};}
+ else{if(!fields(t,['main','branch'])||Reflect.ownKeys(t).length!==2)return null;const main=t.main===null?null:parseRow(t.main,'main'),branch=list(t.branch,'branch');if(t.main!==null&&!main||!branch)return null;tasks={main,branch};}
+ if(!same(tasks,t)||!dense(value.inventory)||value.inventory.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!identifier(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||new Set(value.inventory.map(row=>row.id)).size!==value.inventory.length)return null;
+ const inventory=stockState(new Map(value.inventory.map(row=>[row.id,row.num])));
+ return same(inventory,value.inventory)?{context:copy(c),tasks,inventory}:null;
+}
+export function parseTaskRewardSources(inputs,context,parameters) {
+ const state=snapshot(toSnapshotJson(inputs),context,parameters);
+ return state?parseTaskRewardState(state,parameters):null;
+}
+export function taskRewardExpectedState(before,parameters,rewards,balances) {
+ const state=parseTaskRewardState(before,parameters),p=parameters;
+ if(!state||!(balances instanceof Map)||!dense(rewards)||!rewards.length||rewards.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!identifier(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||new Set(rewards.map(row=>row.id)).size!==rewards.length)return null;
+ if([...balances].some(([id,num])=>!identifier(id)||!Number.isSafeInteger(num)||num<0)||!same(stockState(balances),state.inventory))return null;
+ const task=p.kind==='achievement'?state.tasks.achievements.find(row=>row.taskId===p.taskId):p.kind==='main'?state.tasks.main:state.tasks.branch.find(row=>row.taskId===p.taskId);
+ if(task?.taskId!==p.taskId||p.kind!=='branch'&&task.rewardClaimed!==false)return null;
+ if(p.kind==='achievement'||p.kind==='main')task.rewardClaimed=true;
+ else state.tasks.branch=state.tasks.branch.filter(row=>row.taskId!==p.taskId);
+ const stock=new Map(balances);
+ for(const reward of rewards){if(Object.values(RESOURCE_NAMES).includes(reward.id)&&!stock.has(reward.id))return null;const next=(stock.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(next))return null;stock.set(reward.id,next);}
+ state.inventory=stockState(stock);return state;
+}
+function expected(f,p,def) {return def?taskRewardExpectedState(f?.state,p,def.rewards,f?.stock):null;}
+export function verifyTaskRewardOutcome(operation,before,after,rewards,balances) {
+ const no=reason=>({confirmed:false,reason}),p=operation?.parameters;
+ const from=parseTaskRewardState(before,p),observed=parseTaskRewardState(after,p);
+ if(!from||!observed||!same(from.context,observed.context))return no('任务复核状态或账号角色世界连接不完整');
+ const expected=taskRewardExpectedState(from,p,rewards,balances);
+ if(!expected||!same(operation.beforeState,from)||!same(operation.expectedState,expected)||!same(observed,expected))return no('未同时确认原精确任务状态及完整库存奖励净入');
+ return {confirmed:true,afterState:copy(observed),reason:'独立复读确认精确任务领取状态与奖励净入'};
 }
 function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
   const task=p.kind==='achievement'?f?.tasks?.achievements?.find(row=>row.taskId===p.taskId):p.kind==='main'?f?.tasks?.main:f?.tasks?.branch?.find(row=>row.taskId===p.taskId),def=same(configNames.map(name=>config?.tables?.[name]??null),configNames.map(name=>f?.configEvidence?.tables?.[name]??null))?definition(f.configEvidence,p.kind,p.taskId,task):null;
@@ -148,7 +182,7 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
   const beforeState=copy(f?.state??null),identity=hash({p,beforeState,def}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:p.kind+':'+p.taskId}]};
   return {module:moduleId,capabilityId:'C503',actionId:moduleId+':'+p.kind+':'+p.taskId+':'+identity,actionType:'CLAIM',target:copy(p),parameters:copy(p),identity,beforeState,expectedState:after,
     costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,qualification,
-    ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:buildBody(rewardActionFor(p.kind),p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId})}}:{})};
+    ...(blockedReason===null?{action:taskRewardAction(p)}:{})};
 }
 // Read-only progress uses the original task parsers, independent of inventory
 // or reward mapping. It cannot grant a write, prove settlement or restore a permit.
@@ -217,8 +251,7 @@ export function verifyTaskReward(operation,before,after,response) {
   const canonical=candidate(before,p,{config:before.configEvidence,moduleConfig:{enabled:true}});
   if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','rewards'].some(key=>!same(operation[key],canonical[key])))return no('领取合同与写前状态或配置不一致');
   if(Object.keys(sources).some(key=>after.sourceFacts[key].provenance.sourceAt<before.sourceFacts[key].provenance.sourceAt))return no('复读早于写前观察');
-  if(!same(after.state,canonical.expectedState))return no('未同时确认单任务已领与完整库存的精确奖励净入');
-  return {confirmed:true,afterState:copy(after.state),reason:'独立复读确认精确任务领取状态与奖励净入'};
+  return verifyTaskRewardOutcome(operation,before.state,after.state,canonical.rewards,before.stock);
 }
 export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {
   parameters=validateTaskRewardsParameters(parameters);
