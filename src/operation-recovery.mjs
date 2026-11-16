@@ -5,10 +5,11 @@ import { parseFormation, verifyFormation, validateFormationParameters } from './
 import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, fleetResourceFieldAction, surveyFleetResourceFields, fleetResourceFieldObservation, parseFleetResourceFieldState, verifyFleetResourceFieldOutcome, verifyFleet } from './fleet.mjs';
 import { fleetFacts, stable, worldObservationQuery } from './naval-facts.mjs';
 import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFreeGoldSources, parseFreeGoldState, verifyFreeGold, verifyFreeGoldOutcome } from './free-gold.mjs';
-import { taskRewardAction, parseTaskRewardState, parseTaskRewardSources, verifyTaskReward, verifyTaskRewardOutcome } from './task-rewards.mjs';
+import { validateTaskRewardsParameters, taskRewardAction, parseTaskRewardState, parseTaskRewardSources, verifyTaskReward, verifyTaskRewardOutcome } from './task-rewards.mjs';
 import { compassWheelAction, parseCompassWheelState, parseCompassWheelSources, compassWheelRecoveryWindow, compassWheelExpectedState, compassWheelReceipt, verifyCompassWheel, verifyCompassWheelOutcome } from './compass-wheel.mjs';
 import { validateFreeRecruitParameters, parseFreeRecruitState, freeRecruitReadSources, parseFreeRecruitSources, freeRecruitRecoveryClock, freeRecruitVerificationClock, freeRecruitContractParts, freeRecruitSettlement, verifyFreeRecruit, verifyFreeRecruitOutcome } from './free-recruit.mjs';
 import { trialChallengeAction, parseTrialChallengeState, parseTrialChallengeSources, trialChallengeReceipt, verifyTrialChallenge, verifyTrialChallengeOutcome } from './trial-challenge.mjs';
+import { dailyTaskRewardRecoveryParts, parseDailyTaskRewardState, dailyTaskRewardReadSources, parseDailyTaskRewardSources, dailyTaskRewardSettlement, verifyDailyTaskRewardOutcome, dailyTaskRewardRecoveryClock, dailyTaskRewardVerificationClock } from './daily-task-rewards.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 
@@ -303,6 +304,28 @@ function buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,
  if(!before||!after||!same(scope(before.context),executionContext)||verifyFreeGoldOutcome(candidate,before,after,responseEvidence,goldBefore).confirmed!==true)return null;
  return {version:1,verified:true,module:'free-gold',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,goldBefore,responseEvidence,executionContext};
 }
+function dailyTaskRewardContract(row){
+ if(row?.module!=='task-rewards'||row.actionType!=='CLAIM'||!same(row.costs,[])||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||!text(row.costSource))return null;
+ let p,parts;try{p=validateTaskRewardsParameters(row.parameters);if(stable(p)!==stable(row.parameters))return null;parts=dailyTaskRewardRecoveryParts(row);}catch{return null;}
+ if(!parts||row.actionId!==parts.actionId||stable(row.budgetClaims)!==stable(parts.budgetClaims))return null;
+ try{assertPaymentAllowed({...parts.action,costs:[]});}catch{return null;}
+ return {...parts,identityHash:businessReceiptIdentityHash(row)};
+}
+function dailyTaskRewardReceiptProblem(row,contract,originalScope){
+ const receipt=row.verifiedReceipt;
+ if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='task-rewards'||receipt.request!==contract.action.request||receipt.response!==contract.action.response)return 'MISSING_VERIFIED_RECEIPT';
+ if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+ const before=parseDailyTaskRewardState(receipt.beforeFacts,row.parameters),after=parseDailyTaskRewardState(receipt.afterFacts,row.parameters),balances=taskRewardReceiptBalances(receipt.balancesBefore);
+ if(!before||!after||!balances||!own(receipt,'verifiedClock')||stable(before)!==stable(contract.before)||!same(scope(before.context),originalScope)||receipt.identityHash!==contract.identityHash||verifyDailyTaskRewardOutcome(row,before,after,receipt.settlement,balances).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+ return null;
+}
+function buildDailyTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context){
+ const executionContext=scope(context),contract=dailyTaskRewardContract(candidate);
+ if(!executionContext||!contract||stable(candidate.action)!==stable(contract.action)||verifyTaskReward(candidate,beforeFacts,afterFacts,response).confirmed!==true)return null;
+ const p=candidate.parameters,before=parseDailyTaskRewardState(beforeFacts.state,p),after=parseDailyTaskRewardState(afterFacts.state,p),settlement=dailyTaskRewardSettlement(response,candidate),verified=dailyTaskRewardVerificationClock(afterFacts);
+ if(!before||!after||!verified||!settlement||!same(scope(before.context),executionContext)||verifyDailyTaskRewardOutcome(candidate,before,after,settlement,beforeFacts.stock).confirmed!==true)return null;
+ return {version:1,verified:true,module:'task-rewards',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,settlement,verifiedClock:verified.clock,balancesBefore:[...beforeFacts.stock].sort(([a],[b])=>a.localeCompare(b)),executionContext};
+}
 function trialChallengeContract(row) {
  if(row?.module!=='trial-challenge'||row.actionType!=='CHALLENGE'||!same(row.parameters,{})||!same(row.costs,[])||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||!text(row.costSource))return null;
  let action;try{action=trialChallengeAction(row.target);}catch{return null;}
@@ -410,7 +433,7 @@ function buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,respons
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
   if(candidate?.module==='free-gold')return buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
-  if(candidate?.module==='task-rewards')return buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
+  if(candidate?.module==='task-rewards')return buildDailyTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context)??buildTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='compass-wheel')return buildCompassWheelVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='free-recruit')return buildFreeRecruitVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='trial-challenge')return buildTrialChallengeVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
@@ -458,6 +481,7 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
+  const dailyReward=dailyTaskRewardContract(row);if(dailyReward)readMethod='READ_ONLY_DAILY_REWARD_V1';
   const trialChallenge=trialChallengeContract(row);if(trialChallenge)readMethod='READ_ONLY_TRIAL_FIRST_CLEAR_V1';
   const freeRecruit=freeRecruitContract(row);if(freeRecruit)readMethod='READ_ONLY_RECRUIT_V1';
   const compassWheel=compassWheelContract(row);if(compassWheel)readMethod='READ_ONLY_COMPASS_WHEEL_V1';
@@ -471,10 +495,29 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
   if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
-  if (!trialChallenge && !freeRecruit && !compassWheel && !taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励、罗盘单批抽取、明确英雄/古董招募及经验试炼首通；均须原持久验证凭据');
+  if (!dailyReward && !trialChallenge && !freeRecruit && !compassWheel && !taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励、罗盘单批抽取、明确英雄/古董招募、经验试炼首通及明确日常/日活跃/免费赠礼；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
+  if(dailyReward){
+    const p=row.parameters,problem=dailyTaskRewardReceiptProblem(row,dailyReward,originalScope),readSources=dailyTaskRewardReadSources(p),reads=Object.entries(readSources).map(([key,response])=>({key,response,request:response.replace(/Response$/,'Request')}));
+    if(reads.some(read=>!protocol?.[read.request]||!protocol?.[read.response]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原日常或赠礼及完整库存只读协议');
+    try{
+      const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
+      current();const start=dailyTaskRewardRecoveryClock(client,dailyReward.before.context,p,dailyReward.before,row.verifiedReceipt?.verifiedClock);
+      const primary=reads.find(read=>read.key==='daily'),inputs={};let repeated;
+      readRequest={request:primary.request,response:primary.response,additionalRequests:reads.filter(read=>read.key!=='daily').map(read=>read.request),bracketRequest:primary.request};
+      for(const read of [...reads,{...primary,key:'repeat'}]){current();const body=await awaitExecution(client.request(read.request,{},read.response,15000,{signal}),client,{signal});current();if(read.key==='repeat')repeated=body;else inputs[read.key]=body;}
+      const after=parseDailyTaskRewardSources(inputs,dailyReward.before.context,p),bracket=parseDailyTaskRewardSources({...inputs,daily:repeated},dailyReward.before.context,p),end=dailyTaskRewardRecoveryClock(client,dailyReward.before.context,p,dailyReward.before,start?.clock);
+      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','日常或赠礼双读标记/完整状态变化，或完整库存不可靠');
+      const balances=taskRewardReceiptBalances(row.verifiedReceipt?.balancesBefore),verification=verifyDailyTaskRewardOutcome(row,dailyReward.before,after,row.verifiedReceipt?.settlement,balances),hash=value=>createHash('sha256').update(stable(value)).digest('hex');
+      observation={kind:p.kind,daily:after.daily,inventory:{status:'COMPLETE',entries:after.inventory.length,hash:hash(after.inventory)},desiredStateMatches:verification.confirmed===true,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前已领状态仅供观察，缺少原同身份完整成功凭据');
+      if(!start||!end)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','原周期的可信Ping时间或赠礼原样标记不能完整绑定；不推算新日界');
+      if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
+      current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；仅复核，不重领/续权/恢复执行');
+    }catch(error){const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','日常奖励只读复核未完成，保持原UNKNOWN保护');}
+  }
   if(trialChallenge){
     const problem=trialChallengeReceiptProblem(row,trialChallenge,originalScope);
     if(['TrialRaidInfoRequest','TrialRaidInfoResponse','AllHeroRequest','AllHeroResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原经验试炼及完整英雄/库存只读协议');
