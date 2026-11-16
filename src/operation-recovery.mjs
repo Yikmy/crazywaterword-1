@@ -4,6 +4,7 @@ import { assertPaymentAllowed } from './actions.mjs';
 import { parseFormation, verifyFormation, validateFormationParameters } from './formation.mjs';
 import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, fleetResourceFieldAction, surveyFleetResourceFields, fleetResourceFieldObservation, parseFleetResourceFieldState, verifyFleetResourceFieldOutcome, verifyFleet } from './fleet.mjs';
 import { fleetFacts, stable } from './naval-facts.mjs';
+import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFreeGoldSources, parseFreeGoldState, verifyFreeGold, verifyFreeGoldOutcome } from './free-gold.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 
@@ -268,9 +269,38 @@ function buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts
     target:structuredClone(candidate.target),parameters:structuredClone(candidate.parameters),costs:[],costSource:candidate.costSource,budgetClaims:structuredClone(candidate.budgetClaims),identityHash:fleetIdentityHash(candidate),
     beforeFacts:contract.before,afterFacts:after,expectedState:structuredClone(candidate.expectedState),executionContext};
 }
+function freeGoldIdentityHash(row) {
+ return createHash('sha256').update(stable(Object.fromEntries(['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims'].map(key=>[key,row[key]])))).digest('hex');
+}
+function freeGoldContract(row) {
+ if(row?.module!=='free-gold'||row.actionType!=='CLAIM'||!Array.isArray(row.costs)||row.costs.length!==0||!same(row.parameters,{})||!text(row.costSource)||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity))return null;
+ const before=parseFreeGoldState(row.beforeState);if(!before||before.gold.freeTimes>=2147483647)return null;
+ const target={resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes},action=freeGoldAction(),slot=before.gold.freeTimes+1;
+ const budgetClaims={resources:[],quotas:[{id:'free-gold:reset:'+before.gold.resetTime,num:1}],uids:[{type:'free-gold',id:before.gold.resetTime+':'+slot}]};
+ if(!same(row.target,target)||row.actionId!=='free-gold:'+before.gold.resetTime+':'+slot+':'+row.identity||stable(row.expectedState)!==stable(freeGoldExpectedState(before))||stable(row.budgetClaims)!==stable(budgetClaims))return null;
+ try{assertPaymentAllowed({...action,costs:[]});}catch{return null;}
+ return {before,target,action,identityHash:freeGoldIdentityHash(row)};
+}
+function freeGoldReceiptProblem(row,contract,originalScope) {
+ const receipt=row.verifiedReceipt;
+ if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='free-gold'||receipt.request!==contract.action.request||receipt.response!==contract.action.response)return 'MISSING_VERIFIED_RECEIPT';
+ if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+ const before=parseFreeGoldState(receipt.beforeFacts),after=parseFreeGoldState(receipt.afterFacts);
+ if(!before||!after||stable(before)!==stable(contract.before)||!same(scope(before.context),originalScope)||receipt.identityHash!==contract.identityHash||verifyFreeGoldOutcome(row,before,after,receipt.responseEvidence,receipt.goldBefore).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+ return null;
+}
+function buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context) {
+ const executionContext=scope(context),contract=freeGoldContract(candidate);
+ if(!executionContext||!contract||!same(candidate.action,contract.action)||verifyFreeGold(candidate,beforeFacts,afterFacts,response).confirmed!==true)return null;
+ const before=parseFreeGoldState(beforeFacts.state),after=parseFreeGoldState(afterFacts.state);
+ const responseEvidence={result:[{gold:response.result[0].gold}]},goldBefore=beforeFacts.stock.get('GOLD');
+ if(!before||!after||!same(scope(before.context),executionContext)||verifyFreeGoldOutcome(candidate,before,after,responseEvidence,goldBefore).confirmed!==true)return null;
+ return {version:1,verified:true,module:'free-gold',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,goldBefore,responseEvidence,executionContext};
+}
 // Only an already verified original execution may create this durable projection.
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
+  if(candidate?.module==='free-gold')return buildFreeGoldVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
   if(candidate?.module==='fleet'){
     if(candidate.actionType==='giveUpField')return buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(candidate.actionType==='fleetFormation')return buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
@@ -315,6 +345,8 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
+  const freeGold=freeGoldContract(row);
+  if(freeGold)readMethod='READ_ONLY_FREE_GOLD_V1';
   const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row),fleetLifecycle=fleetLifecycleContract(row),fleetCargo=fleetCargoContract(row),fleetResourceField=fleetResourceFieldContract(row);
   if(fleetStop)readMethod='READ_ONLY_FLEET_STOP_V1';
   if(fleetFormation)readMethod='READ_ONLY_FLEET_FORMATION_V1';
@@ -322,10 +354,37 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
   if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
-  if (!fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃；均须原持久验证凭据');
+  if (!freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
+  if(freeGold){
+    const problem=freeGoldReceiptProblem(row,freeGold,originalScope);
+    if(['ClickGoldInfoRequest','ClickGoldInfoResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少点金原周期与完整库存只读协议');
+    try{
+      const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
+      current();const start=freeGoldRecoveryClock(client,currentScope,freeGold.before.gold.resetTime);
+      if(!start)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','可信Ping未确认仍处于原点金重置标记之前');
+      readRequest={request:'ClickGoldInfoRequest',response:'ClickGoldInfoResponse',inventoryRequests:['AllItemRequest','AllResourceRequest'],bracketRequest:'ClickGoldInfoRequest'};
+      const inputs={};let repeated;
+      for(const [key,request,response]of [['gold','ClickGoldInfoRequest','ClickGoldInfoResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse'],['repeat','ClickGoldInfoRequest','ClickGoldInfoResponse']]){
+        current();const body=await awaitExecution(client.request(request,{},response,15000,{signal}),client,{signal});current();
+        if(key==='repeat')repeated=body;else inputs[key]=body;
+      }
+      const clock=freeGoldRecoveryClock(client,currentScope,freeGold.before.gold.resetTime);
+      if(!clock||clock.earliestMs<start.earliestMs)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','点金复读期间可信时钟失效、回退或跨原周期');
+      const after=parseFreeGoldSources(inputs,freeGold.before.context),bracket=parseFreeGoldSources({...inputs,gold:repeated},freeGold.before.context);
+      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','点金前后双读标记/计次不一致，或完整库存不可靠');
+      const verification=verifyFreeGoldOutcome(row,freeGold.before,after,row.verifiedReceipt?.responseEvidence,row.verifiedReceipt?.goldBefore);
+      observation={gold:after.gold,inventory:{status:'COMPLETE',entries:after.inventory.length,hash:createHash('sha256').update(stable(after.inventory)).digest('hex')},desiredStateMatches:verification.confirmed===true,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前点金计次和库存仅供观察，缺少原同身份完整成功凭据');
+      if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
+      current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；不重发、不续权、不恢复执行');
+    }catch(error){
+      const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;
+      return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','点金只读复核未完成；保持原UNKNOWN保护');
+    }
+  }
   if(fleetResourceField){
     if(['MyResFieldsRequest','MyResFieldsResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原资源田完整双读及库存协议');
     const problem=fleetResourceFieldReceiptProblem(row,fleetResourceField,originalScope);

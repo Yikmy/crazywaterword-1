@@ -60,6 +60,26 @@ function snapshot(inputs,context) {
  const gold=parseGold(inputs?.gold),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
  return gold&&inventory.stockReliable?{context,gold,inventory:stockState(inventory.stock)}:null;
 }
+// Recovery shares the original response and complete state projection.
+export { snapshot as parseFreeGoldSources };
+export function parseFreeGoldState(value) {
+ const keys=['context','gold','inventory'],c=value?.context,contextKeys=['accountId','generation','connectionId','playerId','worldId','playerLevel'];
+ if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||!fields(c,contextKeys)||Reflect.ownKeys(c).length!==contextKeys.length||
+    !text(c.accountId)||!text(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId||!positive(c.playerLevel))return null;
+ const gold=parseGold({info:value.gold});
+ if(!gold||!same(gold,value.gold)||!dense(value.inventory)||value.inventory.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!text(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||
+    new Set(value.inventory.map(row=>row.id)).size!==value.inventory.length)return null;
+ const inventory=stockState(new Map(value.inventory.map(row=>[row.id,row.num])));
+ return same(inventory,value.inventory)?{context:copy(c),gold,inventory}:null;
+}
+export function freeGoldExpectedState(state) {
+ return state?{context:copy(state.context),gold:{...state.gold,freeTimes:state.gold.freeTimes+1},inventoryRule:{kind:'EXACT_GOLD_RECEIPT',before:copy(state.inventory),source:'ClickGoldResponse.result[0].gold',otherBalances:'UNCHANGED'}}:null;
+}
+export const freeGoldAction=()=>({request,response,body:buildDailyDriverBody(request,{times:1,free:true})});
+export function freeGoldRecoveryClock(client,context,resetTime) {
+ const clock=clockOf(client,context);
+ return clock&&positive(resetTime)&&clock.latestMs<resetTime*1000?clock:null;
+}
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,gold:f.gold,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyFreeGold(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
  parameters=validateFreeGoldParameters(parameters);
@@ -109,9 +129,9 @@ function candidate(f,{config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {
  const reset=f?.gold?.resetTime??null,slot=f?.gold?f.gold.freeTimes+1:null,identity=hash({beforeState,cap,requiredLevel});
  const budgetClaims={resources:[],quotas:[{id:moduleId+':reset:'+reset,num:1}],uids:[{type:moduleId,id:reset+':'+slot}]};
  // The random amount is authorized as an exact typed-receipt rule, never guessed.
- const expectedState=beforeState?{context:copy(beforeState.context),gold:{...beforeState.gold,freeTimes:slot},inventoryRule:{kind:'EXACT_GOLD_RECEIPT',before:copy(beforeState.inventory),source:'ClickGoldResponse.result[0].gold',otherBalances:'UNCHANGED'}}:null;
+ const expectedState=freeGoldExpectedState(beforeState);
  return {module:moduleId,actionId:moduleId+':'+reset+':'+slot+':'+identity,actionType:'CLAIM',target:{resetTime:reset,usedBefore:f?.gold?.freeTimes??null},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'普通免费点金 ×1',requiredLevel,limit:cap,remaining:freeGoldRemaining(f?.gold?.freeTimes,cap),
-  ...(blockedReason===null?{action:{request,response,body:buildDailyDriverBody('ClickGoldRequest',{times:1,free:true})}}:{})};
+  ...(blockedReason===null?{action:freeGoldAction()}:{})};
 }
 export function viewFreeGold(f,options={}) {
  validateFreeGoldParameters(options.parameters??{});
@@ -128,14 +148,24 @@ export function verifyFreeGold(operation,before,after,result) {
  if(!authority(before)||!authority(after)||!same(before.context,after.context)||!currentPeriod(before)||!currentPeriod(after)||!same(before.configEvidence,after.configEvidence))return no('点金前后账号、可信时段、配置或库存不可靠');
  const canonical=candidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
  if(!canonical.executable||['module','actionId','actionType','target','parameters','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(operation?.[k],canonical[k])))return no('点金合同与写前事实或配置不一致');
+ if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt))return no('独立复读来源时间早于原调查');
+ return verifyFreeGoldOutcome(operation,before.state,after.state,result,before.stock.get('GOLD'));
+}
+// Settlement comparison only. Live dispatch still requires the private survey
+// seal, full authority, original config/candidate and trusted period above.
+export function verifyFreeGoldOutcome(operation,beforeState,afterState,result,goldBefore) {
+ const no=reason=>({confirmed:false,reason}),before=parseFreeGoldState(beforeState),after=parseFreeGoldState(afterState);
+ if(!before||!after||!same(before.context,after.context)||!same(operation?.beforeState,before)||!same(operation?.expectedState,freeGoldExpectedState(before)))return no('点金原状态、目标规则或完整库存不一致');
  if(!own(result,'result')||!dense(result.result)||result.result.length!==1)return no('缺少单次点金专用回执');
  const receipt=result.result[0];
  if(!own(receipt,'gold')||!positive(receipt.gold))return no('点金回执缺少明确正 GOLD；不从 ratio 倒推');
- const stock=new Map(before.stock),amount=stock.get('GOLD')+receipt.gold;if(!Number.isSafeInteger(amount))return no('金币结算溢出');
+ const stock=new Map(before.inventory.map(row=>[row.id,row.num]));
+ if(!Number.isSafeInteger(goldBefore)||goldBefore<0||(goldBefore===0?stock.has('GOLD'):stock.get('GOLD')!==goldBefore))return no('原金币余额缺少明确来源或与完整库存冲突');
+ const amount=goldBefore+receipt.gold;if(!Number.isSafeInteger(amount))return no('金币结算溢出');
  stock.set('GOLD',amount);
- const expected={context:copy(before.context),gold:copy(canonical.expectedState.gold),inventory:stockState(stock)};
- if(Object.keys(sources).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,expected))return no('独立复读未同时确认同重置标记免费次数加一和精确 GOLD 净入，或无关状态变化');
- return {confirmed:true,afterState:copy(after.state),reason:'单次免费 typed GOLD 回执与同周期计次、完整库存净入共同确认',responseEvidence:{gold:receipt.gold,resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes,usedAfter:after.gold.freeTimes}};
+ const expected={context:copy(before.context),gold:copy(operation.expectedState.gold),inventory:stockState(stock)};
+ if(!same(after,expected))return no('独立复读未同时确认同重置标记免费次数加一和精确 GOLD 净入，或无关状态变化');
+ return {confirmed:true,afterState:copy(after),reason:'单次免费 typed GOLD 回执与同周期计次、完整库存净入共同确认',responseEvidence:{gold:receipt.gold,resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes,usedAfter:after.gold.freeTimes}};
 }
 export function freeGoldDependencyVersions({config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeGoldConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const freeGoldModule=Object.freeze({id:moduleId,label:'普通免费点金',capabilities:Object.freeze(['BIZ-D06']),defaultConfig:FREE_GOLD_DEFAULT_CONFIG,validateConfig:validateFreeGoldConfig,validateParameters:validateFreeGoldParameters,survey:surveyFreeGold,view:viewFreeGold,plan:planFreeGold,verify:verifyFreeGold,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeGoldDependencyVersions});
