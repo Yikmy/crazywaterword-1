@@ -865,6 +865,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
       // Only this in-flight first write may see its own anchor before the store.
       // A fresh Store must reject an anchor without its historical file.
       read(initialStore);
+      assertWriter();
       fileSystem.renameSync(temporary, file);
       knownStore = true;
     } catch (error) {

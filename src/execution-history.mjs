@@ -98,6 +98,7 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
       // first write may see its own existence anchor before creating the file.
       assertWriter();
       read(initialStore);
+      assertWriter();
       fs.renameSync(temporary, file); observed=true;
     } catch { throw fail('执行历史原子保存失败；停止批次，不继续发送'); }
     finally { try { fs.unlinkSync(temporary); } catch {} }

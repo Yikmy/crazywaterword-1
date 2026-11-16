@@ -270,13 +270,15 @@ export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = 
     } finally { if(fd!==undefined)fileSystem.closeSync(fd); }
   }
   const account = id => { if (!text(id)) throw fail('记忆需要精确账号ID'); return id; };
-  function read() {
+  function read(allowInitialMissing = false) {
     try {
-      let stat; try { stat=fileSystem.lstatSync(file); } catch(error) { if(error.code==='ENOENT' && !knownStore && !anchored())return {version:1,accounts:Object.create(null)};throw unavailable(); }
+      let stat; try { stat=fileSystem.lstatSync(file); } catch(error) { if(error.code==='ENOENT' && !knownStore && (!anchored() || allowInitialMissing))return {version:1,accounts:Object.create(null)};throw unavailable(); }
       knownStore=true;
       anchored();
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8 * 1024 * 1024) throw unavailable();
-      const raw = JSON.parse(fileSystem.readFileSync(file,'utf8'));
+      const source = fileSystem.readFileSync(file,'utf8');
+      if(Buffer.byteLength(source,'utf8')>8*1024*1024)throw unavailable();
+      const raw = JSON.parse(source);
       if (!exact(raw,['version','accounts']) || raw.version !== 1 || !plain(raw.accounts)) throw unavailable();
       const ids = new Set();
       for (const [id,events] of Object.entries(raw.accounts)) {
@@ -289,13 +291,21 @@ export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = 
     assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp'; let fd;
     try {
+      read();
+      const initialStore = !knownStore;
       fileSystem.mkdirSync(path.dirname(file),{recursive:true});
       ensureAnchor();
       fd = fileSystem.openSync(temporary,'wx',0o600);
       const serialized=JSON.stringify(raw,null,2)+'\n';if(Buffer.byteLength(serialized,'utf8')>8*1024*1024)throw fail('执行记忆超过安全读取上限；保留原文件','MEMORY_UNAVAILABLE');
       fileSystem.writeFileSync(fd,serialized,'utf8'); fileSystem.fsyncSync(fd);
       fileSystem.closeSync(fd); fd = undefined;
-      assertWriter(); fileSystem.renameSync(temporary,file); knownStore=true;
+      // Same original-evidence barrier as ExecutionHistory and WorkflowStore:
+      // only this first write may see its own anchor before the initial file.
+      // A lost or corrupt established store must never be overwritten.
+      assertWriter();
+      read(initialStore);
+      assertWriter();
+      fileSystem.renameSync(temporary,file); knownStore=true;
     } catch (error) { if (error?.code?.startsWith('WRITER_')) throw error; throw fail('执行记忆原子保存失败；原文件保留，不允许继续派发', 'MEMORY_UNAVAILABLE'); }
     finally { if (fd !== undefined) try { fileSystem.closeSync(fd); } catch {} try { fileSystem.unlinkSync(temporary); } catch {} }
   }
