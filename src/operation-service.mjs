@@ -741,7 +741,13 @@ function authorizeWorkflowPlan(session,payload){
   function allianceOverview(session) { const {facts,view,...scope}=cachedOverviewObservation(session,'alliance');return allianceCacheOverview(facts,view,scope); }
   function fleetOverview(session) { const {facts,view,...scope}=cachedOverviewObservation(session,'fleet');return fleetCacheOverview(facts,view,scope); }
   function formationContext(accountId) { return { facts: clone(moduleFacts.get(accountId)?.formation ?? null), moduleConfig: moduleSettings.get(accountId,'formation').config }; }
-  function stop(accountId) { const run = runs.get(accountId); if (run?.running) run.stop.aborted = true; return status(accountId); }
+  // Workflow cleanup only owns its original run; a failed claim or a stale
+  // generation must never stop or await another operation on the same account.
+  const scopedRun = (accountId, workflowId) => {
+    const run = runs.get(accountId);
+    return workflowId === undefined || typeof workflowId === 'string' && workflowId.length > 0 && run?.record.workflowId === workflowId ? run : null;
+  };
+  function stop(accountId, workflowId) { const run = scopedRun(accountId, workflowId); if (run?.running) run.stop.aborted = true; return status(accountId); }
   return { readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, fleetOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, executeTaskRewards, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
@@ -751,7 +757,7 @@ function authorizeWorkflowPlan(session,payload){
     },
     productionPolicy: accountId => ({ accountId, ...loadProduction(accountId) }),
     saveProductionPolicy: (accountId, payload) => { assertWriter(); exact(payload, ['config']); const result = saveProduction(accountId, payload.config); plans.delete(accountId); cache.delete(accountId); return { accountId, ...result }; },
-    blocked: accountId => status(accountId).blocked, running: accountId => Boolean(runs.get(accountId)?.running),
-    settle: accountId => runs.get(accountId)?.task ?? Promise.resolve(),
+    blocked: accountId => status(accountId).blocked, running: (accountId, workflowId) => Boolean(scopedRun(accountId, workflowId)?.running),
+    settle: (accountId, workflowId) => scopedRun(accountId, workflowId)?.task ?? Promise.resolve(),
   };
 }

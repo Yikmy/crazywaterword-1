@@ -332,7 +332,11 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     if(ctx.eventTrigger)workflowLevelEvent(ctx.session,ctx.eventTrigger.baseline,ctx.graph.runPolicy.eventTrigger);
     if (ctx.session.generation !== ctx.generation || ctx.session.client !== ctx.client || ctx.client?.connected === false || ctx.session.abort?.signal !== ctx.sessionSignal || connectionScope(ctx.session).some((value,index) => value !== ctx.connectionScope[index]) || roleScope(ctx.session).some((value,index) => value !== ctx.roleScope[index]) || isCurrent && isCurrent(ctx.session, ctx.generation, ctx.client) === false) throw fail('账号会话或连接已切换', 'CANCELLED');
   }
-  async function relinquish(ctx) { if (!ctx.claimed) return; ctx.claimed = false; if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId); }
+  async function relinquish(ctx) {
+    if (!ctx.claimed) return;
+    if (ctx.releaseClaim) await ctx.releaseClaim(); else await release(ctx.accountId, ctx.runId);
+    ctx.claimed = false;
+  }
   function finish(ctx,status,reason){if(!ctx.finishTask)ctx.finishTask=finishWork(ctx,status,reason);return ctx.finishTask;}
   async function finishWork(ctx, status, reason) {
     clearTimeout(ctx.deadlineTimer);ctx.eventCleanup?.();finishing=true;
@@ -342,8 +346,15 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
     // Close the parent immediately but retain the owner until its operation settles.
     const outcome={COMPLETED:'SUCCESS',UNKNOWN:'UNKNOWN',CANCELLED:'CANCELLED',FAILED:'FAILED'}[status]??'STOPPED';
     const parent=operations.closeWorkflowBudget?.(ctx.accountId,ctx.runId,outcome); if(parent)ctx.runBudget=parent;
-    if(operations.running?.(ctx.accountId)){operations.stop?.(ctx.accountId);await operations.settle(ctx.accountId);}
     const cleanupFailure=message=>{if(ctx.status!=='UNKNOWN')ctx.status='FAILED';ctx.reason=ctx.reason?ctx.reason+'；'+message:message;};
+    let operationSettled=true;
+    try{
+      if(ctx.claimed&&operations.running?.(ctx.accountId,ctx.runId)){operations.stop?.(ctx.accountId,ctx.runId);await operations.settle(ctx.accountId,ctx.runId);}
+      if(ctx.claimed&&operations.running?.(ctx.accountId,ctx.runId))throw fail('原操作仍在运行');
+    }catch{
+      operationSettled=false;ctx.status='UNKNOWN';
+      ctx.reason=(ctx.reason?ctx.reason+'；':'')+'原操作未能确认停妥；保留UNKNOWN和工作流占用，不派发或重放';
+    }
     // Cancellation/deadline stops orchestration, but cannot turn an already
     // dispatched unresolved batch into a known cancellation. Read only the
     // original account/batch after Service settles; never resume or replay it.
@@ -359,7 +370,14 @@ export function createWorkflowRunner({ operations, getSession, modules, isCurren
       }catch{ctx.status='UNKNOWN';ctx.reason=(ctx.reason?ctx.reason+'；':'')+'停止后无法核对当前批次执行历史；结果保持UNKNOWN';}
     }
     try{await onUpdate(getStatus());}catch{cleanupFailure('工作流持久化失败；已停止所有后续节点');}
-    try{await relinquish(ctx);}catch{cleanupFailure('账号工作流锁释放失败');}finally{finishing=false;}
+    try{
+      if(operationSettled)await relinquish(ctx);
+    }catch{
+      cleanupFailure('账号工作流锁释放失败；未确认释放原运行占用');
+      // The first terminal snapshot preceded release. Persist the amended
+      // outcome through the original store, never leave a durable false success.
+      try{await onUpdate(getStatus());}catch{cleanupFailure('工作流收尾故障未能持久化');}
+    }finally{finishing=false;}
   }
   function cancelled(ctx, promise) {
     const observed = Promise.resolve(promise); let listener;
@@ -466,7 +484,7 @@ function repeatAfterStop(ctx,node){
     return getStatus();
   }
   async function start(accountId, graph) {
-    if (starting || resuming || authorizing || finishing || context && ACTIVE.has(context.status)) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
+    if (starting || resuming || authorizing || finishing || context && (context.claimed || ACTIVE.has(context.status))) throw fail('账号工作流尚未结束', 'WORKFLOW_BUSY');
     if (!text(accountId)) throw fail('工作流必须绑定精确账号 ID');
     const validated = validateWorkflow(graph, { modules }); starting = true;
     try {
@@ -536,7 +554,7 @@ function repeatAfterStop(ctx,node){
   }
 function executeAuthorizedBatch(ctx){
  return (async()=>{current(ctx);ctx.status='RUNNING';ctx.reason='按本次有限运行授权生成原单次许可并核验';await onUpdate(getStatus());current(ctx);
- const plan=ctx.waitingPlan,permit=operations.authorizeWorkflowPlan(ctx.session,{runId:ctx.runId,nodeId:ctx.nodeId,batchId:plan.batchId,planHash:plan.planHash,...(ctx.graph.runPolicy?.maxRounds!==undefined?{round:ctx.round}:{})});current(ctx);operations.execute(ctx.session,permit);await cancelled(ctx,operations.settle(ctx.accountId));current(ctx);
+ const plan=ctx.waitingPlan,permit=operations.authorizeWorkflowPlan(ctx.session,{runId:ctx.runId,nodeId:ctx.nodeId,batchId:plan.batchId,planHash:plan.planHash,...(ctx.graph.runPolicy?.maxRounds!==undefined?{round:ctx.round}:{})});current(ctx);operations.execute(ctx.session,permit);await cancelled(ctx,operations.settle(ctx.accountId,ctx.runId));current(ctx);
  if(await confirmBatch(ctx))return true;if(ctx.status==='AWAITING_AUTHORIZATION'||ctx.status==='RUNNING')await finish(ctx,'UNKNOWN','执行已结束但缺少当前批次完整确认历史；有限运行停止且不重放');return false;})();
 }
 function authorizeRun(payload){
@@ -696,8 +714,16 @@ export function projectWorkflowExecutionHistory(accountId, workflowRun, operatio
   const trace = Array.isArray(workflowRun.trace) && workflowRun.trace.length <= WORKFLOW_LIMITS.steps ? workflowRun.trace : [];
   for (const row of trace) {
     if (row?.type !== 'ACTION' || !text(row.nodeId)) continue;
-    const key=nodeKey(row.nodeId,row.round);if (nodes.has(key)) duplicateNodes.add(key);
-    else nodes.set(key, { nodeId: row.nodeId, traceResult: row.result, timestamp: row.timestamp ?? null, ...traceEvidence(row), batches: [] });
+    const key=nodeKey(row.nodeId,row.round),evidence=traceEvidence(row),previous=nodes.get(key);
+    if(previous){
+      // A confirmed defeat appends to the original ACTION trace. It does not
+      // represent a second dispatch; retain its batch link only for the exact
+      // recorded transition. Every other duplicate remains ambiguous.
+      const sameBatch=previous.traceResult==='AWAITING_AUTHORIZATION'&&row.result==='CONFIRMED_DEFEAT'&&
+        ['module','actionId','batchId','planHash'].every(field=>text(previous[field])&&previous[field]===evidence[field]);
+      if(sameBatch)nodes.set(key,{...previous,traceResult:row.result,timestamp:row.timestamp??previous.timestamp});
+      else duplicateNodes.add(key);
+    }else nodes.set(key, { nodeId: row.nodeId, traceResult: row.result, timestamp: row.timestamp ?? null, ...evidence, batches: [] });
   }
   for (const nodeId of duplicateNodes) nodes.delete(nodeId);
 
