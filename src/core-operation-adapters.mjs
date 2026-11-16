@@ -158,7 +158,7 @@ function planCityDomain(id, facts, options = {}) {
     }
   }
   const result = planCityOperations(facts, { ...args, selections: ids });
-  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id, ...(id==='production'&&args.parameters?.materialSource?{parameters:validateProductionParameters(args.parameters)}:{}) })) };
+  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id, ...(id==='production'&&args.parameters?.buildingId?{parameters:validateProductionParameters(args.parameters)}:{}) })) };
 }
 
 // Verify is a receipt projection, not a second state-verification algorithm.
@@ -182,7 +182,7 @@ async function executeCore(id, client, protocol, operation, options = {}) {
     if (operation?.module !== id || !(id === 'orders' ? ['SUBMIT', 'REFRESH'].includes(operation.actionType) : kinds(id).has(operation.actionType))) {
       throw invalid('操作不属于该核心业务');
     }
-    if(id==='production'&&(args.parameters?.materialSource||operation.parameters?.materialSource)&&!productionSame(operation.parameters,args.parameters))throw invalid('生产操作参数与授权的材料包来源不一致');
+    if(id==='production'&&(args.parameters?.buildingId||operation.parameters?.buildingId)){if(!productionSame(operation.parameters,args.parameters)||operation.actionType!=='startProduce'||operation.target?.buildingId!==args.parameters?.buildingId||operation.target?.productId!==args.parameters?.productId)throw invalid('生产操作参数、工厂或产品与授权范围不一致');}
   } catch (error) {
     return operationResult('NOT_EXECUTED', { dispatched: false, unresolvedWrite: false, error: error.message });
   }
@@ -269,8 +269,9 @@ function productionConfigDigest({config,moduleConfig}){return productionHash({mo
 function productionFactsDigest(f){return productionHash({water:f.rawOnWater,items:f.rawAllItem,resources:f.rawAllResource,stock:[...f.stock],reliability:f.cityReliability,buildings:f.buildings,factories:f.factories,stockCap:f.stockCap,factorySlots:f.factorySlots,strict:f.productionInventoryReliable,stockReliable:f.stockReliable});}
 function productionAuthority(f,options){const live=productionSources.get(f),c=live?.context;return live&&live.client.connected===true&&f.have===live.have&&c&&Object.values(c).every(v=>v!==null)&&Date.now()>=live.at&&Date.now()-live.at<=30000&&productionSame(c,productionScope(live.client,live.player))&&f.stockReliable===true&&f.productionInventoryReliable===true&&f.stock instanceof Map&&live.digest===productionFactsDigest(f)&&live.dependencies===productionConfigDigest(options)?live:null;}
 export function validateProductionParameters(value={}){
- if(!productionFields(value,['buildingId','productId','materialSource']))throw invalid('生产参数仅允许明确工厂、产品及材料包来源；普通入口保持空对象');
+ if(!productionFields(value,['buildingId','productId','materialSource']))throw invalid('生产参数仅允许空对象、明确工厂和产品，或附带固定材料包来源');
  if(Reflect.ownKeys(value).length===0)return {};
+ if(!productionOwn(value,'materialSource')){if(!['buildingId','productId'].every(k=>productionOwn(value,k)&&productionText(value[k])))throw invalid('定点生产须同时指定明确工厂和产品');return {buildingId:value.buildingId,productId:value.productId};}
  if(!['buildingId','productId','materialSource'].every(k=>productionOwn(value,k))||!productionText(value.buildingId)||!productionText(value.productId)||!productionFields(value.materialSource,['exchangeIdentity','productionIdentity','exchangeIdentities'])||!['exchangeIdentity','productionIdentity'].every(k=>productionOwn(value.materialSource,k)&&typeof value.materialSource[k]==='string'&&/^[a-f0-9]{64}$/.test(value.materialSource[k])))throw invalid('组合生产须明确工厂、产品和完整固定来源摘要');
  if(productionOwn(value.materialSource,'exchangeIdentities')){const ids=value.materialSource.exchangeIdentities;if(!productionArray(ids)||ids.length<2||ids.length>23||ids.some(id=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))||new Set(ids).size!==ids.length||ids.at(-1)!==value.materialSource.exchangeIdentity)throw invalid('多项兑换须保留完整有序来源及最终摘要');}
  return structuredClone(value);
@@ -284,7 +285,7 @@ function productionQuote(f,options,buildingId,productId){
  const identity=productionHash({context:live.context,factory:raw[0],recipe,dependencies:live.dependencies});return {identity,costs,factory,recipe};
 }
 function boundProductionCandidates(f,options,rows){
- const parameters=validateProductionParameters(options.parameters);if(!parameters.materialSource)return rows;
+ const parameters=validateProductionParameters(options.parameters);if(!parameters.materialSource)return parameters.buildingId?rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId):rows;
  const live=productionAuthority(f,options),quote=productionQuote(f,options,parameters.buildingId,parameters.productId);if(!live||!quote||quote.identity!==parameters.materialSource.productionIdentity||typeof live.read!=='function')return [];
  let runs;try{runs=live.read();}catch{return [];}
  const identities=parameters.materialSource.exchangeIdentities,settlement=identities?confirmedMaterialPackSequence(runs,live.context,identities,options.config):confirmedMaterialPackSettlement(runs,live.context,parameters.materialSource.exchangeIdentity,options.config);

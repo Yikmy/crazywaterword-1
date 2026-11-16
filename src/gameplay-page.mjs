@@ -313,7 +313,7 @@ function gpRenderProductionFactory(id,s,box,view,coverage){
    const gaps=costs.map(cost=>{const rows=projection?.gaps?.filter(row=>row.id===cost.id);return cost.id+' ×'+(stockKnown&&projection?.reliable===true&&Array.isArray(rows)&&rows.length<=1?show(rows[0]?.gap??0):'未知');}).join('；');
    return [recipe.productId,recipe.unlockLevel,operationCosts(recipe.costs),costs.map(cost=>cost.id+' ×'+show(have(cost.id))).join('；'),gaps||'未知',recipe.produceTime,recipe.appointmentAdjustedSeconds,recipe.timingScope];
   }));
-  for(const recipe of recipes){if(typeof recipe.productId!=='string'||!recipe.productId||!gpBudget(recipe.costs))continue;const button=gpEl('button','选择 '+recipe.productId+' 的覆盖建议');button.dataset.productionFactoryRecipe=recipe.productId;button.onclick=()=>{if(!button.disabled&&live())coverage.selectTarget({buildingId:key,productId:recipe.productId});};detail.appendChild(button);controls.push(button);}
+  for(const recipe of recipes){if(typeof recipe.productId!=='string'||!recipe.productId||!gpBudget(recipe.costs))continue;const button=gpEl('button','选择 '+recipe.productId+' 的覆盖建议');button.dataset.productionFactoryRecipe=recipe.productId;button.onclick=()=>{if(!button.disabled&&live())coverage.selectTarget({buildingId:key,productId:recipe.productId});};detail.appendChild(button);controls.push(button);const start=gpEl('button','准备本厂单份生产 '+recipe.productId);start.dataset.productionFactoryStart=recipe.productId;start._blocked=!reliable;start.onclick=()=>{if(start.disabled||!live()||!gpDomainSelectable(id))return;let parameters;try{parameters=gpParse('gp-'+id+'-parameters');}catch{return;}if(parameters.materialSource){$('gp-'+id+'-hint').textContent='当前含固定材料包来源；请保留组合约束，先在高级参数中明确切换为普通生产。';return;}$('gp-'+id+'-parameters').value=gpJson({buildingId:key,productId:recipe.productId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已固定本厂及产品；请重新探测单份成本与队列，预览后单独授权。';};detail.appendChild(start);controls.push(start);}
   for(const row of view.candidates||[]){if(row.target?.buildingId!==key)continue;const card=gpEl('article');card.appendChild(gpEl('p',(row.label||row.actionType)+' · '+operationCosts(row.costs)));if(gpBlocked(row))card.appendChild(gpEl('p','禁止执行：'+(row.blockedReason||row.reason||'缺少可靠动作')));const button=gpEl('button','选择本厂单项候选');button.dataset.productionFactoryAction=row.actionId;button._blocked=gpBlocked(row);button.onclick=()=>{if(!button.disabled&&live())gpSelectDomainCandidate(id,row.actionId);};card.appendChild(button);detail.appendChild(card);controls.push(button);}
   detail.appendChild(gpEl('p','本厂详情是本次来源观察，队列时间不证明结算或到账；缺料和减时仍为投影。选择候选或配方不派发，继续原预览、授权、预算、复读与UNKNOWN规则。'));
   s.actionControls.push(...controls);gpControls(id);
@@ -410,6 +410,157 @@ function gpRenderEquipmentTarget(box,view){
  mode._blocked=hero._blocked=heroes===null;redraw();
 }
 
+function gpRenderTaskRewardTarget(box,view){
+ const id='task-rewards',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['kind','taskId','tierId','packId','round'].includes(key))||parameters.kind!==undefined&&!WF_TASK_REWARD_KINDS.includes(parameters.kind))throw Error('unknown parameters');}catch{box.appendChild(gpEl('p','目标参数格式未知；请先在高级参数中修正，再重新探测。'));return;}
+ const kind=gpEl('select'),target=gpEl('input'),round=gpEl('input'),choose=gpEl('button','准备明确任务目标');
+ kind.dataset.dailyRewardKind='true';target.dataset.dailyRewardId='true';round.dataset.chipTaskRound='true';choose.dataset.dailyRewardPrepare='true';
+ for(const value of WF_TASK_REWARD_KINDS){const option=gpEl('option',WF_UNIFIED_KINDS[value]||value);option.value=value;kind.appendChild(option);}
+ kind.value=parameters.kind||'daily';
+ for(const input of [target,round]){input.type='text';input.inputMode='numeric';input.value='';}
+ target.value=parameters.taskId!==undefined?String(parameters.taskId):parameters.tierId!==undefined?String(parameters.tierId):'';round.value=parameters.round===undefined?'':String(parameters.round);
+ const label=gpEl('label'),caption=gpEl('span'),roundLabel=gpEl('label','周芯片当前轮次');label.appendChild(caption);label.appendChild(target);roundLabel.appendChild(round);box.appendChild(kind);box.appendChild(label);box.appendChild(roundLabel);box.appendChild(choose);
+ for(const control of [kind,target,round,choose])state.actionControls.push(control);
+ const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const gift=()=>['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(kind.value),tier=()=>kind.value==='daily-activity'||Object.hasOwn(GP_OPEN_RANK_LABELS,kind.value);
+ const redraw=()=>{target._blocked=gift();round._blocked=kind.value!=='weekly-chip-task';caption.textContent=gift()?'固定免费礼包（无需ID）':tier()?'精确score档位 / 活跃档位ID':'精确任务ID';choose.textContent=kind.value==='weekly-battle-pass-task'?'准备战令只读观察':'准备明确任务目标';gpControls(id);};
+ kind.onchange=()=>{if(!live())return;target.value='';round.value='';redraw();};
+ const positive=value=>/^[1-9][0-9]*$/.test(value)&&Number.isInteger(Number(value))&&Number(value)<=2147483647;
+ choose.onclick=()=>{
+  if(choose.disabled||!live()||!WF_TASK_REWARD_KINDS.includes(kind.value))return;
+  if(!gift()&&!positive(target.value)||kind.value==='weekly-chip-task'&&!positive(round.value)){$('gp-'+id+'-hint').textContent='请填写明确的正int32任务/档位ID；周芯片还须当前轮次。';return;}
+  const next={kind:kind.value};if(gift())next.packId=kind.value==='daily-gift'?'赠礼':'1000';else next[tier()?'tierId':'taskId']=Number(target.value);if(kind.value==='weekly-chip-task')next.round=Number(round.value);
+  $('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);
+  $('gp-'+id+'-hint').textContent=kind.value==='weekly-battle-pass-task'?'已准备明确战令任务，只读观察不会生成领取动作。':'已准备明确任务身份；请重新探测完成状态与可领取资格，预览后单独授权。';
+ };
+ box.appendChild(gpEl('p','主线、支线、成就及日常身份分别保留；完成、可领取与奖励到账独立判断。开服任务填写score档位，周芯片还须当前轮次；固定礼包不接受任务ID，战令仅观察。准备不发送请求、不授权。'));
+ redraw();
+}
+function gpRenderBadgeTarget(box,view){
+ const id='badge-growth',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ const dense=value=>Array.isArray(value)&&value.length<=10000&&Object.keys(value).length===value.length&&Array.from({length:value.length},(_,i)=>Object.hasOwn(value,i)).every(Boolean);
+ const uid=value=>typeof value==='string'&&/^[1-9][0-9]{0,18}$/.test(value)&&BigInt(value)<(1n<<63n);
+ const heroes=dense(view?.heroes)&&view.heroes.every(row=>typeof row?.heroId==='string'&&row.heroId.length>0)&&new Set(view.heroes.map(row=>row.heroId)).size===view.heroes.length?view.heroes:null;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['heroId','uid','action','pos'].includes(key))||parameters.action!==undefined&&!['put-on','star'].includes(parameters.action))throw Error('unknown parameters');}catch{box.appendChild(gpEl('p','徽章目标格式未知；请先在高级参数中修正，再重新探测。'));return;}
+ const mode=gpEl('select'),hero=gpEl('select'),badge=gpEl('select'),slot=gpEl('select'),prepare=gpEl('button','准备徽章目标');
+ mode.dataset.badgeTargetMode='true';hero.dataset.badgeTargetHero='true';badge.dataset.badgeTargetUid='true';slot.dataset.badgeTargetSlot='true';prepare.dataset.badgeTargetPrepare='true';
+ const add=(select,value,text)=>{const option=gpEl('option',text);option.value=value;select.appendChild(option);};
+ for(const [value,text]of [['level','已佩戴单次升级'],['star','已佩戴红徽章单次升星'],['put-on','自有闲置徽章穿到空槽']])add(mode,value,text);mode.value=parameters.action||'level';
+ add(hero,'','请选择英雄');for(const row of heroes||[])add(hero,row.heroId,row.heroId);hero.value='';
+ for(const [text,control]of [['原动作种类',mode],['明确英雄',hero],['精确徽章UID',badge],['已解锁空槽',slot]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(prepare);
+ for(const control of [mode,hero,badge,slot,prepare])state.actionControls.push(control);
+ let choices=[],slots=[];
+ const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const redraw=()=>{
+  gpClear(badge);gpClear(slot);add(badge,'','仅调查该英雄候选');add(slot,'','先调查该英雄的空槽');badge.value=slot.value='';
+  const selected=heroes?.find(row=>row.heroId===hero.value),put=mode.value==='put-on',rows=put?view?.bag:selected?.badges;
+  const known=Boolean(selected&&dense(rows)&&rows.every(row=>uid(row?.uid))&&new Set(rows.map(row=>row.uid)).size===rows.length);
+  choices=known?rows:[];for(const row of choices)add(badge,row.uid,(row.badgeId||'徽章')+' · UID '+row.uid);
+  slots=put&&selected&&dense(selected.emptySlots)&&selected.emptySlots.every(pos=>Number.isInteger(pos)&&pos>=1&&pos<=4)&&new Set(selected.emptySlots).size===selected.emptySlots.length?selected.emptySlots:[];
+  for(const pos of slots)add(slot,String(pos),String(pos)+' 号空槽');
+  mode._blocked=hero._blocked=heroes===null;badge._blocked=!known;slot._blocked=!put||slots.length===0;prepare._blocked=!selected;gpControls(id);
+ };
+ mode.onchange=hero.onchange=()=>{if(live())redraw();};
+ prepare.onclick=()=>{
+  if(prepare.disabled||!live()||!heroes?.some(row=>row.heroId===hero.value)||!['level','star','put-on'].includes(mode.value)||badge.value&&!choices.some(row=>row.uid===badge.value)||slot.value&&!slots.includes(Number(slot.value)))return;
+  if(mode.value==='put-on'&&badge.value&&!slot.value){$('gp-'+id+'-hint').textContent='穿戴具体徽章还须选择本次已观察到的已解锁空槽。';return;}
+  const next={heroId:hero.value,...(mode.value!=='level'?{action:mode.value}:{}),...(badge.value?{uid:badge.value}:{}),...(mode.value==='put-on'&&slot.value?{pos:Number(slot.value)}:{})};
+  $('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备徽章目标；请重新探测归属、空槽与成本，预览后单独授权。';
+ };
+ box.appendChild(gpEl('p','成长仅从该英雄已佩戴列表选择；穿戴仅从闲置列表和当前已解锁空槽选择。切换英雄或动作清除UID及槽位；未观察空槽时先只调查英雄，不替换已有徽章。'));
+ redraw();
+}
+
+function gpRenderHeroTarget(box,view){
+ const id='heroes',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['heroId','action','skillIdx','allowUniversal'].includes(key))||parameters.allowUniversal===true)throw Error('guarded or exchange parameters');}catch{box.appendChild(gpEl('p','当前为兑换、前置约束或高级成长草稿；此目标表单保留原参数，请使用下方专用入口或先明确切换成长种类。'));return;}
+ const rows=view?.reliability?.heroes===true&&Array.isArray(view.heroes)&&view.heroes.every(row=>typeof row?.heroId==='string'&&row.heroId.length>0)&&new Set(view.heroes.map(row=>row.heroId)).size===view.heroes.length?view.heroes:null;
+ const mode=gpEl('select'),hero=gpEl('select'),skill=gpEl('select'),prepare=gpEl('button','准备英雄单次成长目标');mode.dataset.heroTargetMode='true';hero.dataset.heroTargetHero='true';skill.dataset.heroTargetSkill='true';prepare.dataset.heroTargetPrepare='true';
+ const add=(select,value,text)=>{const option=gpEl('option',text);option.value=value;select.appendChild(option);};
+ for(const [value,text]of [['level','升一级'],['star','升一星（自有专属碎片）'],['skill','技能槽升一级'],['exclusive-level','专武升一级'],['exclusive-star','专武升一星']])add(mode,value,text);mode.value=['level','star','skill','exclusive-level','exclusive-star'].includes(parameters.action)?parameters.action:'level';
+ add(hero,'','请选择已观察英雄');for(const row of rows||[])add(hero,row.heroId,row.heroId);hero.value='';
+ for(const [text,control]of [['成长种类',mode],['明确英雄',hero],['技能槽（从1开始）',skill]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(prepare);
+ for(const control of [mode,hero,skill,prepare])state.actionControls.push(control);
+ let slots=[];const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const redraw=()=>{gpClear(skill);add(skill,'','请选择技能槽');skill.value='';const selected=rows?.find(row=>row.heroId===hero.value),levels=selected?.skillLevels;slots=Array.isArray(levels)&&levels.length>0&&levels.length<=4&&levels.every(n=>Number.isInteger(n)&&n>=0)?levels.map((level,index)=>({index:index+1,level})):[];for(const row of slots)add(skill,String(row.index),row.index+' 号 · 当前 '+row.level);skill._blocked=mode.value!=='skill'||!slots.length;mode._blocked=hero._blocked=rows===null;prepare._blocked=!selected;gpControls(id);};
+ mode.onchange=hero.onchange=()=>{if(live())redraw();};
+ prepare.onclick=()=>{
+  if(prepare.disabled||!live()||!rows?.some(row=>row.heroId===hero.value)||!['level','star','skill','exclusive-level','exclusive-star'].includes(mode.value))return;
+  if(mode.value==='skill'&&!slots.some(row=>String(row.index)===skill.value)){$('gp-'+id+'-hint').textContent='请选择该英雄本次已观察到的技能槽。';return;}
+  const next={heroId:hero.value,action:mode.value,...(mode.value==='skill'?{skillIdx:Number(skill.value)}:{}),...(mode.value==='star'?{allowUniversal:false}:{})};$('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备单次英雄成长；请重新探测等级门槛和实际成本，预览后单独授权。';
+ };
+ box.appendChild(gpEl('p','每次只选择一个英雄及一种成长；技能使用已观察槽位。切换英雄清除槽位，升星保持自有专属碎片，不自动兑换、补购或改变前置约束。'));redraw();
+}
+function gpRenderPetTarget(box,view){
+ const id='pet',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ const level=view?.mode==='level',building=gpEl('select'),target=gpEl('select'),prepare=gpEl('button',level?'准备服役海兽单级目标':'准备培育批次单次投喂');building.dataset.petTargetBuilding='true';target.dataset.petTargetInstance='true';prepare.dataset.petTargetPrepare='true';
+ const dense=value=>Array.isArray(value)&&value.length<=10000&&Object.keys(value).length===value.length&&Array.from({length:value.length},(_,i)=>Object.hasOwn(value,i)).every(Boolean);
+ const exactUid=value=>typeof value==='string'&&/^[1-9][0-9]{0,18}$/.test(value)&&BigInt(value)<(1n<<63n);
+ const sourceRows=level?view?.serving:view?.rooms,rows=dense(sourceRows)&&sourceRows.every(row=>typeof row?.buildingId==='string'&&row.buildingId.length>0)&&new Set(sourceRows.map(row=>row.buildingId)).size===sourceRows.length?sourceRows:null;
+ const add=(select,value,text)=>{const option=gpEl('option',text);option.value=value;select.appendChild(option);};
+ add(building,'','请选择明确建筑');for(const row of rows||[])add(building,row.buildingId,row.buildingId);building.value='';
+ for(const [text,control]of [['建筑',building],[level?'精确服役海兽UID':'精确培育任务idx（0有效）',target]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(prepare);for(const control of [building,target,prepare])state.actionControls.push(control);
+ let choices=[];const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const redraw=()=>{gpClear(target);add(target,'','请选择明确实例');target.value='';const row=rows?.find(row=>row.buildingId===building.value),jobs=row?.queue?.breedQ;
+  choices=level?(exactUid(row?.uid)?[{value:row.uid,label:'UID '+row.uid}]:[]):dense(jobs)&&jobs.every(job=>Number.isInteger(job?.idx)&&job.idx>=0&&job.idx<=2147483647)&&new Set(jobs.map(job=>job.idx)).size===jobs.length?jobs.map(job=>({value:String(job.idx),label:'idx '+job.idx+' · '+(job.petId||'种类未知')})):[];
+  for(const choice of choices)add(target,choice.value,choice.label);building._blocked=rows===null;target._blocked=prepare._blocked=!choices.length;gpControls(id);
+ };
+ building.onchange=()=>{if(live())redraw();};prepare.onclick=()=>{if(prepare.disabled||!live()||!rows?.some(row=>row.buildingId===building.value)||!choices.some(row=>row.value===target.value))return;
+  const parameters={action:level?'level':'feed',buildingId:building.value,...(level?{uid:target.value}:{jobIdx:Number(target.value)})};$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备精确海兽目标；请重新探测批次、归属与成本，再预览并单独授权。';};
+ box.appendChild(gpEl('p','建筑切换会清除旧实例；任务idx保持服务器值（含0），不使用显示行号。培育与成熟领取继续保持原冻结状态。'));redraw();
+}
+
+function gpRenderForgeTarget(box,view){
+ const id='equipment-forge',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['action','buildingId','makeId','allowUniversal'].includes(key))||parameters.allowUniversal===true)throw Error('guarded parameters');}catch{box.appendChild(gpEl('p','当前草稿含队列或数量前置约束；请保留并使用原有限组合准备入口，此单次表单不改写约束。'));return;}
+ const dense=value=>Array.isArray(value)&&value.length<=10000&&Object.keys(value).length===value.length&&Array.from({length:value.length},(_,i)=>Object.hasOwn(value,i)).every(Boolean);
+ const rows=dense(view?.forges)&&view.forges.every(row=>typeof row?.buildingId==='string'&&row.buildingId.length>0)&&new Set(view.forges.map(row=>row.buildingId)).size===view.forges.length?view.forges:null;
+ const recipes=dense(view?.recipes)&&view.recipes.every(row=>Number.isInteger(row?.makeId)&&row.makeId>0&&row.makeId<=2147483647)&&new Set(view.recipes.map(row=>row.makeId)).size===view.recipes.length?view.recipes:null;
+ const mode=gpEl('select'),building=gpEl('select'),recipe=gpEl('select'),prepare=gpEl('button','准备单次装备厂目标');mode.dataset.forgeTargetMode='true';building.dataset.forgeTargetBuilding='true';recipe.dataset.forgeTargetRecipe='true';prepare.dataset.forgeTargetPrepare='true';
+ const add=(select,value,text)=>{const option=gpEl('option',text);option.value=value;select.appendChild(option);};add(mode,'make','单份制造');add(mode,'pick','收取一个明确批次');mode.value=parameters.action==='pick'?'pick':'make';add(building,'','请选择装备厂');for(const row of rows||[])add(building,row.buildingId,row.buildingId);building.value='';add(recipe,'','请选择明确配方');for(const row of recipes||[])add(recipe,String(row.makeId),row.makeId+' · '+row.type+' · '+operationCosts(row.costs));recipe.value='';
+ for(const [text,control]of [['原操作',mode],['明确装备厂',building],['单份制造配方',recipe]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(prepare);for(const control of [mode,building,recipe,prepare])state.actionControls.push(control);
+ const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const redraw=()=>{mode._blocked=building._blocked=rows===null;recipe._blocked=mode.value==='pick'||recipes===null;prepare._blocked=rows===null||mode.value==='make'&&recipes===null;gpControls(id);};mode.onchange=()=>{if(live()){recipe.value='';redraw();}};building.onchange=()=>{if(live())recipe.value='';};
+ prepare.onclick=()=>{
+  if(prepare.disabled||!live()||!rows?.some(row=>row.buildingId===building.value)||!['make','pick'].includes(mode.value))return;
+  const selected=recipes?.find(row=>String(row.makeId)===recipe.value);if(mode.value==='make'&&!selected){$('gp-'+id+'-hint').textContent='请选择本次已观察到的明确配方。';return;}
+  const next={action:mode.value,buildingId:building.value,...(mode.value==='make'?{makeId:selected.makeId,allowUniversal:false}:{})};$('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备装备厂单次目标；请重新探测队列、赛季及材料，预览后单独授权。';
+ };
+ box.appendChild(gpEl('p','单份制造与收取分别准备；切换工厂清除配方，不自动替换队列或配方，不使用通用补料。收取须重新调查明确队列及到期状态。'));redraw();
+}
+function gpRenderFormationUnlockTarget(box,view){
+ const id='formation-unlock',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value,select=gpEl('select'),prepare=gpEl('button','准备单张普通图纸解锁');select.dataset.formationUnlockTarget='true';prepare.dataset.formationUnlockPrepare='true';
+ const known=view?.reliability?.catalog===true&&Array.isArray(view.templates)&&view.templates.every(row=>Number.isInteger(row?.presetId)&&row.presetId>=2&&row.presetId<=24)&&new Set(view.templates.map(row=>row.presetId)).size===view.templates.length;
+ const empty=gpEl('option','请选择普通模板');empty.value='';select.appendChild(empty);for(const row of known?view.templates:[]){const option=gpEl('option',row.presetId+' · '+row.name);option.value=String(row.presetId);select.appendChild(option);}select.value='';for(const control of [select,prepare]){control._blocked=!known;state.actionControls.push(control);}box.appendChild(select);box.appendChild(prepare);
+ prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id)!==state||state.data?.view!==view||state.revision!==edit||$('gp-'+id+'-parameters').value!==source||!known)return;const row=view.templates.find(row=>String(row.presetId)===select.value);if(!row)return;$('gp-'+id+'-parameters').value=gpJson({presetId:row.presetId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备一个普通模板；请重新探测持有图纸和解锁状态，预览后单独授权，不自动应用阵容。';};
+}
+
+function gpRenderMuseumExploreTarget(box,view){
+ const id='museum',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['stageId','heroIds','factor'].includes(key)))throw Error('other museum branch');}catch{box.appendChild(gpEl('p','当前为其他博物馆业务草稿；出发表单保留原参数，请先在高级参数中明确切换为探险出发。'));return;}
+ const observation=view?.explorationSelection,dense=value=>Array.isArray(value)&&value.length<=10000&&Object.keys(value).length===value.length&&Array.from({length:value.length},(_,i)=>Object.hasOwn(value,i)).every(Boolean),positive=value=>Number.isSafeInteger(value)&&value>0;
+ const stages=dense(observation?.stages)&&observation.stages.every(row=>positive(row?.stageId))&&new Set(observation.stages.map(row=>row.stageId)).size===observation.stages.length?observation.stages:null;
+ const heroes=dense(observation?.heroes)&&observation.heroes.every(row=>typeof row?.heroId==='string'&&row.heroId.length>0&&typeof row.busy==='boolean')&&new Set(observation.heroes.map(row=>row.heroId)).size===observation.heroes.length?observation.heroes:null;
+ const factors=dense(observation?.factors)&&observation.factors.every(positive)&&new Set(observation.factors).size===observation.factors.length?observation.factors:null;
+ const stage=gpEl('select'),factor=gpEl('select'),members=gpEl('div'),hint=gpEl('p'),prepare=gpEl('button','准备明确博物馆出发');stage.dataset.museumExploreStage='true';factor.dataset.museumExploreFactor='true';members.dataset.museumExploreHeroes='true';prepare.dataset.museumExplorePrepare='true';
+ const add=(select,value,text,disabled=false)=>{const option=gpEl('option',text);option.value=value;option.disabled=disabled;select.appendChild(option);};
+ add(stage,'','请选择已观察关卡');for(const row of stages||[])add(stage,String(row.stageId),row.stageId+' · '+row.status+' · 需要 '+(row.requiredHeroCount??'未知')+' 英雄',row.status!=='IDLE'||row.unlocked!==true||!positive(row.requiredHeroCount));stage.value='';
+ add(factor,'','请选择明确已解锁倍率');for(const value of factors||[])add(factor,String(value),'倍率 '+value);factor.value='';
+ for(const [text,control]of [['明确关卡',stage],['本次倍率',factor]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(members);box.appendChild(hint);box.appendChild(prepare);
+ const selections=[];for(const row of heroes||[]){const choice=gpEl('input'),label=gpEl('label',row.heroId+(row.busy?' · 已被探险占用':''));choice.type='checkbox';choice.checked=false;choice.dataset.museumExploreHero=row.heroId;choice._blocked=row.busy;label.appendChild(choice);members.appendChild(label);selections.push({heroId:row.heroId,control:choice});state.actionControls.push(choice);}
+ for(const control of [stage,factor,prepare])state.actionControls.push(control);
+ const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source;
+ const selected=()=>selections.filter(row=>row.control.checked&&!row.control._blocked).map(row=>row.heroId);
+ const redraw=()=>{const row=stages?.find(row=>String(row.stageId)===stage.value);hint.textContent='本次需要 '+(row?.requiredHeroCount??'未知')+' 个英雄；明确选择 '+selected().length+' 个。队伍容量和实际成本将在重新探测时核验。';stage._blocked=stages===null;factor._blocked=factors===null;prepare._blocked=!row||row.status!=='IDLE'||row.unlocked!==true||!positive(row.requiredHeroCount)||heroes===null||factors===null;gpControls(id);};
+ stage.onchange=()=>{if(!live())return;for(const row of selections)row.control.checked=false;redraw();};for(const row of selections)row.control.onchange=()=>{if(live())redraw();};
+ prepare.onclick=()=>{
+  if(prepare.disabled||!live())return;const row=stages?.find(row=>String(row.stageId)===stage.value),heroIds=selected(),multiplier=factors?.find(value=>String(value)===factor.value);
+  if(!row||!positive(multiplier)||heroIds.length!==row.requiredHeroCount||heroIds.length>100){$('gp-'+id+'-hint').textContent='须选择明确已解锁倍率，并按本关人数选择未被探险占用的英雄。';return;}
+  $('gp-'+id+'-parameters').value=gpJson({stageId:row.stageId,heroIds,factor:multiplier});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备明确探险出发；请重新探测队伍容量、占用及实际材料，再预览并单独授权。';
+ };
+ box.appendChild(gpEl('p','本表单只准备原探险出发，不安排结算、领奖、自动换人或补料。切换关卡清除英雄选择；当前观察不保证未来资格。'));redraw();
+}
+
 function gpRenderDomain(id,view){
  const s=gpGet(id),box=gpClear($('gp-'+id+'-facts'));s.actionControls=[];s.mailPageControls=[];s.factoryViewControls=[];
  const show=value=>value===null||value===undefined?'未知':String(value);
@@ -487,6 +638,7 @@ function gpRenderDomain(id,view){
   for(const row of emails){const read=row.read===false&&row.attachment?.hasAttachment===false&&typeof row.got==='boolean';if(!read&&(row.got!==false||row.attachment?.hasAttachment!==true))continue;const button=gpEl('button',(read?'准备单封已读 ':'准备单封附件 ')+row.emailId);if(read)button.dataset.mailReadPrepare=row.emailId;else button.dataset.mailClaimPrepare=row.emailId;button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!viewGuard.current(scope)||gpGet(id).data?.view!==view)return;$('gp-mail-parameters').value=gpJson({pageNo:row.pageNo??page.pageNo,action:read?'read':'claim',emailId:row.emailId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-mail-hint').textContent='已准备精确单封邮件；请重新探测附件与库存，预览后单独授权。';};s.actionControls.push(button);box.appendChild(button);}
   box.appendChild(gpEl('p','普通分页只展示本页；明确枚举在页数上限内检查分页覆盖，不证明原子快照。单封普通道具/资源附件及完整空附件未读邮件可以独立探测、预览和授权；批量及实例附件继续冻结。'));
  }else if(id==='museum'){
+  gpRenderMuseumExploreTarget(box,view);
   box.appendChild(gpEl('p','探险结算与领奖仍缺同次结算身份和可恢复的待领奖/到账凭证。到期只表示等待结算，不证明奖励已生成或到账；收益和成就领取独立。'));
   const materials=view?.explorationMaterials;
   const reasons={PLAYER_IDENTITY_UNKNOWN:'玩家身份未知',EXPEDITION_STATE_UNKNOWN:'远征列表未知',STAGE_NOT_OBSERVED:'未读到所选远征',EXPEDITION_ALREADY_STARTED:'本次远征已开始',STAGE_LOCKED:'远征未解锁',STAGE_UNLOCK_UNKNOWN:'远征解锁状态未知',TIME_FACTOR_LOCKED_OR_UNKNOWN:'倍率未解锁或无法确认',AUTHORITATIVE_EXPEDITION_COST_UNKNOWN:'本次材料需求未知',INVENTORY_UNKNOWN:'持有量未知'};
@@ -581,13 +733,7 @@ function gpRenderDomain(id,view){
   table('挂机等级与奖励',['当前等级','已领奖等级','下一档','配置奖励','当前状态'],(view?.candidates||[]).map(row=>[view.afk?.level,view.afk?.rewardedLevel,row.target?.level,(row.rewards||[]).map(reward=>reward.id+' × '+reward.num).join('、')||'未知',row.executable?(row.actionType==='UPGRADE'?'可预览升级':row.actionType==='INCOME'?'可预览收益':'可预览领取'):row.blockedReason]));
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='task-rewards'){
-  const scope=viewGuard.capture(),revision=gpRevision,input=gpEl('input'),round=gpEl('input'),kind=gpEl('select'),choose=gpEl('button','准备日常领奖');
-  kind.dataset.dailyRewardKind='true';for(const [value,label]of [['daily','日常任务'],['daily-activity','日活跃宝箱'],['daily-gift','免费赠礼（无需ID）'],['weekly-lottery-gift','周转盘免费礼包（无需ID）'],['weekly-unique-lottery-gift','周翻牌免费礼包（无需ID）'],['weekly-chip-gift','周芯片免费礼包（无需ID）'],['weekly-battle-pass-task','战令任务只读观察（ID）'],['weekly-chip-task','周芯片任务（当前轮次与ID）'],...Object.entries(GP_OPEN_RANK_LABELS).map(([kind,label])=>[kind,label+'（score档位）'])]){const option=gpEl('option',label);option.value=value;kind.appendChild(option);}kind.value='daily';kind.disabled=!gpDomainSelectable(id);
-  input.type='number';input.min='1';input.max='2147483647';input.step='1';input.value='';input.dataset.dailyRewardId='true';choose.dataset.dailyRewardPrepare='true';
-  input.disabled=choose.disabled=!gpDomainSelectable(id);kind.onchange=()=>{if(gpSafe(scope,revision)&&gpGet(id).data?.view===view)choose.textContent=kind.value==='weekly-battle-pass-task'?'准备战令只读观察':'准备日常领奖';};
-  round.type='number';round.min='1';round.max='2147483647';round.step='1';round.value='';round.placeholder='周芯片当前轮次';round.dataset.chipTaskRound='true';round.disabled=!gpDomainSelectable(id);
-  choose.onclick=()=>{if(choose.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;const taskId=Number(input.value),chipRound=Number(round.value);if(kind.value==='weekly-chip-task'&&(!Number.isInteger(chipRound)||chipRound<1||chipRound>2147483647)){$('gp-'+id+'-hint').textContent='请填写明确的周芯片当前轮次。';return;}if(!['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...Object.keys(GP_OPEN_RANK_LABELS),'weekly-battle-pass-task'].includes(kind.value)||(!['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(kind.value)&&(!Number.isInteger(taskId)||taskId<1||taskId>2147483647))){$('gp-'+id+'-hint').textContent='请选择日常任务/日活跃宝箱并填写正整数ID，或选择固定免费赠礼。';return;}$('gp-'+id+'-parameters').value=gpJson(kind.value==='weekly-chip-task'?{kind:kind.value,round:chipRound,taskId}:['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(kind.value)?{kind:kind.value,packId:'1000'}:kind.value==='daily-gift'?{kind:'daily-gift',packId:'赠礼'}:['daily-activity',...Object.keys(GP_OPEN_RANK_LABELS)].includes(kind.value)?{kind:kind.value,tierId:taskId}:{kind:kind.value==='weekly-battle-pass-task'?kind.value:'daily',taskId});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent=kind.value==='weekly-battle-pass-task'?'已准备精确战令任务只读观察；请重新探测，不生成领取动作。':'已准备明确任务或日活跃档位；重新探测、预览并单独授权。';};
-  box.appendChild(gpEl('p','任务与宝箱需填写明确ID，开服任务须按对应模式填写score档位值而非行号，订单/闯关直接配置，剿匪/战争按配置季节选择；周芯片任务还需当前轮次，最后一项换轮结算缺证仍冻结；免费赠礼和1000号周转盘/翻牌/芯片礼包无需ID。缓存不能授权领取；周礼包绑定服务器活动窗口，不推算跨周重领；周活跃宝箱周期仍缺证。'));box.appendChild(kind);box.appendChild(input);box.appendChild(round);box.appendChild(choose);s.actionControls.push(kind,input,round,choose);
+  gpRenderTaskRewardTarget(box,view);
   if(view?.battlePassObservation){const o=view.battlePassObservation;table('战令任务只读观察',['任务 ID','任务类型','进度','配置目标','完成状态','任务奖励记录','资格','积分到账'],[[o.taskId,o.taskType,o.progress,o.requiredProgress,o.completion,o.taskRewardState,'未知',o.scoreReceipt]]);table('战令独立观察',['累计积分','配置任务积分','付费激活观察','type1活动期数','活动开始秒','活动结束秒','任务周期与窗口归属'],[[o.totalScore,o.expectedTaskScore,o.activePay,o.activityWindow?.period,o.activityWindow?.startTime,o.activityWindow?.endTime,'未知/未证实绑定']]);table('战令档位记录（非任务奖励）',['档位','普通奖励已领记录','付费奖励已领记录'],(o.rewardStages||[]).map(row=>[row.stage,row.freeGot,row.payGot]));box.appendChild(gpEl('p','战令仅只读；任务完成不等于可领，任务isGot不等于积分到账，普通/付费档位与任务独立。累计积分不作增量；窗口不能证明每日周期或同次归属，不生成领取动作。'));}
   else if(Object.hasOwn(GP_OPEN_RANK_LABELS,view?.candidates?.[0]?.parameters?.kind)){const row=view.candidates[0];box.appendChild(gpEl('p',GP_OPEN_RANK_LABELS[row.parameters.kind]+' · type '+show(row.target?.type)+' · score档位 '+show(row.parameters.tierId)+' · 已领score '+show(view.daily?.gotRewardId?.join('、'))+' · 进度 '+show(view.daily?.progress)+' · 当前季/配置季 '+show(row.target?.season)+' / '+show(row.target?.configuredSeason)+' · 服务器窗口（秒） '+show(row.target?.startTime)+' 至 '+show(row.target?.endTime)+'；只领明确任务档位，窗口观察不能代替领取资格或结算。'));}
   else if(view?.candidates?.[0]?.parameters?.kind==='weekly-chip-task'){const a=view.daily?.activityTime?.find(r=>r.type===6);box.appendChild(gpEl('p','周芯片任务 · 当前轮次 '+show(view.daily?.round)+' · 累计积分 '+show(view.daily?.score)+' · 已领任务 '+show(view.daily?.gotTaskId?.join('、'))+' · 活动期数 '+show(a?.period)+' · 服务器窗口（秒） '+show(a?.startTime)+' 至 '+show(a?.endTime)+'；仅领取配置奖励并持有宝箱，不打开。'));}
@@ -595,7 +741,7 @@ function gpRenderDomain(id,view){
   else if(view?.candidates?.[0]?.parameters?.kind==='daily-gift')box.appendChild(gpEl('p','免费赠礼 · 服务器原样标记 '+show(view.daily?.resetMarker)+' · 英雄 '+show(view.daily?.heroId)+'；不据此安排日重领。'));
   else if(view?.daily)box.appendChild(gpEl('p','服务器日常重置标记 '+show(view.daily.resetTime)+' · 日活跃 '+show(view.daily.dailyActivity)+' · 周活跃 '+show(view.daily.weeklyActivity)));
   for(const row of view?.candidates||[])if(row.parameters?.kind==='daily')box.appendChild(gpEl('p','本次配置活跃增量 '+show(row.activityGain)+'；日周活跃和 EXP 须在同周期独立复读一致。'));
-  table('任务进度与配置奖励',['任务类型','任务 / 档位 ID','进度','目标','奖励','当前状态'],(view?.candidates||[]).map(row=>[Object.hasOwn(GP_OPEN_RANK_LABELS,row.target?.kind)?GP_OPEN_RANK_LABELS[row.target.kind]+'档位':row.target?.kind==='weekly-chip-task'?'周芯片任务':row.target?.kind==='weekly-chip-gift'?'周芯片免费礼包':row.target?.kind==='weekly-unique-lottery-gift'?'周翻牌免费礼包':row.target?.kind==='weekly-lottery-gift'?'周转盘免费礼包':row.target?.kind==='daily-gift'?'免费赠礼':row.target?.kind==='daily-activity'?'日活跃宝箱':row.target?.kind==='daily'?'日常':row.target?.kind==='achievement'?'成就':row.target?.kind==='main'?'主线':'支线',row.target?.taskId??row.target?.tierId??row.target?.packId,row.progress,row.requiredProgress,(row.rewards||[]).map(reward=>reward.id+' × '+reward.num).join('、')||'未知',row.executable?'可预览领取':row.blockedReason]));
+  table('任务进度与配置奖励',['任务类型','任务 / 档位 ID','进度','目标','奖励','当前状态'],(view?.candidates||[]).map(row=>[Object.hasOwn(GP_OPEN_RANK_LABELS,row.target?.kind)?GP_OPEN_RANK_LABELS[row.target.kind]+'档位':row.target?.kind==='weekly-chip-task'?'周芯片任务':row.target?.kind==='weekly-chip-gift'?'周芯片免费礼包':row.target?.kind==='weekly-unique-lottery-gift'?'周翻牌免费礼包':row.target?.kind==='weekly-lottery-gift'?'周转盘免费礼包':row.target?.kind==='daily-gift'?'免费赠礼':row.target?.kind==='daily-activity'?'日活跃宝箱':row.target?.kind==='daily'?'日常':row.target?.kind==='achievement'?'成就':row.target?.kind==='main'?'主线':row.target?.kind==='branch'?'支线':WF_UNIFIED_KINDS[row.target?.kind]||'未知任务种类',row.target?.taskId??row.target?.tierId??row.target?.packId,row.progress,row.requiredProgress,(row.rewards||[]).map(reward=>reward.id+' × '+reward.num).join('、')||'未知',row.executable?'可预览领取':row.blockedReason]));
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='antique-growth'){
   const scope=viewGuard.capture(),revision=gpRevision;
@@ -641,6 +787,7 @@ function gpRenderDomain(id,view){
   apply.onclick=()=>{if(!valid(apply))return;const old=gpParse('gp-'+id+'-parameters'),quantity=Number(num.value);if(!old.antiqueId||!Number.isInteger(quantity)||quantity<1||quantity>2147483647){$('gp-'+id+'-hint').textContent='先选择藏品，并输入本次兑换的正整数数量。';return;}draft({action:'exchange',antiqueId:old.antiqueId,num:quantity});};
   numLabel.appendChild(num);box.appendChild(numLabel);box.appendChild(apply);s.actionControls.push(num,apply);
  }else if(id==='pet'){
+  gpRenderPetTarget(box,view);
   const scope=viewGuard.capture(),revision=gpRevision;
   const valid=control=>!control.disabled&&gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id).data?.view===view;
   const draft=parameters=>{$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已更新海兽操作；请重新探测，再选择明确实例并预览。';};
@@ -661,6 +808,7 @@ function gpRenderDomain(id,view){
   box.appendChild(gpEl('p','每次只投喂指定培育批次一次，减时 '+String(view?.secondsReduced??'未知')+' 秒；只用自有材料。成熟列表变化须独立复读，不自动领取或补料。'));
   }
  }else if(id==='badge-growth'){
+  gpRenderBadgeTarget(box,view);
   const scope=viewGuard.capture(),revision=gpRevision,rows=view?.candidates||[];
   const putOn=view?.mode==='put-on'||rows.some(row=>row.actionType==='PUT-ON'),star=view?.mode==='star'||rows.some(row=>row.actionType==='STAR');
   function draftButton(label,key,value,draft){
@@ -698,9 +846,11 @@ function gpRenderDomain(id,view){
   box.appendChild(gpEl('p','首次升级须明确当前零级且第一级配置费用为零，复读确认库存不变。其他等级单次消耗自有精铁；显式红装精炼消耗精铁与精炼石，单次升星消耗升星石与精铁。目标英雄战力与属性以服务器完整复读为准。'));
   const scope=viewGuard.capture(),revision=gpRevision;for(const mode of [{label:'查看单次等级',action:null},{label:'查看首次升级（0→1）',action:'initial-level'},{label:'查看红装单次精炼',action:'refine'},{label:'穿到空槽',action:'put-on'},{label:'查看红装单次升星',action:'star'}]){const button=gpEl('button',mode.label);button.dataset.equipmentGrowthMode=mode.action||'level';button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;const old=gpParse('gp-'+id+'-parameters'),parameters={};for(const key of ['heroId','uid'])if(old[key]!==undefined)parameters[key]=old[key];if(mode.action)parameters.action=mode.action;$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择成长种类；请重新探测明确目标、成本并单次授权。';};s.actionControls.push(button);box.appendChild(button);}
  }else if(id==='formation-unlock'){
+  gpRenderFormationUnlockTarget(box,view);
   table('普通阵型模板',['模板','名称','对应已有图纸','解锁状态'],(view?.templates||[]).map(row=>[row.presetId,row.name,operationCosts(row.costs),view?.unlockedPresetIds?.includes(row.presetId)?'已解锁':'未解锁']));
   box.appendChild(gpEl('p','仅消耗已持有的对应图纸一张；解锁后必须重新读取阵容列表，再单独预览并授权应用。'));
  }else if(id==='heroes'){
+  gpRenderHeroTarget(box,view);
   table('英雄成长',['英雄','等级','星级','技能槽等级','战力','专武等级','专武星级'],(view?.heroes||[]).map(hero=>[hero.heroId,hero.level,hero.star,Array.isArray(hero.skillLevels)?hero.skillLevels.join(' / '):null,hero.power,hero.exclusive?.level,hero.exclusive?.star]));
   box.appendChild(gpEl('p','每个候选只成长一级或一个技能槽。通用碎片可按指定数量1:1兑换英雄专属碎片；可生成明确补足后单次升星的有限工作流；各步重新调查、预览并授权，UNKNOWN停止。'));
   const scope=viewGuard.capture(),revision=gpRevision;for(const mode of [{label:'查看基础成长',action:null},{label:'查看专武单次升级',action:'exclusive-level'},{label:'查看专武单次升星',action:'exclusive-star'},{label:'查看碎片兑换',action:'fragment-exchange'}]){const button=gpEl('button',mode.label);button.dataset.heroGrowthMode=mode.action||'basic';button._blocked=false;button.disabled=!gpDomainSelectable(id);button.onclick=()=>{if(button.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;const old=gpParse('gp-'+id+'-parameters'),parameters={};if(old.heroId!==undefined)parameters.heroId=old.heroId;if(mode.action)parameters.action=mode.action;$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择成长种类；请重新探测明确英雄、成本并单次授权。';};s.actionControls.push(button);box.appendChild(button);}
@@ -744,6 +894,7 @@ function gpRenderDomain(id,view){
   for(const control of [heroSelect,num,prepare,duration,starPrepare,sequenceAdd,sequencePrepare]){control._heroExchangeDraft=true;control.disabled=!gpHeroExchangeEditable();s.actionControls.push(control);}
   heroLabel.appendChild(heroSelect);numLabel.appendChild(num);box.appendChild(heroLabel);box.appendChild(numLabel);box.appendChild(prepare);box.appendChild(durationLabel);box.appendChild(starPrepare);box.appendChild(gpEl('h3','多英雄单星顺序'));box.appendChild(gpEl('p','依次添加英雄及明确兑换量；按列表顺序各升一星。共享万能碎片在准备时核总量，所有英雄共用本次总时长与累计预算。'));box.appendChild(sequenceAdd);box.appendChild(sequenceBox);box.appendChild(sequencePrepare);drawSequence();
  }else if(id==='equipment-forge'){
+  gpRenderForgeTarget(box,view);
   const scope=viewGuard.capture(),revision=gpRevision;
   table('装备厂队列',['建筑','等级','队列'],(view?.forges||[]).map(row=>[row.buildingId,row.level,gpJson(row.queue)]));
   table('制造配方',['配方','部位','所需赛季','材料','可能产物'],(view?.recipes||[]).map(row=>[row.makeId,row.type,row.season,operationCosts(row.costs),(row.equipIds||[]).join('、')]));

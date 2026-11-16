@@ -414,7 +414,7 @@ export function viewBadgeGrowth(facts, { config, moduleConfig, parameters = fact
         && state.badgeCareers.get(badge.badgeId) === state.heroTypes.get(params.heroId).career).map(({ uid }) => ({ ...params, uid }))
       : [];
     const candidates = (choices.length ? choices : [params]).map(choice => putOnCandidate(facts, choice, { ...options, state }));
-    return { module: moduleId, mode: 'put-on', heroes: heroChoices(roster, state), candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: BADGE_PUT_ON_EVIDENCE };
+    return { module: moduleId, mode: 'put-on', heroes: heroChoices(roster, state), bag: state ? [...state.pool.values()].filter(badge => !state.worn.has(badge.uid)).map(({uid, badgeId, level, star}) => ({uid, badgeId, level, star})) : null, candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: BADGE_PUT_ON_EVIDENCE };
   }
   const choices = [];
   for (const hero of roster) {

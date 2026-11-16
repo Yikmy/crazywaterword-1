@@ -68,6 +68,18 @@ export async function surveyMuseum(client,protocol,{player=null,signal,parameter
 }
 const stateOf=(s,f)=>{const time=gameTimeBounds(f);return !stageValid(s)||time.now===null?'UNKNOWN':!s.expedition||s.expedition.endTime===0?'IDLE':s.expedition.endTime>time.latest?'EXPLORING':s.expedition.endTime<=time.earliest?'COMPLETE_UNSETTLED':'UNKNOWN';};
 function unlocked(f,c,s){const cfg=rows(c,'MuseumExpeditionStageCfg').filter(r=>r.stageId===s.stageId);if(cfg.length!==1||!Array.isArray(cfg[0].areaLevelReq))return null;const req=cfg[0].areaLevelReq;if(req.length===0)return true;if(req.length!==2||!f.exhibitionsReliable||quantity(req[0])===null||quantity(req[1])===null)return null;return f.exhibitions.some(e=>e.exhibitionId===req[0]&&e.level>=req[1]);}
+function requiredExploreHeroCount(config,stage){
+  const matches=rows(config,'MuseumExpeditionConditionCfg').filter(row=>row.conditionId===stage.expedition?.conditionId),condition=matches.length===1?matches[0]:null;
+  return condition&&quantity(condition.heroCount)!==null&&condition.heroCount>0?condition.heroCount:null;
+}
+function exploreSelection(f,config,display,busyHeroes){
+  const factorRows=rows(config,'MuseumExploreTimeFactorCfg'),factorKnown=quantity(f.playerLevel)!==null&&Array.isArray(factorRows)&&factorRows.length>0&&factorRows.every(row=>quantity(row.factor)!==null&&row.factor>0&&quantity(row.playerLevel)!==null)&&unique(factorRows,row=>row.factor);
+  return {
+    heroes:f.heroesReliable&&f.stagesReliable?f.heroes.map(heroId=>({heroId,busy:busyHeroes.has(heroId)})):null,
+    factors:factorKnown?factorRows.filter(row=>canUseExploreFactor(f,config,row.factor)).map(row=>row.factor):null,
+    stages:f.stagesReliable?display.map(stage=>({stageId:stage.stageId,status:stage.status,unlocked:stage.unlocked,requiredHeroCount:requiredExploreHeroCount(config,stage)})):null,
+  };
+}
 function canUseExploreFactor(f,config,factor){
   const factors=rows(config,'MuseumExploreTimeFactorCfg').filter(row=>row.factor===factor);
   return factors.length===1&&quantity(factors[0].playerLevel)!==null&&!(f.playerLevel<factors[0].playerLevel);
@@ -133,10 +145,10 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
       }
       if(open!==true){block('startExplore',open===false?'STAGE_LOCKED':'STAGE_UNLOCK_UNKNOWN',target);continue;}
       if(teamCount===null||busy===null){block('startExplore','TEAM_CAPACITY_UNKNOWN',target);continue;}if(busy.length>=teamCount){block('startExplore','TEAM_CAPACITY_EXHAUSTED',target);continue;}
-      const conditionRows=rows(config,'MuseumExpeditionConditionCfg').filter(r=>r.conditionId===s.expedition?.conditionId),condition=conditionRows.length===1?conditionRows[0]:null;
-      if(!condition||quantity(condition.heroCount)===null||condition.heroCount<=0){block('startExplore','HERO_COUNT_UNKNOWN',target);continue;}
+      const heroCount=requiredExploreHeroCount(config,s);
+      if(heroCount===null){block('startExplore','HERO_COUNT_UNKNOWN',target);continue;}
       const heroIds=parameters.heroIds;
-      if(!heroIds||heroIds.length!==condition.heroCount||!f.heroesReliable||heroIds.some(id=>!f.heroes.includes(id)||busyHeroes.has(id))){block('startExplore','HERO_SELECTION_MISSING_UNKNOWN_OR_BUSY',target);continue;}
+      if(!heroIds||heroIds.length!==heroCount||!f.heroesReliable||heroIds.some(id=>!f.heroes.includes(id)||busyHeroes.has(id))){block('startExplore','HERO_SELECTION_MISSING_UNKNOWN_OR_BUSY',target);continue;}
       const factor=parameters.factor??1;
       if(!canUseExploreFactor(f,config,factor)){block('startExplore','TIME_FACTOR_LOCKED_OR_UNKNOWN',target);continue;}
       const base=s.expedition?.cost;
@@ -220,7 +232,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
     }
   }
 
-  return {candidates,blocked,notes,stages:display,explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
+  return {candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
 }
 export function planMuseum(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
