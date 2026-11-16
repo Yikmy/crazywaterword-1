@@ -51,6 +51,30 @@ function infoOf(raw){
  if(!['score','claimedId','times','minScore','maxScore','pity'].every(k=>own(raw,k)&&uint(raw[k]))||raw.minScore>raw.maxScore||!own(raw,'cost')||!['type','id','num'].every(k=>own(raw.cost,k))||raw.cost.type!==0||raw.cost.id!==ticket||!positive(safeResourceQuantity(raw.cost.num))||!own(raw,'outerGot')||!dense(raw.outerGot)||raw.outerGot.some(n=>!Number.isInteger(n)||n<9||n>16)||new Set(raw.outerGot).size!==raw.outerGot.length)return null;
  return {score:raw.score,claimedId:raw.claimedId,times:raw.times,minScore:raw.minScore,maxScore:raw.maxScore,pity:raw.pity,cost:{type:0,id:ticket,num:safeResourceQuantity(raw.cost.num)},outerGot:[...raw.outerGot].sort((a,b)=>a-b)};
 }
+// Info observations retain their original source proof even when an unrelated
+// inventory read fails. They never replace the complete write-side authority.
+function liveContext(f){
+ const l=liveFacts.get(f),c=f?.context;
+ if(!l||!(f.stock instanceof Map)||l.digest!==digest(f)||l.client.connected!==true||!same(c,contextOf(l.client,l.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId)return null;
+ return l;
+}
+export function validateCompassInfoObservation(value){
+ const keys=['version','status','source','sourceAt','activityId','info','reason','readOnly','claimable','executable','settlement','autoResume'];
+ if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||value.version!==1||!['OBSERVED','UNKNOWN'].includes(value.status)||value.source!==sources.compass||
+   value.activityId!==null&&(typeof value.activityId!=='string'||exactId(value.activityId)!==value.activityId)||value.readOnly!==true||value.claimable!==null||value.executable!==false||value.settlement!=='UNKNOWN'||value.autoResume!==false)throw invalid('罗盘历史须为精确只读Info观察，不含执行或领奖资格');
+ const info=infoOf(value.info);
+ if(value.status==='OBSERVED'?(!value.activityId||!Number.isSafeInteger(value.sourceAt)||value.sourceAt<0||!info||!same(info,value.info)||value.reason!==null):
+   (value.sourceAt!==null||value.info!==null||value.reason!==(value.activityId?'INFO_SOURCE_UNKNOWN':'EXACT_ACTIVITY_REQUIRED')))throw invalid('罗盘Info历史缺少原来源、活动身份或完整字段');
+ return copy(value);
+}
+export function compassInfoObservation(f){
+ const activityId=typeof f?.parameters?.activityId==='string'&&exactId(f.parameters.activityId)===f.parameters.activityId?f.parameters.activityId:null;
+ const base={version:1,status:'UNKNOWN',source:sources.compass,sourceAt:null,activityId,info:null,reason:activityId?'INFO_SOURCE_UNKNOWN':'EXACT_ACTIVITY_REQUIRED',readOnly:true,claimable:null,executable:false,settlement:'UNKNOWN',autoResume:false};
+ if(!activityId||!liveContext(f))return validateCompassInfoObservation(base);
+ const fact=f.sourceFacts?.compass,info=infoOf(f.inputs?.compass);
+ if(fact?.provenance?.source!==sources.compass||!same(fact.value,f.inputs.compass)||!info||factsFreshnessPolicy(fact,{accountId:f.context.accountId,generation:f.context.generation,maxAgeMs:30000,scope}).status!=='FRESH')return validateCompassInfoObservation(base);
+ return validateCompassInfoObservation({...base,status:'OBSERVED',sourceAt:fact.provenance.sourceAt,info,reason:null});
+}
 const stockState=stock=>[...stock].filter(([,num])=>num>0).sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num}));
 function snapshot(inputs,context,compass=infoOf(inputs?.compass)){const stock=parseOperationInventory(inputs?.items,inputs?.resources);return compass&&stock.stockReliable?{context,compass,inventory:stockState(stock.stock)}:null;}
 const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,window:f.window,startClock:f.startClock,endClock:f.endClock});
@@ -61,7 +85,7 @@ export async function surveyCompassWheel(client,protocol,{config,player,paramete
  const raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),compass=infoOf(raw.compass),inventory=parseOperationInventory(raw.items,raw.resources),state=snapshot(inputs,context,compass),sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:k==='compass'?compass!==null:inventory.stockReliable})]));
  const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,state,...inventory,available:Object.keys(protocol??{}),window:same(window,parameters.activityId?windowOf(client,context,parameters.activityId):null)?window:null,startClock,endClock:clockOf(client,context),notes};liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
-function authority(f){const l=liveFacts.get(f),c=f?.context;if(!l||l.digest!==digest(f)||l.client.connected!==true||!same(c,contextOf(l.client,l.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||!f.stockReliable||!(f.stock instanceof Map)||!same(snapshot(f.inputs,c),f.state))return false;return Object.entries(sources).every(([k,s])=>f.sourceFacts?.[k]?.provenance?.source===s&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');}
+function authority(f){const c=f?.context;if(!liveContext(f)||!f.state||!f.stockReliable||!(f.stock instanceof Map)||!same(snapshot(f.inputs,c),f.state))return false;return Object.entries(sources).every(([k,s])=>f.sourceFacts?.[k]?.provenance?.source===s&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');}
 function period(f){const l=liveFacts.get(f),clock=l?clockOf(l.client,f.context):null,w=f?.window;if(!w||!clock||!f.startClock||!f.endClock||!same(w,windowOf(l.client,f.context,f.parameters.activityId))||f.startClock.earliestMs>f.endClock.earliestMs||f.endClock.earliestMs>clock.earliestMs)return false;return [f.startClock,f.endClock,clock].every(t=>t.earliestMs>=Math.max(w.openTime,w.subOpenTime)*1000&&t.latestMs<Math.min(w.closeTime,w.subCloseTime)*1000);}
 function definitions(config){
  const rows=config?.tables?.LinkageLSRCompassWheelCfg?.data,items=config?.tables?.ItemCfg?.data,gates=config?.tables?.ModuleOpenCfg?.data;
@@ -78,7 +102,7 @@ function candidate(f,{config,parameters=f?.parameters??{},moduleConfig=COMPASS_W
  const expectedState=beforeState?{context:copy(beforeState.context),window:copy(f.window),times:info.times+count,claimedId:info.claimedId,receiptRule:'EXACT_CONFIGURED_SPIN_REWARDS_AND_SCORE_WITH_COMPLETE_INVENTORY_NET',outerRule:'ORDERED_UNIQUE_OUTER_ADDITIONS; FULL_CYCLE_TRANSITION_UNVERIFIED',pityRule:'INDEPENDENT_SERVER_OBSERVATION_ONLY; NO_QUALIFICATION_OR_FORMULA',cost:copy(info.cost),minScore:info.minScore,maxScore:info.maxScore}:null;
  return {module:moduleId,actionId:moduleId+':'+identity,actionType:'SPIN',target,parameters:copy(f?.parameters??{}),identity,beforeState,expectedState,costs,costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'龙王罗盘 ×'+(count??'?'),...(blockedReason===null?{action:{request,response,body:buildCompassSpinBody(target.activityId,count)}}:{})};
 }
-export function viewCompassWheel(f,options={}){validateCompassWheelParameters(options.parameters??{});return {module:moduleId,activitySelections:activitySelections(f),window:copy(f?.window??null),compass:copy(f?.state?.compass??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅使用持有铜钱；完成抽取、累计领奖和到账分开。保底仅显示服务器原值，不预测；跨外环整轮结算未经证明时保持UNKNOWN，不自动重放。']};}
+export function viewCompassWheel(f,options={}){validateCompassWheelParameters(options.parameters??{});const compassObservation=compassInfoObservation(f);return {module:moduleId,activitySelections:activitySelections(f),window:copy(f?.window??null),compass:copy(compassObservation.info),compassObservation,candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅使用持有铜钱；完成抽取、累计领奖和到账分开。保底仅显示服务器原值，不预测；跨外环整轮结算未经证明时保持UNKNOWN，不自动重放。']};}
 export function planCompassWheel(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable?f.stock:null),...options}={}){validateCompassWheelParameters(parameters);if(!dense(selections)||selections.length>1||selections.some(s=>!text(s)))throw invalid('罗盘每批只允许一个精确动作');const row=same(parameters,f?.parameters)?viewCompassWheel(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId)):null;return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 // Fixed slot rewards stay held; full outer-cycle transition has no proven recovery rule.
 function receiptOf(result,before,defs){

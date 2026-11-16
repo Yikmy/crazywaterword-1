@@ -666,7 +666,8 @@ function gpRenderDomain(id,view){
   const activities=Array.isArray(view?.activitySelections)?view.activitySelections:null,activity=gpEl('select');activity.dataset.compassObservedActivity='true';const blank=gpEl('option','请选择本账号已观察罗盘活动');blank.value='';activity.appendChild(blank);
   for(const row of activities||[]){if(typeof row?.activityId!=='string'||!/^[1-9][0-9]{0,18}$/.test(row.activityId)||(activities.filter(other=>other?.activityId===row.activityId).length!==1))continue;const option=gpEl('option',row.activityId+' · 赛季 '+row.season+' · 窗口 '+row.subOpenTime+'–'+row.subCloseTime);option.value=row.activityId;activity.appendChild(option);}activity.value='';activity._blocked=activities===null;s.actionControls.push(activity);box.appendChild(activity);
   activity.onchange=()=>{if(activity.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view||!activities?.some(row=>row.activityId===activity.value))return;aid.value=activity.value;};box.appendChild(gpEl('p','活动列表复用原连接的活动身份和窗口解析；观察到活动不代表开放或抽奖资格。明确次数并准备后仍须重新调查和授权；手填入口保留。'));
-  table('罗盘独立观察',['活动ID','赛季','累计次数','累计积分','已领奖档','单抽道具','单抽数量','保底原值'],[[view?.window?.activityId,view?.window?.season,view?.compass?.times,view?.compass?.score,view?.compass?.claimedId,view?.compass?.cost?.id,view?.compass?.cost?.num,view?.compass?.pity]]);
+  const observed=view?.compassObservation;box.appendChild(gpEl('p','罗盘Info只读来源 '+(observed?.status??'UNKNOWN')+' · '+(observed?.source??'未知')+' · 原采集时间 '+(observed?.sourceAt??'未知')+(observed?.reason?' · '+observed.reason:'')+'；库存或配置缺失不抹去可靠Info，记录不证明当前可抽、可领或到账。'));if(observed)gpDetails(box,'原Info独立观察',observed);
+  table('罗盘独立观察',['活动ID','赛季','累计次数','累计积分','已领奖档','单抽道具','单抽数量','保底原值'],[[view?.compassObservation?.activityId??view?.window?.activityId,view?.window?.season,view?.compass?.times,view?.compass?.score,view?.compass?.claimedId,view?.compass?.cost?.id,view?.compass?.cost?.num,view?.compass?.pity]]);
  }else if(id==='trade'){
   box.appendChild(gpEl('p','当前港口观察 · '+show(view?.status)+' · '+show(view?.reason)+'；只读预览不代表可售或到账。'));
   const hours=view?.tradingHours;box.appendChild(gpEl('p','每日贸易时段：'+show(hours?.status)+' · '+(hours?.range?hours.range.startHour+'–'+hours.range.endHour+' 时':'未知')+' · '+show(hours?.reason)+'；账号时区未精确确认，须所有受支持时区均处于开放时段。'));
@@ -1714,7 +1715,8 @@ function wfHistoryRender(data) {
   for(const row of data.surveys||[]){
     const audit=row.mailbox,naval=row.navalObservation,cooldown=row.recruitCooldown,trade=row.tradeObservation;
     box.appendChild(gpEl('p','只读调查节点 '+row.nodeId+(row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · '+(row.module||'未知模块')+' · '+(row.timestamp||'时间未知')));
-    if(row.orderProgress){
+    if(row.compassObservation){const observed=row.compassObservation,info=observed.info;box.appendChild(gpEl('p','罗盘Info历史观察 '+observed.status+' · 活动 '+(observed.activityId??'未知')+' · 次数 '+(info?.times??'未知')+' · 积分 '+(info?.score??'未知')+' · 已领记录 '+(info?.claimedId??'未知')+'；保底仅原值，领奖资格与到账未知。读取历史不续期、授权或解除UNKNOWN。'));gpDetails(box,'原罗盘Info只读来源',observed);}
+    else if(row.orderProgress){
       const count=key=>{const value=row.orderProgress[key];return value?.status==='OBSERVED'&&Number.isInteger(value.value)&&value.value>=0&&value.value<=2147483647?String(value.value):'未知';};
       box.appendChild(gpEl('p','每日订单历史观察：完成计数 '+count('completed')+' · 已领奖阈值 '+count('rewardedThrough')+'；周期与重置时间未知。仅当次观察，不证明当前可领、到账或免费刷新资格，不能恢复执行。'));
     }
