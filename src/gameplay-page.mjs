@@ -1180,6 +1180,13 @@ function gpRenderFleetOperations(view) {
  const live=()=>gpSafe(scope,revision)&&gpGet('fleet')===s&&s.data?.view===view&&Array.from(box.children).includes(section);
  const editable=()=>live()&&gpReady('fleet')&&!s.pending&&!s.configDirty&&!s.data?.status?.blocked&&!s.data?.status?.running&&!snapshot?.busy&&snapshot?.connected;
  const control=(input,allowed=()=>true)=>{input._fleetOperationLive=()=>editable()&&allowed();input.disabled=!input._fleetOperationLive();s.fleetOperationControls.push(input);return input;};
+ let originalParameters=null;try{originalParameters=JSON.parse(source);}catch{}
+ const explicitCenter=originalParameters&&Object.hasOwn(originalParameters,'screenCenter'),center=explicitCenter?originalParameters.screenCenter:null;
+ const centerInputs={};for(const key of ['x','y']){const input=control(gpEl('input'));input.inputMode='numeric';input.placeholder='留空使用原默认0';input.value=center&&Number.isSafeInteger(center[key])?String(center[key]):'';input.dataset.fleetScreenCenter=key;centerInputs[key]=input;const label=gpEl('label','观察中心 '+key.toUpperCase()+' ');label.appendChild(input);section.appendChild(label);}
+ const centerUnchanged=()=>['x','y'].every(key=>centerInputs[key].value===(center&&Number.isSafeInteger(center[key])?String(center[key]):''));
+ const prepareCenter=control(gpEl('button','准备观察中心参数'));prepareCenter.type='button';prepareCenter.dataset.fleetScreenCenterPrepare='true';section.appendChild(prepareCenter);
+ prepareCenter.onclick=()=>{if(!prepareCenter._fleetOperationLive())return;try{const values=['x','y'].map(key=>centerInputs[key].value),parameters={};if(values.some(value=>value!=='')){if(values.some(value=>! /^-?(0|[1-9][0-9]*)$/.test(value)||!Number.isSafeInteger(Number(value))||Math.abs(Number(value))>2147483647))throw Error('请同时填写明确的X、Y整数坐标，或同时留空使用原默认视野。');parameters.screenCenter={x:Number(values[0]),y:Number(values[1])};}$('gp-fleet-parameters').value=gpJson(parameters);gpInvalidate('fleet',true);gpRenderCandidates('fleet');gpRenderFleetOperations(view);$('gp-fleet-hint').textContent='观察中心已准备；请重新调查当前视野，再选择舰队和城市。';}catch(error){$('gp-fleet-hint').textContent=error.message;}};
+ const world=view?.worldScope;section.appendChild(gpEl('p','本次城市视野 '+(world?.status??'UNKNOWN')+' · 中心 '+gpJson(world?.query?.screenCenter??null)+' · 来源时间 '+String(world?.sourceAt??'UNKNOWN')+'；仅覆盖本次响应，不能推断全图。'));
  const fields=view?.resourceFields;
  gpAllianceTable(section,'本账号已占资源田',['网格','城市','类型原值'],(fields?.fields||[]).map(row=>[row.gridIdx,row.cityId,row.type]));
  section.appendChild(gpEl('p','资源田上限：'+(fields?.maxNum??'未知')+'。放弃只移除明确已占网格，不领取产出；须重新探测、预览并授权。'));
@@ -1198,7 +1205,7 @@ function gpRenderFleetOperations(view) {
   return [row.target?.buildingId,labels[row.actionType],row.target?.cityId??'—',gpBlocked(row)?'尚未形成可执行成本':operationCosts(row.costs),row.costSource??'未知',gpBlocked(row)?row.reason||row.blockedReason||'UNKNOWN':'可预览',button];
  }));
  section.appendChild(gpEl('p','选择候选只加载当前明确参数，随后预览成本并单次授权。维修阈值、汽油保留线和计划上限使用本账号已有配置；预期收益不增加预算。'));
- const moveReady=()=>s.data?.config?.enabled===true&&s.data?.config?.move===true&&view?.citiesReliable===true&&view?.formationReliability?.fleets===true&&s.revision===edit&&$('gp-fleet-parameters').value===source;
+ const moveReady=()=>!s.dirty&&centerUnchanged()&&s.data?.config?.enabled===true&&s.data?.config?.move===true&&view?.citiesReliable===true&&view?.formationReliability?.fleets===true&&s.revision===edit&&$('gp-fleet-parameters').value===source;
  const fleet=control(gpEl('select'),moveReady),city=control(gpEl('select'),moveReady);fleet.dataset.fleetMovement='building';city.dataset.fleetMovement='city';
  const option=(select,id,label)=>{const row=gpEl('option',label);row.value=id;select.appendChild(row);};option(fleet,'','请选择精确舰队');option(city,'','请选择当前视野城市');
  for(const row of view?.fleets||[])option(fleet,row.buildingId,row.buildingId+' · 状态 '+(row.state??'未知'));
@@ -1210,7 +1217,7 @@ function gpRenderFleetOperations(view) {
   if(!prepare._fleetOperationLive())return;
   const selectedFleet=(view?.fleets||[]).find(row=>row.buildingId===fleet.value),selectedCity=(view?.cities||[]).find(row=>String(row.id)===city.value);
   if(!selectedFleet||!selectedCity||!Number.isSafeInteger(selectedCity.id)||selectedCity.id<=0||selectedCity.id>2147483647){$('gp-fleet-hint').textContent='请选择本账号本次视野内的精确舰队和城市。';return;}
-  $('gp-fleet-parameters').value=gpJson({buildingId:selectedFleet.buildingId,cityId:selectedCity.id});gpInvalidate('fleet',true);gpRenderCandidates('fleet');gpRenderFleetOperations(view);$('gp-fleet-hint').textContent='移动目标参数已准备；请重新探测，核对具体成本和移动候选，再单次授权。';
+  $('gp-fleet-parameters').value=gpJson({buildingId:selectedFleet.buildingId,cityId:selectedCity.id,...(explicitCenter?{screenCenter:{x:center.x,y:center.y}}:{})});gpInvalidate('fleet',true);gpRenderCandidates('fleet');gpRenderFleetOperations(view);$('gp-fleet-hint').textContent='移动目标参数已准备；请重新探测，核对具体成本和移动候选，再单次授权。';
  };
  if(!moveReady())section.appendChild(gpEl('p','移动目标编辑需本账号启用移动，并具备可靠舰队和当前视野城市；旧缓存缺证不推断为可用。'));
  for(const row of view?.blocked||[])if(['speedUpFleet','speedUpRepair','autoFight'].includes(row.actionType))section.appendChild(gpEl('p',row.actionType+' · '+row.code+' · '+row.reason));
@@ -2193,6 +2200,9 @@ function wfDomainObservation(card,module,view){
   box.appendChild(gpEl('h4','原生产Function配方与工厂观察'));gpAllianceTable(box,'工厂与队列',['工厂ID','类型','等级','状态','空闲位','本次队列'],(view.factories||[]).map(row=>[row.buildingId,row.type,row.level,row.reliable===true?row.status:'UNKNOWN',row.reliable===true?row.freeSlots:null,row.reliable===true?gpJson(row.queue):'UNKNOWN']));
   gpAllianceTable(box,'本厂原配方',['工厂ID','产品ID','解锁等级','原单份成本','原始秒数','委任调整秒数','范围'],(view.factories||[]).flatMap(factory=>(factory.recipes||[]).map(recipe=>[factory.buildingId,recipe.productId,recipe.unlockLevel,operationCosts(recipe.costs),recipe.produceTime,recipe.appointmentAdjustedSeconds,recipe.timingScope])));
   gpAllianceTable(box,'本次完整库存来源',['物品','持有数量'],view.stockReliable===true?(view.stock||[]).map(row=>[row.id,row.num]):[]);box.appendChild(gpEl('p','库存来源 '+(view.stockReliable===true?'已观察':'UNKNOWN')+'；配方和时间为原只读投影，不代表完成结算。材料包组合继续使用原准备入口及固定materialSource，不能在此删除来源约束。'));
+ }else if(module==='fleet'){
+  const world=view.worldScope;box.appendChild(gpEl('h4','原舰队Function当前视野观察'));box.appendChild(gpEl('p','城市视野 '+(world?.status??'UNKNOWN')+' · 中心 '+gpJson(world?.query?.screenCenter??null)+' · 来源时间 '+String(world?.sourceAt??'UNKNOWN')+'；仅覆盖本次WorldInfo响应，移动不代表攻击或占领。'));
+  gpAllianceTable(box,'本次视野城市',['cityId','当前联盟索引'],(view.cities||[]).map(row=>[row.id,row.guildIdx]));gpAllianceTable(box,'原舰队来源',['buildingId','状态'],(view.fleets||[]).map(row=>[row.buildingId,row.state]));box.appendChild(gpEl('p','移动使用相同buildingId、cityId及显式screenCenter；参数变更后重新调查、预览和单次授权。货船与资源田保持原独立目标合同。'));
  }else if(module==='museum'){
   const selection=view.explorationSelection;box.appendChild(gpEl('h4','原Museum目标与占用观察'));gpAllianceTable(box,'探险关卡',['stageId','观察状态','解锁','所需英雄人数'],(selection?.stages||[]).map(row=>[row.stageId,row.status,row.unlocked===true?'已解锁':row.unlocked===false?'未解锁':'UNKNOWN',row.requiredHeroCount]));gpAllianceTable(box,'探险英雄来源',['heroId','占用'],(selection?.heroes||[]).map(row=>[row.heroId,row.busy===true?'已占用':row.busy===false?'本次未占用':'UNKNOWN']));
   box.appendChild(gpEl('p','明确已解锁倍率 '+(Array.isArray(selection?.factors)?selection.factors.join('、'):'UNKNOWN')+' · 队伍上限 '+String(view.teamCount??'UNKNOWN')+' · 占用 '+String(view.occupiedTeams??'UNKNOWN')));

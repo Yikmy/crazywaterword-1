@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { assertPaymentAllowed } from './actions.mjs';
 import { parseFormation, verifyFormation, validateFormationParameters } from './formation.mjs';
 import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, fleetResourceFieldAction, surveyFleetResourceFields, fleetResourceFieldObservation, parseFleetResourceFieldState, verifyFleetResourceFieldOutcome, verifyFleet } from './fleet.mjs';
-import { fleetFacts, stable } from './naval-facts.mjs';
+import { fleetFacts, stable, worldObservationQuery } from './naval-facts.mjs';
 import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFreeGoldSources, parseFreeGoldState, verifyFreeGold, verifyFreeGoldOutcome } from './free-gold.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -175,7 +175,9 @@ function fleetLifecycleContract(row) {
   if(!repair&&(!Number.isInteger(cityId)||cityId<=0||cityId>2147483647||row.beforeState.city?.id!==cityId||row.beforeState.petrol!==(paid?row.costs[0].num:0)))return null;
   const target=repair?{buildingId}:{buildingId,cityId};
   const expectedState=repair?{maxDura:row.beforeState.fleet.maxDura,repairingOrCompleted:true}:{cityId,scope:'MOVEMENT_ONLY'};
-  if(!same(row.target,target)||!same(row.parameters,target)||!same(row.expectedState,expectedState)||row.actionId!=='fleet:'+row.actionType+':'+Object.values(target).map(value=>encodeURIComponent(String(value))).join(':'))return null;
+  let parameters=target;
+  if(!repair&&own(row.parameters,'screenCenter')){try{parameters={...target,...worldObservationQuery(row.parameters.screenCenter)};}catch{return null;}}
+  if(!same(row.target,target)||stable(row.parameters)!==stable(parameters)||!same(row.expectedState,expectedState)||row.actionId!=='fleet:'+row.actionType+':'+Object.values(target).map(value=>encodeURIComponent(String(value))).join(':'))return null;
   return {buildingId,target,expectedState,action:fleetLifecycleAction(row.actionType,target)};
 }
 function fleetLifecycleReceiptProblem(row,contract,originalScope) {

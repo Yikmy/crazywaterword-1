@@ -5,19 +5,20 @@ import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { loadMapAsset } from './world.mjs';
 import { parseFormation, validateFormationParameters, planFormation, catalogFrom } from './formation.mjs';
-import { strictParameters, invalid, readNavalFact, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
+import { worldObservationQuery, strictParameters, invalid, readNavalFact, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
 import { readGameTime } from './state-facts.mjs';
 import { readResourceFieldRevision } from './client.mjs';
 import { toSnapshotJson } from './game.mjs';
 
 export const FLEET_DEFAULT_CONFIG = Object.freeze({ enabled: false, repair: false, repairBelowDurabilityRatio: 0.8, repairMode: 'IMMEDIATE', maximumRepairPetrolPerPlan: 0, repairPriorityBuildingIds: [], stopRepair: false, move: false, cargoFill: false, cargoClaim: false, giveUpResourceField: false, formation: false, autoFight: false, speedUp: false, minimumDurabilityRatio: 0.8, petrolReserve: 0, scenarioId: 1 });
 function parametersOf(parameters = {}) {
-  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx']);
+  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx', 'screenCenter']);
   if(Object.hasOwn(parameters,'resourceFieldGridIdx')){
     const keys=Reflect.ownKeys(parameters),d=Object.getOwnPropertyDescriptor(parameters,'resourceFieldGridIdx');
     if(keys.length!==1||!d?.enumerable||!Object.hasOwn(d,'value')||!Number.isInteger(d.value)||d.value<0||d.value>2147483647)throw invalid('放弃资源田须仅声明明确的非负int32 resourceFieldGridIdx');
     return {resourceFieldGridIdx:d.value};
   }
+  if (parameters.screenCenter !== undefined) worldObservationQuery(parameters.screenCenter);
   if (parameters.buildingId !== undefined && !nonempty(parameters.buildingId)) throw invalid('舰队 ID 无效');
   for (const key of ['cityId', 'shipIndex', 'cargoIndex']) if (parameters[key] !== undefined && (!Number.isSafeInteger(parameters[key]) || parameters[key] <= 0 || parameters[key] > 2147483647)) throw invalid('目标编号必须是明确的正 int32');
   const formation = Object.fromEntries(['presetId', 'heroIds', 'heroPositions'].filter(key => Object.hasOwn(parameters, key)).map(key => [key, parameters[key]]));
@@ -212,7 +213,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);
   if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return surveyResourceFields(client,protocol,{config,player,signal,parameters});
   const fieldObservation=opts.giveUpResourceField?await surveyResourceFields(client,protocol,{config,player,signal}):null;
-  const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'],sourceAt={},worldQuery={screenCenter:{x:0,y:0}};
+  const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'],sourceAt={},worldQuery=worldObservationQuery(parameters.screenCenter);
   const values = await Promise.all(names.map(async request => { const value=await readNavalFact(client,protocol,request,request==='WorldInfoRequest'?worldQuery:{},{signal});if(value.available)sourceAt[request]=Date.now();return value; }));
   const sources = Object.fromEntries(names.map((name, index) => [name, values[index]]));
   let formationFacts = null;
@@ -332,7 +333,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       if (!moveReason && petrol === null) moveReason = 'MOVE_COST_UNKNOWN';
       if (!moveReason && petrol > 0 && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < petrol + opts.petrolReserve)) moveReason = 'INSUFFICIENT_PETROL';
       const moveAction=fleetLifecycleAction('fleetMove',{buildingId:fleet.buildingId,cityId:parameters.cityId});
-      candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, moveAction.request, moveAction.response, moveAction.body, { buildingId: fleet.buildingId, cityId: parameters.cityId }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
+      candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, moveAction.request, moveAction.response, moveAction.body, { buildingId: fleet.buildingId, cityId: parameters.cityId, ...(parameters.screenCenter===undefined?{}:worldObservationQuery(parameters.screenCenter)) }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     }
   }
   for (const ship of Array.isArray(facts.ships)?facts.ships:[]) {
@@ -359,7 +360,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
   }
   return candidates;
 }
-export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, worldScope:{source:'WorldInfoResponse.cities',completeness:'CURRENT_RESPONSE_ONLY',query:facts.worldQuery?structuredClone(facts.worldQuery):null,sourceAt:facts.sourceAt?.WorldInfoRequest??null,status:facts.citiesReliable===true?'OBSERVED':'UNKNOWN'}, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
   { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },

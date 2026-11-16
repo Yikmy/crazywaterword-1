@@ -2,7 +2,7 @@
 import { ResourceLedger } from './resource-ledger.mjs';
 import { createHash } from 'node:crypto';
 import { toSnapshotJson } from './game.mjs';
-import { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
+import { worldObservationQuery, quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
 export { quantity, factQuantity, rowsOf, nonempty, stable, invalid, strictParameters, moduleConfiguration, stringIds, configuredCost, readNavalFact, stockFacts, fleetFacts, selectedActions } from './naval-facts.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 
@@ -48,14 +48,14 @@ function navalParameters(parameters = {}) {
   if (parameters.minimumPower !== undefined && parameters.maximumPower !== undefined && BigInt(parameters.minimumPower) > BigInt(parameters.maximumPower)) throw invalid('战力范围无效');
   if (parameters.excludeGuildIds !== undefined && (!Array.isArray(parameters.excludeGuildIds) || parameters.excludeGuildIds.length > 100 || parameters.excludeGuildIds.some(value => exactInt64(value) === null) || new Set(parameters.excludeGuildIds.map(String)).size !== parameters.excludeGuildIds.length)) throw invalid('排除联盟ID列表无效');
   if (parameters.cityIds !== undefined && (!Array.isArray(parameters.cityIds) || parameters.cityIds.length > 100 || parameters.cityIds.some(id => !Number.isSafeInteger(id) || id <= 0 || id > 2147483647) || new Set(parameters.cityIds).size !== parameters.cityIds.length)) throw invalid('城市筛选必须为明确int32列表');
-  if (parameters.screenCenter !== undefined) { strictParameters(parameters.screenCenter, ['x','y']); if (['x','y'].some(key => !Number.isSafeInteger(parameters.screenCenter[key]) || Math.abs(parameters.screenCenter[key]) > 2147483647)) throw invalid('观察中心必须为明确int32坐标'); }
+  if (parameters.screenCenter !== undefined) worldObservationQuery(parameters.screenCenter);
   return parameters;
 }
 export async function surveyNaval(client, protocol, { signal, parameters = {}, moduleConfig = {}, player = null } = {}) {
   navalParameters(parameters); moduleConfig = validateNavalConfig(moduleConfig);
   const names = ['WorldInfoRequest', 'MyFleetsRequest', 'WorldBossInfoRequest', 'LimitedBossOpenRequest', 'AllItemRequest', 'AllResourceRequest'];
   let worldObservedTime = null;
-  const values = await Promise.all(names.map(async request => { const value = await readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? { screenCenter: parameters.screenCenter ?? { x: 0, y: 0 } } : {}, { signal }); if (request === 'WorldInfoRequest') worldObservedTime = readGameTime(client); return value; }));
+  const values = await Promise.all(names.map(async request => { const value = await readNavalFact(client, protocol, request, request === 'WorldInfoRequest' ? worldObservationQuery(parameters.screenCenter) : {}, { signal }); if (request === 'WorldInfoRequest') worldObservedTime = readGameTime(client); return value; }));
   const sources = Object.fromEntries(names.map((name, index) => [name, values[index]]));
   const world = sources.WorldInfoRequest, rows = world.body?.fleets;
   const worldReliable = world.available && Array.isArray(rows);

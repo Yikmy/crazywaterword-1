@@ -13,6 +13,14 @@ export function strictParameters(value = {}, allowed = []) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some(key => !allowed.includes(key))) throw invalid('请求包含不支持的业务参数');
   return value;
 }
+// One query contract for the existing WorldInfo consumers. This is a viewport,
+// never an assertion of whole-map completeness or authority to dispatch.
+export function worldObservationQuery(screenCenter) {
+ if(screenCenter===undefined)return {screenCenter:{x:0,y:0}};
+ strictParameters(screenCenter,['x','y']);
+ if(Reflect.ownKeys(screenCenter).length!==2||!['x','y'].every(key=>{const d=Object.getOwnPropertyDescriptor(screenCenter,key);return d?.enumerable&&Object.hasOwn(d,'value')&&Number.isSafeInteger(d.value)&&Math.abs(d.value)<=2147483647;}))throw invalid('观察中心必须为明确自有int32坐标');
+ return {screenCenter:{x:screenCenter.x,y:screenCenter.y}};
+}
 export function moduleConfiguration(value, defaults) {
   strictParameters(value, Object.keys(defaults));
   try { return validateModuleConfig(value, defaults); } catch (error) { throw invalid(error.message); }
