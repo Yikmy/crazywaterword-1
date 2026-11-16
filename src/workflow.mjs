@@ -6,12 +6,12 @@ import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { validateTaskRewardsParameters } from './task-rewards.mjs';
 import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
-import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent } from './client.mjs';
+import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent } from './client.mjs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { toSnapshotJson } from './game.mjs';
 import { redact } from './security.mjs';
-import { normalizeBudgetClaims } from './resource-ledger.mjs';
+import { normalizeBudgetClaims, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { validateFunctionParameters } from './function-contracts.mjs';
 import { actionNeedsReconciliation } from './execution-history.mjs';
 import { summarizeNavalObservation, validateNavalObservationSummary } from './naval-rules.mjs';
@@ -109,8 +109,8 @@ export function workflowScheduledAt(schedule,startedAt){
 }
 const taskProgressRule=rule=>['MAIN_TASK_PROGRESS','BRANCH_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'].includes(rule?.kind);
 const exactTaskProgress=value=>typeof value==='string'&&/^(0|[1-9][0-9]{0,18})$/.test(value)&&BigInt(value)<(1n<<63n);
-function validateWorkflowEventRule(rule){if(taskProgressRule(rule)){exact(rule,['kind','taskId','progress'],'主支线及成就任务进度事件');if(!Number.isInteger(rule.taskId)||rule.taskId<1||rule.taskId>2147483647||!exactTaskProgress(rule.progress))throw fail('任务事件须明确正int32任务ID及非负int64十进制字符串进度');return;}if(rule?.kind==='DAILY_TASK_PROGRESS'){exact(rule,['kind','taskId','progress'],'每日任务进度事件');if(!Number.isInteger(rule.taskId)||rule.taskId<1||rule.taskId>2147483647||!Number.isInteger(rule.progress)||rule.progress<0||rule.progress>2147483647)throw fail('任务进度事件须明确正int32任务ID及非负int32进度');return;}if(rule?.kind==='DAILY_TASK_RESET'){exact(rule,['kind'],'每日任务重置事件');return;}exact(rule,['kind','level'],'业务事件');if(!['VIP_LEVEL_CHANGED','PLAYER_LEVEL_CHANGED'].includes(rule.kind)||!Number.isInteger(rule.level)||rule.level<0||rule.level>2147483647)throw fail('事件仅支持明确VIP/角色等级变化、每日任务重置或进度推送；不接受传输或默认字段');}
-const workflowEventSource=rule=>taskProgressRule(rule)?(client,options)=>readTaskProgressEvent(client,{...options,kind:rule.kind==='MAIN_TASK_PROGRESS'?'main':rule.kind==='ACHIEVEMENT_TASK_PROGRESS'?'achievement':'branch'}):rule.kind==='DAILY_TASK_PROGRESS'?readDailyTaskProgressEvent:rule.kind==='DAILY_TASK_RESET'?readDailyResetEvent:rule.kind==='PLAYER_LEVEL_CHANGED'?readPlayerLevelEvent:readVipLevelEvent;
+function validateWorkflowEventRule(rule){if(rule?.kind==='RESOURCE_AMOUNT_CHANGED'){exact(rule,['kind','resource','amount'],'资源变化事件');if(!Object.values(RESOURCE_NAMES).includes(rule.resource)||!exactTaskProgress(rule.amount))throw fail('资源事件须明确已有资源名及非负int64十进制阈值');return;}if(taskProgressRule(rule)){exact(rule,['kind','taskId','progress'],'主支线及成就任务进度事件');if(!Number.isInteger(rule.taskId)||rule.taskId<1||rule.taskId>2147483647||!exactTaskProgress(rule.progress))throw fail('任务事件须明确正int32任务ID及非负int64十进制字符串进度');return;}if(rule?.kind==='DAILY_TASK_PROGRESS'){exact(rule,['kind','taskId','progress'],'每日任务进度事件');if(!Number.isInteger(rule.taskId)||rule.taskId<1||rule.taskId>2147483647||!Number.isInteger(rule.progress)||rule.progress<0||rule.progress>2147483647)throw fail('任务进度事件须明确正int32任务ID及非负int32进度');return;}if(rule?.kind==='DAILY_TASK_RESET'){exact(rule,['kind'],'每日任务重置事件');return;}exact(rule,['kind','level'],'业务事件');if(!['VIP_LEVEL_CHANGED','PLAYER_LEVEL_CHANGED'].includes(rule.kind)||!Number.isInteger(rule.level)||rule.level<0||rule.level>2147483647)throw fail('事件仅支持明确VIP/角色等级变化、每日任务重置或进度推送；不接受传输或默认字段');}
+const workflowEventSource=rule=>rule.kind==='RESOURCE_AMOUNT_CHANGED'?readResourceAmountEvent:taskProgressRule(rule)?(client,options)=>readTaskProgressEvent(client,{...options,kind:rule.kind==='MAIN_TASK_PROGRESS'?'main':rule.kind==='ACHIEVEMENT_TASK_PROGRESS'?'achievement':'branch'}):rule.kind==='DAILY_TASK_PROGRESS'?readDailyTaskProgressEvent:rule.kind==='DAILY_TASK_RESET'?readDailyResetEvent:rule.kind==='PLAYER_LEVEL_CHANGED'?readPlayerLevelEvent:readVipLevelEvent;
 function validateEventCursor(value){exact(value,['streamId','cursor','playerId','worldId'],'业务事件基线');if(typeof value.streamId!=='string'||!/^[a-f0-9-]{36}$/.test(value.streamId)||!Number.isSafeInteger(value.cursor)||value.cursor<0||['playerId','worldId'].some(key=>typeof value[key]!=='string'||!value[key]||value[key].trim()!==value[key]))throw fail('业务事件游标或角色世界身份无效');}
 export function workflowEventCursor(session,rule){
  validateWorkflowEventRule(rule);const fact=workflowEventSource(rule)(session.client),identity=toSnapshotJson(session.player??{});
@@ -121,28 +121,29 @@ export function workflowLevelEvent(session,baseline,rule,cursor){
  validateWorkflowEventRule(rule);validateEventCursor(baseline);const current=workflowEventCursor(session,rule);
  if(current.streamId!==baseline.streamId||current.playerId!==baseline.playerId||current.worldId!==baseline.worldId||current.cursor<baseline.cursor)throw fail('事件连接流或游标基线已失效','WORKFLOW_EVENT_UNKNOWN');
  if(current.cursor===baseline.cursor)return null;
- if(rule.kind==='ACHIEVEMENT_TASK_PROGRESS'&&cursor===undefined){
-  if(current.cursor-baseline.cursor>200)throw fail('成就任务事件已超出可信有界游标','WORKFLOW_EVENT_UNKNOWN');
+ if(['ACHIEVEMENT_TASK_PROGRESS','RESOURCE_AMOUNT_CHANGED'].includes(rule.kind)&&cursor===undefined){
+  if(current.cursor-baseline.cursor>200)throw fail('业务事件已超出可信有界游标','WORKFLOW_EVENT_UNKNOWN');
   for(let next=baseline.cursor+1;next<=current.cursor;next++){
-   const source=readTaskProgressEvent(session.client,{kind:'achievement',cursor:next});
-   if(!source.reliable)throw fail('具体成就事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');
-   const event=source.event;if(event?.taskId===rule.taskId&&exactTaskProgress(event.progress)&&BigInt(event.progress)>=BigInt(rule.progress))return copy(event);
+   const source=workflowEventSource(rule)(session.client,{cursor:next});
+   if(!source.reliable)throw fail('具体业务事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');
+   const event=source.event;if(rule.kind==='RESOURCE_AMOUNT_CHANGED'?resourceEventMatches(event,rule):event?.taskId===rule.taskId&&exactTaskProgress(event.progress)&&BigInt(event.progress)>=BigInt(rule.progress))return copy(event);
   }
   return null;
  }
  const source=workflowEventSource(rule)(session.client,cursor===undefined?{}:{cursor});if(!source.reliable)throw fail('具体业务事件已不在可信有界游标内','WORKFLOW_EVENT_UNKNOWN');const event=source.event;
  const levelKey=rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel';
- return event&&event.cursor>baseline.cursor&&(taskProgressRule(rule)?event.taskId===rule.taskId&&exactTaskProgress(event.progress)&&BigInt(event.progress)>=BigInt(rule.progress):rule.kind==='DAILY_TASK_PROGRESS'?event.taskId===rule.taskId&&event.progress>=rule.progress:rule.kind==='DAILY_TASK_RESET'||event.previousLevel!==event[levelKey]&&event[levelKey]===rule.level)?copy(event):null;
+ return event&&event.cursor>baseline.cursor&&(rule.kind==='RESOURCE_AMOUNT_CHANGED'?resourceEventMatches(event,rule):taskProgressRule(rule)?event.taskId===rule.taskId&&exactTaskProgress(event.progress)&&BigInt(event.progress)>=BigInt(rule.progress):rule.kind==='DAILY_TASK_PROGRESS'?event.taskId===rule.taskId&&event.progress>=rule.progress:rule.kind==='DAILY_TASK_RESET'||event.previousLevel!==event[levelKey]&&event[levelKey]===rule.level)?copy(event):null;
 }
+function resourceEventMatches(event,rule){return event&&Number.isInteger(event.res)&&Object.hasOwn(RESOURCE_NAMES,event.res)&&RESOURCE_NAMES[event.res]===rule.resource&&exactTaskProgress(event.previousAmount)&&exactTaskProgress(event.amount)&&event.previousAmount!==event.amount&&BigInt(event.amount)>=BigInt(rule.amount);}
 function validateEventTriggerHistory(run){
  const rule=run.runPolicy?.eventTrigger,trigger=run.eventTrigger;if(rule===undefined){if(trigger!==undefined)throw fail('事件历史缺少原规则');return;}validateWorkflowEventRule(rule);
  exact(trigger,['state','baseline','armedAt','firedAt','observedAt','event'],'业务事件历史');validateEventCursor(trigger.baseline);if(!['PENDING','WAITING','FIRED'].includes(trigger.state))throw fail('业务事件状态无效');
  const stamp=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString()===value,start=Date.parse(run.startedAt),end=Date.parse(run.expiresAt);
  if(!Number.isFinite(start)||!Number.isFinite(end)||trigger.state==='PENDING'&&(trigger.armedAt!==null||trigger.event!==null||trigger.firedAt!==null||trigger.observedAt!==null)||trigger.state!=='PENDING'&&(!stamp(trigger.armedAt)||Date.parse(trigger.armedAt)<start)||trigger.state==='WAITING'&&(trigger.event!==null||trigger.observedAt!==null||trigger.firedAt!==null)||trigger.state!=='FIRED'&&((run.actionPlans??0)!==0||(run.trace?.length??0)!==0))throw fail('业务事件时间或写前状态不一致');
  if(trigger.state==='FIRED'){
-  const event=trigger.event,daily=rule.kind==='DAILY_TASK_RESET',taskProgress=taskProgressRule(rule),progress=rule.kind==='DAILY_TASK_PROGRESS',levelKey=rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel';
-  exact(event,['eventId','streamId','cursor','seq',...(taskProgress?['taskId','progress',...(rule.kind==='ACHIEVEMENT_TASK_PROGRESS'?['targetProgress','rewardClaimed']:rule.kind==='MAIN_TASK_PROGRESS'?['rewardClaimed']:[])]:progress?['taskId','progress','targetProgress','rewardClaimed']:daily?['dailyResetTime']:['previousLevel',levelKey]),'receivedAt'],'业务事件证据');
-  const invalidValue=taskProgress?event.taskId!==rule.taskId||!exactTaskProgress(event.progress)||BigInt(event.progress)<BigInt(rule.progress)||['MAIN_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'].includes(rule.kind)&&typeof event.rewardClaimed!=='boolean'||rule.kind==='ACHIEVEMENT_TASK_PROGRESS'&&(!exactTaskProgress(event.targetProgress)||event.targetProgress==='0'):progress?event.taskId!==rule.taskId||!Number.isInteger(event.progress)||event.progress<rule.progress||event.progress>2147483647||!Number.isInteger(event.targetProgress)||event.targetProgress<0||event.targetProgress>2147483647||typeof event.rewardClaimed!=='boolean':daily? !Number.isInteger(event.dailyResetTime)||event.dailyResetTime<1||event.dailyResetTime>2147483647 : !Number.isInteger(event.previousLevel)||event.previousLevel<0||event.previousLevel>2147483647||event[levelKey]!==rule.level||event.previousLevel===event[levelKey];
+  const event=trigger.event,resource=rule.kind==='RESOURCE_AMOUNT_CHANGED',daily=rule.kind==='DAILY_TASK_RESET',taskProgress=taskProgressRule(rule),progress=rule.kind==='DAILY_TASK_PROGRESS',levelKey=rule.kind==='PLAYER_LEVEL_CHANGED'?'playerLevel':'vipLevel';
+  exact(event,['eventId','streamId','cursor','seq',...(resource?['res','previousAmount','amount']:taskProgress?['taskId','progress',...(rule.kind==='ACHIEVEMENT_TASK_PROGRESS'?['targetProgress','rewardClaimed']:rule.kind==='MAIN_TASK_PROGRESS'?['rewardClaimed']:[])]:progress?['taskId','progress','targetProgress','rewardClaimed']:daily?['dailyResetTime']:['previousLevel',levelKey]),'receivedAt'],'业务事件证据');
+  const invalidValue=resource?!resourceEventMatches(event,rule):taskProgress?event.taskId!==rule.taskId||!exactTaskProgress(event.progress)||BigInt(event.progress)<BigInt(rule.progress)||['MAIN_TASK_PROGRESS','ACHIEVEMENT_TASK_PROGRESS'].includes(rule.kind)&&typeof event.rewardClaimed!=='boolean'||rule.kind==='ACHIEVEMENT_TASK_PROGRESS'&&(!exactTaskProgress(event.targetProgress)||event.targetProgress==='0'):progress?event.taskId!==rule.taskId||!Number.isInteger(event.progress)||event.progress<rule.progress||event.progress>2147483647||!Number.isInteger(event.targetProgress)||event.targetProgress<0||event.targetProgress>2147483647||typeof event.rewardClaimed!=='boolean':daily? !Number.isInteger(event.dailyResetTime)||event.dailyResetTime<1||event.dailyResetTime>2147483647 : !Number.isInteger(event.previousLevel)||event.previousLevel<0||event.previousLevel>2147483647||event[levelKey]!==rule.level||event.previousLevel===event[levelKey];
   if(event.streamId!==trigger.baseline.streamId||!Number.isSafeInteger(event.cursor)||event.cursor<=trigger.baseline.cursor||event.eventId!==event.streamId+':'+event.cursor||!Number.isInteger(event.seq)||event.seq<1||event.seq>2147483647||invalidValue||!stamp(event.receivedAt)||!stamp(trigger.observedAt)||Date.parse(trigger.observedAt)<start||!stamp(trigger.firedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.observedAt)||Date.parse(trigger.firedAt)<Date.parse(trigger.armedAt)||Date.parse(trigger.firedAt)>=end)throw fail('业务事件身份、游标或时间证据不一致');
  }
 }

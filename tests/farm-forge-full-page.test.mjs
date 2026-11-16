@@ -3112,3 +3112,22 @@ for(const known of [false,true])test('cumulative recruit complete PAGE separates
  assert.equal(descendants(box).filter(n=>n.tagName==='button').length,8);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
  h.run("selectAccount('B')");assert.doesNotMatch(box.textContent,/RecruitInfoResponse.(hero|antique).task/);assert.equal(writes(h).length,0);
 });
+
+
+for(const amount of ['0','9007199254740993','9223372036854775807'])test('resource event PAGE preserves exact threshold through original graph and unified entries '+amount,async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);eventPolicyDraft(h,amount,'RESOURCE_AMOUNT_CHANGED');assert.equal(h.node('wf-policy-event-resource').disabled,false);assert.equal(h.node('wf-policy-event-task').disabled,true);h.node('wf-policy-event-resource').value='GOLD';h.node('wf-policy-event-resource').onchange();h.node('wf-policy-apply').click();const g=conditionGraph(h);
+ assert.deepEqual(g.runPolicy.eventTrigger,{kind:'RESOURCE_AMOUNT_CHANGED',resource:'GOLD',amount});assert.equal(validateWorkflow(g,{modules:GAMEPLAY_MODULES}).valid,true);assert.deepEqual(g.nodes,before.nodes);assert.deepEqual(g.edges,before.edges);assert.deepEqual(g.budget,before.budget);
+ for(const entry of ['tasks','dailies','loop']){unifiedLoad(h,{entry,...(entry==='tasks'?{tasks:[{kind:'main',taskId:1}]}:{dailies:[{taskId:1006}]}),budget:{resources:[],quotas:[],uids:[]}});h.node('wf-unified-policy-copy').click();assert.deepEqual(unifiedDraft(h).runPolicy,g.runPolicy);}
+ assert.equal(writes(h).length,0);
+});
+test('resource event PAGE rejects unknown resource and malformed thresholds, and retained callbacks cannot modify another account',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);
+ for(const [resource,amount]of [['GOLD',''],['GOLD','-1'],['GOLD','01'],['GOLD','1.0'],['GOLD','1e3'],['GOLD','9223372036854775808'],['UNKNOWN','1'],['3','1']]){eventPolicyDraft(h,amount,'RESOURCE_AMOUNT_CHANGED');h.node('wf-policy-event-resource').value=resource;h.node('wf-policy-event-resource').onchange();h.node('wf-policy-apply').click();assert.deepEqual(conditionGraph(h),before);}
+ const stale=h.node('wf-policy-event-resource').onchange,apply=h.node('wf-policy-apply').onclick;h.run("selectAccount('B');selectAccount('A')");const source=h.node('wf-json').value;h.node('wf-policy-event-resource').value='GOLD';stale();apply();assert.equal(h.node('wf-json').value,source);assert.equal(writes(h).length,0);
+});
+test('resource event PAGE exact authorization scope keeps threshold and ignores late permission responses',async()=>{
+ const eventTrigger={kind:'RESOURCE_AMOUNT_CHANGED',resource:'GOLD',amount:'9007199254740993'},f=await finiteRunPage({eventTrigger}),{h,offer,status}=f;
+ assert.equal(h.node('wf-authorize-run').disabled,false);assert.match(h.node('wf-run-scope').textContent,/GOLD.*9007199254740993/);assert.match(h.node('wf-run-scope').textContent,/首次观察不触发.*不证明收入或可支配预算/);
+ const approval=h.node('wf-authorize-run').click();assertMutation(h.pending('/api/workflows/authorize-run'),'/api/workflows/authorize-run',{offer,batchId:null,planHash:null,confirm:true});h.run("selectAccount('B');selectAccount('A')");h.respond('/api/workflows/authorize-run',{accountId:'A',status:{...status,runAuthorization:{scope:offer,approvedAt:'late'}},graphs:[],history:[]});await approval;assert.equal(h.node('wf-authorize-run').disabled,true);assert.equal(writes(h,'/api/operations/execute').length,0);
+ for(const extra of [{eligible:true},{resource:3},{resource:'UNKNOWN'},{amount:1},{amount:'9223372036854775808'}]){const bad=await finiteRunPage({eventTrigger:{...eventTrigger,...extra}});assert.equal(bad.h.node('wf-authorize-run').disabled,true);assert.equal(writes(bad.h).length,0);}
+});

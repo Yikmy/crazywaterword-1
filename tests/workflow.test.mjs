@@ -1101,3 +1101,14 @@ test('task target consolidation preserves exact identities, strict original fiel
  for(const kind of ['main','branch','achievement'])assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[{kind,taskId:1,action:'observe'}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
  for(const target of rows){const input={entry:'tasks',tasks:[target],budget:unifiedBudget},compiled=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});assert.equal(compiled.graph.nodes.find(n=>n.module).type,'ACTION');}
 });
+
+
+test('resource event requires the existing named resource and exact int64 threshold through all original entry points',()=>{
+ const rule={kind:'RESOURCE_AMOUNT_CHANGED',resource:'GOLD',amount:'9007199254740993'};
+ for(const amount of ['0','9007199254740993','9223372036854775807'])assert.equal(validateWorkflow(boundedGraph(graph(),{eventTrigger:{...rule,amount}}),{modules}).valid,true);
+ for(const change of [r=>delete r.resource,r=>r.resource=3,r=>r.resource='gold',r=>r.resource='UNKNOWN',r=>delete r.amount,r=>r.amount=1,r=>r.amount='01',r=>r.amount='-1',r=>r.amount='1.0',r=>r.amount='9223372036854775808',r=>r.reward=true,r=>r.eligible=true,r=>r.retry=true]){const bad=structuredClone(rule);change(bad);assert.throws(()=>validateWorkflow(boundedGraph(graph(),{eventTrigger:bad}),{modules}),{code:'WORKFLOW_INVALID'});}
+ for(const entry of ['tasks','dailies','loop']){const intent=unifiedBoundedIntent(entry),before=compileUnifiedExecution(intent,{modules:unifiedRegistry});intent.runPolicy.eventTrigger=rule;const compiled=compileUnifiedExecution(intent,{modules:unifiedRegistry});assert.deepEqual(compiled.graph.nodes,before.graph.nodes);assert.deepEqual(compiled.graph.budget,before.graph.budget);assert.deepEqual(compiled.graph.runPolicy.eventTrigger,rule);assert.equal(simulateWorkflow(compiled.graph,{modules:unifiedRegistry}).requestsSent,0);}
+});
+test('public resource readers cannot forge a trusted source or claim workflow ownership',async()=>{
+ const f=fixture();f.session.player={playerId:'17',worldId:1};f.session.connectionId='fake';f.session.client.readResourceAmountEvent=()=>({reliable:true,resource:'GOLD',amount:'100'});await assert.rejects(f.runner.start(f.session.id,boundedGraph(graph(),{eventTrigger:{kind:'RESOURCE_AMOUNT_CHANGED',resource:'GOLD',amount:'1'}})),{code:'WORKFLOW_EVENT_UNKNOWN'});assert.equal(f.calls.length,0);
+});

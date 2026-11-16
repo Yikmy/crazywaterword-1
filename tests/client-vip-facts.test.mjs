@@ -1,7 +1,7 @@
 import { dailyChecklist } from '../src/daily-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readFestivalActivitySnapshot, readOpenRankActivitySnapshot, parseOpenRankActivity, readTradeActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
+import { GameClient, readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent, readFestivalActivitySnapshot, readOpenRankActivitySnapshot, parseOpenRankActivity, readTradeActivitySnapshot, LIVE_VIP_LEVEL_EVIDENCE, MAX_SEQ } from '../src/client.mjs';
 import { createCodec } from '../src/codec.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { collectState, ENTRY_QUERIES, summarize, formatState } from '../src/game.mjs';
@@ -620,4 +620,37 @@ test('malformed festival list does not invalidate independent open-rank, trade o
  socket.receive('SCAllActivity',openRankPush(undefined,{festivalActivities:Array.from({length:10001},()=>({})),trade:{period:7,startTime:100,endTime:400}}),1);
  assert.equal(readFestivalActivitySnapshot(f.client).status,'UNKNOWN');assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readTradeActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readPetRevision(f.client).revision,0);assert.equal(readResourceFieldRevision(f.client).revision,0);
  socket.receive('SCAllActivity',openRankPush(undefined,{festivalActivities:[festivalRecord()]}),2);assert.equal(readFestivalActivitySnapshot(f.client).status,'OBSERVED');assert.equal(readOpenRankActivitySnapshot(f.client).status,'OBSERVED');
+});
+
+
+test('resource amounts share private accepted-stream authority, seed unknown balances and preserve exact decreases',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();const read=()=>readResourceAmountEvent(f.client);
+ assert.equal(read().reliable,true);assert.equal(read().cursor,0);assert.equal(readTaskProgressEvent(f.client,{kind:'resource'}).reliable,false);
+ f.client.readResourceAmountEvent=()=>({reliable:true,cursor:99});f.client.emit('message',{name:'SCUpdateResource',seq:1,body:{list:[{res:3,amount:'10'}]}});assert.equal(read().cursor,0);
+ socket.receive('SCUpdateResource',{list:[{res:3,amount:'9007199254740993'},{res:1,amount:'0'},{res:7,amount:'10'}]},1);assert.equal(read().cursor,0);assert.equal(read().event,null);
+ socket.receive('SCUpdateResource',{list:[{res:3,amount:'9007199254740993'},{res:1,amount:'0'}]},2);assert.equal(read().cursor,0);
+ let observed;f.client.on('message',({name})=>{if(name==='SCUpdateResource')observed=read();});
+ socket.receive('SCUpdateResource',{list:[{res:3,amount:'9007199254740992'},{res:1,amount:'9223372036854775807'},{res:4,amount:'0'}]},3);
+ assert.equal(observed.cursor,2);assert.equal(observed.source,'SCUpdateResource.list');const first=readResourceAmountEvent(f.client,{cursor:1}).event;
+ assert.equal(first.res,3);assert.equal(first.previousAmount,'9007199254740993');assert.equal(first.amount,'9007199254740992');assert.equal(first.seq,3);assert.equal(read().event.amount,'9223372036854775807');
+ first.amount='1';assert.equal(readResourceAmountEvent(f.client,{cursor:1}).event.amount,'9007199254740992');
+ socket.receive('SCUpdateResource',{list:[{res:3,amount:'999'}]},3);assert.equal(read().cursor,2);
+ socket.receive('SCUpdateResource',{list:[{res:4,amount:'1'},{res:7,amount:'11'}]},4);assert.equal(read().cursor,3);assert.equal(read().event.previousAmount,'0');assert.equal(read().event.amount,'1');
+ socket.receive('SCAchievementUpdate',{task:[achievementRow()]},5);assert.equal(read().cursor,3);assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cursor,1);
+ assert.equal(socket.sent.some(m=>!['LoginRequest','PingRequest','ConfirmSeqNoRequest'].includes(m.name)),false);
+});
+for(const fault of ['missing-res','missing-amount','zero-res','negative','duplicate','limit'])test('resource malformed list fails atomically without invalidating independent task stream '+fault,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready();socket.receive('SCUpdateResource',{list:[{res:3,amount:'10'}]},1);
+ const bad={res:4,amount:'1'};if(fault==='missing-res')delete bad.res;if(fault==='missing-amount')delete bad.amount;if(fault==='zero-res')bad.res=0;if(fault==='negative')bad.amount='-1';
+ let list=[{res:3,amount:'20'},bad];if(fault==='duplicate')list=[{res:3,amount:'20'},{res:3,amount:'30'}];if(fault==='limit')list=Array.from({length:201},(_,i)=>({res:i+1,amount:'1'}));
+ if(fault==='missing-amount'){const header=codec.encode('SCUpdateResource',2,{list:[]}),bytes=new Uint8Array(header.length+4);bytes.set(header);bytes.set([10,2,8,4],header.length);new DataView(bytes.buffer).setInt32(0,bytes.length-4);socket.onmessage({data:bytes});}else socket.receive('SCUpdateResource',{list},2);assert.equal(readResourceAmountEvent(f.client).reliable,false);assert.equal(readResourceAmountEvent(f.client,{cursor:1}).reliable,false);
+ socket.receive('SCUpdateResource',{list:[{res:3,amount:'30'}]},3);assert.equal(readResourceAmountEvent(f.client).reliable,false);socket.receive('SCAchievementUpdate',{task:[achievementRow()]},4);if(fault==='missing-amount')assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).reliable,false);else assert.equal(readTaskProgressEvent(f.client,{kind:'achievement'}).cursor,1);
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId'])test('resource identity cannot regain authority by restoring changed '+field,async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const socket=await f.ready(),context={...f.client.factContext};socket.receive('SCUpdateResource',{list:[{res:3,amount:'10'}]},1);f.client.factContext={...context,[field]:field==='generation'?99:'changed'};assert.equal(readResourceAmountEvent(f.client).reliable,false);f.client.factContext=context;socket.receive('SCUpdateResource',{list:[{res:3,amount:'20'}]},2);assert.equal(readResourceAmountEvent(f.client).reliable,false);
+});
+test('resource bounded cursors, disconnect, fresh login and old socket preserve original continuity rules',async t=>{
+ const f=fixture();t.after(()=>f.client.stop());const old=await f.ready();for(let seq=1;seq<=202;seq++)old.receive('SCUpdateResource',{list:[{res:3,amount:String(seq)}]},seq);
+ assert.equal(readResourceAmountEvent(f.client,{cursor:1}).reliable,false);assert.equal(readResourceAmountEvent(f.client,{cursor:2}).event.amount,'3');const before=readResourceAmountEvent(f.client);f.client.stop();assert.equal(readResourceAmountEvent(f.client).reliable,false);const socket=await f.ready();assert.notEqual(readResourceAmountEvent(f.client).streamId,before.streamId);
+ old.receive('SCUpdateResource',{list:[{res:3,amount:'999'}]},203);assert.equal(readResourceAmountEvent(f.client).cursor,0);socket.receive('SCUpdateResource',{list:[{res:3,amount:'0'}]},1);socket.receive('SCUpdateResource',{list:[{res:3,amount:'1'}]},3);assert.equal(readResourceAmountEvent(f.client).reliable,false);
 });

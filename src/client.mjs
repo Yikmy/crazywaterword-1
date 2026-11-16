@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createCodec } from './codec.mjs';
 import { trustedGameClock } from './state-facts.mjs';
+import { RESOURCE_NAMES } from './resource-ledger.mjs';
 
 // Only this module can attest that a local error preceded socket dispatch.
 const undispatchedErrors = new WeakMap();
@@ -152,7 +153,7 @@ function seedTaskProgress(client,body,socket) {
  const state=liveTaskProgress.get(client),player=vipValue(body,'playerInfo'),playerId=vipIdentity(vipValue(player,'playerId')),worldId=vipIdentity(vipValue(player,'worldId'));
  if(state?.invalid)return;
  if(!state||state.socket!==socket||!vipCurrentContext(client,state)||vipValue(body,'result')!==0||!playerId||!worldId||vipOwn(player,'id')&&vipIdentity(vipValue(player,'id'))!==playerId){invalidateTaskProgress(client,'TASK_PROGRESS_LOGIN_OR_CONTEXT_UNKNOWN');return;}
- Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch','achievement'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,cacheRevision:0,events:[],tasks:new Map(),invalid:null}]))});
+ Object.assign(state,{seeded:true,identity:{playerId,worldId},reason:null,streams:Object.fromEntries(['main','branch','achievement','resource'].map(kind=>[kind,{streamId:randomUUID(),cursor:0,cacheRevision:0,events:[],tasks:new Map(),invalid:null}]))});
 }
 function taskProgressCount(value) {
  let n;
@@ -184,16 +185,34 @@ function observeTaskProgress(client,kind,body,seq,receivedAt) {
  // Validate the entire push before recording any member; one invalid row cannot partially fire a workflow.
  for(const row of changed){stream.tasks.set(row.taskId,row.progress);const cursor=++stream.cursor;stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,...row,receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();}
 }
-export function readTaskProgressEvent(client,{kind,cursor}={}) {
+function readContinuousEvent(client,{kind,cursor}={}) {
  const state=liveTaskProgress.get(client);
  if(state&&!taskProgressCurrent(client,state))invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');
  else if(state?.seeded&&(!client.connected||state.socket!==client.socket))invalidateTaskProgress(client,'TASK_PROGRESS_CONNECTION_NOT_CURRENT');
- const stream=['main','branch','achievement'].includes(kind)?state?.streams?.[kind]:null;
+ const stream=['main','branch','achievement','resource'].includes(kind)?state?.streams?.[kind]:null;
  if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return {status:'UNKNOWN',reliable:false,reason:stream?.invalid??state?.reason??'TASK_PROGRESS_BASELINE_UNKNOWN'};
  const event=cursor===undefined?stream.events.at(-1)??null:stream.events.find(row=>row.cursor===cursor);
  if(cursor!==undefined&&!event)return {status:'UNKNOWN',reliable:false,reason:'TASK_PROGRESS_CURSOR_UNAVAILABLE'};
- return {status:'CURRENT',reliable:true,reason:null,source:kind==='main'?'SCMainTaskUpdate.task':kind==='achievement'?'SCAchievementUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,cacheRevision:stream.cacheRevision,event:event?structuredClone(event):null};
+ return {status:'CURRENT',reliable:true,reason:null,source:kind==='resource'?'SCUpdateResource.list':kind==='main'?'SCMainTaskUpdate.task':kind==='achievement'?'SCAchievementUpdate.task':'SCBranchTaskUpdate.task',...state.context,...state.identity,streamId:stream.streamId,cursor:stream.cursor,cacheRevision:stream.cacheRevision,event:event?structuredClone(event):null};
 }
+export function readTaskProgressEvent(client,{kind,cursor}={}) {return readContinuousEvent(client,{kind:['main','branch','achievement'].includes(kind)?kind:null,cursor});}
+export function readResourceAmountEvent(client,{cursor}={}) {return readContinuousEvent(client,{kind:'resource',cursor});}
+// The existing login/socket/sequence owner holds this bounded resource stream too.
+// SCUpdateResource amounts replace balances; the first value is not a change from zero.
+function observeResourceAmounts(client,body,seq,receivedAt) {
+ const state=liveTaskProgress.get(client),stream=state?.streams?.resource;if(!state||state.invalid||!state.seeded||!stream||stream.invalid)return;
+ if(!client.connected||state.socket!==client.socket||!taskProgressCurrent(client,state)){invalidateTaskProgress(client,'TASK_PROGRESS_CONTEXT_UNKNOWN_OR_CHANGED');return;}
+ const rows=vipValue(body,'list');if(rows===undefined&&!vipOwn(body,'list'))return;
+ const dense=Array.isArray(rows)&&Object.getPrototypeOf(rows)===Array.prototype&&rows.length<=200&&Reflect.ownKeys(rows).length===rows.length+1&&Array.from({length:rows.length},(_,i)=>Object.getOwnPropertyDescriptor(rows,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
+ if(!Number.isInteger(seq)||seq<1||seq>MAX_SEQ||!dense){stream.invalid='RESOURCE_EVENT_SOURCE_UNKNOWN';return;}
+ const seen=new Set(),updates=[];
+ for(const row of rows){const res=vipValue(row,'res'),amount=taskProgressCount(vipValue(row,'amount'));if(!Number.isInteger(res)||res<1||res>2147483647||amount===null||seen.has(res)){stream.invalid='RESOURCE_EVENT_VALUES_UNKNOWN';return;}seen.add(res);if(Object.hasOwn(RESOURCE_NAMES,res))updates.push({res,amount});}
+ const changes=updates.filter(row=>stream.tasks.has(row.res)&&stream.tasks.get(row.res)!==row.amount);
+ if(!Number.isSafeInteger(stream.cursor)||stream.cursor>Number.MAX_SAFE_INTEGER-changes.length||!Number.isSafeInteger(stream.cacheRevision)||stream.cacheRevision>=Number.MAX_SAFE_INTEGER){stream.invalid='RESOURCE_EVENT_CURSOR_LIMIT';return;}
+ if(updates.length)stream.cacheRevision++;
+ for(const row of updates){const previousAmount=stream.tasks.get(row.res);stream.tasks.set(row.res,row.amount);if(previousAmount===undefined||previousAmount===row.amount)continue;const cursor=++stream.cursor;stream.events.push({eventId:stream.streamId+':'+cursor,streamId:stream.streamId,cursor,seq,res:row.res,previousAmount,amount:row.amount,receivedAt:new Date(receivedAt).toISOString()});if(stream.events.length>200)stream.events.shift();}
+}
+export const RESOURCE_AMOUNT_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 AllResourcesModel._onSCUpdateResource/updateOneResource: SCUpdateResource.list replaces DisplayResource(res,amount), not a delta',scope:'Known RESOURCE_NAMES only, exact signed int64 amounts; first observation seeds a baseline, subsequent distinct accepted balances emit changes; no inventory total, reward attribution or authorization',realGame:'REAL_UNVERIFIED'});
 export const TASK_PROGRESS_EVENT_EVIDENCE=Object.freeze({connectionEvidence:LIVE_VIP_LEVEL_EVIDENCE,source:'Fixed v76 MainTaskModel._onSCMainTaskUpdate/_onSCBranchTaskUpdate and AchievementModel._onSCAchievementUpdate; exact taskId/id and signed int64 progress',scope:'New accepted progress only; not target completion, claim eligibility, game day or reward receipt',realGame:'REAL_UNVERIFIED'});
 
 // The client DailyTaskModel replaces daily state on this push. The marker is the
@@ -996,6 +1015,7 @@ export class GameClient extends EventEmitter {
     if(name==='SCMainTaskUpdate')observeTaskProgress(this,'main',body,seq,receivedAt);
     if(name==='SCBranchTaskUpdate')observeTaskProgress(this,'branch',body,seq,receivedAt);
     if(name==='SCAchievementUpdate')observeTaskProgress(this,'achievement',body,seq,receivedAt);
+    if(name==='SCUpdateResource')observeResourceAmounts(this,body,seq,receivedAt);
     if (name === 'SCAllActivity') {updateFestivalActivities(this,body,seq,receivedAt);updateTradeActivity(this,body,seq,receivedAt);updateOpenRankActivity(this,body,seq,receivedAt);}
     if (['SCTradeCityGoods','SCTradeGuildTask','SCTradeCityReport'].includes(name)) {
       const activity=liveFestivalActivities.get(this);
