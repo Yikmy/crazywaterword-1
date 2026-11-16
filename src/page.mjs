@@ -2281,6 +2281,16 @@ function renderDailyChecklist(data) {
     const scope=viewGuard.capture(),link=el('button','','打开普通免费点金');link.type='button';
     link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-free-gold-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
   }
+  if(view.waterFloaters){
+    const floaters=view.waterFloaters,source=view.sources?.waterFloaters;
+    box.appendChild(el('h3','','海面漂浮物 · 缓存种类与数量'));
+    box.appendChild(el('p','dim','采集时 '+known(floaters.speciesCount)+' 类 / '+known(floaters.totalCount)+' 个；来源 '+(source?.status||'UNKNOWN')+' / '+(source?.observedAt||'采集时间未知')));
+    box.appendChild(table(['种类 ID','数量原值','配置类型','配置产物（非到账）','当前拾取资格 / 到账'],floaters.rows.map(row=>[
+      row.floaterId,known(row.num),known(row.configuredType),known(row.configuredProductId),'未知 / 未知'
+    ])));
+    if(!floaters.rows.length)box.appendChild(el('p','dim',floaters.speciesCount===0?'本次采集明确报告空列表':'漂浮物列表未知'));
+    box.appendChild(el('p','dim',floaters.note));
+  }
   if(view.warOnlineReward){
     const online=view.warOnlineReward,source=view.sources?.warOnlineReward;box.appendChild(el('h3','','城战在线奖 · 缓存计数观察'));
     box.appendChild(table(['计数类型','已报阶段原值','更新时间原值（秒）','下一配置档位 / 配置秒数','当前领取资格 / 到账'],[[

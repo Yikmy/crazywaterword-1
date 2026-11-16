@@ -32,6 +32,25 @@ function source(state,request) {
     observedAt:typeof observedAt==='string'&&Number.isFinite(Date.parse(observedAt))?observedAt:null,
     precision:exact?'DECODED_EXACT':'LEGACY_NORMALIZED'} };
 }
+// Fixed client BuildUtil/FloatingManager use GarbageProductionCfg species IDs and
+// per-species counts. A collection is historical, never an instance or claim proof.
+function waterFloaterView(body,config) {
+  const base={status:'UNKNOWN',reason:'WATER_FLOATER_LIST_UNKNOWN',coverage:'COLLECTED_ON_WATER_ONLY',rows:[],speciesCount:null,totalCount:null,
+    eligible:null,expiry:'UNKNOWN',settlement:'UNKNOWN',executable:false,
+    note:'仅显示本账号 OnWater 采集时的种类与数量；种类 ID 不是实例 ID。配置产物不代表实际奖励，普通拾取与深海打捞分开；过期、当前资格与到账未知。'};
+  const rows=own(body,'floater');
+  if(!dense(rows)||rows.some(row=>!text(own(row,'floaterId'))||count(row,'num')===null)
+    ||new Set(rows.map(row=>own(row,'floaterId'))).size!==rows.length)return base;
+  const configured=table(config,'GarbageProductionCfg');
+  const definitions=dense(configured)&&configured.every(row=>text(own(row,'id')))&&new Set(configured.map(row=>own(row,'id'))).size===configured.length?configured:null;
+  const observed=rows.map(row=>{
+    const floaterId=own(row,'floaterId'),definition=definitions?.find(r=>own(r,'id')===floaterId),type=own(definition,'type'),production=own(definition,'production');
+    const configuredType=['拾取','打捞'].includes(type)?type:null;
+    const configuredProductId=configuredType&&dense(production)&&production.length===2&&text(production[0])&&positive(production[1])?production[0]:null;
+    return {floaterId,num:count(row,'num'),configuredType,configuredProductId,configStatus:configuredType&&configuredProductId?'AVAILABLE':'UNKNOWN',eligible:null,executable:false};
+  });
+  return {...base,status:'OBSERVED',reason:null,rows:observed,speciesCount:observed.length,totalCount:observed.reduce((sum,row)=>sum+row.num,0)};
+}
 function dailyTasks(body,config) {
   const rows = dailyTaskRows(body);
   if(rows===null)return {status:'UNKNOWN',reason:'DAILY_TASK_LIST_UNKNOWN',rows:[],counts:{total:null,completed:null,claimed:null,eligible:null}};
@@ -216,9 +235,9 @@ function openRankView(state,context=null) {
 }
 
 export function dailyChecklist(state,{config=null,context=null}={}) {
-  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest');
-  return {readOnly:true,warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
-    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info,warOnlineReward:counters.info},
+  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest'),water=source(state,'OnWaterRequest');
+  return {readOnly:true,waterFloaters:waterFloaterView(water.body,config),warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info,warOnlineReward:counters.info,waterFloaters:water.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
 export function formatDailyChecklist(view) {
@@ -227,6 +246,7 @@ export function formatDailyChecklist(view) {
     '成就：'+known(view.achievements.counts.eligible)+' 项达到门槛；普通免费点金剩余 '+known(view.freeGold.remaining),
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
     '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',
+    '漂浮物缓存 '+known(view.waterFloaters.speciesCount)+' 类 / '+known(view.waterFloaters.totalCount)+' 个；当前拾取资格未知',
     '城战在线奖缓存阶段 '+known(view.warOnlineReward.reportedStage)+'；当前领取资格未知',
     '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',
     '开服排行窗口：'+view.openRank.status+'，观察到 '+view.openRank.rows.length+' 类；当前领取资格未知',view.note].join('\n');

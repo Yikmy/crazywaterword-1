@@ -833,3 +833,39 @@ test('war online restored public snapshot has no connection binding or implicit 
   const second=await app.call('/api/dailies');assert.equal(second.data.checklist.warOnlineReward.status,'UNKNOWN');assert.equal(second.data.checklist.warOnlineReward.reportedStage,null);assert.equal(second.data.checklist.warOnlineReward.executable,false);assert.equal(app.clients.length,0);assert.equal(app.sent.length,0);assert.equal(app.collects,0);
  }finally{await app.close();}
 });
+
+function floaterRuntimeSnapshot(num=3){
+ const state=dailyRuntimeSnapshot();state.raw.OnWaterRequest={floater:[{floaterId:'塑料垃圾1',num}]};state.ok.OnWaterRequest=structuredClone(state.raw.OnWaterRequest);state.outcomes.OnWaterRequest={status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'};return state;
+}
+test('water floater HTTP and overview share collected observations with zero pickup or automatic refresh',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>floaterRuntimeSnapshot(client.factContext.accountId==='account-A'?3:7)});try{
+  for(const account of ['account-A','account-B']){await app.login(account);await app.refresh(account);}
+  const sent=app.sent.length,bytes=JSON.stringify(app.sessions.get('account-A').snapshot);
+  for(const account of ['account-A','account-B']){
+   const d=(await app.call('/api/dailies',{account})).data,o=(await app.call('/api/overview',{account})).data;
+   assert.deepEqual(o.activityAlliance.checklist.waterFloaters,d.checklist.waterFloaters);assert.equal(d.checklist.waterFloaters.totalCount,account==='account-A'?3:7);assert.equal(d.checklist.waterFloaters.eligible,null);assert.equal(d.checklist.waterFloaters.executable,false);assert.equal(Object.hasOwn(d.checklist.waterFloaters,'action'),false);
+  }
+  assert.equal(app.sent.length,sent);assert.equal(app.collects,2);assert.equal(app.sent.includes('PickUpFloaterRequest'),false);assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),bytes);
+  app.sessions.get('account-A').snapshot.failed.OnWaterRequest='synthetic failure';const v=(await app.call('/api/dailies')).data.checklist;assert.equal(v.waterFloaters.totalCount,null);assert.equal(v.tasks.counts.eligible,1);assert.equal((await app.call('/api/dailies',{account:'account-B'})).data.checklist.waterFloaters.totalCount,7);
+ }finally{await app.close();}
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId','client'])test('water floater collected cache cannot cross identity '+field,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>floaterRuntimeSnapshot()});try{
+  await app.login();await app.refresh();const s=app.sessions.get('account-A'),sent=app.sent.length;assert.equal((await app.call('/api/dailies')).data.checklist.waterFloaters.totalCount,3);
+  if(field==='accountId')s.id='foreign';else if(field==='client')s.client={...s.client,stop(){}};else if(['playerId','worldId'].includes(field))s.player[field]='9007199254740993';else if(field==='generation')s.generation++;else s.connectionId='replacement';
+  const v=(await app.call('/api/dailies')).data.checklist.waterFloaters;assert.equal(v.status,'UNKNOWN');assert.equal(v.totalCount,null);assert.equal(v.eligible,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+test('water floater late former-world collection and restored snapshots never grant pickup or resume',async()=>{
+ const gate=deferred();let started=false;const app=await dailyRuntimeHarness({collect:async()=>{started=true;return gate.promise;}});try{
+  const first=await app.call('/api/dailies');assert.equal(first.data.checklist.waterFloaters.status,'UNKNOWN');assert.equal(app.clients.length,0);
+  const s=app.sessions.get('account-A');s.snapshot=floaterRuntimeSnapshot(9);assert.equal((await app.call('/api/dailies')).data.checklist.waterFloaters.totalCount,null);assert.equal(app.clients.length,0);
+  await app.login();const pending=app.refresh();await until(()=>started);s.player.worldId='different';gate.resolve(floaterRuntimeSnapshot());await pending;const sent=app.sent.length,v=(await app.call('/api/dailies')).data.checklist.waterFloaters;assert.equal(v.status,'UNKNOWN');assert.equal(v.totalCount,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{gate.resolve(floaterRuntimeSnapshot());await app.close();}
+});
+test('water floater push never turns historical species counts into a current pickup qualification',async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>floaterRuntimeSnapshot()});try{
+  const socket=await app.login();await app.refresh();const bytes=JSON.stringify(app.sessions.get('account-A').snapshot),sent=app.sent.length;socket.receive('SCRandomWaterFloaters',{floater:[{floaterId:'塑料垃圾1',num:10}]},1);
+  const v=(await app.call('/api/dailies')).data.checklist.waterFloaters;assert.equal(v.coverage,'COLLECTED_ON_WATER_ONLY');assert.equal(v.totalCount,3);assert.equal(v.eligible,null);assert.equal(v.executable,false);assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),bytes);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});

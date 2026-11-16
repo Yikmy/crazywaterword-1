@@ -389,3 +389,45 @@ test('war online legacy safe numbers and reordered config remain observations, m
  const v=dailyChecklist({ok:{CounterInfoRequest:body},failed:{}},{config:c});assert.equal(v.warOnlineReward.reportedStage,'0');assert.equal(v.warOnlineReward.updateTime,0);assert.deepEqual(v.warOnlineReward.nextConfiguredStage,{stage:1,requiredSeconds:1});assert.equal(v.sources.warOnlineReward.precision,'LEGACY_NORMALIZED');
  assert.equal(dailyChecklist(fixture(),{config}).warOnlineReward.reportedStage,null);assert.equal(dailyChecklist(s,{config}).warOnlineReward.eligible,null);
 });
+function withWaterFloaters(rows=[{floaterId:'塑料垃圾1',num:3},{floaterId:'深海宝箱1',num:2}],{snapshot=false}={}){
+ const state=fixture();state.raw.OnWaterRequest=snapshot?toSnapshotJson(typed('OnWaterRequest',{floater:rows})):typed('OnWaterRequest',{floater:rows});state.outcomes.OnWaterRequest={status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'};return state;
+}
+test('water floater local Codec counts species and quantities separately and never infers eligibility or settlement',()=>{
+ for(const snapshot of [false,true]){
+  const state=withWaterFloaters(undefined,{snapshot}),before=toSnapshotJson(state),view=dailyChecklist(state,{config}),v=view.waterFloaters;
+  assert.equal(v.status,'OBSERVED');assert.equal(v.speciesCount,2);assert.equal(v.totalCount,5);assert.deepEqual(v.rows.map(r=>r.configuredType),['拾取','打捞']);assert.deepEqual(v.rows.map(r=>r.num),[3,2]);assert.equal(v.rows[0].configuredProductId,'塑料');assert.equal(v.rows[0].configStatus,'AVAILABLE');assert.equal(v.coverage,'COLLECTED_ON_WATER_ONLY');assert.equal(v.eligible,null);assert.equal(v.expiry,'UNKNOWN');assert.equal(v.settlement,'UNKNOWN');assert.equal(v.executable,false);
+  assert.equal(view.sources.waterFloaters.precision,'DECODED_EXACT');assert.equal(view.sources.waterFloaters.observedAt,'2026-11-16T01:00:00Z');assert.match(formatDailyChecklist(view),/漂浮物缓存 2 类 \/ 5 个；当前拾取资格未知/);
+  for(const item of [v,...v.rows])for(const key of ['action','actions','claimParameters','costs','rewards','expiresAt','uid'])assert.equal(Object.hasOwn(item,key),false);
+  v.rows[0].num=100;assert.deepEqual(toSnapshotJson(state),before);
+ }
+});
+test('water floater empty and explicit zero are observations while missing num stays unknown',()=>{
+ for(const snapshot of [false,true]){
+  let state=withWaterFloaters([],{snapshot}),v=dailyChecklist(state,{config}).waterFloaters;assert.equal(v.status,'OBSERVED');assert.equal(v.speciesCount,0);assert.equal(v.totalCount,0);
+  state=withWaterFloaters([{floaterId:'塑料垃圾1',num:0}],{snapshot});v=dailyChecklist(state,{config}).waterFloaters;assert.equal(v.status,'OBSERVED');assert.equal(v.totalCount,0);
+  state=withWaterFloaters([{floaterId:'塑料垃圾1'}],{snapshot});v=dailyChecklist(state,{config}).waterFloaters;assert.equal(v.status,'UNKNOWN');assert.equal(v.totalCount,null);
+ }
+});
+test('water floater legacy format preserves order without interpreting string counts or defaults',()=>{
+ const state={ok:{OnWaterRequest:{floater:[{floaterId:'玻璃垃圾1',num:0},{floaterId:'塑料垃圾2',num:2147483647}]}}},v=dailyChecklist(state,{config});assert.equal(v.waterFloaters.totalCount,2147483647);assert.deepEqual(v.waterFloaters.rows.map(r=>r.floaterId),['玻璃垃圾1','塑料垃圾2']);assert.equal(v.sources.waterFloaters.precision,'LEGACY_NORMALIZED');state.ok.OnWaterRequest.floater[0].num='0';assert.equal(dailyChecklist(state,{config}).waterFloaters.totalCount,null);
+});
+for(const [label,mutate]of[
+ ['missing list',s=>s.raw.OnWaterRequest={}],['sparse list',s=>s.raw.OnWaterRequest.floater=Array(1)],['oversize list',s=>s.raw.OnWaterRequest.floater=Array(10001)],['duplicate species',s=>s.raw.OnWaterRequest.floater.push({floaterId:'塑料垃圾1',num:1})],
+ ['missing id',s=>delete s.raw.OnWaterRequest.floater[0].floaterId],['blank id',s=>s.raw.OnWaterRequest.floater[0].floaterId=' '],['control id',s=>s.raw.OnWaterRequest.floater[0].floaterId='塑料垃圾1\n'],['missing count',s=>delete s.raw.OnWaterRequest.floater[0].num],['negative',s=>s.raw.OnWaterRequest.floater[0].num=-1],['fraction',s=>s.raw.OnWaterRequest.floater[0].num=1.5],['overflow',s=>s.raw.OnWaterRequest.floater[0].num=2147483648],['string',s=>s.raw.OnWaterRequest.floater[0].num='3'],['nan',s=>s.raw.OnWaterRequest.floater[0].num=NaN],
+ ['inherited row',s=>s.raw.OnWaterRequest.floater[0]=Object.create({floaterId:'塑料垃圾1',num:3})],['inherited list',s=>s.raw.OnWaterRequest=Object.create({floater:[{floaterId:'塑料垃圾1',num:3}]})],
+ ['count accessor',s=>Object.defineProperty(s.raw.OnWaterRequest.floater[0],'num',{enumerable:true,get(){throw Error('must not read accessor');}})],['list accessor',s=>Object.defineProperty(s.raw.OnWaterRequest,'floater',{enumerable:true,get(){throw Error('must not read accessor');}})],
+ ['array accessor',s=>Object.defineProperty(s.raw.OnWaterRequest.floater,0,{enumerable:true,get(){throw Error('must not read accessor');}})],['failed source',s=>s.failed.OnWaterRequest='secret-error'],['failed outcome',s=>s.outcomes.OnWaterRequest.status='FAILED'],['missing exact source',s=>delete s.raw.OnWaterRequest]
+])test('water floater '+label+' stays unknown without hiding independent daily qualifications',()=>{
+ const state=withWaterFloaters();mutate(state);const view=dailyChecklist(state,{config}),v=view.waterFloaters;assert.equal(v.status,'UNKNOWN');assert.equal(v.totalCount,null);assert.equal(v.speciesCount,null);assert.deepEqual(v.rows,[]);assert.equal(v.executable,false);assert.equal(v.eligible,null);assert.equal(view.tasks.counts.eligible,1);assert.equal(view.gift.eligible,true);assert.doesNotMatch(JSON.stringify(view),/secret-error/);
+});
+for(const [label,definition]of[
+ ['missing',null],['diving only',{DiveItemsDefinitionCfg:{data:[{id:'玻璃垃圾1',produce:['玻璃',1]}]}}],['duplicate id',{GarbageProductionCfg:{data:[{id:'塑料垃圾1',type:'拾取',production:['塑料',1]},{id:'塑料垃圾1',type:'打捞',production:['藏品碎片',1]}]}}],['unknown type',{GarbageProductionCfg:{data:[{id:'塑料垃圾1',type:'潜水',production:['塑料',1]}]}}],['invalid production',{GarbageProductionCfg:{data:[{id:'塑料垃圾1',type:'拾取',production:['塑料','1']}]}}]
+])test('water floater '+label+' config never hides independent counts or borrows diving rewards',()=>{
+ const view=dailyChecklist(withWaterFloaters(),{config:{tables:definition}}).waterFloaters;assert.equal(view.status,'OBSERVED');assert.equal(view.totalCount,5);assert.equal(view.rows[0].configStatus,'UNKNOWN');assert.equal(view.rows[0].configuredProductId,null);assert.equal(view.eligible,null);
+});
+test('water floater unknown future species and payloads are isolated without reading accessors or deriving rewards',()=>{
+ const state=withWaterFloaters([{floaterId:'未来种类',num:1}]),before=toSnapshotJson(state);let reads=0;
+ Object.defineProperty(state.raw.OnWaterRequest.floater[0],'reward',{enumerable:true,get(){reads++;throw Error('must not read future data');}});
+ const cfg={tables:{GarbageProductionCfg:{data:[{id:'未来种类',type:'拾取'}]}}};Object.defineProperty(cfg.tables.GarbageProductionCfg.data[0],'production',{enumerable:true,get(){reads++;throw Error('must not read config getter');}});
+ const v=dailyChecklist(state,{config:cfg}).waterFloaters;assert.equal(v.totalCount,1);assert.equal(v.rows[0].configStatus,'UNKNOWN');assert.equal(reads,0);assert.equal(Object.hasOwn(v.rows[0],'reward'),false);assert.equal(state.raw.OnWaterRequest.floater[0].num,before.raw.OnWaterRequest.floater[0].num);
+});

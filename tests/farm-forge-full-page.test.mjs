@@ -3168,3 +3168,11 @@ test('war online page shows cached stage and config seconds without countdown or
  body.counters[0].num='1';view=dailyChecklist(state,{config});h.run('renderDailies('+JSON.stringify({checklist:view,tasks:[]})+')');text=h.node('dailies-table').textContent;assert.match(text,/2 \/ 60/);assert.equal(h.requests.length,before);assert.equal(descendants(h.node('dailies-table')).some(n=>n.tagName==='BUTTON'&&/在线/.test(n.textContent)),false);assert.equal(writes(h,'/api/operations/execute').length,0);
  h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');
 });
+
+test('water floater page separates species counts and types without pickup controls and clears account data',async()=>{
+ const h=await boot(),before=h.requests.length,state={raw:{OnWaterRequest:{floater:[{floaterId:'塑料垃圾1',num:3},{floaterId:'深海宝箱1',num:2}]}},outcomes:{OnWaterRequest:{status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'}}},config={tables:{GarbageProductionCfg:{data:[{id:'塑料垃圾1',type:'拾取',production:['塑料',1]},{id:'深海宝箱1',type:'打捞',production:['藏品碎片',1]}]}}};
+ h.run('renderDailies('+JSON.stringify({checklist:dailyChecklist(state,{config}),tasks:[]})+')');let text=h.node('dailies-table').textContent;assert.match(text,/海面漂浮物.*缓存种类与数量/);assert.match(text,/2 类 \/ 5 个/);assert.match(text,/塑料垃圾1/);assert.match(text,/深海宝箱1/);assert.match(text,/拾取/);assert.match(text,/打捞/);assert.match(text,/配置产物（非到账）/);assert.match(text,/未知 \/ 未知/);assert.equal(descendants(h.node('dailies-table')).some(n=>n.tagName==='BUTTON'&&/拾取|漂浮|打捞/.test(n.textContent)),false);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ state.raw.OnWaterRequest.floater=[];h.run('renderDailies('+JSON.stringify({checklist:dailyChecklist(state,{config}),tasks:[]})+')');assert.match(h.node('dailies-table').textContent,/本次采集明确报告空列表/);
+ delete state.raw.OnWaterRequest.floater;h.run('renderDailies('+JSON.stringify({checklist:dailyChecklist(state,{config}),tasks:[]})+')');text=h.node('dailies-table').textContent;assert.match(text,/漂浮物列表未知/);assert.doesNotMatch(text,/塑料垃圾1|深海宝箱1/);
+ h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');
+});
