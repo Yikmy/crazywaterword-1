@@ -56,10 +56,11 @@ export function buildBuildingCollectBody(buildingIds) {
 }
 
 // Open-rank task rewards use a score as the protocol id, never a row index.
-export function buildOpenRankWarRewardBody(score) {
-  if(typeof score!=='number'||!Number.isInteger(score)||score<=0||score>2147483647)throw new Error('Open-rank war score must be a positive int32');
-  return {type:4,id:score};
+export function buildOpenRankTaskRewardBody(type,score) {
+  if(![1,2,3,4].includes(type)||typeof score!=='number'||!Number.isInteger(score)||score<=0||score>2147483647)throw new Error('Open-rank task requires type 1–4 and a positive int32 score');
+  return {type,id:score};
 }
+export function buildOpenRankWarRewardBody(score) { return buildOpenRankTaskRewardBody(4,score); }
 
 // Pure shared bodies for legacy observations and registered adapters.
 // Eligibility, debit and transport remain with their existing domain contracts.
@@ -362,7 +363,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(request==='RecruitStartRequest'&&body.way===1&&(!fields(body,['way'])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','免费英雄招募仅允许明确 way=1 与零支出');
   if(request==='RecruitStartRequest'&&[2,3,4].includes(body.way)&&(!fields(body,['way'])||!exactCosts(Object.getOwnPropertyDescriptor(action,'costs')?.value)||costs.length!==1||costs[0].id!=='抽卡券'||costs[0].num!==({2:1,3:10,4:50})[body.way]))fail('COST_UNKNOWN','用券招募仅允许明确way=2/3/4与自有抽卡券1/10/50张');
   if(request==='ClickGoldRequest'&&(!fields(body,['times','free'])||body.times!==1||body.free!==true||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','普通免费点金仅允许 times=1、free=true 与明确零支出');
-  if(request==='GotOpenRankRewardRequest'&&(!fields(body,['type','id'])||body.type!==4||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','开服战争档位仅允许明确type=4与score ID、零支出');
+  if(request==='GotOpenRankRewardRequest'&&(!fields(body,['type','id'])||![1,2,3,4].includes(body.type)||!positiveInt32(body.id)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','开服任务档位仅允许明确type=1–4与score ID、零支出');
   if(request==='WeekChipGotTaskRequest'&&(!fields(body,['round','taskId'])||!positiveInt32(body.round)||!positiveInt32(body.taskId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','周芯片任务仅允许精确round/taskId与明确零支出');
   if(['WeekLotteryFreePackRequest','GotUniqueLotteryFreeRequest','WeekChipGotFreeRequest'].includes(request)&&(!fields(Object.getOwnPropertyDescriptor(action,'body')?.value,[])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','周活动免费礼包仅允许明确空请求与零支出');
   if(request==='GotFreeDailyPackRequest'&&(!fields(body,['packId'])||body.packId!=='赠礼'||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','仅明确免费赠礼packId与零支出允许领取');

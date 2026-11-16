@@ -2,7 +2,7 @@
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateWorkflow } from './workflow.mjs';
-import { validateTaskRewardsParameters } from './task-rewards.mjs';
+import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
 import { fleetCargoFillSelection } from './fleet.mjs';
@@ -189,9 +189,9 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateMailParameters({pageNo:row.pageNo,emailId:row.emailId,action:row.action});}catch{invalid('Tasks邮件须明确来源页和精确正int64邮件ID');}
         steps.push({phase,index,module:'mail',parameters,selection});continue;
       }
-      if(['tasks','dailies'].includes(phase)&&row?.kind==='open-rank-war'){
+      if(['tasks','dailies'].includes(phase)&&OPEN_RANK_TASK_KINDS.includes(row?.kind)){
         exact(row,phase==='tasks'?['kind','tierId']:['kind','tierId','action']);
-        if(!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647||phase==='dailies'&&row.action!=='claim')invalid('开服战争须明确score档位tierId及日常action=claim');
+        if(!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647||phase==='dailies'&&row.action!=='claim')invalid('开服任务须明确种类和score档位tierId及日常action=claim');
         steps.push({phase,index,module:'task-rewards',parameters:{kind:row.kind,tierId:row.tierId},selection});continue;
       }
       if(['tasks','dailies'].includes(phase)&&row?.kind==='weekly-chip-task'){

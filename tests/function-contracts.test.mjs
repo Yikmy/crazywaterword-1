@@ -234,7 +234,8 @@ test('multi-exchange production contract records conditional original production
 
 test('open-rank war contract pins original score subset and conditional configuration without rank payouts',async()=>{
  const {taskRewardsModule}=await import('../src/task-rewards.mjs'),c=validateFunctionContract('task-rewards',taskRewardsModule),p={kind:'open-rank-war',tierId:500};assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,p),p);assert.ok(c.requirementIds.C.includes('C517'));assert.ok(c.inputSchema.properties.kind.enum.includes('open-rank-war'));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.kind=open-rank-war').keys,['config.OpenRankWarTaskCfg','config.ItemCfg']);assert.match(c.verification.scope,/private continuous-stream type4 window/);assert.match(c.verification.scope,/no dedicated response alias or rank payout/);
- for(const parameters of [{...p,type:4},{...p,taskId:500},{kind:'open-rank-order',tierId:500},{kind:'open-rank-war-rank',tierId:1}])invalid(()=>validateFunctionParameters('task-rewards',taskRewardsModule,parameters));
+ for(const [kind,table] of [['open-rank-order','OpenRankOrderTaskCfg'],['open-rank-stage','OpenRankStageTaskCfg'],['open-rank-pirate','OpenRankPirateTaskCfg']]){const target={kind,tierId:500};assert.deepEqual(validateFunctionParameters('task-rewards',taskRewardsModule,target),target);assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.kind='+kind).keys,['config.'+table,'config.ItemCfg']);invalid(()=>validateFunctionParameters('task-rewards',taskRewardsModule,{...target,taskId:500}));}
+ for(const parameters of [{...p,type:4},{...p,taskId:500},{kind:'open-rank-order-rank',tierId:500},{kind:'open-rank-war-rank',tierId:1}])invalid(()=>validateFunctionParameters('task-rewards',taskRewardsModule,parameters));
 });
 
 test('original recruit contract accepts explicit antique identity without creating another Function',async()=>{
