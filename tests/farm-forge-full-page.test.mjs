@@ -3193,3 +3193,19 @@ for(const id of ['orders','city','production'])test(id+' Workflow settings reuse
  const h=await boot(),data={accountId:'A',module:id,config:{enabled:true},source:'account',csrfToken:'synthetic-csrf-A',functions:[{id,defaultConfig:{enabled:false}}]};const loading=h.node('wf-'+id+'-load').click();h.respond('/api/gameplay',data,{module:id});await loading;assert.match(h.node('wf-'+id+'-source').textContent,/账号独立配置/);const before=h.requests.length;assert.equal(h.node('wf-'+id+'-default').disabled,false);h.node('wf-'+id+'-default').click();assert.equal(h.node('wf-'+id+'-enabled').checked,false);assert.equal(h.requests.length,before);assert.equal(writes(h).length,0);
  const saving=h.node('wf-'+id+'-save').click();assertMutation(h.pending('/api/gameplay/config'),'/api/gameplay/config',{module:id,config:{enabled:false}});h.respond('/api/gameplay/config',{accountId:'A',module:id,config:{enabled:false},source:'account'});await saving;assert.equal(writes(h).length,1);h.run("selectAccount('B');selectAccount('A');");h.node('wf-'+id+'-default').click();assert.equal(h.node('wf-'+id+'-source').textContent,'');assert.equal(writes(h).length,1);
 });
+
+
+test('professional and Workflow action preview and confirmation show exact bound identity, expiry and original costs',async()=>{
+ const spec=cases.find(row=>row.module==='farm'),h=await loaded(spec),context={accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',generation:7,connectionId:'bound-original-connection'};
+ const buttons=domainButtons(h,spec);buttons[0].click();const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);expected.executionContext=context;h.respond('/api/operations/plan',expected);await pending;
+ const box=h.node('gp-'+spec.module+'-plan-view');for(const text of ['角色 9007199254740993','世界 9007199254740995','连接 bound-original-connection','代次 7'])assert.ok(box.textContent.includes(text));
+ h.setConfirm(false);await h.node('gp-'+spec.module+'-authorize').onclick();const confirm=h.confirmations.at(-1);for(const text of ['角色 9007199254740993','世界 9007199254740995','连接 bound-original-connection','代次 7',expected.expiresAt,expected.planHash,spec.costs[0].id])assert.ok(confirm.includes(String(text)));assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run('wfPlan='+JSON.stringify(expected)+';gpRenderPlan($("wf-plan"),wfPlan)');assert.ok(h.node('wf-plan').textContent.includes('角色 9007199254740993'));
+});
+for(const [name,context]of [
+ ['missing',undefined],['foreign account',{accountId:'B',playerId:'17',worldId:'9',generation:7,connectionId:'foreign'}],
+ ['unsafe role number',{accountId:'A',playerId:9007199254740992,worldId:'9',generation:7,connectionId:'safe'}],
+ ['overflow role',{accountId:'A',playerId:'9223372036854775808',worldId:'9',generation:7,connectionId:'safe'}]
+])test('plan identity PAGE never borrows snapshot values for '+name,async()=>{
+ const h=await boot(),value={accountId:'A',executionContext:context};h.run('snapshot.player={playerId:"should-not-borrow",worldId:"should-not-borrow"}');const text=h.run('operationPlanIdentityText('+JSON.stringify(value)+')');assert.match(text,/角色 未知/);assert.doesNotMatch(text,/should-not-borrow/);assert.equal(writes(h).length,0);
+});

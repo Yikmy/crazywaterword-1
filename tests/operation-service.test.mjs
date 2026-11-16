@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createOperationService } from '../src/operation-service.mjs';
+import { createOperationService, operationDigest } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
 
 const operation = (id, module, num = 40) => ({ actionId: id, actionType: module === 'orders' ? 'SUBMIT' : 'UPGRADE', target: { id }, costs: [{ id: 'wood', num }], beforeState: { level: 1 }, identity: id, executable: true, action: { request: 'InternalOnly', body: { id } } });
@@ -302,3 +302,19 @@ for(const key of ['account','generation','connection','player','world','client',
  const f=fleetCacheFixture();try{await f.service.surveyModule(f.session,'fleet');const s=f.session;if(key==='account')s.id='B';if(key==='generation')s.generation++;if(key==='connection')s.connectionId='other';if(key==='player')s.player.playerId='2';if(key==='world')s.player.worldId=2000001;if(key==='client')s.client={...s.client};if(key==='client-world')s.client.factContext.worldId=2000001;if(key==='disconnect')s.client.connected=false;if(key==='abort')s.abort.abort();assert.equal(f.service.fleetOverview(s).status,'UNKNOWN');assert.equal(f.reads(),1);}finally{f.cleanup();}
 });
 test('Service late Fleet survey cannot seed cache for successor role',async()=>{let resolve;const gate={promise:new Promise(r=>resolve=r)},f=fleetCacheFixture({gate});try{const pending=f.service.surveyModule(f.session,'fleet');f.session.player.worldId=2000001;f.session.busy='successor';resolve();await assert.rejects(pending,{code:'CANCELLED'});assert.equal(f.service.fleetOverview(f.session).status,'UNKNOWN');assert.equal(f.session.busy,'successor');assert.equal(f.reads(),1);}finally{f.cleanup();}});
+
+
+test('displayed plan identity is the exact original bound context, hashed and independently copied into history',async()=>{
+ const f=fixture(),session=f.session('A');session.player={playerId:'9007199254740993',worldId:'9007199254740995'};session.connectionId='synthetic-connection';try{
+  const plan=await createPlan(f,session),expected={accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',generation:1,connectionId:'synthetic-connection'};
+  assert.deepEqual(plan.executionContext,expected);const {planHash,...summary}=plan;assert.equal(operationDigest(summary),planHash);
+  const forged=structuredClone(summary);forged.executionContext.worldId='9007199254740997';assert.notEqual(operationDigest(forged),planHash);
+  plan.executionContext.playerId='other';assert.deepEqual(f.service.view('A').lastPlan.executionContext,expected);
+  start(f,session,plan);await f.service.settle('A');const record=f.history.originalRecords('A')[0];assert.deepEqual(record.planSummary.executionContext,expected);assert.equal(record.planSummary.planHash,planHash);assert.equal(f.calls.length,1);
+ }finally{f.cleanup();}
+});
+for(const key of ['playerId','worldId','connectionId','generation'])test('displaying plan context does not weaken original stale identity rejection: '+key,async()=>{
+ const f=fixture(),session=f.session('A');session.player={playerId:'17',worldId:'9'};session.connectionId='synthetic-connection';try{
+  const plan=await createPlan(f,session);if(key==='generation')session.generation++;else if(key==='connectionId')session.connectionId='new-connection';else session.player[key]='99';assert.throws(()=>approve(f,session,plan));assert.equal(f.calls.length,0);assert.deepEqual(f.history.list('A'),[]);
+ }finally{f.cleanup();}
+});

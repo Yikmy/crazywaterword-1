@@ -361,3 +361,10 @@ test('directory PAGE shares overview and daily rendering without writes and clea
  h.run('globalThis.directoryBox=document.createElement("div")');h.run('renderActivityDirectory(directoryBox,'+JSON.stringify(directory)+')');assert.ok(h.run('directoryBox.textContent').includes('period 7'));assert.equal(h.requests.some(row=>(row.options.method||'GET')==='POST'),false);
  h.run("selectAccount('B')");assert.equal(box.textContent,'');
 });
+
+
+test('core operation preview and cancelled confirmation show original exact plan binding without extra requests',async()=>{
+ const h=await boot(),plan={accountId:'A',executionContext:{accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',connectionId:'original-core-connection',generation:3},batchId:'original-batch',planHash:'original-hash',mode:'Manual',expiresAt:Date.now()+60000,actions:[{actionId:'order-a',module:'orders',actionType:'SUBMIT',target:{id:'order-a'},costs:[],beforeState:{},expectedState:{}}],resourceBudget:[]};
+ h.run('operationsPlan='+JSON.stringify(plan)+';renderOperationPlan(operationsPlan);$("ops-authorize-execute").disabled=false;globalThis.planConfirmText="";window.confirm=text=>{planConfirmText=text;return false;}');assert.match(h.node('ops-plan-meta').textContent,/角色 9007199254740993.*世界 9007199254740995.*连接 original-core-connection.*代次 3/);
+ const before=h.requests.length;await h.node('ops-authorize-execute').onclick();assert.equal(h.requests.length,before);assert.match(h.run('planConfirmText'),/角色 9007199254740993.*世界 9007199254740995/);assert.match(h.run('planConfirmText'),/original-hash/);
+});

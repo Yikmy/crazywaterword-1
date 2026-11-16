@@ -1095,6 +1095,12 @@ function operationRows() {
 }
 function operationTarget(target) { return typeof target === 'string' ? target : Object.entries(target || {}).map(([key, value]) => key + '=' + value).join(' · '); }
 function operationTitle(row) { return row.label || row.actionType + ' · ' + operationTarget(row.target); }
+function operationPlanIdentityText(plan) {
+ const candidate=plan?.executionContext,context=candidate&&candidate.accountId===plan.accountId?candidate:null;
+ const text=value=>typeof value==='string'&&value.length>0&&value.length<=256&&!/[\\u0000-\\u001f\\u007f]/.test(value)?value:'未知';
+ const id=value=>{if(typeof value==='number')return Number.isSafeInteger(value)&&value>0?String(value):'未知';if(typeof value!=='string'||!/^\\d{1,19}$/.test(value))return '未知';const integer=BigInt(value);return integer>0n&&integer<=9223372036854775807n?integer.toString():'未知';};
+ return '计划绑定：账号 '+text(context?.accountId)+' · 角色 '+id(context?.playerId)+' · 世界 '+id(context?.worldId)+' · 连接 '+text(context?.connectionId)+' · 代次 '+(Number.isSafeInteger(context?.generation)&&context.generation>=0?context.generation:'未知');
+}
 function operationCosts(costs) { return Array.isArray(costs) ? costs.length ? costs.map((cost) => cost.id + ' × ' + (cost.num ?? '未知')).join('；') : '无资源消耗' : '成本未知'; }
 function operationValidBudget(budget) { return Array.isArray(budget) && budget.every((cost) => typeof cost.id === 'string' && cost.id && Number.isSafeInteger(cost.num) && cost.num >= 0); }
 function operationPlanLive() {
@@ -1274,7 +1280,7 @@ async function refreshOperations() {
   catch (error) { if (viewGuard.current(scope)) { operationsReadable = false; $('ops-hint').textContent = '读取失败：' + error.message; operationControls(); } }
 }
 function renderOperationPlan(plan) {
-  $('ops-plan-meta').textContent = '待授权 · 批次 ' + plan.batchId + ' · ' + plan.mode + ' · ' + plan.actions.length + ' 项 · 有效至 ' + when(plan.expiresAt) + '。只授权下列计划与资源预算。';
+  $('ops-plan-meta').textContent = '待授权 · 批次 ' + plan.batchId + ' · ' + plan.mode + ' · ' + plan.actions.length + ' 项 · 有效至 ' + when(plan.expiresAt) + '。只授权下列计划与资源预算。' + operationPlanIdentityText(plan);
   const box = clear($('ops-plan-actions'));
   for (const row of plan.actions) {
     const card = el('div', 'order-preview-card'); card.appendChild(el('h3', null, operationTitle(row)));
@@ -1320,7 +1326,7 @@ $('ops-plan').onclick = async () => {
 $('ops-authorize-execute').onclick = async () => {
   if ($('ops-authorize-execute').disabled || !operationPlanLive()) return;
   const plan = operationsPlan, scope = viewGuard.begin('operations');
-  const text = '为账号 ' + scope.account + ' 授权本批次 ' + plan.batchId + '（' + plan.mode + '）？' + String.fromCharCode(10) + plan.actions.map(operationTitle).join(String.fromCharCode(10)) + String.fromCharCode(10) + '总资源消耗：' + operationCosts(plan.resourceBudget) + String.fromCharCode(10) + '只执行本批次具体列表；新订单或新计划需重新授权。未知结果立即停止。';
+  const text = '为账号 ' + scope.account + ' 授权本批次 ' + plan.batchId + '（' + plan.mode + '）？' + String.fromCharCode(10) + operationPlanIdentityText(plan) + String.fromCharCode(10) + '计划标识：' + plan.planHash + ' · 有效至：' + plan.expiresAt + String.fromCharCode(10) + plan.actions.map(operationTitle).join(String.fromCharCode(10)) + String.fromCharCode(10) + '总资源消耗：' + operationCosts(plan.resourceBudget) + String.fromCharCode(10) + '只执行本批次具体列表；新订单或新计划需重新授权。未知结果立即停止。';
   if (!window.confirm(text)) return;
   viewGuard.assert(scope); operationsPending = true; operationControls(); $('ops-hint').textContent = '正在授权此计划与总预算 ...';
   try {

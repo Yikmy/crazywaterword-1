@@ -459,7 +459,7 @@ function authorizeWorkflowPlan(session,payload){
     const release = acquire(session, 'operations:PLAN', workflowId);
     const generation = session.generation, client = session.client;
     try {
-      const contextHash=operationDigest(executionContext(session)),sourceIdentity=observationIdentity(session,client);
+      const displayedContext=executionContext(session),contextHash=operationDigest(displayedContext),sourceIdentity=observationIdentity(session,client);
       const config = getConfig(), rules = loadRules(session.id).config;
       const moduleConfig = adapter ? moduleSettings.get(session.id,module).config : null;
       const production = loadProduction(session.id).config;
@@ -505,7 +505,7 @@ function authorizeWorkflowPlan(session,payload){
       const createdAt = now(), batchId = randomUUID(), expiresAt = new Date(clock() + 300000).toISOString();
       let parent = null;
       if (workflowId) { parent = workflowBudgets.get(session.id); if (!parent || parent.runId !== workflowId) throw error('工作流父预算不存在', 'RUN_BUDGET_SCOPE_MISMATCH'); if (!parent.context) { parent.limits = stockLimits(facts.stock); parent.context = createRunBudgetContext({scope:parent.scope,limits:parent.limits}); } assertWorkflowDeadline(session,workflowId); parent.context.assertScope(parentScope(session,workflowId)); }
-      const summary = { ...(workflowContext?{workflowDefinitionId:workflowContext.workflowId,workflowNodeId:workflowContext.nodeId,...(workflowContext.round!==undefined?{workflowRound:workflowContext.round}:{})}:{}), ...(parent ? { parentRunId: workflowId, runBudgetIdentity: { scope: clone(parent.scope), limits: clone(parent.limits) } } : {}), batchId, accountId: session.id, module, mode, actions: operations.map(publicAction), resourceBudget, budgetClaims, productionPolicy: production, ...(adapter ? { moduleConfig, parameters: normalizedParameters } : {}), createdAt, expiresAt,
+      const summary = { ...(workflowContext?{workflowDefinitionId:workflowContext.workflowId,workflowNodeId:workflowContext.nodeId,...(workflowContext.round!==undefined?{workflowRound:workflowContext.round}:{})}:{}), ...(parent ? { parentRunId: workflowId, runBudgetIdentity: { scope: clone(parent.scope), limits: clone(parent.limits) } } : {}), batchId, accountId: session.id, executionContext: clone(displayedContext), module, mode, actions: operations.map(publicAction), resourceBudget, budgetClaims, productionPolicy: production, ...(adapter ? { moduleConfig, parameters: normalizedParameters } : {}), createdAt, expiresAt,
         notes: ['授权仅覆盖本批次具体操作；新订单和新计划需要重新授权', 'UNKNOWN 停止批次并保留预算；不自动重试'] };
       const preparation=module==='formation'?extremePreparations.get(session.id):null;
       if(preparation&&preparation.contextHash===contextHash&&preparation.stage===session.player?.mainlineStage&&preparation.dependencyHash===operationDigest(adapter.dependencyVersions(options))&&preparation.parametersHash===operationDigest(normalizedParameters)&&clock()>=preparation.preparedAt&&clock()-preparation.preparedAt<=30000)summary.preparationEvidence={capabilityId:'C215',source:clone(preparation.source),preparedAt:preparation.preparedAt,scope:'SOURCE_TEMPLATE_ONLY_CURRENT_TARGET_REVALIDATED'};
