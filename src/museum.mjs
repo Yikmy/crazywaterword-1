@@ -117,10 +117,13 @@ function projectExplorationMaterials(f,config,parameters,display,moduleConfig){
   });
   return result;
 }
+function exhibitionSelection(f){
+  return {exhibitions:f.exhibitionsReliable===true?f.exhibitions.map(e=>({exhibitionId:e.exhibitionId,level:e.level,keywordLevels:keywordsValid(e)?[...e.keywordLevels]:null,cases:casesValid(e)?copy(e.cases):null})):null,antiques:f.antiquesReliable===true?[...f.antiques]:null};
+}
 export function museumView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const time=gameTimeBounds(f),candidates=[],blocked=[],notes=[...(f.notes??[])];
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason}),enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
-  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:actionIdOf(type,target),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:copy(parameters),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
+  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:actionIdOf(type,target),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,parameters:parametersOf({...parameters,...Object.fromEntries(Object.entries(target).filter(([key])=>['stageId','heroIds','factor','exhibitionId','caseIndex','keywordType','antiqueId'].includes(key)))}),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
   if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[],explorationMaterials:projectExplorationMaterials(f,config,parameters,[],moduleConfig)};
   if(parameters.payment==='PREMIUM')block('speedExplore','PREMIUM_BLOCKED');
   const busy=f.stagesReliable?f.stages.filter(s=>s.expedition?.endTime>0):null,busyHeroes=new Set(busy?.flatMap(s=>s.expedition.heroIds)??[]);
@@ -232,7 +235,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
     }
   }
 
-  return {candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
+  return {candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes),exhibitionSelection:exhibitionSelection(f),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
 }
 export function planMuseum(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;

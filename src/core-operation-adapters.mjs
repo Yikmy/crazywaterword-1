@@ -141,7 +141,7 @@ export function planCoreOrders(facts, options = {}) {
 }
 function viewCityDomain(id, facts, options = {}) {
   const args = context(options,id), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
-  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='production'?validateProductionParameters(args.parameters):{} }, args));
+  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='production'?validateProductionParameters(row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
     : { module: id, ...planning, stock: view.stock, stockReliable: facts.stockReliable===true&&facts.productionInventoryReliable===true, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };

@@ -38,6 +38,15 @@ function windowOf(client,c,id){
  return {activityId:id,festival:r.festival,type:r.type,season:r.season,startTime:r.startTime,openTime:r.openTime,closeTime:r.closeTime,endTime:r.endTime,subOpenTime:sub.openTime,subCloseTime:sub.closeTime};
 }
 // Parse original decoded objects before snapshotting; absent own fields never authorize.
+function activitySelections(f){
+ const l=liveFacts.get(f),c=f?.context;
+ if(!l||l.digest!==digest(f)||l.client.connected!==true||!same(c,contextOf(l.client,l.player)))return null;
+ const observed=toSnapshotJson(readFestivalActivitySnapshot(l.client,c));
+ if(observed?.reliable!==true||observed.status!=='OBSERVED'||!dense(observed.activities)||['playerId','worldId'].some(key=>exactId(observed[key])!==c[key]))return null;
+ // Reuse the exact write-side identity/window parser; this is a selection
+ // source only, never proof that its time window or spin eligibility is open.
+ return observed.activities.filter(row=>row?.type==='捞尸人联动活动').map(row=>{const id=exactId(row.activityId);return id?windowOf(l.client,c,id):null;}).filter(Boolean);
+}
 function infoOf(raw){
  if(!['score','claimedId','times','minScore','maxScore','pity'].every(k=>own(raw,k)&&uint(raw[k]))||raw.minScore>raw.maxScore||!own(raw,'cost')||!['type','id','num'].every(k=>own(raw.cost,k))||raw.cost.type!==0||raw.cost.id!==ticket||!positive(safeResourceQuantity(raw.cost.num))||!own(raw,'outerGot')||!dense(raw.outerGot)||raw.outerGot.some(n=>!Number.isInteger(n)||n<9||n>16)||new Set(raw.outerGot).size!==raw.outerGot.length)return null;
  return {score:raw.score,claimedId:raw.claimedId,times:raw.times,minScore:raw.minScore,maxScore:raw.maxScore,pity:raw.pity,cost:{type:0,id:ticket,num:safeResourceQuantity(raw.cost.num)},outerGot:[...raw.outerGot].sort((a,b)=>a-b)};
@@ -69,7 +78,7 @@ function candidate(f,{config,parameters=f?.parameters??{},moduleConfig=COMPASS_W
  const expectedState=beforeState?{context:copy(beforeState.context),window:copy(f.window),times:info.times+count,claimedId:info.claimedId,receiptRule:'EXACT_CONFIGURED_SPIN_REWARDS_AND_SCORE_WITH_COMPLETE_INVENTORY_NET',outerRule:'ORDERED_UNIQUE_OUTER_ADDITIONS; FULL_CYCLE_TRANSITION_UNVERIFIED',pityRule:'INDEPENDENT_SERVER_OBSERVATION_ONLY; NO_QUALIFICATION_OR_FORMULA',cost:copy(info.cost),minScore:info.minScore,maxScore:info.maxScore}:null;
  return {module:moduleId,actionId:moduleId+':'+identity,actionType:'SPIN',target,parameters:copy(f?.parameters??{}),identity,beforeState,expectedState,costs,costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'龙王罗盘 ×'+(count??'?'),...(blockedReason===null?{action:{request,response,body:buildCompassSpinBody(target.activityId,count)}}:{})};
 }
-export function viewCompassWheel(f,options={}){validateCompassWheelParameters(options.parameters??{});return {module:moduleId,window:copy(f?.window??null),compass:copy(f?.state?.compass??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅使用持有铜钱；完成抽取、累计领奖和到账分开。保底仅显示服务器原值，不预测；跨外环整轮结算未经证明时保持UNKNOWN，不自动重放。']};}
+export function viewCompassWheel(f,options={}){validateCompassWheelParameters(options.parameters??{});return {module:moduleId,activitySelections:activitySelections(f),window:copy(f?.window??null),compass:copy(f?.state?.compass??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅使用持有铜钱；完成抽取、累计领奖和到账分开。保底仅显示服务器原值，不预测；跨外环整轮结算未经证明时保持UNKNOWN，不自动重放。']};}
 export function planCompassWheel(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable?f.stock:null),...options}={}){validateCompassWheelParameters(parameters);if(!dense(selections)||selections.length>1||selections.some(s=>!text(s)))throw invalid('罗盘每批只允许一个精确动作');const row=same(parameters,f?.parameters)?viewCompassWheel(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId)):null;return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 // Fixed slot rewards stay held; full outer-cycle transition has no proven recovery rule.
 function receiptOf(result,before,defs){
