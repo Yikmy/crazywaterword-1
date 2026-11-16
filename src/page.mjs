@@ -2281,6 +2281,12 @@ function renderDailyChecklist(data) {
     const scope=viewGuard.capture(),link=el('button','','打开普通免费点金');link.type='button';
     link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-free-gold-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
   }
+  if(view.warOnlineReward){
+    const online=view.warOnlineReward,source=view.sources?.warOnlineReward;box.appendChild(el('h3','','城战在线奖 · 缓存计数观察'));
+    box.appendChild(table(['计数类型','已报阶段原值','更新时间原值（秒）','下一配置档位 / 配置秒数','当前领取资格 / 到账'],[[
+      online.counterType,known(online.reportedStage),known(online.updateTime),online.nextConfiguredStage?online.nextConfiguredStage.stage+' / '+online.nextConfiguredStage.requiredSeconds:'未知','未知 / 未知'
+    ]]));box.appendChild(el('p','dim','计数来源 '+(source?.status||'UNKNOWN')+' / '+(source?.observedAt||'采集时间未知')+'；'+online.note));
+  }
   if(view.vip){
     box.appendChild(el('h3','','VIP · 采集等级 '+known(view.vip.vipLevel)));
     box.appendChild(table(['配置包等级','等级条件','配置奖励','每日领取状态'],view.vip.configuredPackages.map(row=>[

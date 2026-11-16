@@ -3161,3 +3161,10 @@ test('compass professional draft stays local, invalidates preview and rejects de
  const before=h.requests.length;aid.value='9007199254740997';count.value='50';button.click();assert.equal(h.requests.length,before);assert.deepEqual(JSON.parse(h.node('gp-compass-wheel-parameters').value),{activityId:'9007199254740997',count:50});assert.equal(h.node('gp-compass-wheel-plan').disabled,true);assert.equal(h.node('gp-compass-wheel-authorize').disabled,true);
  h.run("selectAccount('B'); selectAccount('A');");const value=h.node('gp-compass-wheel-parameters').value;aid.value='1';count.value='1';button.click();assert.equal(h.node('gp-compass-wheel-parameters').value,value);assert.equal(writes(h).length,0);
 });
+
+test('war online page shows cached stage and config seconds without countdown or claim controls and clears account data',async()=>{
+ const h=await boot(),body={counters:[{type:'DAILY_WORLD_ONLINE_RWD',num:'9007199254740993',updateTime:1780000000}]},state={raw:{CounterInfoRequest:body},outcomes:{CounterInfoRequest:{status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'}},failed:{}},config={tables:{WorldOnlineRwdCfg:{data:[{stage:1,seconds:1},{stage:2,seconds:60}]}}},before=h.requests.length;
+ let view=dailyChecklist(state,{config});h.run('renderDailies('+JSON.stringify({checklist:view,tasks:[]})+')');let text=h.node('dailies-table').textContent;assert.match(text,/城战在线奖.*缓存计数观察/);assert.match(text,/9007199254740993/);assert.match(text,/1780000000/);assert.match(text,/未知 \/ 未知/);assert.match(text,/不计算剩余等待或重置/);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ body.counters[0].num='1';view=dailyChecklist(state,{config});h.run('renderDailies('+JSON.stringify({checklist:view,tasks:[]})+')');text=h.node('dailies-table').textContent;assert.match(text,/2 \/ 60/);assert.equal(h.requests.length,before);assert.equal(descendants(h.node('dailies-table')).some(n=>n.tagName==='BUTTON'&&/在线/.test(n.textContent)),false);assert.equal(writes(h,'/api/operations/execute').length,0);
+ h.run("selectAccount('B')");assert.equal(h.node('dailies-table').textContent,'');
+});

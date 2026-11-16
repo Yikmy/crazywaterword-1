@@ -347,3 +347,45 @@ test('same gift observation preserves raw list order and old omitted marker form
  }
  const body={heroId:'h',drawnPack:[]};Object.defineProperty(body,'resetTime',{enumerable:true,get(){throw Error('must not use opaque marker getter');}});assert.equal(planDailyGift(body).resetTime,null);
 });
+
+function withOnlineCounter({num='0',updateTime=1780000000,other=true,snapshot=false}={}){
+ const s=fixture({snapshot}),body=typed('CounterInfoRequest',{counters:[{type:'DAILY_WORLD_ONLINE_RWD',num,updateTime},...(other?[{type:'DAILY_GUILD_AID',num:'99',updateTime:1}]:[])]});
+ s.raw.CounterInfoRequest=snapshot?toSnapshotJson(body):body;s.ok.CounterInfoRequest={counters:[]};s.outcomes.CounterInfoRequest={status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'};return s;
+}
+
+test('war online cached counter preserves actual codec int64, stage zero and configured next stage without eligibility',()=>{
+ for(const snapshot of [false,true])for(const num of ['0','1','6','7','9007199254740993','9223372036854775807']){
+  const s=withOnlineCounter({num,snapshot}),before=toSnapshotJson(s),view=dailyChecklist(s,{config}),v=view.warOnlineReward;
+  assert.equal(v.status,'OBSERVED');assert.equal(v.reportedStage,num);assert.equal(v.updateTime,1780000000);assert.equal(v.configStatus,'AVAILABLE');
+  if(BigInt(num)<7n){assert.equal(v.nextConfiguredStage.stage,Number(num)+1);assert.equal(v.nextConfiguredStage.requiredSeconds,config.tables.WorldOnlineRwdCfg.data[Number(num)].seconds);}else assert.equal(v.nextConfiguredStage,null);
+  assert.equal(v.eligible,null);assert.equal(v.currentPeriod,'UNKNOWN');assert.equal(v.claimState,'UNKNOWN');assert.equal(v.settlement,'UNKNOWN');assert.equal(v.executable,false);
+  for(const key of ['action','actions','claimParameters','rewards','remainingSeconds'])assert.equal(Object.hasOwn(v,key),false);
+  assert.equal(view.sources.warOnlineReward.precision,'DECODED_EXACT');assert.equal(view.sources.warOnlineReward.observedAt,'2026-11-16T01:00:00Z');assert.deepEqual(toSnapshotJson(s),before);
+  assert.match(formatDailyChecklist(view),/城战在线奖缓存阶段 .*当前领取资格未知/);
+ }
+});
+
+for(const [label,mutate]of [
+ ['missing list',s=>s.raw.CounterInfoRequest={}],['empty list',s=>s.raw.CounterInfoRequest={counters:[]}],['sparse list',s=>s.raw.CounterInfoRequest={counters:Array(1)}],
+ ['duplicate identity',s=>s.raw.CounterInfoRequest.counters.push(s.raw.CounterInfoRequest.counters[0])],['missing num',s=>delete s.raw.CounterInfoRequest.counters[0].num],
+ ['unsafe number',s=>s.raw.CounterInfoRequest.counters[0].num=9007199254740992],['overflow',s=>s.raw.CounterInfoRequest.counters[0].num='9223372036854775808'],['negative',s=>s.raw.CounterInfoRequest.counters[0].num='-1'],
+ ['missing update',s=>delete s.raw.CounterInfoRequest.counters[0].updateTime],['negative update',s=>s.raw.CounterInfoRequest.counters[0].updateTime=-1],
+ ['inherited identity',s=>s.raw.CounterInfoRequest.counters[0]=Object.create({type:'DAILY_WORLD_ONLINE_RWD',num:'0',updateTime:1})],
+ ['counter getter',s=>Object.defineProperty(s.raw.CounterInfoRequest.counters[0],'num',{enumerable:true,get(){throw Error('must not execute counter getter');}})],
+ ['source failed',s=>s.failed.CounterInfoRequest='hidden'],['failed outcome',s=>s.outcomes.CounterInfoRequest.status='FAILED'],['missing exact source',s=>delete s.raw.CounterInfoRequest]
+])test('war online observation stays local and unknown: '+label,()=>{
+ const s=withOnlineCounter();mutate(s);const v=dailyChecklist(s,{config});assert.equal(v.warOnlineReward.status,'UNKNOWN');assert.equal(v.warOnlineReward.eligible,null);assert.equal(v.warOnlineReward.executable,false);assert.equal(v.tasks.counts.eligible,1);assert.equal(v.gift.eligible,true);assert.doesNotMatch(JSON.stringify(v),/hidden/);
+});
+
+for(const [label,mutate]of [
+ ['missing table',c=>delete c.tables.WorldOnlineRwdCfg],['empty table',c=>c.tables.WorldOnlineRwdCfg.data=[]],['duplicate stage',c=>c.tables.WorldOnlineRwdCfg.data.push(c.tables.WorldOnlineRwdCfg.data[0])],
+ ['missing stage',c=>c.tables.WorldOnlineRwdCfg.data.shift()],['missing seconds',c=>delete c.tables.WorldOnlineRwdCfg.data[0].seconds],['bad seconds',c=>c.tables.WorldOnlineRwdCfg.data[0].seconds=NaN]
+])test('war online config failure cannot remove independent counter or invent threshold: '+label,()=>{
+ const c=clone(config);mutate(c);const v=dailyChecklist(withOnlineCounter(),{config:c}).warOnlineReward;assert.equal(v.status,'OBSERVED');assert.equal(v.reportedStage,'0');assert.equal(v.configStatus,'UNKNOWN');assert.equal(v.nextConfiguredStage,null);assert.equal(v.eligible,null);
+});
+
+test('war online legacy safe numbers and reordered config remain observations, missing counters never default to zero',()=>{
+ const s=withOnlineCounter(),body={counters:[{type:'DAILY_WORLD_ONLINE_RWD',num:0,updateTime:0}]},c=clone(config);c.tables.WorldOnlineRwdCfg.data.reverse();
+ const v=dailyChecklist({ok:{CounterInfoRequest:body},failed:{}},{config:c});assert.equal(v.warOnlineReward.reportedStage,'0');assert.equal(v.warOnlineReward.updateTime,0);assert.deepEqual(v.warOnlineReward.nextConfiguredStage,{stage:1,requiredSeconds:1});assert.equal(v.sources.warOnlineReward.precision,'LEGACY_NORMALIZED');
+ assert.equal(dailyChecklist(fixture(),{config}).warOnlineReward.reportedStage,null);assert.equal(dailyChecklist(s,{config}).warOnlineReward.eligible,null);
+});

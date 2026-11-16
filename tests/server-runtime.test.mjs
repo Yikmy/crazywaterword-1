@@ -790,3 +790,46 @@ test('old daily API and Checklist expose the same observation qualification and 
   assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),raw);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
  }finally{await app.close();}
 });
+
+function onlineRuntimeSnapshot(num='0'){
+ const s=dailyRuntimeSnapshot();s.raw.CounterInfoRequest={counters:[{type:'DAILY_WORLD_ONLINE_RWD',num,updateTime:1780000000}]};s.ok.CounterInfoRequest=structuredClone(s.raw.CounterInfoRequest);s.outcomes.CounterInfoRequest={status:'SUCCESS',updatedAt:'2026-11-16T01:00:00Z'};return s;
+}
+
+test('war online HTTP reads only collected account counter and never sends a claim or refresh',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>onlineRuntimeSnapshot(client.factContext.accountId==='account-A'?'0':'4')});
+ try{
+  for(const account of ['account-A','account-B']){await app.login(account);await app.refresh(account);}
+  const sent=app.sent.length,bytes=JSON.stringify(app.sessions.get('account-A').snapshot);
+  for(const account of ['account-A','account-B'])for(let i=0;i<2;i++){
+   const result=await app.call('/api/dailies',{account}),v=result.data.checklist.warOnlineReward;assert.equal(result.status,200);assert.equal(v.status,'OBSERVED');assert.equal(v.reportedStage,account==='account-A'?'0':'4');assert.equal(v.eligible,null);assert.equal(v.executable,false);assert.equal(v.settlement,'UNKNOWN');assert.equal(Object.hasOwn(v,'action'),false);
+  }
+  assert.equal(app.collects,2);assert.equal(app.sent.length,sent);assert.equal(app.sent.includes('GotWorldOnlineRwdRequest'),false);assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),bytes);
+  delete app.sessions.get('account-A').snapshot.raw.CounterInfoRequest;assert.equal((await app.call('/api/dailies')).data.checklist.warOnlineReward.status,'UNKNOWN');assert.equal((await app.call('/api/dailies',{account:'account-B'})).data.checklist.warOnlineReward.reportedStage,'4');
+ }finally{await app.close();}
+});
+
+for(const field of ['accountId','generation','connectionId','playerId','worldId','client'])test('war online cache cannot transfer across identity '+field,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>onlineRuntimeSnapshot()});
+ try{
+  await app.login();await app.refresh();const session=app.sessions.get('account-A'),sent=app.sent.length;
+  assert.equal((await app.call('/api/dailies')).data.checklist.warOnlineReward.status,'OBSERVED');
+  if(field==='accountId')session.id='foreign';else if(field==='client')session.client={...session.client,stop(){}};else if(['playerId','worldId'].includes(field))session.player[field]='9007199254740993';else if(field==='generation')session.generation++;else session.connectionId='replacement';
+  const result=(await app.call('/api/dailies')).data.checklist;assert.equal(result.warOnlineReward.status,'UNKNOWN');assert.equal(result.warOnlineReward.reportedStage,null);assert.equal(result.warOnlineReward.eligible,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+
+test('war online late collection keeps former role counter unknown with zero extra dispatch',async()=>{
+ const gate=deferred();let started=false;const app=await dailyRuntimeHarness({collect:async()=>{started=true;return gate.promise;}});
+ try{
+  await app.login();const pending=app.refresh();await until(()=>started);app.sessions.get('account-A').player.worldId='different';gate.resolve(onlineRuntimeSnapshot());assert.equal((await pending).status,200);
+  const sent=app.sent.length,result=(await app.call('/api/dailies')).data.checklist.warOnlineReward;assert.equal(result.status,'UNKNOWN');assert.equal(result.reportedStage,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{gate.resolve(onlineRuntimeSnapshot());await app.close();}
+});
+
+test('war online restored public snapshot has no connection binding or implicit resume authority',async()=>{
+ const app=await dailyRuntimeHarness();try{
+  const first=await app.call('/api/dailies');assert.equal(first.data.checklist.warOnlineReward.status,'UNKNOWN');assert.equal(app.clients.length,0);
+  const session=app.sessions.get('account-A');session.snapshot=onlineRuntimeSnapshot('4');session.snapshotAt='2026-11-16T01:00:00Z';
+  const second=await app.call('/api/dailies');assert.equal(second.data.checklist.warOnlineReward.status,'UNKNOWN');assert.equal(second.data.checklist.warOnlineReward.reportedStage,null);assert.equal(second.data.checklist.warOnlineReward.executable,false);assert.equal(app.clients.length,0);assert.equal(app.sent.length,0);assert.equal(app.collects,0);
+ }finally{await app.close();}
+});

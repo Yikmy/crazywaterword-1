@@ -385,7 +385,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
   }
 
   function taskObservationSnapshot(session) {
-    const failures=taskSnapshotFailures(session,['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest','DailyTaskInfoRequest','DailyGiftPackRequest']);
+    const requests=['MainTaskInfoRequest','AchievementInfoRequest','OnWaterRequest','DailyTaskInfoRequest','DailyGiftPackRequest'];
+    if(Object.hasOwn(session.snapshot?.raw??{},'CounterInfoRequest')||Object.hasOwn(session.snapshot?.ok??{},'CounterInfoRequest'))requests.push('CounterInfoRequest');
+    const failures=taskSnapshotFailures(session,requests);
     return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot?.failed,...failures}} : session.snapshot;
   }
 

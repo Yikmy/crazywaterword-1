@@ -1,7 +1,7 @@
 import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
 import { CHEST_TABLE, describeDailyTask, dailyGiftObservation, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
-import { taskObservation, taskQualification } from './tasks.mjs';
+import { achievementProgressCount, taskObservation, taskQualification } from './tasks.mjs';
 import { parseOpenRankActivity } from './client.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -100,6 +100,26 @@ function achievementsView(body) {
     counts:{total:rows.length,completed:countKnown('complete',row=>row.complete),claimed:countKnown('rewardClaimed',row=>row.rewardClaimed),eligible:countKnown('eligible',row=>row.eligible)},
     note:'缓存仅显示成就 ID、精确进度和已领观察；领取请进入任务奖励 Function，指定 kind=achievement 与 taskId，重新探测并逐批授权。'};
 }
+// BIZ-R12a: WarPop reads counterInfo(DAILY_WORLD_ONLINE_RWD); missing is not stage zero.
+// CounterInfo and config are observations only. Client timezone/open-day rules and
+// the empty claim request do not establish a restorable reward identity here.
+function warOnlineRewardView(body,config) {
+  const counterType='DAILY_WORLD_ONLINE_RWD',raw=own(body,'counters');
+  const listKnown=dense(raw)&&raw.every(row=>text(own(row,'type')));
+  const matches=listKnown?raw.filter(row=>own(row,'type')===counterType):[];
+  const row=matches.length===1?matches[0]:null;
+  const reportedStage=row?achievementProgressCount(own(row,'num')):null,updateTime=count(row,'updateTime');
+  const configured=table(config,'WorldOnlineRwdCfg');
+  const configKnown=dense(configured)&&configured.length>0&&configured.every(row=>positive(own(row,'stage'))&&positive(own(row,'seconds')))&&new Set(configured.map(row=>own(row,'stage'))).size===configured.length;
+  const stages=configKnown?configured.map(row=>({stage:own(row,'stage'),requiredSeconds:own(row,'seconds')})).sort((a,b)=>a.stage-b.stage):null;
+  const contiguous=stages!==null&&stages.every((row,index)=>row.stage===index+1);
+  const next=contiguous&&reportedStage!==null?stages.find(row=>BigInt(row.stage)===BigInt(reportedStage)+1n)??null:null;
+  return {readOnly:true,status:reportedStage!==null&&updateTime!==null?'OBSERVED':'UNKNOWN',
+    reason:!listKnown?'WAR_ONLINE_COUNTER_LIST_UNKNOWN':matches.length!==1?'WAR_ONLINE_COUNTER_IDENTITY_UNKNOWN':reportedStage===null||updateTime===null?'WAR_ONLINE_COUNTER_FIELDS_UNKNOWN':null,
+    counterType,reportedStage,updateTime,configStatus:contiguous?'AVAILABLE':'UNKNOWN',nextConfiguredStage:next,
+    currentPeriod:'UNKNOWN',eligible:null,claimState:'UNKNOWN',settlement:'UNKNOWN',executable:false,blockedReason:'WAR_ONLINE_WINDOW_AND_SETTLEMENT_UNVERIFIED',
+    note:'本账号缓存中的在线奖励计数原值；num 为客户端已报阶段，updateTime 保留服务器秒值。下一档仅为配置观察，不计算剩余等待或重置；缺城战开放日、客户端时区及空请求同次归属，当前领取资格与实际到账未知。'};
+}
 function freeGoldView(body,config) {
   const info=own(body,'clickGoldInfo'),used=count(info,'freeTimes'),paidUsed=count(info,'paidTimes'),resetMarker=count(info,'resetTime'),minimumGold=count(info,'minGold');
   const rows=table(config,'OfflineParamCfg'),matches=dense(rows)?rows.filter(row=>own(row,'paramName')==='免费点金次数'):[];
@@ -196,9 +216,9 @@ function openRankView(state,context=null) {
 }
 
 export function dailyChecklist(state,{config=null,context=null}={}) {
-  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest');
-  return {readOnly:true,festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
-    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info},
+  const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest');
+  return {readOnly:true,warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},
+    gift:giftView(gift.body),resetMarker:count(daily.body,'dailyResetTime'),sources:{daily:daily.info,gift:gift.info,achievements:achievements.info,freeGold:freeGold.info,warOnlineReward:counters.info},
     note:'门槛资格来自本账号缓存；重置字段保留原值。领取仍需精确周期、奖励及权威复核合同。'};
 }
 export function formatDailyChecklist(view) {
@@ -207,6 +227,7 @@ export function formatDailyChecklist(view) {
     '成就：'+known(view.achievements.counts.eligible)+' 项达到门槛；普通免费点金剩余 '+known(view.freeGold.remaining),
     '每日活跃 '+known(view.activity.daily.activity)+'；每周活跃 '+known(view.activity.weekly.activity),
     '免费赠礼：'+labels[view.gift.status]+'；VIP 等级 '+known(view.vip.vipLevel)+'，每日礼包领取状态未知',
+    '城战在线奖缓存阶段 '+known(view.warOnlineReward.reportedStage)+'；当前领取资格未知',
     '季节活动推送：'+view.festival.status+'，观察到 '+view.festival.rows.length+' 条；当前领取资格未知',
     '开服排行窗口：'+view.openRank.status+'，观察到 '+view.openRank.rows.length+' 类；当前领取资格未知',view.note].join('\n');
 }
