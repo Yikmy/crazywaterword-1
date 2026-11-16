@@ -10,7 +10,7 @@ import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewTaskRewards,planTaskRewards,verifyTaskReward,taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
-import { parseDailyTaskObservation, claimableDailyTasks, claimDailies, activityRewardDefinition, dailyGiftDefinition, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
+import { parseDailyTaskObservation, claimableDailyTasks, claimDailies, activityRewardDefinition, dailyGiftDefinition, dailyGiftObservation, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
 import { DAILY_TASK_REWARD_EVIDENCE, WEEKLY_BATTLE_PASS_TASK_EVIDENCE } from '../src/daily-task-rewards.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -1187,3 +1187,16 @@ for(const [kind]of openingModes)for(const apply of [true,false])test('opening ta
 });
 test('opening task highest pirate tier keeps chip boxes held and verifies full configured income',async t=>{const f=await ready({war:true,rankKind:'open-rank-pirate',worldId:'7000001'},f=>{f.options.parameters.tierId=30000;f.state.openRank.progress=30000;});t.after(()=>f.client.stop());assert.ok(f.operation);assert.ok(f.operation.rewards.some(r=>r.id==='绿芯片宝箱'&&r.num===2));const r=await executeBusinessOperation(f.client,protocol,f.operation,{...f.options,adapter:taskRewardsModule,allowMutate:true,budget:budget(f)});assert.equal(r.status,'SUCCESS');assert.equal(f.state.stock.find(r=>r.itemId==='绿芯片宝箱').num,2);assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].name,'GotOpenRankRewardRequest');});
 test('opening task equal scores have distinct mode budgets and immutable exact dependencies',async t=>{const rows=[];for(const rankKind of ['open-rank-order','open-rank-pirate','open-rank-war']){const f=await ready({war:true,rankKind},f=>{f.options.parameters.tierId=1000;});t.after(()=>f.client.stop());assert.ok(f.operation);rows.push(f.operation.budgetClaims.uids[0]);const options=clone(f.options);options.config.tables.unrelated={data:[]};assert.equal(planTaskRewards(f.facts,{...options,selections:[f.operation.actionId]}).actions.length,1);Object.values(options.config.tables)[0].revision=2;assert.equal(planTaskRewards(f.facts,{...options,selections:[f.operation.actionId]}).actions.length,0);}assert.equal(new Set(rows.map(r=>r.id)).size,3);assert.equal(new Set(rows.map(r=>r.type)).size,3);});
+
+for(const field of ['resetTime','boughtPack'])test('shared gift progress observation cannot replace strict write evidence '+field,async()=>{
+ const f=await ready({gift:true,codec:false},f=>delete f.state.gift[field]);
+ assert.equal(dailyGiftObservation(f.state.gift).freeAvailable,true);assert.equal(planDailyGift(f.state.gift).freeAvailable,true);
+ assert.equal(f.operation,undefined);assert.equal(f.row.executable,false);assert.equal(f.state.writes.length,0);
+});
+
+test('shared gift parser keeps strict snapshots sorted without mutating legacy source or granting settlement',async()=>{
+ const f=await ready({gift:true},f=>{f.state.gift.drawnPack=['礼包2','礼包1'];f.state.gift.boughtPack=['礼包3','礼包1'];});
+ assert.ok(f.operation);assert.deepEqual(f.facts.daily.drawnPack,['礼包1','礼包2']);assert.deepEqual(f.facts.daily.boughtPack,['礼包1','礼包3']);
+ assert.deepEqual(dailyGiftObservation(f.state.gift).drawnPack,['礼包2','礼包1']);assert.deepEqual(f.state.gift.boughtPack,['礼包3','礼包1']);
+ assert.equal(verifyTaskReward(f.operation,f.facts,f.facts,null).confirmed,false);assert.equal(f.state.writes.length,0);
+});

@@ -1,6 +1,6 @@
 import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
-import { CHEST_TABLE, describeDailyTask, planDailyGift, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
+import { CHEST_TABLE, describeDailyTask, dailyGiftObservation, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
 import { taskObservation, taskQualification } from './tasks.mjs';
 import { parseOpenRankActivity } from './client.mjs';
 
@@ -110,10 +110,10 @@ function freeGoldView(body,config) {
     note:'freeTimes 为本次缓存中的已用次数；领取请进入普通免费点金 Function，重新探测可信时段、单次授权并复读结算。缓存不构成资格授权，未推定日界或实际到账；付费点金仍受 D6 禁止。'};
 }
 function giftView(body) {
-  const drawn=list(own(body,'drawnPack'),text),heroId=own(body,'heroId'),resetMarker=count(body,'resetTime');
-  const known=drawn!==null&&text(heroId),gift=known?planDailyGift({drawnPack:drawn,heroId,resetTime:resetMarker}):null;
-  return {packId:'赠礼',heroId:text(heroId)?heroId:null,drawn,resetMarker,eligible:gift?.freeAvailable??null,
-    status:known?gift.freeAvailable?'ELIGIBLE':'CLAIMED':'UNKNOWN',reason:known?null:'DAILY_GIFT_STATE_UNKNOWN',
+  const observed=dailyGiftObservation(body),drawn=observed.drawnPack,heroId=observed.heroId,resetMarker=count(body,'resetTime');
+  const eligible=observed.freeAvailable,known=eligible!==null;
+  return {packId:'赠礼',heroId,drawn,resetMarker,eligible,
+    status:known?eligible?'ELIGIBLE':'CLAIMED':'UNKNOWN',reason:known?null:'DAILY_GIFT_STATE_UNKNOWN',
     executable:false,claimFunctionId:'task-rewards',claimParameters:{kind:'daily-gift',packId:'赠礼'},blockedReason:'CACHED_STATE_REQUIRES_TASK_REWARDS_SURVEY_AND_AUTHORIZATION'};
 }
 function vipView(state,config) {

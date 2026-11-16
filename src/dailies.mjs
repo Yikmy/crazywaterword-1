@@ -171,18 +171,24 @@ function nextThreshold(config, kind, { activity = null, claimed = [], status, se
 // resetTime 保留为服务端原样标记；未闭合单位与日界合同，不据此安排重领。
 //
 // 面板里另外三个（礼包1/2/3）要走充值，"合并礼包" 要先买过前三个才可领，都不在本工具范围内。
+// Shared read-only identity/list observation; no period, authorization or settlement is inferred.
+export function dailyGiftObservation(response) {
+  const field=key=>{const d=response!==null&&typeof response==='object'&&!Array.isArray(response)?Object.getOwnPropertyDescriptor(response,key):null;return d?.enumerable&&Object.hasOwn(d,'value')?d.value:undefined;};
+  const id=field('heroId'),raw=field('drawnPack');
+  const validText=v=>rewardText(v)&&!/[\u0000-\u001f\u007f]/.test(v);
+  const heroId=validText(id)?id:null;
+  const drawnPack=rewardDense(raw)&&raw.every(validText)&&new Set(raw).size===raw.length?[...raw]:null;
+  return {heroId,drawnPack,freeAvailable:heroId!==null&&drawnPack!==null?!drawnPack.includes(FREE_DAILY_PACK_ID):null};
+}
 export function planDailyGift(response) {
-  // The real codec requires heroId and initializes omitted repeated fields to [].
-  // An empty decoded list is valid; a malformed plain object without the list is unknown.
-  const drawn = response?.drawnPack;
-  const known = Array.isArray(drawn) && drawn.every((id) => typeof id === 'string')
-    && typeof response?.heroId === 'string' && response.heroId.trim().length > 0;
-  const available = known && !drawn.includes(FREE_DAILY_PACK_ID);
+  // The real codec initializes omitted repeated fields to explicit empty lists.
+  const observation=dailyGiftObservation(response),drawn=observation.drawnPack;
+  const known=observation.freeAvailable!==null,available=observation.freeAvailable===true;
   return {
     drawn: known ? drawn : null,
     status: known ? available ? 'ready' : 'done' : 'unknown',
     freeAvailable: known ? available : null,
-    resetTime: response?.resetTime ?? null,
+    resetTime: Object.getOwnPropertyDescriptor(response ?? {},'resetTime')?.value ?? null,
     actions: available
       ? [{
         request: ACTIONS.freeDailyPackDraw.request,

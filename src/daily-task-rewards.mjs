@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { achievementProgressCount } from './tasks.mjs';
 import { readOpenRankActivitySnapshot } from './client.mjs';
 import { ACTIONS, buildBody, buildOpenRankTaskRewardBody, FREE_DAILY_PACK_ID } from './actions.mjs';
-import { activityRewardDefinition, activityTierAvailable, dailyGiftDefinition, planDailyGift, dailyTaskRows, parseDailyTaskObservation } from './dailies.mjs';
+import { activityRewardDefinition, activityTierAvailable, dailyGiftDefinition, dailyGiftObservation, dailyTaskRows, parseDailyTaskObservation } from './dailies.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
@@ -136,10 +136,9 @@ function activityCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.
 // resetTime is an opaque identity component; no clock/day policy is inferred.
 export const DAILY_GIFT_EVIDENCE=Object.freeze({source:'Fixed v76 main/game.js DailyCombinePanel._onClickFree/_asyncDrawGiftPack/_packCfgList and DailyChargeGiftPackCfg',byte:1613827,sha256:'f428fcb14c89df67357bf2256ff959d41a6918489803f14c73e8030c79a5c3b2',realGame:'REAL_UNVERIFIED'});
 function parseGift(raw){
- if(!own(raw,'heroId')||!text(raw.heroId)||!own(raw,'resetTime')||!positive(raw.resetTime))return null;
- const result={heroId:raw.heroId,resetMarker:raw.resetTime};
- for(const key of['drawnPack','boughtPack']){if(!own(raw,key)||!dense(raw[key])||raw[key].some(v=>!text(v))||new Set(raw[key]).size!==raw[key].length)return null;result[key]=[...raw[key]].sort();}
- return result;
+ const observed=dailyGiftObservation(raw);
+ if(observed.freeAvailable===null||!own(raw,'resetTime')||!positive(raw.resetTime)||!own(raw,'boughtPack')||!dense(raw.boughtPack)||raw.boughtPack.some(v=>!text(v))||new Set(raw.boughtPack).size!==raw.boughtPack.length)return null;
+ return {heroId:observed.heroId,resetMarker:raw.resetTime,drawnPack:observed.drawnPack.sort(),boughtPack:[...raw.boughtPack].sort()};
 }
 function giftDefinition(f,config){
  if(!same(f?.configEvidence?.tables?.DailyChargeGiftPackCfg,config?.tables?.DailyChargeGiftPackCfg))return null;
@@ -148,7 +147,7 @@ function giftDefinition(f,config){
 function giftCandidate(f,{config,moduleConfig={enabled:false}}={}){
  const p={kind:'daily-gift',packId:FREE_DAILY_PACK_ID},valid=authority(f),def=giftDefinition(f,config),beforeState=copy(f?.state??null);let expectedState=null;
  if(valid&&def&&f.stock.has('RUBY')&&Number.isSafeInteger(f.stock.get('RUBY')+def.rewards[0].num)){const next=copy(beforeState),stock=new Map(f.stock);stock.set('RUBY',stock.get('RUBY')+def.rewards[0].num);next.inventory=stockState(stock);next.daily.drawnPack=[...next.daily.drawnPack,FREE_DAILY_PACK_ID].sort();expectedState=next;}
- const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_GIFT_AUTHORITY_UNKNOWN':!def?'DAILY_GIFT_CONFIG_OR_SEASON_UNKNOWN':planDailyGift(f.daily).freeAvailable!==true?'DAILY_GIFT_ALREADY_CLAIMED':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('GotFreeDailyPackRequest')?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_GIFT_AUTHORITY_UNKNOWN':!def?'DAILY_GIFT_CONFIG_OR_SEASON_UNKNOWN':dailyGiftObservation(f.daily).freeAvailable!==true?'DAILY_GIFT_ALREADY_CLAIMED':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('GotFreeDailyPackRequest')?'PROTOCOL_UNAVAILABLE':null;
  const identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),uid=hash({p,daily:f?.daily,season:def?.configuredSeason}),source='Fixed v76 DailyCombinePanel explicit free 赠礼 only; selected DailyChargeGiftPackCfg price=0 fragNum=0 guildPack=[] and RUBY reward; opaque server marker, no assumed game-day renewal';
  return {module:moduleId,capabilityId:'C513',actionId:moduleId+':daily-gift:'+identity,actionType:'CLAIM',target:{...p,heroId:f?.daily?.heroId??null,resetMarker:f?.daily?.resetMarker??null,season:def?.season??null,configuredSeason:def?.configuredSeason??null},parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:'free-daily-gift',id:uid}]},executable:blockedReason===null,blockedReason,label:'免费日赠礼',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:ACTIONS.freeDailyPackDraw.request,response:ACTIONS.freeDailyPackDraw.response,body:buildBody(ACTIONS.freeDailyPackDraw)}}:{})};
 }

@@ -6,7 +6,7 @@ import { loadProtocol } from '../src/proto.mjs';
 import { dailyChecklist, formatDailyChecklist } from '../src/daily-checklist.mjs';
 import { toSnapshotJson } from '../src/game.mjs';
 import { taskObservation, taskQualification } from '../src/tasks.mjs';
-import { parseDailyTaskObservation, claimableDailyTasks } from '../src/dailies.mjs';
+import { dailyGiftObservation, planDailyGift, parseDailyTaskObservation, claimableDailyTasks } from '../src/dailies.mjs';
 
 const config={tables:getConfig().tables},codec=createCodec(loadProtocol()),clone=v=>structuredClone(v);
 const typed=(request,body)=>codec.decode(codec.encode(request.replace(/Request$/,'Response'),1,body)).body;
@@ -324,3 +324,26 @@ test('seasonal subactivity actual Codec preserves zeros and exact parent IDs but
  s.activities[0].subActivity[1].compassWheel={};s.activities[0].subActivity[3].evilExpel={};s.activities=decode();row=festivalSubView(s);assert.equal(row.subActivities.rows[1].detail.score,null);assert.equal(row.subActivities.rows[3].detail.killTotal,null);assert.equal(row.checkInRecord.checkRuby,'9007199254740993');
 });
 for(const [label,mutate]of[['past',r=>{r.openTime=1;r.closeTime=2;}],['future',r=>{r.openTime=2147483600;r.closeTime=2147483601;}],['reversed',r=>{r.openTime=20;r.closeTime=10;}],['missing',r=>{delete r.openTime;delete r.closeTime;}]])test('seasonal subactivity '+label+' window or completed progress never grants a write',()=>{const s=festivalSubObservation();for(const r of s.activities[0].subActivity)mutate(r);s.activities[0].subActivity[3].evilExpel={killTotal:75,claimed:0,alive:6};const row=festivalSubView(s);for(const r of row.subActivities.rows){assert.equal(r.eligible,null);assert.equal(r.claimStatus,'UNKNOWN');assert.equal(r.executable,false);}assert.equal(row.eligible,null);});
+
+for(const [label,make]of [
+ ['missing list',()=>({heroId:'h'})],['sparse list',()=>({heroId:'h',drawnPack:Array(1)})],['duplicate list',()=>({heroId:'h',drawnPack:['礼包1','礼包1']})],
+ ['blank ID',()=>({heroId:'h',drawnPack:['']})],['padded ID',()=>({heroId:'h',drawnPack:[' 赠礼']})],['invalid hero',()=>({heroId:' h',drawnPack:[]})],
+ ['control pack',()=>({heroId:'h',drawnPack:['礼包'+String.fromCharCode(0)+'1']})],['control hero',()=>({heroId:'h'+String.fromCharCode(0)+'x',drawnPack:[]})],
+ ['inherited hero',()=>Object.assign(Object.create({heroId:'h'}),{drawnPack:[]})],
+ ['list getter',()=>Object.defineProperty({heroId:'h'},'drawnPack',{enumerable:true,get(){throw Error('must not read list getter');}})],
+ ['entry getter',()=>{const drawnPack=[];Object.defineProperty(drawnPack,'0',{enumerable:true,get(){throw Error('must not read entry getter');}});return {heroId:'h',drawnPack};}]
+])test('same gift observation keeps legacy and cached qualification unknown: '+label,()=>{
+ const raw=make(),s=fixture();s.raw.DailyGiftPackRequest=raw;
+ const observed=dailyGiftObservation(raw),legacy=planDailyGift(raw),cached=dailyChecklist(s,{config}).gift;
+ assert.equal(observed.freeAvailable,null);assert.equal(legacy.freeAvailable,null);assert.deepEqual(legacy.actions,[]);assert.equal(cached.eligible,null);assert.equal(cached.status,'UNKNOWN');assert.equal(cached.executable,false);
+ assert.equal(Object.hasOwn(observed,'action'),false);assert.equal(Object.hasOwn(observed,'actions'),false);
+});
+
+test('same gift observation preserves raw list order and old omitted marker format without a settlement assertion',()=>{
+ for(const drawnPack of [[],['礼包2','礼包1'],['礼包1','赠礼']]){
+  const body={heroId:'h',drawnPack},original=structuredClone(body),observed=dailyGiftObservation(body),s=fixture();s.raw.DailyGiftPackRequest=body;
+  const legacy=planDailyGift(body),cached=dailyChecklist(s,{config}).gift;assert.equal(legacy.freeAvailable,observed.freeAvailable);assert.equal(cached.eligible,observed.freeAvailable);assert.equal(cached.resetMarker,null);assert.equal(legacy.resetTime,null);
+  assert.deepEqual(observed.drawnPack,drawnPack);assert.notEqual(observed.drawnPack,drawnPack);assert.deepEqual(body,original);assert.equal(cached.executable,false);assert.equal(Object.hasOwn(cached,'action'),false);
+ }
+ const body={heroId:'h',drawnPack:[]};Object.defineProperty(body,'resetTime',{enumerable:true,get(){throw Error('must not use opaque marker getter');}});assert.equal(planDailyGift(body).resetTime,null);
+});
