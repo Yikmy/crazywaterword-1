@@ -869,3 +869,12 @@ test('water floater push never turns historical species counts into a current pi
   const v=(await app.call('/api/dailies')).data.checklist.waterFloaters;assert.equal(v.coverage,'COLLECTED_ON_WATER_ONLY');assert.equal(v.totalCount,3);assert.equal(v.eligible,null);assert.equal(v.executable,false);assert.equal(JSON.stringify(app.sessions.get('account-A').snapshot),bytes);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
  }finally{await app.close();}
 });
+
+test('task summary HTTP shares exact read-only eligibility with original daily checklist across accounts',async()=>{
+ const app=await dailyRuntimeHarness({collect:async client=>{const state=dailyRuntimeSnapshot();state.raw.AchievementInfoRequest.task=[{id:1,progress:client.factContext.accountId==='account-A'?'2':'10',targetProgress:'10',rewardClaimed:false}];state.ok.AchievementInfoRequest={task:[{id:1,progress:100,targetProgress:1,rewardClaimed:false}]};return state;}});try{
+  for(const account of ['account-A','account-B']){await app.login(account);await app.refresh(account);}
+  const sent=app.sent.length,bytes=JSON.stringify(app.sessions.get('account-A').snapshot);
+  for(const account of ['account-A','account-B']){const summary=(await app.call('/api/overview',{account})).data,detail=(await app.call('/api/dailies',{account})).data.checklist;assert.equal(summary.claimable.achievement,detail.achievements.counts.eligible);assert.equal(summary.claimable.achievement,account==='account-A'?0:1);assert.equal(summary.claimable.daily,detail.tasks.counts.eligible);assert.doesNotMatch(summary.text,/个可领奖/);}
+  delete app.sessions.get('account-A').snapshot.raw.DailyTaskInfoRequest.dailyTask[0].rewardClaimed;assert.equal((await app.call('/api/overview')).data.claimable.daily,null);assert.equal((await app.call('/api/dailies')).data.checklist.tasks.counts.eligible,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,2);assert.equal(bytes.includes('rewardClaimed'),true);
+ }finally{await app.close();}
+});

@@ -234,6 +234,12 @@ function openRankView(state,context=null) {
     note:'仅显示当前连接最近一次已接受推送中的开服排行类型与窗口原值；未报类型不证明不存在。窗口不证明当前开放、进度、已领档位或奖励到账；领取仍需独立排行信息、精确档位和结算合同。'};
 }
 
+// Legacy summary and detailed checklist use the same source and qualification rules.
+// This projection contains counts only and never establishes write authority.
+export function taskProgressCounts(state) {
+  const daily=source(state,'DailyTaskInfoRequest'),achievements=source(state,'AchievementInfoRequest');
+  return {daily:dailyTasks(daily.body,null).counts,achievements:achievementsView(achievements.body).counts};
+}
 export function dailyChecklist(state,{config=null,context=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest'),water=source(state,'OnWaterRequest');
   return {readOnly:true,waterFloaters:waterFloaterView(water.body,config),warOnlineReward:warOnlineRewardView(counters.body,config),festival:festivalView(state,context),openRank:openRankView(state,context),achievements:achievementsView(achievements.body),freeGold:freeGoldView(freeGold.body,config),vip:vipView(state,config),tasks:dailyTasks(daily.body,config),activity:{daily:activityView(daily.body,config,'daily'),weekly:activityView(daily.body,config,'weekly')},

@@ -4,6 +4,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { dailyChecklist } from '../src/daily-checklist.mjs';
+import { getConfig } from '../src/config.mjs';
 
 // Only synthetic accounts; no GameClient, certificate or game network is used.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-explorer-api-'));
@@ -137,7 +139,7 @@ test('overview and Explorer expose only the selected cached fishing sources with
 });
 
 
-test('daily checklist preserves independent partial cached sources across accounts with zero game requests', async () => {
+test('daily checklist preserves independent parsing but unbound restored HTTP snapshots never regain task qualifications', async () => {
   const app=await harness();
   try {
     for(const id of ['account-A','account-B']) {
@@ -152,23 +154,28 @@ test('daily checklist preserves independent partial cached sources across accoun
     const before=JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot]));
     const [a,b]=await Promise.all(['account-A','account-B'].map(id=>app.call('?account='+id,'GET','/api/dailies')));
     assert.equal(a.status,200);assert.equal(b.status,200);assert.equal(a.data.accountId,'account-A');assert.equal(b.data.accountId,'account-B');
-    assert.equal(a.data.checklist.tasks.counts.eligible,1);assert.equal(b.data.checklist.tasks.counts.eligible,0);
-    assert.equal(a.data.checklist.gift.eligible,true);assert.equal(b.data.checklist.gift.eligible,false);assert.equal(a.data.checklist.vip.vipLevel,2);assert.equal(b.data.checklist.vip.vipLevel,null);assert.equal(a.data.checklist.vip.eligible,null);
-    assert.equal(a.data.checklist.achievements.rows[0].progress,'9007199254740993');assert.equal(a.data.checklist.achievements.counts.eligible,1);assert.equal(b.data.checklist.achievements.counts.eligible,0);assert.equal(a.data.checklist.achievements.rows[0].configuredRewards,null);assert.equal(a.data.checklist.freeGold.remaining,3);assert.equal(b.data.checklist.freeGold.remaining,0);assert.equal(a.data.checklist.freeGold.executable,false);
-    assert.equal(a.data.checklist.activity.weekly.tiers[0].eligible,false);assert.equal(a.data.stale,true);
+    // Retain the original offline arithmetic assertions; restored HTTP state has no live binding.
+    const parsed=id=>dailyChecklist(app.sessions.get(id).snapshot,{config:getConfig()}),observedA=parsed('account-A'),observedB=parsed('account-B');
+    assert.equal(observedA.tasks.counts.eligible,1);assert.equal(observedB.tasks.counts.eligible,0);
+    assert.equal(observedA.gift.eligible,true);assert.equal(observedB.gift.eligible,false);assert.equal(observedA.achievements.rows[0].progress,'9007199254740993');assert.equal(observedA.achievements.counts.eligible,1);assert.equal(observedB.achievements.counts.eligible,0);assert.equal(observedA.achievements.rows[0].configuredRewards,null);assert.equal(observedA.activity.weekly.tiers[0].eligible,false);
+    for(const response of [a,b]){assert.equal(response.data.checklist.tasks.counts.eligible,null);assert.equal(response.data.checklist.gift.eligible,null);assert.equal(response.data.checklist.achievements.counts.eligible,null);assert.deepEqual(response.data.checklist.achievements.rows,[]);assert.equal(response.data.checklist.activity.weekly.tiers[0].eligible,null);assert.equal(response.data.executable,false);assert.deepEqual(response.data.tasks,[]);}
+    assert.equal(a.data.checklist.vip.vipLevel,2);assert.equal(b.data.checklist.vip.vipLevel,null);assert.equal(a.data.checklist.vip.eligible,null);
+    assert.equal(a.data.checklist.freeGold.remaining,3);assert.equal(b.data.checklist.freeGold.remaining,0);assert.equal(a.data.checklist.freeGold.executable,false);
+    assert.equal(a.data.stale,true);
     assert.equal(b.text.includes('account-A'),false);assert.equal(a.text.includes('account-B'),false);
     assert.equal(JSON.stringify([...app.sessions].map(([id,s])=>[id,s.snapshot])),before);
     app.sessions.get('account-A').snapshot.failed.DailyTaskInfoRequest='token=hidden';
     const partial=await app.call('?account=account-A','GET','/api/dailies');
-    assert.equal(partial.status,200);assert.equal(partial.data.checklist.tasks.counts.total,null);assert.equal(partial.data.checklist.gift.eligible,true);assert.doesNotMatch(partial.text,/hidden/);
-    const other=await app.call('?account=account-B','GET','/api/dailies');assert.equal(other.data.checklist.tasks.counts.total,1);
+    assert.equal(partial.status,200);assert.equal(partial.data.checklist.tasks.counts.total,null);assert.equal(partial.data.checklist.gift.eligible,null);assert.doesNotMatch(partial.text,/hidden/);
+    const other=await app.call('?account=account-B','GET','/api/dailies');assert.equal(other.data.checklist.tasks.counts.total,null);
     app.sessions.get('account-A').snapshot.outcomes.AchievementInfoRequest.status='FAILED';app.sessions.get('account-A').snapshot.outcomes.AfkInfoRequest.status='UNKNOWN';
-    const noStale=await app.call('?account=account-A','GET','/api/dailies');assert.equal(noStale.data.checklist.achievements.counts.total,null);assert.equal(noStale.data.checklist.freeGold.remaining,null);assert.equal(noStale.data.checklist.gift.eligible,true);
-    const intact=await app.call('?account=account-B','GET','/api/dailies');assert.equal(intact.data.checklist.achievements.counts.total,1);assert.equal(intact.data.checklist.freeGold.remaining,0);
+    const noStale=await app.call('?account=account-A','GET','/api/dailies');assert.equal(noStale.data.checklist.achievements.counts.total,null);assert.equal(noStale.data.checklist.freeGold.remaining,null);assert.equal(noStale.data.checklist.gift.eligible,null);
+    const intact=await app.call('?account=account-B','GET','/api/dailies');assert.equal(intact.data.checklist.achievements.counts.total,null);assert.equal(intact.data.checklist.freeGold.remaining,0);
     const malformed=app.sessions.get('account-A').snapshot;
     delete malformed.failed.DailyTaskInfoRequest;malformed.ok.DailyTaskInfoRequest={dailyTask:{invalid:true}};
     for(const name of ['AllItemRequest','AllResourceRequest','AfkInfoRequest','RecruitInfoRequest'])malformed.ok[name]={};
-    const independent=await app.call('?account=account-A','GET','/api/dailies');assert.equal(independent.status,200);assert.equal(independent.data.checklist.gift.eligible,true);assert.equal(independent.data.checklist.tasks.counts.eligible,1);
+    const independent=await app.call('?account=account-A','GET','/api/dailies');assert.equal(independent.status,200);assert.equal(independent.data.checklist.gift.eligible,null);assert.equal(independent.data.checklist.tasks.counts.eligible,null);
+    assert.equal(parsed('account-A').tasks.counts.eligible,1);assert.equal(parsed('account-A').gift.eligible,true);assert.equal(parsed('account-B').tasks.counts.total,1);assert.equal(parsed('account-B').achievements.counts.total,1);
     assert.deepEqual(app.counts(),{creates:0,collects:0});
   } finally {await app.close();}
 });

@@ -89,8 +89,8 @@ test('all 28 parsed query links preserve distinct synthetic business values', ()
     ['EmailBoxRequest', { total: 105, email: [{ got: false }, { got: true }] }, { email: { total: 105, unclaimed: 1 } }],
     ['EquipsRequest', { equip: [{ id: 106 }, { id: 107 }] }, { equips: 2 }],
     ['RecruitInfoRequest', { hero: { recruitTimes: 108, nextLuck: 19 } }, { recruit: { hero: { recruitTimes: 108, nextLuck: 19 } } }],
-    ['AchievementInfoRequest', { task: [{ progress: 2, targetProgress: 2, rewardClaimed: false }, { progress: 1, targetProgress: 3, rewardClaimed: false }, { progress: 4, targetProgress: 4, rewardClaimed: true }] }, { achievements: { total: 3, done: 2, claimable: 1 } }],
-    ['DailyTaskInfoRequest', { dailyTask: [{ progress: 5, targetProgress: 5, rewardClaimed: false }], dailyActivity: 110, weeklyActivity: 210, dailyRewardClaimed: [10], dailyResetTime: 310 }, { daily: { tasks: 1, done: 1, claimable: 1, dailyActivity: 110, weeklyActivity: 210, dailyRewardClaimed: [10], resetTime: 310 } }],
+    ['AchievementInfoRequest', { task: [{ id: 1, progress: 2, targetProgress: 2, rewardClaimed: false }, { id: 2, progress: 1, targetProgress: 3, rewardClaimed: false }, { id: 3, progress: 4, targetProgress: 4, rewardClaimed: true }] }, { achievements: { total: 3, done: 2, claimable: 1 } }],
+    ['DailyTaskInfoRequest', { dailyTask: [{ id: 1001, progress: 5, targetProgress: 5, rewardClaimed: false }], dailyActivity: 110, weeklyActivity: 210, dailyRewardClaimed: [10], dailyResetTime: 310 }, { daily: { tasks: 1, done: 1, claimable: 1, dailyActivity: 110, weeklyActivity: 210, dailyRewardClaimed: [10], resetTime: 310 } }],
     ['MainTaskInfoRequest', { task: { taskId: 111, progress: 211 } }, { mainTask: { taskId: 111, progress: 211 } }],
     ['GuideInfoRequest', { guide: { step: 112 } }, { guide: { step: 112 } }],
     ['AfkInfoRequest', { afkInfo: { level: 113, afkStartTime: 213, afkFinishTime: 0, rewardedLevel: 110 }, clickGoldInfo: { times: 313 } }, { afk: { level: 113, startTime: 213, finishTime: 0, rewardedLevel: 110, capped: false, pendingLevels: 3 }, clickGold: { times: 313 } }],
@@ -280,4 +280,41 @@ test('activity overview uses the original checklist open-rank window projection 
  const state=activityOverviewState();state.sessionFacts={openRankActivity:{...overviewContext,status:'OBSERVED',reliable:true,source:'SCAllActivity.openRankActivity',scope:'ACCEPTED_STREAM_WINDOWS_ONLY',seq:1,observedAt:overviewTime,activityTime:[{type:4,startTime:100,endTime:400}]}};
  const before=structuredClone(state),v=activityOverview(state);assert.equal(v.checklist.openRank.status,'OBSERVED');assert.equal(v.checklist.openRank.rows[0].type,4);assert.equal(v.checklist.openRank.rows[0].eligible,null);assert.equal(v.checklist.openRank.rows[0].executable,false);assert.deepEqual(state,before);
  const changed=activityOverview(state,{context:{...overviewContext,worldId:'2000001'}});assert.equal(changed.checklist.openRank.status,'UNKNOWN');assert.deepEqual(changed.checklist.openRank.rows,[]);
+});
+
+function taskSummaryState(){return {ok:{DailyTaskInfoRequest:{dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false}]},AchievementInfoRequest:{task:[{id:1,progress:'2',targetProgress:'10',rewardClaimed:false}]}}};}
+function assertTaskSummaryMatches(state){
+ const summary=summarize(state),view=dailyChecklist(state),a=view.achievements.counts,d=view.tasks.counts;
+ assert.deepEqual({total:summary.achievements.total,completed:summary.achievements.done,eligible:summary.achievements.claimable},{total:a.total,completed:a.completed,eligible:a.eligible});
+ assert.deepEqual({total:summary.daily.tasks,completed:summary.daily.done,eligible:summary.daily.claimable},{total:d.total,completed:d.completed,eligible:d.eligible});
+ for(const value of [summary.daily,summary.achievements])for(const key of ['action','actions','permit','executable','rewards','settlement'])assert.equal(Object.hasOwn(value,key),false);
+ return summary;
+}
+test('task summary uses shared daily and achievement qualification instead of lexicographic progress comparisons',()=>{
+ const state=taskSummaryState(),before=structuredClone(state),v=assertTaskSummaryMatches(state);assert.equal(v.achievements.done,0);assert.equal(v.achievements.claimable,0);assert.equal(v.daily.done,1);assert.equal(v.daily.claimable,1);assert.deepEqual(state,before);
+ state.ok.AchievementInfoRequest.task[0].progress='10';state.ok.AchievementInfoRequest.task[0].rewardClaimed=true;const claimed=assertTaskSummaryMatches(state);assert.equal(claimed.achievements.done,1);assert.equal(claimed.achievements.claimable,0);
+});
+for(const [label,mutate]of[
+ ['missing daily claim flag',s=>delete s.ok.DailyTaskInfoRequest.dailyTask[0].rewardClaimed],['missing achievement flag',s=>delete s.ok.AchievementInfoRequest.task[0].rewardClaimed],['missing daily identity',s=>delete s.ok.DailyTaskInfoRequest.dailyTask[0].id],['missing achievement identity',s=>delete s.ok.AchievementInfoRequest.task[0].id],
+ ['duplicate daily id',s=>s.ok.DailyTaskInfoRequest.dailyTask.push({...s.ok.DailyTaskInfoRequest.dailyTask[0]})],['duplicate achievement id',s=>s.ok.AchievementInfoRequest.task.push({...s.ok.AchievementInfoRequest.task[0]})],['missing daily list',s=>delete s.ok.DailyTaskInfoRequest.dailyTask],['missing achievement list',s=>delete s.ok.AchievementInfoRequest.task],['sparse daily',s=>s.ok.DailyTaskInfoRequest.dailyTask=Array(1)],['sparse achievement',s=>s.ok.AchievementInfoRequest.task=Array(1)],
+ ['string daily count',s=>s.ok.DailyTaskInfoRequest.dailyTask[0].progress='1'],['invalid achievement int64',s=>s.ok.AchievementInfoRequest.task[0].progress='1garbage'],['unsafe achievement number',s=>s.ok.AchievementInfoRequest.task[0].progress=9007199254740992],
+ ['inherited daily claim',s=>{delete s.ok.DailyTaskInfoRequest.dailyTask[0].rewardClaimed;Object.setPrototypeOf(s.ok.DailyTaskInfoRequest.dailyTask[0],{rewardClaimed:false});}],['inherited achievement progress',s=>{delete s.ok.AchievementInfoRequest.task[0].progress;Object.setPrototypeOf(s.ok.AchievementInfoRequest.task[0],{progress:'20'});}],
+ ['daily claim getter',s=>Object.defineProperty(s.ok.DailyTaskInfoRequest.dailyTask[0],'rewardClaimed',{enumerable:true,get(){throw Error('must not read daily getter');}})],['achievement progress getter',s=>Object.defineProperty(s.ok.AchievementInfoRequest.task[0],'progress',{enumerable:true,get(){throw Error('must not read achievement getter');}})]
+])test('task summary shares safe unknown handling: '+label,()=>{const state=taskSummaryState();mutate(state);assertTaskSummaryMatches(state);});
+test('task summary uses exact collected int64 even when legacy normalized numbers have lost precision',()=>{
+ const state=taskSummaryState();state.raw=structuredClone(state.ok);state.outcomes={DailyTaskInfoRequest:{status:'SUCCESS'},AchievementInfoRequest:{status:'SUCCESS'}};state.raw.AchievementInfoRequest.task[0]={id:1,progress:'9007199254740992',targetProgress:'9007199254740993',rewardClaimed:false};state.ok.AchievementInfoRequest.task[0]={id:1,progress:9007199254740992,targetProgress:9007199254740992,rewardClaimed:false};const v=assertTaskSummaryMatches(state);assert.equal(v.achievements.done,0);assert.equal(v.achievements.claimable,0);
+ delete state.raw.AchievementInfoRequest;const missing=assertTaskSummaryMatches(state);assert.equal(missing.achievements.total,null);assert.equal(missing.daily.claimable,1);
+});
+test('task summary known empty lists stay zero and unknown counts render as unknown rather than zero or null',()=>{
+ const state=taskSummaryState();state.ok.DailyTaskInfoRequest.dailyTask=[];state.ok.AchievementInfoRequest.task=[];let v=assertTaskSummaryMatches(state);assert.equal(v.daily.tasks,0);assert.equal(v.achievements.total,0);
+ delete state.ok.DailyTaskInfoRequest.dailyTask;delete state.ok.AchievementInfoRequest.task;v=assertTaskSummaryMatches(state);assert.equal(v.daily.tasks,null);assert.equal(v.achievements.total,null);const text=formatState(v).split('\n').filter(line=>/^(每日任务|成就):/.test(line)).join('\n');assert.match(text,/每日任务: 未知\/未知/);assert.match(text,/成就: 未知\/未知/);assert.doesNotMatch(text,/null|undefined|个可领奖/);
+});
+
+test('task summary local Codec and public JSON preserve explicit flags, int64 comparison and legacy daily fields',async()=>{
+ const [{createCodec},{loadProtocol},{toSnapshotJson}]=await Promise.all([import('../src/codec.mjs'),import('../src/proto.mjs'),import('../src/game.mjs')]),codec=createCodec(loadProtocol());
+ for(const json of [false,true]){
+  const state=taskSummaryState();state.raw={};state.outcomes={};
+  for(const name of ['DailyTaskInfoRequest','AchievementInfoRequest']){const body=codec.decode(codec.encode(name.replace(/Request$/,'Response'),1,state.ok[name])).body;state.raw[name]=json?toSnapshotJson(body):body;state.outcomes[name]={status:'SUCCESS'};}
+  const v=assertTaskSummaryMatches(state);assert.equal(v.achievements.done,0);assert.equal(v.daily.claimable,1);delete state.raw.DailyTaskInfoRequest.dailyTask[0].rewardClaimed;assert.equal(assertTaskSummaryMatches(state).daily.claimable,null);
+ }
 });

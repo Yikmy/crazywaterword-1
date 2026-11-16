@@ -4,6 +4,7 @@ import { redact } from './security.mjs';
 import { createStateFact } from './state-facts.mjs';
 import { pirateSweepView, observePirateVipLevel } from './pirate-sweep.mjs';
 import { fishingView } from './fishing-view.mjs';
+import { taskProgressCounts } from './daily-checklist.mjs';
 import { capturePirateQuotaContext, observePirateMonthCards, observePirateQuotaClock } from './pirate-quota.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
@@ -162,9 +163,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
   const buildings = asArray(water.building);
   const monthCard = asArray(q.MonthCardRequest?.cardItem);
 
-  const tasksDone = (list) => asArray(list).filter((task) => task.progress >= task.targetProgress);
-  const claimable = (list) =>
-    tasksDone(list).filter((task) => !task.rewardClaimed).length;
+  const taskCounts = taskProgressCounts(state);
 
   const view = {
     resources: asArray(q.AllResourceRequest?.list).map((entry) => ({
@@ -199,9 +198,9 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     clickGold: q.AfkInfoRequest?.clickGoldInfo ?? null,
     daily: daily
       ? {
-          tasks: asArray(daily.dailyTask).length,
-          done: tasksDone(daily.dailyTask).length,
-          claimable: claimable(daily.dailyTask),
+          tasks: taskCounts.daily.total,
+          done: taskCounts.daily.completed,
+          claimable: taskCounts.daily.eligible,
           dailyActivity: daily.dailyActivity,
           weeklyActivity: daily.weeklyActivity,
           dailyRewardClaimed: asArray(daily.dailyRewardClaimed),
@@ -210,9 +209,9 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
       : null,
     achievements: achievement
       ? {
-          total: asArray(achievement.task).length,
-          done: tasksDone(achievement.task).length,
-          claimable: claimable(achievement.task),
+          total: taskCounts.achievements.total,
+          done: taskCounts.achievements.completed,
+          claimable: taskCounts.achievements.eligible,
         }
       : null,
     mainTask: q.MainTaskInfoRequest?.task ? { taskId: q.MainTaskInfoRequest.task.taskId, progress: q.MainTaskInfoRequest.task.progress } : null,
@@ -283,10 +282,10 @@ export function formatState(view) {
     lines.push(`  已封顶=${view.afk.capped} 已领等级=${view.afk.rewardedLevel} 待领等级=${view.afk.pendingLevels}`);
   }
   if (view.daily) {
-    lines.push(`每日任务: ${view.daily.done}/${view.daily.tasks} 完成, ${view.daily.claimable} 个可领奖, 活跃度 ${view.daily.dailyActivity}`);
+    lines.push(`每日任务: ${view.daily.done ?? '未知'}/${view.daily.tasks ?? '未知'} 完成, ${view.daily.claimable ?? '未知'} 个达到领奖门槛（缓存进度）, 活跃度 ${view.daily.dailyActivity ?? '未知'}`);
     lines.push(`  重置 ${clock(view.daily.resetTime)}`);
   }
-  if (view.achievements) lines.push(`成就: ${view.achievements.done}/${view.achievements.total} 完成, ${view.achievements.claimable} 个可领奖`);
+  if (view.achievements) lines.push(`成就: ${view.achievements.done ?? '未知'}/${view.achievements.total ?? '未知'} 完成, ${view.achievements.claimable ?? '未知'} 个达到领奖门槛（缓存进度）`);
   if (view.email) lines.push(`邮件: ${view.email.total} 封, ${view.email.unclaimed} 封未领附件`);
   lines.push(`水上建筑 ${view.buildings.length} 座:`);
   for (const building of view.buildings) {
