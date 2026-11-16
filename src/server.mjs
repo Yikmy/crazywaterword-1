@@ -31,7 +31,7 @@ import { createStageRunner, defaultStageConfig, validateStageConfig, MAINLINE_CH
 import { qrSvg } from './vendor/qrcode.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, DAILY_DRIVERS, CHEST_TABLE } from './dailies.mjs';
-import { dailyChecklist, formatDailyChecklist } from './daily-checklist.mjs';
+import { dailyChecklist, formatDailyChecklist, taskProgressCounts } from './daily-checklist.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset, makeTypeResolver } from './world.mjs';
 import { runLoop, formatLoopRound, compileUnifiedExecution } from './loop.mjs';
@@ -453,7 +453,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const { ok, failed } = state;
     const config = loadConfigSafe();
     const view = summarize(state, { config });
-    const daily = view.daily;
+    const qualifiedTasks = taskProgressCounts(taskObservationSnapshot(session), { config });
     return {
       account: describeAccount(account, { active: account.id === loadStore().activeId }),
       status: accountStatus(session),
@@ -468,9 +468,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         top: (view.items?.top ?? []).map((item) => ({ itemId: item.itemId, num: item.num, icon: itemIcon(item.itemId) })),
       },
       claimable: {
-        mainTask: Object.hasOwn(ok, 'MainTaskInfoRequest') ? (view.mainTask ? 1 : 0) : null,
-        daily: daily?.claimable ?? null,
-        achievement: view.achievements?.claimable ?? null,
+        mainTask: qualifiedTasks.main.claimable === null ? null : Number(qualifiedTasks.main.claimable),
+        daily: dailySnapshotInvalid(session) ? null : qualifiedTasks.daily.eligible,
+        achievement: qualifiedTasks.achievements.eligible,
         email: view.email?.unclaimed ?? null,
         afk: view.afk ? Math.max((view.afk.level ?? 0) - (view.afk.rewardedLevel ?? 0), 0) : null,
       },

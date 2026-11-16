@@ -4,12 +4,14 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dailyChecklist } from '../src/daily-checklist.mjs';
-import { getConfig } from '../src/config.mjs';
 
 // Only synthetic accounts; no GameClient, certificate or game network is used.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-explorer-api-'));
 process.env.CW_DATA_DIR = sandbox;
+const { dailyChecklist } = await import('../src/daily-checklist.mjs');
+const { getConfig } = await import('../src/config.mjs');
+const { DATA_DIR: parsedDataDir } = await import('../src/accounts.mjs');
+assert.equal(parsedDataDir, sandbox, 'all domain imports must follow test account-store isolation');
 const { createConsole } = await import('../src/server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const token = 'explorer-synthetic-token', sign = 'explorer-synthetic-sign';

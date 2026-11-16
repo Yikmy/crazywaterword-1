@@ -1,7 +1,7 @@
 import { vipLevelView } from './pirate-sweep.mjs';
 // W16: cached facts and eligibility only; writes belong to registered Functions.
 import { CHEST_TABLE, describeDailyTask, dailyGiftObservation, dailyTaskRows, dailyTaskObservation, dailyTaskQualification } from './dailies.mjs';
-import { achievementProgressCount, taskObservation, taskQualification } from './tasks.mjs';
+import { achievementProgressCount, taskObservation, taskQualification, taskConfigurationRow, taskTarget } from './tasks.mjs';
 import { parseOpenRankActivity } from './client.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -235,10 +235,11 @@ function openRankView(state,context=null) {
 }
 
 // Legacy summary and detailed checklist use the same source and qualification rules.
-// This projection contains counts only and never establishes write authority.
-export function taskProgressCounts(state) {
-  const daily=source(state,'DailyTaskInfoRequest'),achievements=source(state,'AchievementInfoRequest');
-  return {daily:dailyTasks(daily.body,null).counts,achievements:achievementsView(achievements.body).counts};
+// These count and progress projections never establish write authority.
+export function taskProgressCounts(state,{config=null}={}) {
+  const daily=source(state,'DailyTaskInfoRequest'),achievements=source(state,'AchievementInfoRequest'),main=source(state,'MainTaskInfoRequest');
+  const task=taskObservation(own(main.body,'task'),'main'),definition=taskConfigurationRow(config,'main',task.taskId);
+  return {main:taskQualification(task,taskTarget(definition),'main'),daily:dailyTasks(daily.body,null).counts,achievements:achievementsView(achievements.body).counts};
 }
 export function dailyChecklist(state,{config=null,context=null}={}) {
   const daily=source(state,'DailyTaskInfoRequest'),gift=source(state,'DailyGiftPackRequest'),achievements=source(state,'AchievementInfoRequest'),freeGold=source(state,'AfkInfoRequest'),counters=source(state,'CounterInfoRequest'),water=source(state,'OnWaterRequest');

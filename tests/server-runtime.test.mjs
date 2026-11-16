@@ -878,3 +878,46 @@ test('task summary HTTP shares exact read-only eligibility with original daily c
   delete app.sessions.get('account-A').snapshot.raw.DailyTaskInfoRequest.dailyTask[0].rewardClaimed;assert.equal((await app.call('/api/overview')).data.claimable.daily,null);assert.equal((await app.call('/api/dailies')).data.checklist.tasks.counts.eligible,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,2);assert.equal(bytes.includes('rewardClaimed'),true);
  }finally{await app.close();}
 });
+
+function mainSummaryRuntimeSnapshot(task={taskId:1,progress:15,rewardClaimed:false}){
+ const state=taskRuntimeSnapshot();state.raw.MainTaskInfoRequest={...(task===null?{}:{task}),branch:[]};state.ok.MainTaskInfoRequest=structuredClone(state.raw.MainTaskInfoRequest);state.outcomes.MainTaskInfoRequest={status:'SUCCESS'};return state;
+}
+test('main task summary shares original target qualification and never treats existence as claimability',async()=>{
+ let state=mainSummaryRuntimeSnapshot();const app=await dailyRuntimeHarness({collect:async()=>structuredClone(state)});try{
+  await app.login();
+  for(const [label,task,expected]of [
+   ['incomplete',{taskId:1,progress:14,rewardClaimed:false},0],['complete unclaimed',{taskId:1,progress:15,rewardClaimed:false},1],['already claimed',{taskId:1,progress:15,rewardClaimed:true},0],['missing reward flag',{taskId:1,progress:15},null],['missing identity',{progress:15,rewardClaimed:false},null],['unknown config identity',{taskId:2147483647,progress:15,rewardClaimed:false},null],['invalid count',{taskId:1,progress:'15garbage',rewardClaimed:false},null],['absent task',null,null]
+  ]){
+   state=mainSummaryRuntimeSnapshot(task);await app.refresh();const sent=app.sent.length,summary=(await app.call('/api/overview')).data,tasks=(await app.call('/api/tasks')).data;
+   assert.equal(summary.claimable.mainTask,expected,label);const qualified=tasks.main?.qualification?.claimable;assert.equal(summary.claimable.mainTask,qualified===true?1:qualified===false?0:null,label+' same original parser');assert.equal(app.sent.length,sent);
+  }
+ }finally{await app.close();}
+});
+for(const field of ['accountId','generation','connectionId','playerId','worldId','client'])test('main task summary cannot transfer or revive qualification across '+field,async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>mainSummaryRuntimeSnapshot()});try{
+  await app.login();await app.refresh();const s=app.sessions.get('account-A'),sent=app.sent.length;assert.equal((await app.call('/api/overview')).data.claimable.mainTask,1);
+  const obj=field==='accountId'?s:['playerId','worldId'].includes(field)?s.player:s,key=field==='accountId'?'id':field,old=obj[key];obj[key]=field==='client'?{...old,stop(){}}:field==='generation'?old+1:'different';
+  const invalid=(await app.call('/api/overview')).data;assert.equal(invalid.claimable.mainTask,null);assert.equal(invalid.claimable.daily,null);assert.equal(invalid.claimable.achievement,null);obj[key]=old;assert.equal((await app.call('/api/overview')).data.claimable.mainTask,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+test('main task summary unknowns follow accepted task changes and daily reset without extra requests',async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>mainSummaryRuntimeSnapshot()});try{
+  const socket=await app.login();socket.receive('SCMainTaskUpdate',{task:{taskId:1,progress:15,rewardClaimed:false}},1);await app.refresh();assert.equal((await app.call('/api/overview')).data.claimable.mainTask,1);const sent=app.sent.length;
+  socket.receive('SCMainTaskUpdate',{task:{taskId:1,progress:15,rewardClaimed:true}},2);let v=(await app.call('/api/overview')).data;assert.equal(v.claimable.mainTask,null);assert.equal(v.claimable.daily,1);
+  socket.receive('SCDailyTaskReset',{dailyResetTime:1780086400},3);v=(await app.call('/api/overview')).data;assert.equal(v.claimable.mainTask,null);assert.equal(v.claimable.daily,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+test('main task summary restored or failed exact source stays unknown with zero implicit reconnect',async()=>{
+ const app=await dailyRuntimeHarness({collect:async()=>mainSummaryRuntimeSnapshot()});try{
+  await app.call('/api/overview');app.sessions.get('account-A').snapshot=mainSummaryRuntimeSnapshot();assert.equal((await app.call('/api/overview')).data.claimable.mainTask,null);assert.equal(app.clients.length,0);assert.equal(app.collects,0);assert.equal(app.sent.length,0);
+  await app.login();await app.refresh();const s=app.sessions.get('account-A'),sent=app.sent.length;delete s.snapshot.raw.MainTaskInfoRequest;assert.equal((await app.call('/api/overview')).data.claimable.mainTask,null);s.snapshot.raw.MainTaskInfoRequest={task:{taskId:1,progress:15,rewardClaimed:false}};s.snapshot.failed.MainTaskInfoRequest='synthetic-error';assert.equal((await app.call('/api/overview')).data.claimable.mainTask,null);assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
+ }finally{await app.close();}
+});
+
+test('main task summary local Codec keeps explicit false distinct from omitted inherited defaults',async()=>{
+ const codec=createCodec(loadProtocol());let state;const app=await dailyRuntimeHarness({collect:async()=>state});try{
+  await app.login();for(const flag of [false,true,undefined]){
+   const task={taskId:1,progress:15,...(flag===undefined?{}:{rewardClaimed:flag})};state=mainSummaryRuntimeSnapshot(task);state.raw.MainTaskInfoRequest=codec.decode(codec.encode('MainTaskInfoResponse',1,{task,branch:[]})).body;state.ok.MainTaskInfoRequest={task:{taskId:1,progress:999,rewardClaimed:false}};await app.refresh();const sent=app.sent.length,result=(await app.call('/api/overview')).data;assert.equal(result.claimable.mainTask,flag===undefined?null:flag?0:1);assert.equal(app.sent.length,sent);
+  }
+ }finally{await app.close();}
+});
