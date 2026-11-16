@@ -2,9 +2,10 @@ import { ACTIONS, buildBody } from './actions.mjs';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Fleet/cargo adapters. Existing GameClient, Session and shared executor own execution.
 import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
+import { parseOperationInventory } from './hero-operations.mjs';
 import { loadMapAsset } from './world.mjs';
 import { parseFormation, validateFormationParameters, planFormation, catalogFrom } from './formation.mjs';
-import { strictParameters, invalid, readNavalFact, stockFacts, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
+import { strictParameters, invalid, readNavalFact, fleetFacts, rowsOf, quantity, nonempty, stable, selectedActions, stockMatchesDelta, moduleConfiguration } from './naval-facts.mjs';
 import { readGameTime } from './state-facts.mjs';
 import { readResourceFieldRevision } from './client.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -74,30 +75,19 @@ function cargoShip(raw) {
 function cargoHeaderReliable(ships) {
   return denseCargoArray(ships) && ships.every(ship=>ownCargo(ship,'index') && Number.isSafeInteger(ship.index) && ship.index>0 && ship.index<=2147483647) && new Set(ships.map(ship=>ship.index)).size===ships.length;
 }
+function fleetInventory(items, resources) {
+  return parseOperationInventory(items?.available === true ? items.body : null,
+    resources?.available === true ? resources.body : null, { allowLegacyAliases: true });
+}
 function cargoInventory(facts) {
   if(facts?.stockReliable!==true)return null;
-  const sources=facts?.sources;
-  if(!sources) {
-    if(facts?.stockReliable!==true || !(facts.stock instanceof Map) || [...facts.stock].some(([id,num])=>!nonempty(id)||quantity(num)===null))return null;
+  if(!facts.sources) {
+    // Keep existing in-memory/legacy callers; production reads always carry sources.
+    if (!(facts.stock instanceof Map) || [...facts.stock].some(([id,num])=>!nonempty(id)||quantity(num)===null)) return null;
     return new Map([...facts.stock].map(([id,num])=>[id,quantity(num)]));
   }
-  const items=sources.AllItemRequest,resources=sources.AllResourceRequest;
-  if(items?.available!==true || resources?.available!==true || !ownCargo(items.body,'items') || !ownCargo(resources.body,'list') || !denseCargoArray(items.body.items) || !denseCargoArray(resources.body.list))return null;
-  const stock=new Map();
-  for(const row of items.body.items) {
-    const id=ownCargo(row,'itemId')?row.itemId:ownCargo(row,'id')?row.id:null;
-    const num=ownCargo(row,'num')?quantity(row.num):ownCargo(row,'count')?quantity(row.count):null;
-    if(!nonempty(id)||id!==id.trim()||num===null||stock.has(id)||(ownCargo(row,'itemId')&&ownCargo(row,'id')&&row.itemId!==row.id))return null;
-    stock.set(id,num);
-  }
-  const seen=new Set();
-  for(const row of resources.body.list) {
-    if(!ownCargo(row,'res')||!ownCargo(row,'amount')||!Number.isSafeInteger(row.res)||row.res<=0||seen.has(row.res))return null;
-    const id=RESOURCE_NAMES[row.res]??String(row.res),num=quantity(row.amount);
-    if(num===null||stock.has(id))return null;
-    seen.add(row.res);stock.set(id,num);
-  }
-  return stock;
+  const inventory=fleetInventory(facts.sources.AllItemRequest,facts.sources.AllResourceRequest);
+  return inventory.stockReliable ? inventory.stock : null;
 }
 function cargoStockAmount(stock,id) {return stock instanceof Map?quantity(stock.has(id)?stock.get(id):0):null;}
 function cargoInventoryMatches(beforeFacts,afterFacts,costs,rewards) {
@@ -156,7 +146,7 @@ async function surveyResourceFields(client,protocol,{config=null,player=null,sig
  const context=fieldContext(client,player),revision=readResourceFieldRevision(client,context),sourceAt=Date.now();
  const first=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal}),items=await readNavalFact(client,protocol,'AllItemRequest',{}, {signal}),resources=await readNavalFact(client,protocol,'AllResourceRequest',{}, {signal}),last=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal});
  const before=resourceFields(first.body),after=resourceFields(last.body),inventory={AllItemRequest:items,AllResourceRequest:resources};
- const stock=stockFacts(items,resources),f={config,player:structuredClone(player),parameters:structuredClone(parameters),sources:inventory,...stock,sourceRevision:revision,sourceAt,resourceFields:before&&after&&stable(before)===stable(after)?before:null,protocolReady:{GiveUpResFieldRequest:Boolean(protocol?.GiveUpResFieldRequest)}};
+ const stock=fleetInventory(items,resources),f={config,player:structuredClone(player),parameters:structuredClone(parameters),sources:inventory,...stock,sourceRevision:revision,sourceAt,resourceFields:before&&after&&stable(before)===stable(after)?before:null,protocolReady:{GiveUpResFieldRequest:Boolean(protocol?.GiveUpResFieldRequest)}};
  // Reuse the complete inventory parser; duplicate or missing quantities stay unknown.
  f.stockReliable=f.stockReliable&&cargoInventory(f)!==null;
  if(revision&&context&&stable(context)===stable(fieldContext(client,player))&&stable(revision)===stable(readResourceFieldRevision(client,context)))fieldOwners.set(f,{client,player,context,digest:fieldDigest(f)});
@@ -214,7 +204,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   const citiesReliable = sources.WorldInfoRequest.available && Array.isArray(cities) && cities.every(city => Number.isSafeInteger(city.id) && city.id > 0) && new Set(cities.map(city => city.id)).size === cities.length;
   const guildId = quantity(sources.GuildInfoRequest.body?.guild?.guildId), playerGuild = quantity(player?.guildId);
   const guildIdx = sources.GuildInfoRequest.available && guildId > 0 && (playerGuild === null || playerGuild === guildId) ? guildId % 1000 : null;
-  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, sourceAt, worldQuery, ...fleets, formationFacts, ...stockFacts(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
+  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, sourceAt, worldQuery, ...fleets, formationFacts, ...fleetInventory(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
     resourceFields:fieldObservation&&fieldCurrent(fieldObservation)?fieldObservation.resourceFields:null, cargoReliable, ships: cargoReliable ? structuredClone(ships) : [], citiesReliable, cities: citiesReliable ? cities.map(city => ({ id: city.id, state: quantity(city.state), guildIdx: quantity(city.guildIdx) })) : [], guildIdx,
     map: opts.move === true ? loadMapAsset(opts.scenarioId) : null,
     protocolReady: Object.fromEntries(['RepairFleetRequest', 'StopRepairingRequest', 'SetFleetAutoFightRequest', 'FleetSaveFormationRequest', 'MoveFleetsToCityRequest', 'FillCargoShipRequest', 'DrawShipRewardRequest'].map(name => [name, Boolean(protocol?.[name] && (!['FillCargoShipRequest', 'DrawShipRewardRequest'].includes(name) || protocol?.[name.replace('Request', 'Response')]))])),

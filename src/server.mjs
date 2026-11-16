@@ -371,13 +371,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     if (binding.invalidated) return Object.fromEntries(requests.map(name=>[name,'TASK_CACHE_STALE']));
     const bodies=Object.hasOwn(session.snapshot,'raw') ? session.snapshot.raw : session.snapshot.ok;
     for(const name of requests)if(!Object.hasOwn(session.snapshot.ok??{},name) || Object.hasOwn(session.snapshot.failed??{},name) || session.snapshot.outcomes?.[name]?.status && session.snapshot.outcomes[name].status!=='SUCCESS' || !bodies?.[name] || typeof bodies[name]!=='object' || Array.isArray(bodies[name]))failures[name]='TASK_CACHE_SOURCE_UNAVAILABLE';
-    const writes=taskRewardWriteVersions(session);
-    for(const name of ['MainTaskInfoRequest','AchievementInfoRequest','DailyTaskInfoRequest','DailyGiftPackRequest'].filter(name=>requests.includes(name))) {
+    const writeRequests=['MainTaskInfoRequest','AchievementInfoRequest','DailyTaskInfoRequest','DailyGiftPackRequest'].filter(name=>requests.includes(name));
+    const writes=writeRequests.length ? taskRewardWriteVersions(session) : null;
+    for(const name of writeRequests) {
       if(!binding.writes || !writes)failures[name]='TASK_CACHE_HISTORY_UNAVAILABLE';
       else if(binding.writes[name]!==writes[name])failures[name]='TASK_CACHE_REWARD_WRITE';
     }
-    const current=taskStreamVersions(session);
-    for(const [name,kinds] of [['MainTaskInfoRequest',['main','branch']],['AchievementInfoRequest',['achievement']]]) {
+    const streamRequests=[['MainTaskInfoRequest',['main','branch']],['AchievementInfoRequest',['achievement']]].filter(([name])=>requests.includes(name));
+    const current=streamRequests.length ? taskStreamVersions(session) : null;
+    for(const [name,kinds] of streamRequests) {
       if (binding.streams!==null && (current===null || kinds.some(kind=>!binding.streams[kind] || !current[kind]
         || JSON.stringify(binding.streams[kind])!==JSON.stringify(current[kind])))) failures[name]='TASK_CACHE_SOURCE_CHANGED';
     }
@@ -391,6 +393,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const binding=taskSnapshotBindings.get(session),directoryInvalid=!binding||binding.invalidated===true;
     if(directoryInvalid)return {...session.snapshot,failed:{...session.snapshot?.failed,...failures},sessionFacts:{...session.snapshot?.sessionFacts,activityDirectory:null}};
     return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot?.failed,...failures}} : session.snapshot;
+  }
+
+  function fishingObservationSnapshot(session) {
+    if (!session?.snapshot) return null;
+    // Reuse the collection's private Client/context binding. No new query,
+    // persisted qualification, or authority is created for a restored cache.
+    const failures=taskSnapshotFailures(session,['OnWaterRequest','AllItemRequest','GameEffectRequest','FishEncyclopediaRequest']);
+    return Object.keys(failures).length ? {...session.snapshot,failed:{...session.snapshot.failed,...failures}} : session.snapshot;
   }
 
   function refresh(session, account) {
@@ -454,7 +464,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     const state = session.snapshot ?? { ok: {}, failed: {} };
     const { ok, failed } = state;
     const config = loadConfigSafe();
-    const view = summarize(state, { config });
+    const view = summarize(state, { config, fishingSnapshot: fishingObservationSnapshot(session) });
     const qualifiedTasks = taskProgressCounts(taskObservationSnapshot(session), { config });
     return {
       account: describeAccount(account, { active: account.id === loadStore().activeId }),
@@ -1044,7 +1054,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if (!account) { json({ error: '没有这个账号' }, 404); return; }
         const session = sessions.get(account.id);
         json({ accountId: account.id, updatedAt: session?.snapshotAt ?? null, stale: session?.snapshotStale ?? false,
-          ...exploreSnapshot(session?.snapshot, { domain: parsed.searchParams.get('domain'), config: loadConfigSafe(), updatedAt: session?.snapshotAt ?? null }) });
+          ...exploreSnapshot(fishingObservationSnapshot(session), { domain: parsed.searchParams.get('domain'), config: loadConfigSafe(), updatedAt: session?.snapshotAt ?? null }) });
         return;
       }
       if (route === 'GET /api/snapshot/export') {

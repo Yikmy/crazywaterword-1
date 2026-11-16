@@ -103,6 +103,8 @@ export function exploreSnapshot(snapshot, { domain = null, config = null, update
     let status = outcome?.status;
     if (!['SUCCESS', 'FAILED', 'NOT_EXECUTED'].includes(status)) status = Object.hasOwn(failed, entry.request) ? 'FAILED' : hasBody ? 'SUCCESS' : 'NOT_EXECUTED';
     let error = outcome?.error ?? failed[entry.request] ?? null;
+    // A current invalidation takes precedence over the older SUCCESS marker.
+    if (Object.hasOwn(failed, entry.request)) { status = 'FAILED'; error = failed[entry.request]; }
     if (status === 'SUCCESS' && !hasBody) { status = 'FAILED'; error ??= '成功状态缺少缓存响应'; }
     if (status === 'NOT_EXECUTED') error ??= snapshot ? '未采集此查询' : '尚未采集';
     let parsed = null, parseError = null;

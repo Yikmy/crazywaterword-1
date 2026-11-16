@@ -199,7 +199,14 @@ function collectionView(observation, config) {
 
 export function fishingView(state, { config = null } = {}) {
   const observed = name => currentResponse(state, name);
+  const sources = ['OnWaterRequest','AllItemRequest','GameEffectRequest','FishEncyclopediaRequest'].map(request => {
+    const response=observed(request), failure=own(own(state,'failed'),request);
+    return { request, status:response?'OBSERVED':'UNKNOWN', reason:response?null
+      :typeof failure==='string' && /^TASK_CACHE_[A-Z_]+$/.test(failure)?failure
+        :has(own(state,'failed'),request)?'FISHING_SOURCE_FAILED':'FISHING_SOURCE_NOT_CONFIRMED' };
+  });
   return {
+    readOnly: true, executable: false, qualificationScope: 'CONFIGURED_SCORE_THRESHOLD_ONLY', sources,
     level: levelView(observed('OnWaterRequest')),
     inventory: inventoryView(observed('AllItemRequest'), observed('GameEffectRequest')),
     collection: collectionView(observed('FishEncyclopediaRequest'), config),

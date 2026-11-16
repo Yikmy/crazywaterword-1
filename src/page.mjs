@@ -712,6 +712,10 @@ function renderFishing(data, readFailed = false) {
       box.appendChild(table(['配置奖励', '数量'], next.rewards.map(row => [row.id === 'RUBY' ? '钻石' : row.id, known(row.num)])));
     }
   } else box.appendChild(el('p', 'dim', collection?.complete === true ? '当前配置中的图鉴档位已领完。' : '下一档奖励资格未知。'));
+  const unknownReasons = [level?.reason, inventory?.reason, collection?.reason].filter(Boolean);
+  if (unknownReasons.length) box.appendChild(el('p', 'warn', '未知原因：' + [...new Set(unknownReasons)].join('；')));
+  for (const source of view.sources || []) if (source.reason) box.appendChild(el('p', 'dim', source.request + '：' + source.reason));
+  box.appendChild(el('p', 'dim', '仅观察配置积分门槛；达到门槛不代表可执行领奖或奖励到账。'));
   box.appendChild(el('p', 'dim', '待捕鱼、收线剩余时间和续接状态：未知。此页只读。'));
 }
 

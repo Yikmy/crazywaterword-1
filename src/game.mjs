@@ -151,7 +151,7 @@ const asArray = (value) => (Array.isArray(value) ? value : []);
 
 // Turns the raw response bodies into the picture a player would describe. Every number
 // here is straight from the server; nothing is inferred except the obvious sums.
-export function summarize(state, { now = Date.now() / 1000, config = null } = {}) {
+export function summarize(state, { now = Date.now() / 1000, config = null, fishingSnapshot = state } = {}) {
   const q = state.ok || {};
   const water = q.OnWaterRequest || {};
   const afk = q.AfkInfoRequest?.afkInfo;
@@ -165,6 +165,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
   const monthCard = asArray(q.MonthCardRequest?.cardItem);
 
   const taskCounts = taskProgressCounts(state);
+  const fishing = fishingView(fishingSnapshot, { config });
 
   const view = {
     resources: asArray(q.AllResourceRequest?.list).map((entry) => ({
@@ -250,8 +251,8 @@ export function summarize(state, { now = Date.now() / 1000, config = null } = {}
     monthCard: monthCard.map((card) => ({ type: card.type, active: card.endTime > now, endTime: card.endTime, gotDailyReward: card.gotDailyReward })),
     guide: q.GuideInfoRequest?.guide ?? null,
     cargo: asArray(q.CargoShipsRequest?.ship).length,
-    fish: q.FishEncyclopediaRequest ?? null,
-    fishing: fishingView(state, { config }),
+    fish: fishing.sources.find(source => source.request === 'FishEncyclopediaRequest')?.status === 'OBSERVED' ? q.FishEncyclopediaRequest ?? null : null,
+    fishing,
   };
   const failures = state.failed || {};
   const sources = { resources: "AllResourceRequest", items: "AllItemRequest", heroes: "AllHeroRequest", afk: "AfkInfoRequest", clickGold: "AfkInfoRequest", daily: "DailyTaskInfoRequest", achievements: "AchievementInfoRequest", mainTask: "MainTaskInfoRequest", email: "EmailBoxRequest", buildings: "OnWaterRequest", water: "OnWaterRequest", resFields: "MyResFieldsRequest", fleets: "MyFleetsRequest", guild: "AllGuildAbstractionRequest", counters: "CounterInfoRequest", recruit: "RecruitInfoRequest", antiques: "AllAntiqueRequest", pets: "AllPetRequest", equips: "EquipsRequest", pirates: "AllPirateRequest", worldBoss: "WorldBossInfoRequest", season: "SeasonRankInfoRequest", week: "WeekInfoRequest", monthCard: "MonthCardRequest", guide: "GuideInfoRequest", cargo: "CargoShipsRequest", fish: "FishEncyclopediaRequest" };
@@ -307,7 +308,7 @@ export function formatState(view) {
   lines.push('  VIP 等级：'+(sweep?.vipLevel ?? '未知')+'；'+(sweep?.vipLevelStatus==='OBSERVED'?'本次采集的连接观察值':'连接权威未知')+'，仅作为额度组件查看。');
   lines.push(`  野怪扫荡：已用 ${sweep?.usedSweeps ?? '未知'}，总额 ${sweep?.totalSweeps ?? '未知'}，剩余 ${sweep?.remainingSweeps ?? '未知'}；等级关系仅供查看。`);
   lines.push(`  自动生产至 ${clock(view.water.autoProduceEndTime)} 永久=${view.water.autoProduceForever} 自动种植=${view.water.autoFarming}`);
-  lines.push(`  钓鱼lv${view.water.fishingLevel ?? '-'} 打捞lv${view.water.salvageLevel ?? '-'} 潜水lv${view.water.divingLevel ?? '-'}`);
+  lines.push(`  钓鱼lv${(view.fishing ? view.fishing.level?.level : view.water.fishingLevel) ?? '-'} 打捞lv${view.water.salvageLevel ?? '-'} 潜水lv${view.water.divingLevel ?? '-'}`);
   if (view.worldBoss) lines.push(`  世界Boss bossId=${view.worldBoss.bossId} 最高伤害=${view.worldBoss.bestDamage} 已领档位=${view.worldBoss.gotRewardLevel}`);
   lines.push(`公会候选: ${JSON.stringify(view.guild.map((entry) => entry.id))}`);
   lines.push(`每日计数: ${view.counters.map((counter) => `${counter.type}=${counter.num}`).join(' ')}`);
@@ -317,9 +318,14 @@ export function formatState(view) {
   const fishing = view.fishing;
   if (fishing) {
     const { inventory, collection } = fishing, next = collection.nextStage, known = value => value ?? '未知';
+    lines.push('图鉴观察: 鱼种 '+known(collection.collectedCount)+'，总积分 '+known(collection.totalScore)+'，已领奖档位 '+known(collection.rewardId)+'，已用积分 '+known(collection.claimedScore)+'。');
     lines.push('钓鱼库存: 鱼 '+known(inventory.owned)+' / '+known(inventory.capacity)+'，图鉴可用积分 '+known(collection.availableScore)+'；待捕状态未知。');
     if (next) lines.push('  图鉴第 '+next.stage+' 档需 '+next.requiredScore+' 积分；'+(next.eligible===true?'已达积分门槛':next.eligible===false?'还差 '+next.missingScore+' 积分':'积分资格未知')+'。');
     else if (collection.complete===true) lines.push('  当前配置中的图鉴档位已领完。');
+    else lines.push('  下一档积分资格未知。');
+    for (const part of [fishing.level, inventory, collection]) if (part?.reason) lines.push('  未知原因：'+part.reason);
+    for (const source of fishing.sources ?? []) if (source.reason) lines.push('  '+source.request+'：'+source.reason);
+    lines.push('  仅观察配置积分门槛；不代表可执行领奖或奖励到账。');
   }
   if (view.fish) lines.push(`鱼类图鉴: ${JSON.stringify(view.fish)}`);
   const prefixes = { AllResourceRequest: "资源:", OnWaterRequest: "水上建筑", MyResFieldsRequest: "世界:", MyFleetsRequest: "世界:", CargoShipsRequest: "世界:", AllPirateRequest: "世界:", AllGuildAbstractionRequest: "公会候选:", CounterInfoRequest: "每日计数:", RecruitInfoRequest: "招募:", AllAntiqueRequest: "藏品 ", AllPetRequest: "藏品 ", EquipsRequest: "藏品 ", MonthCardRequest: "藏品 " };
