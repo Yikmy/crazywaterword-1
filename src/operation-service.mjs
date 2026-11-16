@@ -606,7 +606,7 @@ function authorizeWorkflowPlan(session,payload){
             (row.stages ??= []).push({ stage, timestamp: now() });
             history.put(record);
           }, onVerifiedReceipt(candidate, before, after, response) {
-            const receipt = buildVerifiedReceipt(candidate, before, after, response, record.executionContext);
+            const receipt = buildVerifiedReceipt({ ...candidate, module: operation.module }, before, after, response, record.executionContext);
             if (receipt) { row.verifiedReceipt = receipt; history.put(record); }
           } } : {}) });
         if (operation.module === 'formation') {

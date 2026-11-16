@@ -223,6 +223,13 @@ function movementCost(facts, config, city) {
   let unit = costs[0].cost; for (const row of costs) { if (distance < row.dist) break; unit = row.cost; }
   const cost = Math.ceil(distance * unit); return Number.isSafeInteger(cost) ? cost : null;
 }
+// One request description for planning and durable receipt validation; no dispatch here.
+export function fleetStopAction(kind, buildingId) {
+  if (!nonempty(buildingId)) return null;
+  if (kind === 'fleetStopRepair') return { request: 'StopRepairingRequest', response: null, body: { buildingId } };
+  if (kind === 'fleetStopAutoFight') return { request: 'SetFleetAutoFightRequest', response: null, body: { buildingIds: [buildingId], isOn: false } };
+  return null;
+}
 function candidate(kind, target, costs, costSource, beforeState, expectedState, request, response, body, parameters, reason) {
   return { actionId: 'fleet:' + kind + ':' + Object.values(target).map(value => encodeURIComponent(String(value))).join(':'), actionType: kind, target, costs, costSource, beforeState, identity: stable(beforeState), expectedState, parameters, decision: reason ? 'BLOCKED' : 'READY', reason, label: kind === 'fleetMove' ? '移动舰队到城市 ' + target.cityId : kind, action: reason ? null : { request, response, body } };
 }
@@ -245,10 +252,11 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
     if (!reason && cost > opts.maximumRepairPetrolPerPlan) reason = 'REPAIR_PLAN_BUDGET';
     if (!reason && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < cost + opts.petrolReserve)) reason = 'INSUFFICIENT_PETROL';
     candidates.push(candidate('fleetRepair', { buildingId: fleet.buildingId }, cost === null ? [] : [{ id: '汽油', num: cost }], paramReliable ? 'FleetRepairParamResponse.unitRepairCost × 缺失耐久，向上取整' : null, { fleet, param: param ?? null }, { maxDura: fleet.maxDura, repairingOrCompleted: true }, 'RepairFleetRequest', null, { buildingId: fleet.buildingId }, { buildingId: fleet.buildingId }, reason || (!facts.protocolReady?.RepairFleetRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
-    const stopRepairReason = disabled('stopRepair') || (!facts.fleetReliable || fleet.state !== 4 || !fleet.repairing ? 'FLEET_NOT_REPAIRING' : null) || (!fleet.autoFight || fleet.autoFight.isOn !== false ? 'AUTO_FIGHT_STATE_UNVERIFIED' : null) || (!facts.protocolReady?.StopRepairingRequest ? 'PROTOCOL_UNAVAILABLE' : null);
-    candidates.push(candidate('fleetStopRepair', { buildingId: fleet.buildingId }, [], 'ArmyPop._onBtnCancel: StopRepairingRequest，无购买/加速支付参数', { fleet }, { state: 1, repairing: null }, 'StopRepairingRequest', null, { buildingId: fleet.buildingId }, { buildingId: fleet.buildingId }, stopRepairReason));
+    const stopRepairReason = disabled('stopRepair') || (!facts.fleetReliable || fleet.state !== 4 || !fleet.repairing ? 'FLEET_NOT_REPAIRING' : null) || (quantity(fleet.durability) === null ? 'FLEET_DURABILITY_UNKNOWN' : null) || (!fleet.autoFight || fleet.autoFight.isOn !== false ? 'AUTO_FIGHT_STATE_UNVERIFIED' : null) || (!facts.protocolReady?.StopRepairingRequest ? 'PROTOCOL_UNAVAILABLE' : null);
+    const stopRepairAction = fleetStopAction('fleetStopRepair', fleet.buildingId), stopAutoAction = fleetStopAction('fleetStopAutoFight', fleet.buildingId);
+    candidates.push(candidate('fleetStopRepair', { buildingId: fleet.buildingId }, [], 'ArmyPop._onBtnCancel: StopRepairingRequest，无购买/加速支付参数', { fleet }, { state: 1, repairing: null }, stopRepairAction.request, stopRepairAction.response, stopRepairAction.body, { buildingId: fleet.buildingId }, stopRepairReason));
     const stopAutoReason = disabled('autoFight') || (!facts.fleetReliable || fleet.autoFight?.isOn !== true ? 'AUTO_FIGHT_NOT_ON' : null) || (!facts.protocolReady?.SetFleetAutoFightRequest ? 'PROTOCOL_UNAVAILABLE' : null);
-    candidates.push(candidate('fleetStopAutoFight', { buildingId: fleet.buildingId }, [], 'TroopAppointPop._autoFightRequest(false): 仅关闭委任，无支付', { fleet }, { autoFight: { isOn: false } }, 'SetFleetAutoFightRequest', null, { buildingIds: [fleet.buildingId], isOn: false }, { buildingId: fleet.buildingId }, stopAutoReason));
+    candidates.push(candidate('fleetStopAutoFight', { buildingId: fleet.buildingId }, [], 'TroopAppointPop._autoFightRequest(false): 仅关闭委任，无支付', { fleet }, { autoFight: { isOn: false } }, stopAutoAction.request, stopAutoAction.response, stopAutoAction.body, { buildingId: fleet.buildingId }, stopAutoReason));
     if (parameters.buildingId && ['presetId', 'heroIds', 'heroPositions'].some(key => Object.hasOwn(parameters, key))) {
       const params = Object.fromEntries(['presetId', 'heroIds', 'heroPositions'].filter(key => Object.hasOwn(parameters, key)).map(key => [key, parameters[key]]));
       const formation = facts.formationFacts, building = formation?.buildings?.find(row => row.buildingId === fleet.buildingId);
@@ -341,7 +349,7 @@ export function verifyFleet(operation, beforeFacts, afterFacts, response) {
   if (['fleetStopRepair', 'fleetStopAutoFight'].includes(type)) {
     const before = beforeFacts?.fleets?.find(fleet => fleet.buildingId === target?.buildingId), after = afterFacts?.fleets?.find(fleet => fleet.buildingId === target?.buildingId);
     if (!beforeFacts?.fleetReliable || !afterFacts?.fleetReliable || !before || !after) return { confirmed: false, reason: 'MyFleets精确舰队复读缺失' };
-    const confirmed = type === 'fleetStopRepair' ? before.state === 4 && Boolean(before.repairing) && before.autoFight?.isOn === false && after.state === 1 && !after.repairing && after.autoFight?.isOn === false && after.durability !== null && after.durability >= before.durability : before.autoFight?.isOn === true && after.autoFight?.isOn === false;
+    const confirmed = type === 'fleetStopRepair' ? before.state === 4 && Boolean(before.repairing) && before.autoFight?.isOn === false && quantity(before.durability) !== null && after.state === 1 && !after.repairing && after.autoFight?.isOn === false && quantity(after.durability) !== null && after.durability >= before.durability : before.autoFight?.isOn === true && after.autoFight?.isOn === false;
     return { confirmed, reason: confirmed ? 'MyFleets精确舰队已确认停止状态' : 'MyFleets未确认停止，保留UNKNOWN' };
   }
   if (['fleetRepair', 'fleetMove'].includes(type)) {
