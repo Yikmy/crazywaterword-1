@@ -82,7 +82,21 @@ function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.paramete
  return {module:moduleId,capabilityId:'C503',actionId:moduleId+':daily:'+reset+':'+taskId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset},parameters:p,identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'日常任务 '+taskId+' 奖励',rewards:def?[{id:'EXP',num:def.exp}]:null,activityGain:def?.point??null,progress:task?.progress??null,requiredProgress:task?.targetProgress??null,...(blockedReason===null?{action:{request,response,body:buildBody(ACTIONS.dailyTaskDraw,{id:taskId})}}:{})};
 }
 const candidateFor=(f,options)=>{const kind=(options?.parameters??f?.parameters)?.kind;return (OPEN_RANK_TASK_KINDS.includes(kind)?openRankTaskCandidate:kind==='weekly-chip-task'?chipTaskCandidate:weeklyKinds.includes(kind)?weeklyCandidate:kind==='daily-gift'?giftCandidate:kind==='daily-activity'?activityCandidate:candidate)(f,options);};
-export function viewDailyTaskReward(f,options={}){if((options.parameters??f?.parameters)?.kind==='weekly-battle-pass-task')return viewBattlePassTask(f,options);const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),candidates:[row],notes:[...(f?.notes??[]),isOpenRank(row.parameters)?'仅领取当前可信对应type窗口中的明确score任务档位；订单/闯关直接配置，剿匪/战争精确当前季否则取最大配置季；进度与已领分离，独立OpenRankInfo及完整库存净入共同确认，不将通用奖励包当同次回执或排名奖励。':row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
+function taskTargetSelection(f,config,parameters=f?.parameters){
+ const kind=f?.parameters?.kind,unknown={kind,readOnly:true,status:'UNKNOWN',field:null,targets:null,round:null};
+ if(!same(parameters,f?.parameters)||!sourceAuthority(f)||!same(f?.daily,parseFor(f?.inputs,f.parameters)))return unknown;
+ const table=kind==='daily-activity'?'DailyActivityRewardCfg':kind==='weekly-chip-task'?'WeekChipPointsCfg':isOpenRank(f.parameters)?openRankSpec(f.parameters).table:null;
+ if(!table)return unknown;const rows=f.configEvidence?.tables?.[table]?.data,key=kind==='daily-activity'?'id':kind==='weekly-chip-task'?'rwdId':'score';
+ if(!dense(rows)||!rows.length||rows.some(row=>!own(row,key)||!positive(row[key])))return unknown;
+ const ids=[...new Set(rows.map(row=>row[key]))],targets=[];
+ for(const id of ids){
+  const definition=kind==='daily-activity'?activityDefinition(f,config,id):kind==='weekly-chip-task'?chipTaskDefinition(f,config,id):openRankTaskDefinition(f,config,id);
+  if(!definition)continue;
+  targets.push({id,requiredProgress:kind==='daily-activity'?definition.requiredActivity:kind==='weekly-chip-task'?definition.amount:id,rewards:copy(definition.rewards),season:definition.season??null,configuredSeason:definition.configuredSeason??null});
+ }
+ return targets.length?{kind,readOnly:true,status:'OBSERVED_DEFINITIONS',field:kind==='weekly-chip-task'?'taskId':'tierId',targets,round:kind==='weekly-chip-task'?f.daily.round:null}:unknown;
+}
+export function viewDailyTaskReward(f,options={}){if((options.parameters??f?.parameters)?.kind==='weekly-battle-pass-task')return viewBattlePassTask(f,options);const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),targetSelection:taskTargetSelection(f,options.config,options.parameters??f?.parameters),candidates:[row],notes:[...(f?.notes??[]),isOpenRank(row.parameters)?'仅领取当前可信对应type窗口中的明确score任务档位；订单/闯关直接配置，剿匪/战争精确当前季否则取最大配置季；进度与已领分离，独立OpenRankInfo及完整库存净入共同确认，不将通用奖励包当同次回执或排名奖励。':row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
 export function planDailyTaskReward(f,{parameters,selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){const row=viewDailyTaskReward(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 export function verifyDailyTaskReward(operation,before,after,result){const no=reason=>({confirmed:false,reason});
  if([operation?.parameters?.kind,before?.parameters?.kind,after?.parameters?.kind].includes('weekly-battle-pass-task'))return no('战令任务仅只读观察；每日周期和独立积分结算缺证');
@@ -199,7 +213,7 @@ function weeklyCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.pa
 // C516/W17: exact chip task and round. The final unclaimed task is held until
 // the server's round transition has an independently recoverable contract.
 export const WEEKLY_CHIP_TASK_EVIDENCE=Object.freeze({source:'Fixed v76 WeekChipTask.ts / WeekChip.ts / ActivityWeekUtil.ts',byte:7353073,sha256:'5306147a2a46bc09ce658e92e6be10e331dce080435b6b7e5adc30c3b8d32844',semantics:'WeekChipGotTaskRequest round/taskId; cumulative score minus highest amount*(round-1); typed round, full gotTaskId and DisplayAssetPackage; held inventory only',realGame:'REAL_UNVERIFIED'});
-function chipTaskDefinition(f,config){
+function chipTaskDefinition(f,config,taskId=f?.parameters?.taskId){
  if(!same(configNamesFor(f?.parameters).map(n=>f?.configEvidence?.tables?.[n]??null),configNamesFor(f?.parameters).map(n=>config?.tables?.[n]??null)))return null;
  const tables=f?.configEvidence?.tables,rows=tables?.WeekChipPointsCfg?.data,periods=tables?.WeekChipPeriodCfg?.data,items=tables?.ItemCfg?.data,activity=f?.daily?.activityTime?.find(r=>r.type===6);
  if(!dense(rows)||!rows.length||!dense(periods)||!dense(items)||!activity||periods.some(r=>!own(r,'periodId')||!positive(r.periodId))||new Set(periods.map(r=>r.periodId)).size!==periods.length)return null;
@@ -217,7 +231,7 @@ function chipTaskDefinition(f,config){
   if(new Set(rewards.map(r=>r.id)).size!==rewards.length)return null;
   definitions.push({taskId:r.rwdId,amount:r.amount,rewards});lastId=r.rwdId;lastAmount=r.amount;
  }
- const row=definitions.find(r=>r.taskId===f.parameters.taskId);
+ const row=definitions.find(r=>r.taskId===taskId);
  return row?{...row,ids:definitions.map(r=>r.taskId),roundAmount:lastAmount,maxRound:period.round}:null;
 }
 function chipTaskCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
@@ -254,11 +268,11 @@ function currentOpenRankWindow(f){
  const live=liveFacts.get(f),window=f?.state?.window,clock=live?clockOf(live.client,f.context):null;
  return window&&window.type===openRankSpec(f?.parameters)?.type&&window.endTime===f?.daily?.endTime&&clock&&f.startClock&&f.endClock&&f.startClock.earliestMs<=f.endClock.earliestMs&&f.endClock.earliestMs<=clock.earliestMs&&[f.startClock,f.endClock,clock].every(c=>c.earliestMs>=window.startTime*1000&&c.latestMs<window.endTime*1000)?window:null;
 }
-function openRankTaskDefinition(f,config){
+function openRankTaskDefinition(f,config,tierId=f?.parameters?.tierId){
  if(!same(configNamesFor(f?.parameters).map(n=>config?.tables?.[n]??null),configNamesFor(f?.parameters).map(n=>f?.configEvidence?.tables?.[n]??null)))return null;
  const spec=openRankSpec(f?.parameters),rows=f?.configEvidence?.tables?.[spec?.table]?.data,items=f?.configEvidence?.tables?.ItemCfg?.data,world=roleId(f?.context?.worldId);if(!world||!dense(rows)||!rows.length||!dense(items))return null;
  const season=spec.seasonal?Number(BigInt(world)/1000000n%1000n):null;if(spec.seasonal&&!positive(season)||rows.some(r=>!own(r,'score')||!positive(r.score)||(spec.seasonal?!own(r,'season')||!positive(r.season):own(r,'season')))||new Set(rows.map(r=>(spec.seasonal?r.season+':':'')+r.score)).size!==rows.length)return null;
- const configuredSeason=spec.seasonal?(rows.some(r=>r.season===season)?season:Math.max(...rows.map(r=>r.season))):null,selected=spec.seasonal?rows.filter(r=>r.season===configuredSeason):rows,row=selected.find(r=>r.score===f.parameters.tierId);if(!row||!own(row,'reward')||!dense(row.reward)||!row.reward.length)return null;
+ const configuredSeason=spec.seasonal?(rows.some(r=>r.season===season)?season:Math.max(...rows.map(r=>r.season))):null,selected=spec.seasonal?rows.filter(r=>r.season===configuredSeason):rows,row=selected.find(r=>r.score===tierId);if(!row||!own(row,'reward')||!dense(row.reward)||!row.reward.length)return null;
  const rewards=[];
  for(const pair of row.reward){
   if(!dense(pair)||pair.length!==2||!text(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0)return null;
@@ -296,5 +310,5 @@ function viewBattlePassTask(f,{config,parameters=f?.parameters}={}){
  const row=configs?.find(row=>row.taskId===parameters.taskId),target=row&&own(row,'target')?achievementProgressCount(row.target):null;
  const known=row&&target!==null&&target!=='0'&&own(row,'type')&&text(row.type)&&own(row,'score')&&positive(row.score),task=observed?.tasks.find(task=>task.taskId===parameters.taskId);
  const completion=task&&known?BigInt(task.progress)>=BigInt(target)?'COMPLETE':'INCOMPLETE':'UNKNOWN';
- return {module:moduleId,candidates:[],battlePassObservation:{status:observed?'OBSERVED':'UNKNOWN',readOnly:true,taskId:parameters.taskId,taskType:known?row.type:null,description:known&&own(row,'desc')&&typeof row.desc==='string'?row.desc:null,progress:task?.progress??null,requiredProgress:known?target:null,completion,taskRewardState:task?task.isGot?'CLAIMED_RECORD':'UNCLAIMED_RECORD':'UNKNOWN',claimable:null,expectedTaskScore:known?row.score:null,totalScore:observed?.score??null,activePay:observed?.activePay??null,rewardStages:copy(observed?.got??null),activityWindow:copy(observed?.activityTime.find(row=>row.type===1)??null),periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN',executable:false,blockedReason:'WEEKLY_BATTLE_PASS_PERIOD_AND_SETTLEMENT_UNVERIFIED'},notes:[...(f?.notes??[]),'战令只读：任务完成、任务已领记录、普通/付费档位记录、累计积分各自独立；WeekInfo type1窗口不证明本任务的每日周期或绑定归属。积分不是增量，到账未知；不生成领取动作、许可或重启恢复权限。']};
+ return {module:moduleId,candidates:[],targetSelection:{kind:'weekly-battle-pass-task',readOnly:true,status:observed?'OBSERVED_TASKS':'UNKNOWN',field:'taskId',targets:observed?observed.tasks.map(task=>({id:task.taskId})):null,round:null},battlePassObservation:{status:observed?'OBSERVED':'UNKNOWN',readOnly:true,taskId:parameters.taskId,taskType:known?row.type:null,description:known&&own(row,'desc')&&typeof row.desc==='string'?row.desc:null,progress:task?.progress??null,requiredProgress:known?target:null,completion,taskRewardState:task?task.isGot?'CLAIMED_RECORD':'UNCLAIMED_RECORD':'UNKNOWN',claimable:null,expectedTaskScore:known?row.score:null,totalScore:observed?.score??null,activePay:observed?.activePay??null,rewardStages:copy(observed?.got??null),activityWindow:copy(observed?.activityTime.find(row=>row.type===1)??null),periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN',executable:false,blockedReason:'WEEKLY_BATTLE_PASS_PERIOD_AND_SETTLEMENT_UNVERIFIED'},notes:[...(f?.notes??[]),'战令只读：任务完成、任务已领记录、普通/付费档位记录、累计积分各自独立；WeekInfo type1窗口不证明本任务的每日周期或绑定归属。积分不是增量，到账未知；不生成领取动作、许可或重启恢复权限。']};
 }
