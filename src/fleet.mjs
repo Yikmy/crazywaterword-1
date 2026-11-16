@@ -150,9 +150,10 @@ function fieldDigest(f){return stable({parameters:f.parameters,resourceFields:f.
 function fieldCurrent(f){
  const owner=fieldOwners.get(f);return Boolean(owner&&owner.client.connected===true&&owner.digest===fieldDigest(f)&&Date.now()>=f.sourceAt&&Date.now()-f.sourceAt<=30000&&stable(owner.context)===stable(fieldContext(owner.client,owner.player))&&stable(f.sourceRevision)===stable(readResourceFieldRevision(owner.client,owner.context)));
 }
-async function surveyResourceFields(client,protocol,{config=null,player=null,signal,parameters={}}={}){
+async function surveyResourceFields(client,protocol,{config=null,player=null,signal,parameters={},assertCurrent=()=>{}}={}){
  const context=fieldContext(client,player),revision=readResourceFieldRevision(client,context),sourceAt=Date.now();
- const first=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal}),items=await readNavalFact(client,protocol,'AllItemRequest',{}, {signal}),resources=await readNavalFact(client,protocol,'AllResourceRequest',{}, {signal}),last=await readNavalFact(client,protocol,'MyResFieldsRequest',{}, {signal});
+ const read=async request=>{assertCurrent();const result=await readNavalFact(client,protocol,request,{}, {signal});assertCurrent();return result;};
+ const first=await read('MyResFieldsRequest'),items=await read('AllItemRequest'),resources=await read('AllResourceRequest'),last=await read('MyResFieldsRequest');
  const before=resourceFields(first.body),after=resourceFields(last.body),inventory={AllItemRequest:items,AllResourceRequest:resources};
  const stock=fleetInventory(items,resources),f={config,player:structuredClone(player),parameters:structuredClone(parameters),sources:inventory,...stock,sourceRevision:revision,sourceAt,resourceFields:before&&after&&stable(before)===stable(after)?before:null,protocolReady:{GiveUpResFieldRequest:Boolean(protocol?.GiveUpResFieldRequest)}};
  // Reuse the complete inventory parser; duplicate or missing quantities stay unknown.
@@ -160,12 +161,42 @@ async function surveyResourceFields(client,protocol,{config=null,player=null,sig
  if(revision&&context&&stable(context)===stable(fieldContext(client,player))&&stable(revision)===stable(readResourceFieldRevision(client,context)))fieldOwners.set(f,{client,player,context,digest:fieldDigest(f)});
  return f;
 }
+export { surveyResourceFields as surveyFleetResourceFields };
+// Durable recovery shares only the original settlement comparison; live writes
+// still require the private source seals and the original canonical candidate.
+export function fleetResourceFieldAction(gridIdx) {
+ return {request:ACTIONS.giveUpField.request,response:ACTIONS.giveUpField.response,body:buildBody(ACTIONS.giveUpField,{gridIdx})};
+}
+function resourceFieldState(f) {
+ const owner=fieldOwners.get(f);
+ return {context:owner?.context??null,resourceFields:f.resourceFields??null,inventory:[...(cargoInventory(f)??[])].sort(([a],[b])=>a.localeCompare(b))};
+}
+export function fleetResourceFieldObservation(f) {
+ return fieldCurrent(f)&&f.resourceFields&&f.stockReliable?structuredClone(resourceFieldState(f)):null;
+}
+export function parseFleetResourceFieldState(value) {
+ if(!value||!value.context||!fieldDense(value.inventory))return null;
+ const fields=resourceFields({info:value.resourceFields});
+ if(!fields||value.inventory.some(row=>!fieldDense(row)||row.length!==2)||new Set(value.inventory.map(row=>row[0])).size!==value.inventory.length)return null;
+ const stock=cargoInventory({stockReliable:true,stock:new Map(value.inventory)});
+ if(!stock)return null;
+ const parsed={context:structuredClone(value.context),resourceFields:fields,inventory:[...stock].sort(([a],[b])=>a.localeCompare(b))};
+ return stable(parsed)===stable(value)?parsed:null;
+}
+export function verifyFleetResourceFieldOutcome(operation,beforeState,afterState) {
+ const before=parseFleetResourceFieldState(beforeState),after=parseFleetResourceFieldState(afterState),gridIdx=operation.target?.gridIdx;
+ if(!before||!after||!fieldUint(gridIdx)||!before.resourceFields.fields.some(row=>row.gridIdx===gridIdx))return {confirmed:false,reason:'资源田完整原状态或目标身份缺失'};
+ const expected={...before,resourceFields:{maxNum:before.resourceFields.maxNum,fields:before.resourceFields.fields.filter(row=>row.gridIdx!==gridIdx)}};
+ const confirmed=stable(operation.beforeState)===stable(before)&&operation.identity===stable(before)&&stable(operation.expectedState)===stable(expected)&&stable(after)===stable(expected);
+ return {confirmed,reason:confirmed?'独立完整MyResFields确认仅指定资源田移除、上限及其他田不变，完整库存不变；不领取收益':'目标移除、非目标田、上限或库存未精确确认，保持UNKNOWN'};
+}
 function resourceFieldCandidate(f,parameters,opts,settlement=false){
  const field=f.resourceFields?.fields.find(row=>row.gridIdx===parameters.resourceFieldGridIdx),owner=fieldOwners.get(f),context=owner?.context;
  const valid=settlement?owner&&owner.digest===fieldDigest(f)&&stable(owner.context)===stable(fieldContext(owner.client,owner.player)):fieldCurrent(f);
  const reason=!opts.enabled||!opts.giveUpResourceField?'MODULE_DISABLED':!valid||!f.resourceFields||!f.stockReliable?'RESOURCE_FIELD_FACTS_UNKNOWN':!field?'RESOURCE_FIELD_NOT_OWNED':!f.protocolReady?.GiveUpResFieldRequest?'PROTOCOL_UNAVAILABLE':null;
- const beforeState={context:context??null,resourceFields:f.resourceFields??null,inventory:[...(cargoInventory(f)??[])].sort(([a],[b])=>a.localeCompare(b))},expectedState=f.resourceFields?{...beforeState,resourceFields:{maxNum:f.resourceFields.maxNum,fields:f.resourceFields.fields.filter(row=>row.gridIdx!==parameters.resourceFieldGridIdx)}}:null;
- const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,ACTIONS.giveUpField.request,ACTIONS.giveUpField.response,buildBody(ACTIONS.giveUpField,{gridIdx:parameters.resourceFieldGridIdx}),parameters,reason);
+ const beforeState=resourceFieldState(f),expectedState=f.resourceFields?{...beforeState,resourceFields:{maxNum:f.resourceFields.maxNum,fields:f.resourceFields.fields.filter(row=>row.gridIdx!==parameters.resourceFieldGridIdx)}}:null;
+ const action=fleetResourceFieldAction(parameters.resourceFieldGridIdx);
+ const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,action.request,action.response,action.body,parameters,reason);
  row.executable=reason===null;row.budgetClaims={resources:[],quotas:[],uids:context?[{type:'resource-field',id:context.worldId+':'+parameters.resourceFieldGridIdx}]:[]};return row;
 }
 function verifyResourceField(operation,before,after){
@@ -175,8 +206,7 @@ function verifyResourceField(operation,before,after){
  if(!owner||owner.client!==other?.client||owner.digest!==fieldDigest(before)||!fieldCurrent(after)||stable(owner.context)!==stable(other.context)||!before.resourceFields||!after.resourceFields)return no('资源田归属、完整前后读或连接身份未确认');
  const canonical=resourceFieldCandidate(before,before.parameters,{enabled:true,giveUpResourceField:true},true);
  if(!before.resourceFields.fields.some(row=>row.gridIdx===operation.target?.gridIdx)||!before.stockReliable||!after.stockReliable||['target','beforeState','expectedState','action','parameters','costs','budgetClaims'].some(k=>stable(operation[k])!==stable(canonical[k])))return no('资源田请求、原目标或预算不一致');
- const observed={context:other.context,resourceFields:after.resourceFields,inventory:[...(cargoInventory(after)??[])].sort(([a],[b])=>a.localeCompare(b))};
- return {confirmed:stable(observed)===stable(canonical.expectedState),reason:stable(observed)===stable(canonical.expectedState)?'独立完整MyResFields确认仅指定资源田移除、上限及其他田不变，完整库存不变；不领取收益':'目标移除、非目标田、上限或库存未精确确认，保持UNKNOWN'};
+ return verifyFleetResourceFieldOutcome(operation,resourceFieldState(before),resourceFieldState(after));
 }
 export async function surveyFleet(client, protocol, { config = null, player = null, signal, parameters = {}, moduleConfig = {} } = {}) {
   parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);

@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { assertPaymentAllowed } from './actions.mjs';
 import { parseFormation, verifyFormation, validateFormationParameters } from './formation.mjs';
-import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, verifyFleet } from './fleet.mjs';
+import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, fleetResourceFieldAction, surveyFleetResourceFields, fleetResourceFieldObservation, parseFleetResourceFieldState, verifyFleetResourceFieldOutcome, verifyFleet } from './fleet.mjs';
 import { fleetFacts, stable } from './naval-facts.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -240,10 +240,39 @@ function buildFleetCargoVerifiedReceipt(candidate,beforeFacts,afterFacts,respons
     target:contract.target,parameters:structuredClone(candidate.parameters),costs:structuredClone(candidate.costs),costSource:candidate.costSource,identityHash:fleetIdentityHash(candidate),
     beforeFacts:before,afterFacts:after,responseEvidence:evidence,expectedState:contract.expectedState,executionContext};
 }
+function fleetResourceFieldContract(row) {
+  if(row?.module!=='fleet'||row.actionType!=='giveUpField'||!Array.isArray(row.costs)||row.costs.length!==0||!text(row.costSource))return null;
+  const gridIdx=row.target?.gridIdx,before=parseFleetResourceFieldState(row.beforeState);
+  if(!before||!Number.isInteger(gridIdx)||gridIdx<0||gridIdx>2147483647||!same(row.target,{gridIdx})||!same(row.parameters,{resourceFieldGridIdx:gridIdx})||row.actionId!=='fleet:giveUpField:'+gridIdx)return null;
+  const context=scope(before.context),budgetClaims={resources:[],quotas:[],uids:[{type:'resource-field',id:context?.worldId+':'+gridIdx}]};
+  if(!context||stable(context)!==stable(before.context)||stable(row.budgetClaims)!==stable(budgetClaims)||verifyFleetResourceFieldOutcome(row,before,row.expectedState).confirmed!==true)return null;
+  const action=fleetResourceFieldAction(gridIdx);
+  try{assertPaymentAllowed({...action,costs:row.costs});}catch{return null;}
+  return {gridIdx,before,action};
+}
+function fleetResourceFieldReceiptProblem(row,contract,originalScope) {
+  const receipt=row.verifiedReceipt;
+  if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='fleet'||receipt.actionType!=='giveUpField'||receipt.request!==contract.action.request||receipt.response!==null)return 'MISSING_VERIFIED_RECEIPT';
+  if(!same(scope(receipt.executionContext),originalScope)||!same(scope(contract.before.context),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+  if(!parseFleetResourceFieldState(receipt.beforeFacts)||!parseFleetResourceFieldState(receipt.afterFacts)||stable(receipt.beforeFacts)!==stable(contract.before)||
+    receipt.identityHash!==fleetIdentityHash(row)||!same(receipt.target,row.target)||!same(receipt.parameters,row.parameters)||!same(receipt.costs,row.costs)||receipt.costSource!==row.costSource||
+    !same(receipt.budgetClaims,row.budgetClaims)||stable(receipt.expectedState)!==stable(row.expectedState)||verifyFleetResourceFieldOutcome(row,receipt.beforeFacts,receipt.afterFacts).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+  return null;
+}
+function buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts,context) {
+  const executionContext=scope(context),contract=fleetResourceFieldContract(candidate);
+  if(!executionContext||!contract||!same(candidate.action,contract.action)||!same(scope(contract.before.context),executionContext)||verifyFleet(candidate,beforeFacts,afterFacts).confirmed!==true)return null;
+  const after=fleetResourceFieldObservation(afterFacts);
+  if(!after||verifyFleetResourceFieldOutcome(candidate,contract.before,after).confirmed!==true)return null;
+  return {version:1,verified:true,module:'fleet',actionType:'giveUpField',request:contract.action.request,response:null,
+    target:structuredClone(candidate.target),parameters:structuredClone(candidate.parameters),costs:[],costSource:candidate.costSource,budgetClaims:structuredClone(candidate.budgetClaims),identityHash:fleetIdentityHash(candidate),
+    beforeFacts:contract.before,afterFacts:after,expectedState:structuredClone(candidate.expectedState),executionContext};
+}
 // Only an already verified original execution may create this durable projection.
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
   if(candidate?.module==='fleet'){
+    if(candidate.actionType==='giveUpField')return buildFleetResourceFieldVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(candidate.actionType==='fleetFormation')return buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(['fleetRepair','fleetMove'].includes(candidate.actionType))return buildFleetLifecycleVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
     if(['cargoFill','cargoClaim'].includes(candidate.actionType))return buildFleetCargoVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
@@ -286,16 +315,36 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
-  const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row),fleetLifecycle=fleetLifecycleContract(row),fleetCargo=fleetCargoContract(row);
+  const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row),fleetLifecycle=fleetLifecycleContract(row),fleetCargo=fleetCargoContract(row),fleetResourceField=fleetResourceFieldContract(row);
   if(fleetStop)readMethod='READ_ONLY_FLEET_STOP_V1';
   if(fleetFormation)readMethod='READ_ONLY_FLEET_FORMATION_V1';
   if(fleetLifecycle)readMethod='READ_ONLY_FLEET_LIFECYCLE_V1';
   if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
+  if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
-  if (!fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动及货船装货/领奖；均须原持久验证凭据');
+  if (!fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
+  if(fleetResourceField){
+    if(['MyResFieldsRequest','MyResFieldsResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原资源田完整双读及库存协议');
+    const problem=fleetResourceFieldReceiptProblem(row,fleetResourceField,originalScope);
+    try{
+      const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
+      current();readRequest={request:'MyResFieldsRequest',gridIdx:fleetResourceField.gridIdx,response:'MyResFieldsResponse',inventoryRequests:['AllItemRequest','AllResourceRequest'],bracketRequest:'MyResFieldsRequest'};
+      const facts=await surveyFleetResourceFields(client,protocol,{player:{playerId:currentScope.playerId,worldId:currentScope.worldId},parameters:row.parameters,signal,assertCurrent:current});
+      current();const observed=fleetResourceFieldObservation(facts);
+      if(!observed||!same(scope(observed.context),currentScope))return finish('STILL_UNKNOWN','UNRELIABLE_READ','资源田双读、完整库存或原私有来源身份未确认');
+      const verification=verifyFleetResourceFieldOutcome(row,fleetResourceField.before,observed);
+      observation={resourceFields:observed.resourceFields,inventory:{status:'COMPLETE',entries:observed.inventory.length,hash:createHash('sha256').update(stable(observed.inventory)).digest('hex')},desiredStateMatches:verification.confirmed,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前田列表与库存仅供观察，缺少原同身份完整验证的持久凭据');
+      if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
+      current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；不重发、续权、恢复执行或领取收益');
+    }catch(error){
+      const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;
+      return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','资源田复核取消、身份变化或读取失败，未解除保护');
+    }
+  }
   const requestName=fleetCargo?'CargoShipsRequest':fleetFormation?'OnWaterRequest':fleetStop||fleetLifecycle?'MyFleetsRequest':'GetFormationRequest',responseName=fleetCargo?'CargoShipsResponse':fleetFormation?'OnWaterResponse':fleetStop||fleetLifecycle?'MyFleetsResponse':'GetFormationResponse';
   if (!protocol?.[requestName] || !protocol?.[responseName]) return finish('STILL_UNKNOWN', 'PROTOCOL_MISSING', '缺少固定只读复核协议');
   if((fleetLifecycle||fleetCargo)&&['AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少完整库存只读复核协议');
