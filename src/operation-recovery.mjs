@@ -496,24 +496,24 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   if(fleetResourceField)readMethod='READ_ONLY_RESOURCE_FIELD_V1';
   const expected = completeFormation(row.expectedState);
   if (!dailyReward && !trialChallenge && !freeRecruit && !compassWheel && !taskReward && !freeGold && !fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && !fleetResourceField && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励、罗盘单批抽取、明确英雄/古董招募、经验试炼首通及明确日常/日活跃/免费赠礼；均须原持久验证凭据');
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动、货船装货/领奖及资源田放弃、普通免费点金、明确主线/支线/成就任务奖励、罗盘单批抽取、明确英雄/古董招募、经验试炼首通及明确日常/日活跃/免费赠礼/既有周活动免费礼包和周芯片同轮任务；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
   if(dailyReward){
     const p=row.parameters,problem=dailyTaskRewardReceiptProblem(row,dailyReward,originalScope),readSources=dailyTaskRewardReadSources(p),reads=Object.entries(readSources).map(([key,response])=>({key,response,request:response.replace(/Response$/,'Request')}));
-    if(reads.some(read=>!protocol?.[read.request]||!protocol?.[read.response]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原日常或赠礼及完整库存只读协议');
+    if(reads.some(read=>!protocol?.[read.request]||!protocol?.[read.response]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原任务/赠礼/周活动或完整库存只读协议');
     try{
       const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
       current();const start=dailyTaskRewardRecoveryClock(client,dailyReward.before.context,p,dailyReward.before,row.verifiedReceipt?.verifiedClock);
-      const primary=reads.find(read=>read.key==='daily'),inputs={};let repeated;
-      readRequest={request:primary.request,response:primary.response,additionalRequests:reads.filter(read=>read.key!=='daily').map(read=>read.request),bracketRequest:primary.request};
-      for(const read of [...reads,{...primary,key:'repeat'}]){current();const body=await awaitExecution(client.request(read.request,{},read.response,15000,{signal}),client,{signal});current();if(read.key==='repeat')repeated=body;else inputs[read.key]=body;}
-      const after=parseDailyTaskRewardSources(inputs,dailyReward.before.context,p),bracket=parseDailyTaskRewardSources({...inputs,daily:repeated},dailyReward.before.context,p),end=dailyTaskRewardRecoveryClock(client,dailyReward.before.context,p,dailyReward.before,start?.clock);
-      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','日常或赠礼双读标记/完整状态变化，或完整库存不可靠');
+      const primary=reads.find(read=>read.key==='daily'),bracketReads=reads.filter(read=>['daily','week'].includes(read.key)).reverse(),inputs={},repeated={};
+      readRequest={request:primary.request,response:primary.response,additionalRequests:reads.filter(read=>read.key!=='daily').map(read=>read.request),bracketRequest:primary.request,...(bracketReads.length>1?{additionalBracketRequests:bracketReads.filter(read=>read.key!=='daily').map(read=>read.request)}:{})};
+      for(const read of [...reads,...bracketReads.map(read=>({...read,repeat:true}))]){current();const body=await awaitExecution(client.request(read.request,{},read.response,15000,{signal}),client,{signal});current();(read.repeat?repeated:inputs)[read.key]=body;}
+      const after=parseDailyTaskRewardSources(inputs,dailyReward.before.context,p),bracket=parseDailyTaskRewardSources({...inputs,...repeated},dailyReward.before.context,p),end=dailyTaskRewardRecoveryClock(client,dailyReward.before.context,p,dailyReward.before,start?.clock);
+      if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','任务/赠礼/周活动双读窗口或完整状态变化，或完整库存不可靠');
       const balances=taskRewardReceiptBalances(row.verifiedReceipt?.balancesBefore),verification=verifyDailyTaskRewardOutcome(row,dailyReward.before,after,row.verifiedReceipt?.settlement,balances),hash=value=>createHash('sha256').update(stable(value)).digest('hex');
       observation={kind:p.kind,daily:after.daily,inventory:{status:'COMPLETE',entries:after.inventory.length,hash:hash(after.inventory)},desiredStateMatches:verification.confirmed===true,authoritative:true};
       if(problem)return finish('STILL_UNKNOWN',problem,'当前已领状态仅供观察，缺少原同身份完整成功凭据');
-      if(!start||!end)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','原周期的可信Ping时间或赠礼原样标记不能完整绑定；不推算新日界');
+      if(!start||!end)return finish('STILL_UNKNOWN','PERIOD_UNKNOWN','原周期/活动窗口的可信Ping时间或赠礼原样标记不能完整绑定；不推算新日界或跨周重领');
       if(!verification.confirmed)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification.reason);
       current();return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED',verification.reason+'；仅复核，不重领/续权/恢复执行');
     }catch(error){const cancelled=error?.code==='CANCELLED'||error?.name==='AbortError'||signal?.aborted||client?.connected===false;return finish('STILL_UNKNOWN',cancelled?'CANCELLED':'READ_FAILED','日常奖励只读复核未完成，保持原UNKNOWN保护');}

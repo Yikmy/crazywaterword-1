@@ -79,21 +79,27 @@ function currentPeriod(f){const live=liveFacts.get(f),clock=live?clockOf(live.cl
 function definition(config,taskId){const rows=config?.tables?.DailyTaskCfg?.data;if(!dense(rows))return null;const found=rows.filter(row=>own(row,'taskId')&&row.taskId===taskId);if(found.length!==1)return null;const r=found[0];return own(r,'point')&&positive(r.point)&&own(r,'exp')&&positive(r.exp)&&own(r,'moduleId')&&r.moduleId===''?{point:r.point,exp:r.exp}:null;}
 // Durable read-only reconciliation uses the same projections and settlement as live verification.
 const rewardFields=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,Object.prototype].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===keys.length&&keys.every(k=>Object.getOwnPropertyDescriptor(v,k)?.enumerable&&own(v,k));
-const dailyRecoveryKinds=['daily','daily-activity','daily-gift'];
+const dailyRecoveryKinds=['daily','daily-activity','daily-gift',...weeklyKinds];
 export function dailyTaskRewardAction(p){
  if(p?.kind==='daily')return {request,response,body:buildBody(ACTIONS.dailyTaskDraw,{id:p.taskId})};
  if(p?.kind==='daily-activity')return {request:ACTIONS.dailyRewardDraw.request,response:ACTIONS.dailyRewardDraw.response,body:buildBody(ACTIONS.dailyRewardDraw,{index:[p.tierId]})};
  if(p?.kind==='daily-gift')return {request:ACTIONS.freeDailyPackDraw.request,response:ACTIONS.freeDailyPackDraw.response,body:buildBody(ACTIONS.freeDailyPackDraw)};
+ if(p?.kind==='weekly-chip-task')return {request:'WeekChipGotTaskRequest',response:'WeekChipGotTaskResponse',body:{round:p.round,taskId:p.taskId}};
+ if(weeklyKinds.includes(p?.kind))return {request:weekSpec(p).request,response:null,body:{}};
  throw new Error('Unsupported daily reward recovery target');
 }
 export function parseDailyTaskRewardState(value,p){
  if(!dailyRecoveryKinds.includes(p?.kind)||!rewardFields(value,['context','daily','inventory']))return null;
  const c=value.context,d=value.daily,contextKeys=['accountId','generation','connectionId','playerId','worldId'];
  if(!rewardFields(c,contextKeys)||!text(c.accountId)||!text(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId)return null;
- const dailyKeys=p.kind==='daily-gift'?['heroId','resetMarker','drawnPack','boughtPack']:['resetTime','dailyActivity','weeklyActivity','dailyRewardClaimed','weeklyRewardClaimed','tasks'];
+ const spec=weeklyKinds.includes(p.kind)?weekSpec(p):null;
+ const dailyKeys=spec?['activityTime','gift',...(spec.chip?['round','score','gotTaskId']:spec.unique?['floor','selectId','gotFloor','buyTimes','gotFree','prizePos']:['gotInfo'])]:p.kind==='daily-gift'?['heroId','resetMarker','drawnPack','boughtPack']:['resetTime','dailyActivity','weeklyActivity','dailyRewardClaimed','weeklyRewardClaimed','tasks'];
  if(!rewardFields(d,dailyKeys))return null;
  let daily;
- if(p.kind==='daily-gift')daily=parseGift({heroId:d?.heroId,resetTime:d?.resetMarker,drawnPack:d?.drawnPack,boughtPack:d?.boughtPack});
+ if(spec){
+  if(!dense(d.activityTime)||d.activityTime.some(r=>!rewardFields(r,['type','period','startTime','endTime']))||!dense(d.gift)||d.gift.some(r=>!rewardFields(r,spec.chip?['giftId','paidTimes']:['giftId','gotTimes','charge']))||(!spec.chip&&!spec.unique&&!rewardFields(d.gotInfo,['times','gotStage']))||(spec.unique&&(!dense(d.prizePos)||d.prizePos.some(r=>!rewardFields(r,['prizeId','pos'])))))return null;
+  daily=parseWeekly({...d,...(spec.chip?{gifts:d.gift}:{})},{activityTime:d.activityTime},p);
+ }else if(p.kind==='daily-gift')daily=parseGift({heroId:d?.heroId,resetTime:d?.resetMarker,drawnPack:d?.drawnPack,boughtPack:d?.boughtPack});
  else {if(!dense(d?.tasks)||d.tasks.some(r=>!rewardFields(r,['taskId','progress','targetProgress','rewardClaimed'])))return null;daily=parseDaily({dailyResetTime:d.resetTime,dailyActivity:d.dailyActivity,weeklyActivity:d.weeklyActivity,dailyRewardClaimed:d.dailyRewardClaimed,weeklyRewardClaimed:d.weeklyRewardClaimed,dailyTask:d.tasks.map(r=>({id:r.taskId,progress:r.progress,targetProgress:r.targetProgress,rewardClaimed:r.rewardClaimed}))});}
  if(!daily||!same(daily,d)||!dense(value.inventory)||value.inventory.some(r=>!rewardFields(r,['id','num'])||!text(r.id)||!Number.isSafeInteger(r.num)||r.num<=0)||new Set(value.inventory.map(r=>r.id)).size!==value.inventory.length)return null;
  const inventory=stockState(new Map(value.inventory.map(r=>[r.id,r.num])));return same(inventory,value.inventory)?{context:copy(c),daily,inventory}:null;
@@ -110,24 +116,37 @@ export function dailyTaskRewardExpectedState(before,p,rewards,activityGain,balan
  }else if(p.kind==='daily-activity'){
   if(activityGain!==0||!positive(p.tierId)||rewards.length!==1||next.daily.dailyRewardClaimed.includes(p.tierId))return null;
   next.daily.dailyRewardClaimed=[...next.daily.dailyRewardClaimed,p.tierId].sort((a,b)=>a-b);
- }else {
+ }else if(p.kind==='daily-gift'){
   if(activityGain!==0||p.packId!==FREE_DAILY_PACK_ID||rewards.length!==1||rewards[0].id!=='RUBY'||next.daily.drawnPack.includes(FREE_DAILY_PACK_ID))return null;
   next.daily.drawnPack=[...next.daily.drawnPack,FREE_DAILY_PACK_ID].sort();
- }
+ }else if(weeklyKinds.includes(p.kind)){
+  const spec=weekSpec(p),gift=next.daily.gift.find(r=>r.giftId===1000);
+  if(activityGain!==0||!next.daily.activityTime.some(r=>r.type===spec.type))return null;
+  if(p.kind==='weekly-chip-task'){
+   if(!positive(p.round)||!positive(p.taskId)||next.daily.round!==p.round||next.daily.gotTaskId.includes(p.taskId))return null;
+   next.daily.gotTaskId=[...next.daily.gotTaskId,p.taskId].sort((a,b)=>a-b);
+  }else {
+   if(p.packId!=='1000')return null;
+   if(spec.unique){if(gift||next.daily.gotFree!==false)return null;next.daily.gotFree=true;}
+   else {const key=spec.chip?'paidTimes':'gotTimes';if(!gift||gift[key]!==0||!spec.chip&&gift.charge!==0)return null;gift[key]=1;}
+  }
+ }else return null;
  const stock=new Map(balances);
  for(const {id,num}of rewards){const total=(stock.get(id)??0)+num;if(Object.values(RESOURCE_NAMES).includes(id)&&!stock.has(id)||!Number.isSafeInteger(total))return null;stock.set(id,total);}
  next.inventory=stockState(stock);return next;
 }
 export function dailyTaskRewardSettlement(result,operation){
  const p=operation?.parameters;if(!dailyRecoveryKinds.includes(p?.kind))return null;
- if(p.kind==='daily'?!own(result,'activity')||result.activity!==operation.activityGain:result!==null&&result!==undefined)return null;
- return {rewards:copy(operation.rewards),activityGain:operation.activityGain,evidence:p.kind==='daily'?{activity:result.activity}:null};
+ if(p.kind==='weekly-chip-task'?!chipTaskReceipt(result,operation):p.kind==='daily'?!own(result,'activity')||result.activity!==operation.activityGain:result!==null&&result!==undefined)return null;
+ return {rewards:copy(operation.rewards),activityGain:operation.activityGain,evidence:p.kind==='weekly-chip-task'?{round:p.round,gotTaskId:copy(operation.expectedState.daily.gotTaskId),rewards:copy(operation.rewards)}:p.kind==='daily'?{activity:result.activity}:null};
 }
 export function verifyDailyTaskRewardOutcome(operation,before,after,settlement,balances){
  const no=reason=>({confirmed:false,reason}),p=operation?.parameters,b=parseDailyTaskRewardState(before,p),a=parseDailyTaskRewardState(after,p);
  if(!b||!a||!same(b.context,a.context)||!same(operation.beforeState,b)||!rewardFields(settlement,['rewards','activityGain','evidence']))return no('缺少原日常奖励完整状态与结算凭据');
  const expected=dailyTaskRewardExpectedState(b,p,settlement.rewards,settlement.activityGain,balances);
- if(!expected||!same(operation.expectedState,expected)||!same(a,expected)||!same(settlement.evidence,p.kind==='daily'?{activity:settlement.activityGain}:null))return no('原周期、唯一领取变化、完整库存净入或typed增量未精确确认');
+ const evidence=p.kind==='weekly-chip-task'?{round:p.round,gotTaskId:expected?.daily.gotTaskId,rewards:settlement.rewards}:p.kind==='daily'?{activity:settlement.activityGain}:null;
+ if(!expected||!same(operation.expectedState,expected)||!same(a,expected)||!same(settlement.evidence,evidence))return no('原周期、唯一领取变化、完整库存净入或typed增量未精确确认');
+ if(weeklyKinds.includes(p.kind))return {confirmed:true,afterState:copy(a),reason:p.kind==='weekly-chip-task'?'同活动窗口、精确轮次与任务typed回执、唯一已领ID新增和完整库存净入共同确认；不跨轮或开箱':'同活动窗口、唯一免费礼包领取变化和完整库存配置奖励净入共同确认；其他活动/礼包/进度不变，不推算跨周重领或开箱'};
  return {confirmed:true,afterState:copy(a),reason:p.kind==='daily-gift'?'原样标记、英雄、唯一赠礼领取与RUBY净入共同确认；不证明日界':p.kind==='daily-activity'?'同周期唯一日活跃档位新增、配置奖励精确净入和其他完整状态不变共同确认':'同日常周期独立任务状态、typed活跃增量和完整库存EXP净入共同确认',...(p.kind==='daily'?{responseEvidence:{taskId:p.taskId,resetTime:b.daily.resetTime,activity:settlement.activityGain,experience:settlement.rewards[0].num}}:{})};
 }
 export function dailyTaskRewardRecoveryParts(row){
@@ -135,15 +154,16 @@ export function dailyTaskRewardRecoveryParts(row){
  const t=row.target;let target,uid,actionId;
  if(p.kind==='daily'){target={...p,resetTime:before.daily.resetTime};uid={type:'task-reward',id:'daily:'+before.daily.resetTime+':'+p.taskId};actionId=moduleId+':daily:'+before.daily.resetTime+':'+p.taskId+':'+row.identity;}
  else if(p.kind==='daily-activity'){if(!positive(t?.season)||!positive(t?.configuredSeason))return null;target={...p,resetTime:before.daily.resetTime,season:t.season,configuredSeason:t.configuredSeason};uid={type:'daily-activity-reward',id:before.daily.resetTime+':'+p.tierId};actionId=moduleId+':daily-activity:'+before.daily.resetTime+':'+p.tierId+':'+row.identity;}
- else {if(!positive(t?.season)||!positive(t?.configuredSeason))return null;target={...p,heroId:before.daily.heroId,resetMarker:before.daily.resetMarker,season:t.season,configuredSeason:t.configuredSeason};uid={type:'free-daily-gift',id:hash({p,daily:before.daily,season:t.configuredSeason})};actionId=moduleId+':daily-gift:'+row.identity;}
+ else if(p.kind==='daily-gift'){if(!positive(t?.season)||!positive(t?.configuredSeason))return null;target={...p,heroId:before.daily.heroId,resetMarker:before.daily.resetMarker,season:t.season,configuredSeason:t.configuredSeason};uid={type:'free-daily-gift',id:hash({p,daily:before.daily,season:t.configuredSeason})};actionId=moduleId+':daily-gift:'+row.identity;}
+ else {const spec=weekSpec(p),activity=before.daily.activityTime.find(r=>r.type===spec.type);if(!activity)return null;target={...p,...activity};uid={type:p.kind==='weekly-chip-task'?'weekly-chip-task-reward':spec.chip?'free-weekly-chip-gift':spec.unique?'free-weekly-unique-lottery-gift':'free-weekly-lottery-gift',id:hash(target)};actionId=moduleId+':'+p.kind+':'+row.identity;}
  if(!same(t,target))return null;return {before,action:dailyTaskRewardAction(p),actionId,budgetClaims:{resources:[],quotas:[],uids:[uid]}};
 }
 export function dailyTaskRewardRecoveryClock(client,context,p,state,previous){
  const parsed=parseDailyTaskRewardState(state,p);if(!parsed||!same(parsed.context,context))return null;
  if(p.kind==='daily-gift')return previous===null?{clock:null}:null;
  const valid=c=>rewardFields(c,['earliestMs','nowMs','latestMs'])&&['earliestMs','nowMs','latestMs'].every(k=>Number.isFinite(c[k])&&c[k]>=0&&c[k]<=Number.MAX_SAFE_INTEGER)&&c.earliestMs<=c.nowMs&&c.nowMs<=c.latestMs;
- const clock=clockOf(client,context),expiry=parsed.daily.resetTime*1000;
- return valid(previous)&&valid(clock)&&previous.latestMs<expiry&&clock.latestMs<expiry&&previous.earliestMs<=clock.earliestMs?{clock}:null;
+ const clock=clockOf(client,context),activity=weeklyKinds.includes(p.kind)?parsed.daily.activityTime.find(r=>r.type===weekSpec(p).type):null,expiry=(activity?.endTime??parsed.daily.resetTime)*1000;
+ return valid(previous)&&valid(clock)&&previous.latestMs<expiry&&clock.latestMs<expiry&&(!weeklyKinds.includes(p.kind)||activity&&previous.earliestMs>=activity.startTime*1000&&clock.earliestMs>=activity.startTime*1000)&&previous.earliestMs<=clock.earliestMs?{clock}:null;
 }
 export function dailyTaskRewardVerificationClock(f){const live=liveFacts.get(f);return live&&authority(f)?dailyTaskRewardRecoveryClock(live.client,f.context,f.parameters,f.state,f.parameters.kind==='daily-gift'?null:f.endClock):null;}
 function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
@@ -184,14 +204,6 @@ export function verifyDailyTaskReward(operation,before,after,result){const no=re
  if(isOpenRank(canonical.parameters)){
   if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('开服任务同一类型窗口、唯一score已领新增及完整库存净入未同时确认');
   return {confirmed:true,afterState:copy(after.state),reason:'独立对应type排行复读确认同窗口、同进度且仅明确score档位新增；完整库存按固定配置精确净入，其他库存保持，不打开所得包'};
- }
- if(canonical.parameters.kind==='weekly-chip-task'){
-  if(!chipTaskReceipt(result,canonical)||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周芯片任务同轮次回执、唯一已领ID新增及完整库存净入未同时确认');
-  return {confirmed:true,afterState:copy(after.state),reason:'精确round/taskId请求，typed轮次与完整已领列表/奖励包和独立复读共同确认；积分/礼包/其他活动不变，不打开所得宝箱'};
- }
- if(weeklyKinds.includes(canonical.parameters.kind)){
-  if(result!==null&&result!==undefined||Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||!same(after.state,canonical.expectedState))return no('周转盘礼包的同活动期数、唯一领取计次和完整库存净入未同时确认');
-  return {confirmed:true,afterState:copy(after.state),reason:canonical.parameters.kind==='weekly-chip-gift'?'独立复读确认同可信type6活动窗口内仅1000号礼包paidTimes由0变1及配置宝箱数量精确净入，其他活动/礼包/积分/轮次/已领任务不变；不打开宝箱':canonical.parameters.kind==='weekly-unique-lottery-gift'?'独立复读确认同可信type7活动窗口内仅gotFree由false变true及配置奖励精确净入，其他活动/礼包/翻牌状态不变':'独立复读确认同可信活动窗口内仅1000号礼包gotTimes由0变1、charge不变及配置奖励精确净入，其他活动、礼包和转盘进度不变'};
  }
  return no('不支持的日常奖励合同');
 }
@@ -265,14 +277,10 @@ function weeklyDefinition(f,config){
 }
 function weeklyCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
  const p=copy(parameters),spec=weekSpec(p),valid=authority(f)&&same(p,f.parameters),def=weeklyDefinition(f,config),activity=currentWeek(f),gift=f?.daily?.gift?.find(r=>r.giftId===1000),beforeState=copy(f?.state??null);let expectedState=null;
- if(valid&&def&&(spec.unique?!gift:Boolean(gift))&&def.rewards.every(r=>!Object.values(RESOURCE_NAMES).includes(r.id)||f.stock.has(r.id))){
-  const next=copy(beforeState),stock=new Map(f.stock);let safe=true;
-  for(const r of def.rewards){const total=(stock.get(r.id)??0)+r.num;if(!Number.isSafeInteger(total))safe=false;stock.set(r.id,total);}
-  if(safe){next.inventory=stockState(stock);if(spec.unique)next.daily.gotFree=true;else next.daily.gift.find(r=>r.giftId===1000)[spec.chip?'paidTimes':'gotTimes']=1;expectedState=next;}
- }
+ if(valid&&def)expectedState=dailyTaskRewardExpectedState(beforeState,p,def.rewards,0,f.stock);
  const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_GIFT_AUTHORITY_UNKNOWN':!def?'WEEKLY_GIFT_CONFIG_UNKNOWN':(spec.unique?Boolean(gift):!gift)?'WEEKLY_GIFT_ENTITLEMENT_UNKNOWN':(spec.unique?f.daily.gotFree:gift[spec.chip?'paidTimes':'gotTimes']!==0)?'WEEKLY_GIFT_ALREADY_CLAIMED':!spec.unique&&!spec.chip&&gift.charge!==0?'WEEKLY_GIFT_CHARGE_UNKNOWN':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes(spec.request)?'PROTOCOL_UNAVAILABLE':null;
  const target={...p,type:spec.type,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence}),source=spec.chip?'Fixed v76 WeekChipPack WeekChipGotFreeRequest and WeekChipPackCfg1000: zero price, buyLimit1, empty guildPack; trusted WeekInfo activity6 window and explicit WeekChipGift paidTimes0; grant configured held box count, never open boxes':spec.unique?'Fixed v76 WeekLotteryPackItem GotUniqueLotteryFreeRequest and WeekUniquePackCfg1000: zero price, limitedTimes1, empty guildPack; trusted WeekInfo activity7 window and explicit gotFree=false with no conflicting gift1000 record':'Fixed v76 WeekLotteryPackItem free normal pack request; unique WeekLotteryPackCfg1000 zero price, limitedTimes1 and empty guildPack; explicit WeekLotteryGift and trusted WeekInfo activity4 window';
- return {module:moduleId,capabilityId:'C513',actionId:moduleId+':'+p.kind+':'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:spec.chip?'free-weekly-chip-gift':spec.unique?'free-weekly-unique-lottery-gift':'free-weekly-lottery-gift',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:spec.label+'免费礼包 1000',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:{request:spec.request,response:null,body:{}}}:{})};
+ return {module:moduleId,capabilityId:'C513',actionId:moduleId+':'+p.kind+':'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:spec.chip?'free-weekly-chip-gift':spec.unique?'free-weekly-unique-lottery-gift':'free-weekly-lottery-gift',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:spec.label+'免费礼包 1000',rewards:copy(def?.rewards??null),activityGain:0,...(blockedReason===null?{action:dailyTaskRewardAction(p)}:{})};
 }
 
 // C516/W17: exact chip task and round. The final unclaimed task is held until
@@ -303,14 +311,10 @@ function chipTaskCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.
  const p=copy(parameters),valid=authority(f)&&same(p,f.parameters),def=chipTaskDefinition(f,config),activity=currentWeek(f),beforeState=copy(f?.state??null),claimed=f?.daily?.gotTaskId;
  const known=def&&claimed?.every(id=>def.ids.includes(id)),roundKnown=def&&positive(f?.daily?.round)&&f.daily.round===p.round&&p.round<=def.maxRound;
  const progress=roundKnown?f.daily.score-def.roundAmount*(p.round-1):null;let expectedState=null;
- if(valid&&known&&roundKnown){
-  const next=copy(beforeState),stock=new Map(f.stock);let safe=true;
-  for(const {id,num}of def.rewards){const start=stock.get(id);if(Object.values(RESOURCE_NAMES).includes(id)&&start===undefined)safe=false;const total=(start??0)+num;if(!Number.isSafeInteger(total))safe=false;stock.set(id,total);}
-  if(safe){next.inventory=stockState(stock);next.daily.gotTaskId=[...claimed,p.taskId].sort((a,b)=>a-b);expectedState=next;}
- }
+ if(valid&&known&&roundKnown)expectedState=dailyTaskRewardExpectedState(beforeState,p,def.rewards,0,f.stock);
  const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'WEEKLY_CHIP_TASK_AUTHORITY_UNKNOWN':!def||!known?'WEEKLY_CHIP_TASK_CONFIG_UNKNOWN':!roundKnown?'WEEKLY_CHIP_TASK_ROUND_UNKNOWN':claimed.includes(p.taskId)?'WEEKLY_CHIP_TASK_ALREADY_CLAIMED':!Number.isSafeInteger(progress)||progress<def.amount?'WEEKLY_CHIP_TASK_INCOMPLETE':claimed.length===def.ids.length-1?'WEEKLY_CHIP_ROUND_TRANSITION_UNVERIFIED':!activity?'WEEKLY_GIFT_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!['WeekChipGotTaskRequest','WeekChipGotTaskResponse'].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const target={...p,type:6,period:activity?.period??null,startTime:activity?.startTime??null,endTime:activity?.endTime??null},identity=hash({target,beforeState,def,configEvidence:f?.configEvidence});
- return {module:moduleId,capabilityId:'C516',actionId:moduleId+':weekly-chip-task:'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 WeekChipTask exact round/taskId; WeekChipPointsCfg and matching WeekChipPeriodCfg; score minus full prior-round maxima; no round-transition inference',budgetClaims:{resources:[],quotas:[],uids:[{type:'weekly-chip-task-reward',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:'周芯片第'+p.round+'轮任务 '+p.taskId,rewards:copy(def?.rewards??null),activityGain:0,progress,requiredProgress:def?.amount??null,...(blockedReason===null?{action:{request:'WeekChipGotTaskRequest',response:'WeekChipGotTaskResponse',body:{round:p.round,taskId:p.taskId}}}:{})};
+ return {module:moduleId,capabilityId:'C516',actionId:moduleId+':weekly-chip-task:'+identity,actionType:'CLAIM',target,parameters:p,identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 WeekChipTask exact round/taskId; WeekChipPointsCfg and matching WeekChipPeriodCfg; score minus full prior-round maxima; no round-transition inference',budgetClaims:{resources:[],quotas:[],uids:[{type:'weekly-chip-task-reward',id:hash(target)}]},executable:blockedReason===null,blockedReason,label:'周芯片第'+p.round+'轮任务 '+p.taskId,rewards:copy(def?.rewards??null),activityGain:0,progress,requiredProgress:def?.amount??null,...(blockedReason===null?{action:dailyTaskRewardAction(p)}:{})};
 }
 function chipTaskReceipt(raw,op){
  if(!own(raw,'round')||raw.round!==op.parameters.round||!own(raw,'gotTaskId')||!dense(raw.gotTaskId)||raw.gotTaskId.some(v=>!positive(v))||new Set(raw.gotTaskId).size!==raw.gotTaskId.length||!same([...raw.gotTaskId].sort((a,b)=>a-b),op.expectedState.daily.gotTaskId)||!own(raw,'reward')||!own(raw.reward,'asset')||!dense(raw.reward.asset))return false;
