@@ -4,7 +4,7 @@ import { summarizeTradeObservation, validateTradeObservationSummary, validateTra
 import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { validateTaskRewardsParameters } from './task-rewards.mjs';
+import { validateTaskRewardsParameters, validateTaskQualificationObservation } from './task-rewards.mjs';
 import {validateFreeRecruitCooldownObservation} from './free-recruit.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent } from './client.mjs';
 import path from 'node:path';
@@ -402,7 +402,10 @@ function repeatAfterStop(ctx,node){
           const orderProgress=node.module==='orders'?summarizeOrderProgress(ctx.survey?.view):null;
           const recruitCooldown=node.module==='free-recruit'&&ctx.survey?.view?.cooldownObservation?validateFreeRecruitCooldownObservation(ctx.survey.view.cooldownObservation):null;
           const taskObservation=node.module==='task-rewards'?taskSurveyTarget(node.parameters):null;
-          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(taskObservation?{taskObservation}:{}),...(orderProgress?{orderProgress}:{})});
+          const taskRows=taskObservation&&['main','branch','achievement'].includes(taskObservation.kind)&&Array.isArray(ctx.survey?.view?.qualificationObservations)?ctx.survey.view.qualificationObservations.filter(row=>row.kind===taskObservation.kind&&row.taskId===taskObservation.taskId):[];
+          if(taskRows.length>1)throw fail('任务只读资格身份不唯一','WORKFLOW_UNKNOWN');
+          const taskQualification=taskRows.length===1?validateTaskQualificationObservation(taskRows[0]):null;
+          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(taskObservation?{taskObservation}:{}),...(taskQualification?{taskQualification}:{}),...(orderProgress?{orderProgress}:{})});
           ctx.nodeId = next(ctx); continue;
         }
         if (node.type === 'ACTION') {
@@ -603,6 +606,12 @@ function traceEvidence(row) {
   if(row.recruitCooldown!==undefined){if(row.type!=='SURVEY'||row.module!=='free-recruit'||row.result!=='SURVEYED')throw fail('招募冷却摘要仅属于原free-recruit SURVEY');evidence.recruitCooldown=validateFreeRecruitCooldownObservation(row.recruitCooldown);}
   if(row.orderProgress!==undefined){if(row.type!=='SURVEY'||row.module!=='orders'||row.result!=='SURVEYED')throw fail('订单计数观察仅属于原orders SURVEY');evidence.orderProgress=validateOrderProgressSummary(row.orderProgress);}
   if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED')throw fail('任务观察目标仅属于原task-rewards SURVEY');const target=taskSurveyTarget(row.taskObservation);if(!target)throw fail('任务观察历史须有明确目标');evidence.taskObservation=target;}
+  if(row.taskQualification!==undefined){
+    if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED')throw fail('任务资格观察仅属于原task-rewards SURVEY');
+    const observation=validateTaskQualificationObservation(row.taskQualification),target=evidence.taskObservation;
+    if(!target||target.kind!==observation.kind||target.taskId!==observation.taskId)throw fail('任务资格历史与原明确目标不一致');
+    evidence.taskQualification=observation;
+  }
   if(row.cooldownWait!==undefined){cooldownWaitHistoryRow(row);evidence.cooldownWait=copy(row.cooldownWait);}
   if(row.round!==undefined){if(!Number.isSafeInteger(row.round)||row.round<1||row.round>WORKFLOW_LIMITS.rounds)throw fail('历史轮次无效');evidence.round=row.round;}
   if(row.durationMs!==undefined){

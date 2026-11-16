@@ -1717,7 +1717,7 @@ function wfHistoryRender(data) {
       const count=key=>{const value=row.orderProgress[key];return value?.status==='OBSERVED'&&Number.isInteger(value.value)&&value.value>=0&&value.value<=2147483647?String(value.value):'未知';};
       box.appendChild(gpEl('p','每日订单历史观察：完成计数 '+count('completed')+' · 已领奖阈值 '+count('rewardedThrough')+'；周期与重置时间未知。仅当次观察，不证明当前可领、到账或免费刷新资格，不能恢复执行。'));
     }
-    else if(row.taskObservation){box.appendChild(gpEl('p','只读任务调查目标；不证明任务完成、可领或到账。'));gpDetails(box,'原任务Function与明确目标',row.taskObservation);}
+    else if(row.taskObservation){box.appendChild(gpEl('p','只读任务调查目标；不证明任务完成、可领或到账。'));gpDetails(box,'原任务Function与明确目标',row.taskObservation);if(row.taskQualification){box.appendChild(gpEl('p','原调查时的任务资格观察；读取历史不重新计算、不续期或授权，奖励到账仍未知。'));gpDetails(box,'任务进度与奖励记录的历史观察',row.taskQualification);}}
     else if(trade){
       box.appendChild(gpEl('p','海商王观察 '+(trade.status==='OBSERVED'?'已观察':'未知')+' · 周期 '+(trade.period??'未知')+' · 港口 '+(trade.cityId??'未知')+' · 船级 '+(trade.cargoLv??'未知')+' · 行情货物 '+(trade.priceCount??'未知')+' · 持货批次 '+(trade.holdingCount??'未知')+' · 非亏损预览 '+(trade.nonLossPreviewCount??'未知')+' · 未知报价 '+(trade.unknownQuoteCount??'未知')+'；仅历史当前港口响应摘要，不证明实时行情、成交或到账，不能恢复执行。'));
     }else if(cooldown){

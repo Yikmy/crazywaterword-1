@@ -152,6 +152,23 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
 }
 // Read-only progress uses the original task parsers, independent of inventory
 // or reward mapping. It cannot grant a write, prove settlement or restore a permit.
+export function validateTaskQualificationObservation(value) {
+  const keys=['kind','taskId','status','source','sourceAt','progress','requiredProgress','completion','rewardState','observedRequirementsMet','eligibility','readOnly','executable','autoResume','settlement','reason'];
+  if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||!['main','branch','achievement'].includes(value.kind)||!positive(value.taskId)||
+    !['OBSERVED','UNKNOWN'].includes(value.status)||value.source!==sourcesFor(value).tasks||
+    value.sourceAt!==null&&(!Number.isSafeInteger(value.sourceAt)||value.sourceAt<0)||value.eligibility!==null||value.readOnly!==true||
+    value.executable!==false||value.autoResume!==false||value.settlement!=='UNKNOWN')throw invalid('任务资格历史须为原来源的精确只读观察');
+  const count=n=>value.kind==='achievement'?achievementProgressCount(n):safeResourceQuantity(n);
+  if(value.requiredProgress!==null&&(count(value.requiredProgress)!==value.requiredProgress||BigInt(value.requiredProgress)<=0n)||
+    value.status==='OBSERVED'&&(value.sourceAt===null||value.progress===null||count(value.progress)!==value.progress)||
+    value.status==='UNKNOWN'&&value.progress!==null)throw invalid('任务资格历史进度、目标或来源时间未知');
+  const task=value.status==='OBSERVED'?{taskId:value.taskId,progress:value.progress,...(value.rewardState==='CLAIMED'?{rewardClaimed:true}:value.rewardState==='UNCLAIMED'?{rewardClaimed:false}:{})}:null;
+  const qualification=taskQualification(task,value.requiredProgress,value.kind);
+  const reason=value.status==='UNKNOWN'?(value.sourceAt===null?'TASK_OBSERVATION_UNKNOWN':'TASK_NOT_PRESENT'):qualification.completion==='UNKNOWN'?'TASK_TARGET_UNKNOWN':'READ_ONLY_QUALIFICATION';
+  if(value.completion!==qualification.completion||value.rewardState!==qualification.rewardState||value.observedRequirementsMet!==qualification.claimable||value.reason!==reason)
+    throw invalid('任务资格历史与原任务解析不一致');
+  return copy(value);
+}
 function qualificationObservations(f,parameters,choices,config) {
   const live=liveTaskFacts.get(f),c=f?.context,source=f?.sourceFacts?.tasks;
   const parsed=parseFor(f?.inputs?.tasks,f?.parameters);
@@ -167,10 +184,10 @@ function qualificationObservations(f,parameters,choices,config) {
     const row=same(config?.tables?.[table]??null,f?.configEvidence?.tables?.[table]??null)?taskConfigurationRow(f?.configEvidence,p.kind,p.taskId):null;
     const target=p.kind==='achievement'?exact?.targetProgress??null:taskTarget(row);
     const qualification=taskQualification(exact,target,p.kind);
-    return {kind:p.kind,taskId:p.taskId,status:exact?'OBSERVED':'UNKNOWN',source:sourcesFor(f.parameters).tasks,sourceAt:valid?source.provenance.sourceAt:null,
+    return validateTaskQualificationObservation({kind:p.kind,taskId:p.taskId,status:exact?'OBSERVED':'UNKNOWN',source:sourcesFor(f?.parameters).tasks,sourceAt:valid?source.provenance.sourceAt:null,
       progress:exact?.progress??null,requiredProgress:target??null,completion:qualification.completion,rewardState:qualification.rewardState,
       observedRequirementsMet:qualification.claimable,eligibility:null,readOnly:true,executable:false,autoResume:false,
-      settlement:'UNKNOWN',reason:!valid?'TASK_OBSERVATION_UNKNOWN':!exact?'TASK_NOT_PRESENT':qualification.completion==='UNKNOWN'?'TASK_TARGET_UNKNOWN':'READ_ONLY_QUALIFICATION'};
+      settlement:'UNKNOWN',reason:!valid?'TASK_OBSERVATION_UNKNOWN':!exact?'TASK_NOT_PRESENT':qualification.completion==='UNKNOWN'?'TASK_TARGET_UNKNOWN':'READ_ONLY_QUALIFICATION'});
   });
 }
 export function viewTaskRewards(f,options={}) {
