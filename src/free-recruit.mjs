@@ -1,11 +1,12 @@
 // W16: explicit hero/antique free, single-ticket or fixed owned-ticket batches.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { configuredRewardSeason } from './dailies.mjs';
 import { heroDerivedStateReliable } from './equipment-growth.mjs';
 import { parseAntiqueOwnership, readAntiqueGrowthCatalog, antiqueSuitsConfirmed } from './antique-growth.mjs';
 import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
-import { ResourceLedger, safeResourceQuantity } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -21,6 +22,7 @@ const fields=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,O
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
 const configNames=['ModuleOpenCfg','HeroCfg','ItemCfg'];
+const taskConfigNames=['HeroRecruitTaskCfg','AntiqueRecruitTaskCfg'];
 const configNamesFor=p=>p?.recruit==='antique'?[...configNames,'AntiqueBaseCfg','AntiqueFragReturnCfg','AntiqueSuitCfg']:configNames;
 const sourcesFor=p=>p?.recruit==='antique'?{...sources,antiques:'AllAntiqueResponse'}:sources;
 const sources={recruit:'RecruitInfoResponse',heroes:'AllHeroResponse',city:'OnWaterResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
@@ -35,6 +37,7 @@ export const FREE_RECRUIT_EVIDENCE=Object.freeze({
  batchDispatchModuleByteOffset:3609201,batchCostModuleByteOffset:5533184,
  antiqueObservationModuleByteOffset:265838,
  antiqueObservationSemantics:'AntiqueRecruitItem uses RecruitInfo.antique, the same free marker comparison, and owned 藏品券 costs 1/10/50; explicit AntiqueRecruitRequest type=1/way uses its own typed new-antique/configured conversion branch and independent AllAntique ownership; original growth catalog and derived-suit validation are reused',
+ taskSemantics:'RecruitTaskItem displays times >= configured times and gotId >= id independently; RecruitUtil.seasonTasks uses ordered season groups. GotHeroRecruitTaskRequest/GotAntiqueRecruitTaskRequest are empty and share GotRecruitTaskResponse(gotId,reward); exact target/season and recovery attribution remain unproven, observation only',
  advertisingSemantics:'RecruitView._onBtnAdRecruit calls recruitAdv only after AdvUtils.playAdv success; RECRUIT_ADV(5) is advertising, never ordinary free authorization',
  realGame:'REAL_UNVERIFIED'
 });
@@ -93,7 +96,7 @@ function snapshot(inputs,context,parameters={}) {
  const recruit=parseRecruit(inputs?.recruit,parameters),antiques=parameters.recruit==='antique'?parseAntiqueOwnership(inputs?.antiques):null,heroes=parseHeroes(inputs?.heroes),broadcast=parseBroadcast(inputs?.city),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
  return recruit&&heroes&&broadcast&&inventory.stockReliable&&(parameters.recruit!=='antique'||antiques)?{context,recruit,heroes,broadcast,inventory:stockState(inventory.stock),...(parameters.recruit==='antique'?{antiques}:{})}:null;
 }
-const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
+const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,taskConfigEvidence:f.taskConfigEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyFreeRecruit(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
  parameters=validateFreeRecruitParameters(parameters);
  const readSources=sourcesFor(parameters),tables=configNamesFor(parameters);
@@ -108,7 +111,7 @@ export async function surveyFreeRecruit(client,protocol,{config,player,parameter
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('招募采集期间账号或连接变化'),{code:'CANCELLED'});
  const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),recruit=parseRecruit(raw.recruit,parameters),heroes=parseHeroes(raw.heroes),broadcast=parseBroadcast(raw.city),inventory=parseOperationInventory(raw.items,raw.resources);
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:readSources[k],sourceAt,scope,reliable:k==='recruit'?recruit!==null:k==='heroes'?heroes!==null:k==='city'?broadcast!==null:k==='antiques'?parseAntiqueOwnership(raw.antiques)!==null:inventory.stockReliable})]));
- const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(tables.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context,parameters),available:Object.keys(protocol??{}),notes,startClock,endClock};
+ const f={module:moduleId,parameters,context,taskConfigEvidence:{tables:Object.fromEntries(taskConfigNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},configEvidence:{tables:Object.fromEntries(tables.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context,parameters),available:Object.keys(protocol??{}),notes,startClock,endClock};
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 
@@ -192,9 +195,41 @@ function antiqueRecruitObservation(f,{config}={}) {
   })};
 }
 
+// Same read and RecruitData parser as recruitment. These rows describe the
+// client display conditions; empty claim requests cannot bind a tier or season.
+function recruitTaskObservations(f,{config}={}) {
+ const valid=authority(f),world=valid?roleId(f.context.worldId):null;
+ const season=world?Number(BigInt(world)/1000000n%1000n):null;
+ const items=f?.configEvidence?.tables?.ItemCfg?.data;
+ return ['hero','antique'].map(kind=>{
+  const table=kind==='hero'?'HeroRecruitTaskCfg':'AntiqueRecruitTaskCfg';
+  const base={kind,status:'UNKNOWN',source:'RecruitInfoResponse.'+kind+'.task',sourceAt:null,season:null,configuredSeason:null,progress:null,claimedThroughId:null,nextRewardId:null,tasks:[],readOnly:true,eligibility:null,executable:false,autoResume:false,settlement:'UNKNOWN',blockedReason:'BLOCKED_EVIDENCE'};
+  const data=valid?parseRecruitData(f?.state?.recruit?.[kind]):null;
+  const matches=same(config?.tables?.[table]??null,f?.taskConfigEvidence?.tables?.[table]??null)&&same(config?.tables?.ItemCfg??null,f?.configEvidence?.tables?.ItemCfg??null);
+  const selected=matches?configuredRewardSeason(f?.taskConfigEvidence?.tables?.[table]?.data,season,'id'):null;
+  if(!data||!selected||!dense(items))return base;
+  const known=new Set(Object.values(RESOURCE_NAMES));
+  for(const item of items)if(own(item,'id')&&text(item.id))known.add(item.id);
+  const tasks=[];let lastId=0,lastTimes=0;
+  for(const row of selected.rows){
+   if(!own(row,'times')||!positive(row.times)||row.id<=lastId||row.times<=lastTimes||!own(row,'reward')||!dense(row.reward)||!row.reward.length)return base;
+   const rewards=[];
+   for(const pair of row.reward){
+    if(!dense(pair)||pair.length!==2||!known.has(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0||rewards.some(r=>r.id===pair[0]))return base;
+    rewards.push({id:pair[0],num:pair[1]});
+   }
+   const complete=data.task.times>=row.times,claimed=data.task.gotId>=row.id;
+   tasks.push({id:row.id,requiredProgress:row.times,completion:complete?'COMPLETE':'INCOMPLETE',rewardState:claimed?'CLAIMED':'UNCLAIMED',observedRequirementsMet:complete&&!claimed,rewards,executable:false,settlement:'UNKNOWN'});
+   lastId=row.id;lastTimes=row.times;
+  }
+  if(data.task.gotId!==0&&!tasks.some(row=>row.id===data.task.gotId)||tasks.some(row=>row.rewardState==='CLAIMED'&&row.completion!=='COMPLETE'))return base;
+  return {...base,status:'OBSERVED',sourceAt:f.sourceFacts.recruit.provenance.sourceAt,season,configuredSeason:selected.configuredSeason,progress:data.task.times,claimedThroughId:data.task.gotId,nextRewardId:tasks.find(row=>row.rewardState==='UNCLAIMED')?.id??null,tasks};
+ });
+}
+
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??f?.parameters??{});
- return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，古董写入须显式recruit=antique并重新调查完整藏品/配置，再独立授权；只读条件不构成许可。广告、潜水和购买仍关闭，未知结果不重放。']};
+ return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),taskObservations:recruitTaskObservations(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，古董写入须显式recruit=antique并重新调查完整藏品/配置，再独立授权；只读条件不构成许可。广告、潜水和购买仍关闭，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);

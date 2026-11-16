@@ -491,6 +491,11 @@ function gpRenderDomain(id,view){
   }
   for(const [payment,count] of [['free',1],['ticket',1],['ticket',10],['ticket',50]]){const prepare=gpEl('button',payment==='ticket'?'准备用自有'+(selectedRecruit==='antique'?'藏品券':'抽卡券')+'招募'+count+'次':'准备免费单次');prepare.dataset.recruitPayment=count>1?'ticket-'+count:payment;prepare.disabled=!gpDomainSelectable(id);prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;$('gp-'+id+'-parameters').value=gpJson({...((selectedRecruit==='antique')?{recruit:'antique'}:{}),...(payment==='ticket'?{payment:'ticket',...(count>1?{count}:{})}:{})});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择'+(payment==='ticket'?'自有'+(selectedRecruit==='antique'?'藏品券':'抽卡券')+count+'张':'免费单次')+'；重新探测资格和库存，再预览并单独授权。';};box.appendChild(prepare);s.actionControls.push(prepare);}
   table(selectedRecruit==='antique'?'古董招募':'英雄招募',['支付模式','当前冷却标记','当前累计次数','广播站','开放等级','当前状态'],(view?.candidates||[]).map(row=>[row.parameters?.payment==='ticket'?'自有'+(selectedRecruit==='antique'?'藏品券':'抽卡券')+(row.parameters.count??1)+'张':'免费',view.recruit?.[selectedRecruit]?.freeEndTimeSeconds,view.recruit?.[selectedRecruit]?.recruitTimes,view.broadcast?.level,row.requiredLevel,row.executable?'可预览明确招募':row.blockedReason]));
+  for(const observation of view?.taskObservations||[]){
+   box.appendChild(gpEl('p',(observation.kind==='antique'?'古董':'英雄')+'累计任务（仅只读） · '+show(observation.source)+' · 当前季/配置季 '+show(observation.season)+' / '+show(observation.configuredSeason)+' · 累计进度 '+show(observation.progress)+' · 已领至 '+show(observation.claimedThroughId)+' · '+show(observation.status)));
+   table('累计任务条件与奖励',['档位','目标进度','完成状态','领取状态','本次观察条件','配置奖励','执行状态'],(observation.tasks||[]).map(row=>[row.id,row.requiredProgress,row.completion==='COMPLETE'?'已达标':'未达标',row.rewardState==='CLAIMED'?'服务端记录已领':'未领',row.observedRequirementsMet?'达标且未领':'条件未满足',(row.rewards||[]).map(r=>r.id+' × '+r.num).join('、'),'不可执行']));
+  }
+  if(view?.taskObservations?.length)box.appendChild(gpEl('p','累计任务达标、服务端已领记录和实际奖励到账分别观察。空领奖请求无法绑定档位与赛季，累计领奖保持冻结；这些只读条件不会生成领取动作或授权，也不代表日常1002完成。'));
   const antique=view?.antiqueObservation;
   if(antique){
    const requirements=value=>value===true?'已观察到所需条件':value===false?'所需条件未满足':'未知';

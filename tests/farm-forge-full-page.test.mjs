@@ -3103,3 +3103,12 @@ for(const count of [1,10,50])test('antique recruit complete PAGE preserves expli
 test('hero PAGE selection of antique only changes draft and does not start a survey or write',async()=>{
  const spec=cases.find(s=>s.module==='free-recruit'),h=await loaded(spec),before=h.requests.length,choose=descendants(h.node('gp-free-recruit-facts')).find(n=>n.dataset?.recruitKind==='antique');choose.click();assert.deepEqual(JSON.parse(h.node('gp-free-recruit-parameters').value),{recruit:'antique'});assert.equal(h.requests.length,before);assert.equal(h.node('gp-free-recruit-authorize').disabled,true);assert.equal(writes(h).length,0);
 });
+
+for(const known of [false,true])test('cumulative recruit complete PAGE separates conditions and settlement without claim controls '+known,async()=>{
+ const original=cases.find(s=>s.module==='free-recruit'),taskObservations=['hero','antique'].map(kind=>({kind,status:known?'OBSERVED':'UNKNOWN',source:'RecruitInfoResponse.'+kind+'.task',season:known?2:null,configuredSeason:known?2:null,progress:known?650:null,claimedThroughId:known?1:null,tasks:known?[{id:1,requiredProgress:200,completion:'COMPLETE',rewardState:'CLAIMED',observedRequirementsMet:false,rewards:[{id:'<累计奖励>',num:1}]},{id:2,requiredProgress:400,completion:'COMPLETE',rewardState:'UNCLAIMED',observedRequirementsMet:true,rewards:[]},{id:3,requiredProgress:800,completion:'INCOMPLETE',rewardState:'UNCLAIMED',observedRequirementsMet:false,rewards:[]}]:[],eligibility:null,executable:false,settlement:'UNKNOWN'}));
+ const spec={...original,facts:{...original.facts,taskObservations}},h=await loaded(spec),box=h.node('gp-free-recruit-facts');
+ assert.match(box.textContent,/英雄累计任务（仅只读）/);assert.match(box.textContent,/古董累计任务（仅只读）/);assert.match(box.textContent,/空领奖请求无法绑定档位与赛季/);assert.match(box.textContent,/不代表日常1002完成/);
+ if(known){assert.match(box.textContent,/服务端记录已领/);assert.match(box.textContent,/达标且未领/);assert.match(box.textContent,/未达标/);assert.match(box.textContent,/<累计奖励>/);}else assert.match(box.textContent,/UNKNOWN/);
+ assert.equal(descendants(box).filter(n=>n.tagName==='button').length,8);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
+ h.run("selectAccount('B')");assert.doesNotMatch(box.textContent,/RecruitInfoResponse.(hero|antique).task/);assert.equal(writes(h).length,0);
+});

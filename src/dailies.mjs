@@ -63,7 +63,7 @@ const rewardOwn=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(Object.getOw
 const rewardPositive=v=>Number.isInteger(v)&&v>0&&v<=2147483647;
 const rewardText=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
 const rewardDense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
-function configuredRewardSeason(rows,season,key) {
+export function configuredRewardSeason(rows,season,key) {
  if(!rewardPositive(season)||!rewardDense(rows)||!rows.length)return null;
  const seen=new Set();let last=0;
  for(const row of rows){if(!rewardOwn(row,'season')||!rewardPositive(row.season)||row.season<last||!rewardOwn(row,key)||(key==='id'?!rewardPositive(row[key]):!rewardText(row[key]))||seen.has(row.season+':'+row[key]))return null;last=row.season;seen.add(row.season+':'+row[key]);}

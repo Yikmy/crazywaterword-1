@@ -1713,3 +1713,16 @@ for(const [freeAntique,count]of [[true,1],[false,1],[false,10],[false,50]])for(c
  if(unconfirmed){const before=app.requests.length;assert.equal((await app.call('/api/gameplay/survey',{body:args})).data.code,'RESPONSE_UNCERTAIN');assert.equal(app.requests.length,before);}assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('cumulative recruit HTTP observes both seasonal identities through the original survey with zero writes',async()=>{
+ const data={freeEndTimeSeconds:2000,nextLuck:10,recruitTimes:999,task:{times:650,gotId:1}},state={stock:50,recruit:structuredClone(data),antique:{...structuredClone(data),task:{times:100,gotId:0}},heroes:[{heroId:'tank',level:1,star:0,power:'1',skillLevels:[1],equips:[],attributes:[]}]};
+ const configOverride={tables:{ModuleOpenCfg:{data:[{moduleId:'英雄入口',playerLevel:6},{moduleId:'藏品',playerLevel:10}]},HeroCfg:{data:[{id:'tank'}]},ItemCfg:{data:[{id:'抽卡券'},{id:'藏品券'},{id:'任务奖励'}]},HeroRecruitTaskCfg:{data:[{season:1,id:1,times:200,reward:[['任务奖励',1]]},{season:2,id:1,times:200,reward:[['任务奖励',2]]},{season:2,id:2,times:400,reward:[['任务奖励',3]]}]},AntiqueRecruitTaskCfg:{data:[{season:1,id:1,times:50,reward:[['任务奖励',1]]}]}}};
+ const app=await harness({testProtocol:heroWireProtocol,includeFreeRecruit:true,recruitState:state,configOverride});try{
+  const route='/api/gameplay?module=free-recruit';assert.equal((await app.call(route)).data.view,null);const session=app.ready('A');session.player.worldId='2000001';
+  const read=await app.call('/api/gameplay/survey',{body:{module:'free-recruit',parameters:{}}});assert.equal(read.status,200,JSON.stringify(read.data));const [h,a]=read.data.view.taskObservations;
+  assert.equal(h.status,'OBSERVED');assert.equal(h.season,2);assert.equal(h.configuredSeason,2);assert.equal(h.progress,650);assert.equal(h.nextRewardId,2);assert.deepEqual(h.tasks.map(r=>r.rewardState),['CLAIMED','UNCLAIMED']);assert.equal(h.tasks[1].observedRequirementsMet,true);assert.equal(h.settlement,'UNKNOWN');assert.equal(h.eligibility,null);assert.equal(h.executable,false);
+  assert.equal(a.configuredSeason,1);assert.equal(a.progress,100);assert.equal(a.claimedThroughId,0);assert.equal(a.tasks[0].requiredProgress,50);
+  assert.deepEqual(app.requests.map(r=>r.name),['RecruitInfoRequest','AllHeroRequest','OnWaterRequest','AllItemRequest','AllResourceRequest']);assert.equal(app.requests.some(r=>r.options?.mutate),false);
+  const before=app.requests.length;assert.equal((await app.call(route,{id:'B'})).data.view,null);assert.equal(app.requests.length,before);assert.deepEqual((await app.call('/api/operations/history')).data.runs,[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

@@ -476,3 +476,64 @@ test('antique new ownership permits only reliable server-derived hero refresh, n
  for(const change of [s=>s.heroes[0].level++,s=>s.heroes[0].attributes.push({attr:1,value:9}),s=>s.heroes[0].attributes[0].value=Infinity]){const x=await ready({antique:true}),done=await settle(x,s=>{s.heroes[0].power='11';s.heroes[0].attributes=[{attr:1,value:123}];change(s);});assert.equal(verifyFreeRecruit(x.operation,x.facts,done.after,done.reply).confirmed,false);}
  const converted=await ready({antique:true,fragment:true}),r=await settle(converted,s=>{s.heroes[0].power='11';s.heroes[0].attributes=[{attr:1,value:123}];});assert.equal(verifyFreeRecruit(converted.operation,converted.facts,r.after,r.reply).confirmed,false);
 });
+
+// Cumulative conditions reuse RecruitData; the claim protocol has no target.
+function cumulativeFixture(options={}){
+ const f=fixture(options);f.options.player.worldId='1000001';
+ for(const n of ['HeroRecruitTaskCfg','AntiqueRecruitTaskCfg'])f.options.config.tables[n]=clone(actual.tables[n]);
+ return f;
+}
+const cumulativeView=(facts,f)=>viewFreeRecruit(facts,f.options).taskObservations;
+for(const codec of [false,true])test('cumulative recruit task observations distinguish progress, claims and settlement '+codec,async()=>{
+ const f=cumulativeFixture({codec});f.state.recruit.hero.task={times:650,gotId:1};f.state.recruit.hero.recruitTimes=9999;f.state.recruit.antique.task={times:100,gotId:0};
+ const facts=await surveyFreeRecruit(f.client,protocol,f.options),view=viewFreeRecruit(facts,f.options),[h,a]=view.taskObservations;
+ assert.equal(h.status,'OBSERVED');assert.equal(h.source,'RecruitInfoResponse.hero.task');assert.equal(h.season,1);assert.equal(h.configuredSeason,1);assert.equal(h.progress,650);assert.equal(h.claimedThroughId,1);assert.equal(h.nextRewardId,2);
+ assert.deepEqual(h.tasks.slice(0,4).map(r=>[r.completion,r.rewardState,r.observedRequirementsMet]),[['COMPLETE','CLAIMED',false],['COMPLETE','UNCLAIMED',true],['COMPLETE','UNCLAIMED',true],['INCOMPLETE','UNCLAIMED',false]]);
+ assert.equal(a.source,'RecruitInfoResponse.antique.task');assert.equal(a.tasks[0].requiredProgress,50);assert.equal(a.tasks[0].observedRequirementsMet,true);assert.equal(a.claimedThroughId,0);assert.equal(a.nextRewardId,1);
+ for(const o of[h,a]){assert.equal(o.readOnly,true);assert.equal(o.eligibility,null);assert.equal(o.executable,false);assert.equal(o.autoResume,false);assert.equal(o.settlement,'UNKNOWN');assert.equal(o.blockedReason,'BLOCKED_EVIDENCE');for(const row of[o,...o.tasks]){assert.equal(row.executable,false);assert.equal(row.settlement,'UNKNOWN');for(const k of ['action','actionId','parameters','permit'])assert.equal(Object.hasOwn(row,k),false);}}
+ assert.equal(view.candidates.length,1);assert.equal(view.candidates[0].action.request,'RecruitStartRequest');
+ for(const id of ['GotHeroRecruitTaskRequest','GotAntiqueRecruitTaskRequest'])assert.deepEqual(planFreeRecruit(facts,{...f.options,selections:[id]}).actions,[]);
+ assert.deepEqual(f.state.reads,['RecruitInfoRequest','AllHeroRequest','OnWaterRequest','AllItemRequest','AllResourceRequest']);assert.equal(f.state.writes.length,0);
+ assert.deepEqual(Object.keys(protocol.GotHeroRecruitTaskRequest.prototype),[]);assert.deepEqual(Object.keys(protocol.GotAntiqueRecruitTaskRequest.prototype),[]);assert.deepEqual(Object.keys(protocol.GotRecruitTaskResponse.prototype),['gotId','reward']);
+});
+for(const [world,season,configured]of [['1000001',1,1],['2000001',2,2],['8000001',8,7],['9007199254740993',254,7]])test('cumulative recruit exact world season and fallback '+world,async()=>{
+ const f=cumulativeFixture();f.options.player.worldId=world;f.state.recruit.hero.task={times:2000,gotId:10};
+ const facts=await surveyFreeRecruit(f.client,protocol,f.options),[h,a]=cumulativeView(facts,f);
+ assert.equal(h.status,'OBSERVED');assert.equal(h.season,season);assert.equal(h.configuredSeason,configured);assert.equal(h.nextRewardId,null);assert.ok(h.tasks.every(r=>r.rewardState==='CLAIMED'&&!r.observedRequirementsMet));
+ assert.deepEqual(h.tasks[0].rewards,actual.tables.HeroRecruitTaskCfg.data.find(r=>r.season===configured&&r.id===1).reward.map(([id,num])=>({id,num})));
+ assert.equal(a.configuredSeason,configured);assert.equal(f.state.writes.length,0);
+});
+for(const [label,mutate]of [
+ ['missing times',f=>delete f.state.recruit.antique.task.times],['missing gotId',f=>delete f.state.recruit.antique.task.gotId],
+ ['negative times',f=>f.state.recruit.antique.task.times=-1],['unknown claimed id',f=>f.state.recruit.antique.task.gotId=99],
+ ['contradictory claim',f=>f.state.recruit.antique.task={times:1,gotId:1}],['missing config',f=>delete f.options.config.tables.AntiqueRecruitTaskCfg],
+ ['duplicate tier',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data.splice(1,0,clone(f.options.config.tables.AntiqueRecruitTaskCfg.data[0]))],
+ ['unordered seasons',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data.reverse()],
+ ['unordered tiers',f=>{const a=f.options.config.tables.AntiqueRecruitTaskCfg.data;[a[0],a[1]]=[a[1],a[0]];}],
+ ['nonmonotonic target',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data[1].times=50],
+ ['unknown reward',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data[0].reward=[['unknown',1]]],
+ ['unsafe reward',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data[0].reward[0][1]=Number.MAX_SAFE_INTEGER+1],
+ ['duplicate reward',f=>f.options.config.tables.AntiqueRecruitTaskCfg.data[0].reward.push(clone(f.options.config.tables.AntiqueRecruitTaskCfg.data[0].reward[0]))],
+])test('cumulative recruit unknown remains local and never changes original hero action: '+label,async()=>{
+ const f=cumulativeFixture({codec:false});mutate(f);const facts=await surveyFreeRecruit(f.client,protocol,f.options),view=viewFreeRecruit(facts,f.options),[h,a]=view.taskObservations;
+ assert.equal(h.status,'OBSERVED');assert.equal(a.status,'UNKNOWN');assert.equal(a.progress,null);assert.equal(a.claimedThroughId,null);assert.deepEqual(a.tasks,[]);assert.equal(a.eligibility,null);assert.equal(a.executable,false);assert.equal(view.candidates[0].executable,true,JSON.stringify(view.candidates[0]));assert.equal(f.state.writes.length,0);
+});
+for(const [label,change]of [
+ ['account',f=>f.client.factContext.accountId='B'],['role',f=>f.options.player.playerId='2'],['world',f=>f.options.player.worldId='2000001'],
+ ['generation',f=>f.client.factContext.generation++],['connection',f=>f.client.factContext.connectionId='new'],['disconnect',f=>f.client.connected=false],
+ ['restart copy',f=>f.facts=clone(f.facts)],['stale facts',f=>f.facts.sourceFacts.recruit.provenance.sourceAt-=60000],
+ ['forged progress',f=>f.facts.state.recruit.hero.task.times=2000],['forged config',f=>f.facts.taskConfigEvidence.tables.HeroRecruitTaskCfg.data[0].times=1],
+])test('cumulative recruit observation invalidates on '+label,async()=>{
+ const f=cumulativeFixture();f.facts=await surveyFreeRecruit(f.client,protocol,f.options);assert.equal(cumulativeView(f.facts,f)[0].status,'OBSERVED');change(f);
+ for(const o of cumulativeView(f.facts,f)){assert.equal(o.status,'UNKNOWN');assert.equal(o.progress,null);assert.deepEqual(o.tasks,[]);assert.equal(o.executable,false);}assert.equal(f.state.writes.length,0);
+});
+for(const [key,value]of [['accountId','B'],['generation',4],['connectionId','new']])test('cumulative recruit late read cancels changed '+key,async()=>{
+ const f=cumulativeFixture();f.state.onRead=n=>{if(n==='RecruitInfoRequest')f.client.factContext[key]=value;};
+ await assert.rejects(surveyFreeRecruit(f.client,protocol,f.options),{code:'CANCELLED'});assert.equal(f.state.writes.length,0);
+});
+test('cumulative config drift, missing season and optional codec defaults never grant qualification',async()=>{
+ const f=cumulativeFixture();const facts=await surveyFreeRecruit(f.client,protocol,f.options);f.options.config.tables.HeroRecruitTaskCfg.data[0].times=1;
+ assert.equal(cumulativeView(facts,f)[0].status,'UNKNOWN');assert.equal(cumulativeView(facts,f)[1].status,'OBSERVED');assert.equal(viewFreeRecruit(facts,f.options).candidates[0].executable,true);
+ const noSeason=cumulativeFixture();noSeason.options.player.worldId='17';for(const o of cumulativeView(await surveyFreeRecruit(noSeason.client,protocol,noSeason.options),noSeason))assert.equal(o.status,'UNKNOWN');
+ const empty=cumulativeFixture();empty.state.recruit.antique.task={};const e=await surveyFreeRecruit(empty.client,protocol,empty.options);assert.equal(cumulativeView(e,empty)[1].status,'UNKNOWN');assert.equal(cumulativeView(e,empty)[0].status,'OBSERVED');
+});
