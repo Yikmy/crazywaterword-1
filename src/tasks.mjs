@@ -27,18 +27,15 @@ function formatDesc(row) {
 
 // 任务目标值。与客户端同款规则，算不出来就返回 null（调用方据此跳过，不猜）。
 export function taskTarget(row) {
-  const params = row?.params;
-  if (!Array.isArray(params) || params.length === 0) return null;
-  // 升级建筑：params[1] 形如 "1|1"（数量|等级），客户端取 "|" 前那段。
-  if (row.type === '升级建筑') {
-    const n = parseInt(String(params[1] ?? '').split('|')[0], 10);
-    return Number.isFinite(n) ? n : null;
-  }
-  // 试炼挑战：客户端把这个类型的目标值写死成 1（通过某副本的某一关）。
+  if (!own(row,'type') || typeof row.type !== 'string' || !row.type || !own(row,'params')) return null;
+  const params = row.params;
+  if (!denseTaskList(params) || params.length === 0) return null;
+  // 保留客户端目标算法；未知数量不得通过 parseInt 截断或对象转换成为资格。
   if (row.type === '试炼挑战') return 1;
-  const raw = TARGET_FROM_PARAM1.has(row.type) ? params[1] : params[0];
-  const n = typeof raw === 'number' ? raw : parseInt(raw, 10);
-  return Number.isFinite(n) ? n : null;
+  let raw = TARGET_FROM_PARAM1.has(row.type) || row.type === '升级建筑' ? params[1] : params[0];
+  if (row.type === '升级建筑' && typeof raw === 'string') raw = raw.split('|')[0];
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^[0-9]+$/.test(raw) ? Number(raw) : null;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 const own = (v,k) => {

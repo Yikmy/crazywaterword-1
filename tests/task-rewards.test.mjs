@@ -1,4 +1,4 @@
-import { runTasks, surveyTasks } from '../src/tasks.mjs';
+import { runTasks, surveyTasks, taskTarget } from '../src/tasks.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -311,4 +311,33 @@ test('same task ID observations stay local to each account and do not authorize 
  const options=opts(config),facts=await surveyTaskRewards(a.client,protocol,options);facts.context.accountId='synthetic-B';
  assert.equal(planTaskRewards(facts,{...options,selections:viewTaskRewards(facts,options).candidates.map(x=>x.actionId)}).actions.length,0);
  for(const p of [{kind:'main',taskId:1,round:2},{kind:'achievement',taskId:1,season:3}])assert.throws(()=>validateTaskRewardsParameters(p),{code:'INVALID_PARAMETERS'});
+});
+
+test('shared target parser keeps every captured main and branch task algorithm equivalent',()=>{
+ const fromSecond=new Set(['拥有指定资源','获取资源','生产物品','种植作物','占领资源地','击败野怪','英雄升星','英雄万能升星','藏品万能升星','强化装备','分解装备','分解海兽']);
+ const original=row=>{const p=row?.params;if(!Array.isArray(p)||!p.length)return null;if(row.type==='升级建筑'){const n=parseInt(String(p[1]??'').split('|')[0],10);return Number.isFinite(n)?n:null;}if(row.type==='试炼挑战')return 1;const raw=fromSecond.has(row.type)?p[1]:p[0],n=typeof raw==='number'?raw:parseInt(raw,10);return Number.isFinite(n)?n:null;};
+ for(const table of ['MainTaskCfg','BranchTaskCfg'])for(const row of actual.tables[table].data)assert.equal(taskTarget(row),original(row),table+':'+row.taskId);
+ for(const row of [{type:'升级建筑',params:['建筑','2|3']},{type:'获取资源',params:['木材','0015']},{type:'完成订单',params:['15']},{type:'试炼挑战',params:['副本',4]}])assert.equal(taskTarget(row),original(row));
+});
+
+for(const [label,value]of [['trailing text','1garbage'],['fraction string','1.5'],['exponent string','1e3'],['hex string','0x10'],['signed string','+1'],['blank string',' '],['null',null],['boolean',true],['fraction number',1.5],['unsafe number',9007199254740992],['unsafe string','9007199254740993'],['negative',-1],['zero',0],['object',{toString(){throw Error('must not coerce');}}]])test('shared target rejects unknown count '+label,()=>{
+ assert.equal(taskTarget({type:'完成订单',params:[value]}),null);
+ assert.equal(taskTarget({type:'获取资源',params:['木材',value]}),null);
+ if(typeof value==='string')assert.equal(taskTarget({type:'升级建筑',params:['建筑',value+'|2']}),null);
+});
+
+test('unknown or accessor config fields never supply a target or execute caller code',()=>{
+ for(const key of ['type','params']){const row={type:'完成订单',params:[1]};Object.defineProperty(row,key,{enumerable:true,get(){throw Error('must not read config accessor');}});assert.equal(taskTarget(row),null);}
+ const params=[];Object.defineProperty(params,'0',{enumerable:true,get(){throw Error('must not read parameter accessor');}});assert.equal(taskTarget({type:'完成订单',params}),null);
+ assert.equal(taskTarget(Object.create({type:'完成订单',params:[1]})),null);
+ assert.equal(taskTarget({type:'试炼挑战',params:[]}),null);
+ assert.equal(taskTarget({type:'升级建筑',params:['建筑',{}]}),null);
+});
+
+for(const kind of ['main','branch'])test('legacy and Function keep malformed target UNKNOWN without a request or executable plan '+kind,async()=>{
+ const f=fake(),config=cfg(),taskId=kind==='main'?1:8001,row=config.tables[kind==='main'?'MainTaskCfg':'BranchTaskCfg'].data.find(r=>r.taskId===taskId);
+ row.type='获取资源';row.params=['木材','1garbage'];const options=opts(config,{parameters:{kind,taskId}}),facts=await surveyTaskRewards(f.client,protocol,options),candidate=viewTaskRewards(facts,options).candidates[0];
+ const legacy=await surveyTasks(f.client,protocol,{config,water:{}}),observed=kind==='main'?legacy.main:legacy.branch.find(r=>r.taskId===taskId);
+ assert.deepEqual(candidate.qualification,observed.qualification);assert.equal(observed.qualification.completion,'UNKNOWN');assert.equal(observed.qualification.claimable,null);assert.equal(candidate.executable,false);
+ assert.equal(planTaskRewards(facts,{...options,selections:[candidate.actionId]}).actions.length,0);assert.equal(legacy.plan.some(r=>r.kind===kind&&r.id===taskId),false);assert.equal(f.state.writes.length,0);
 });
