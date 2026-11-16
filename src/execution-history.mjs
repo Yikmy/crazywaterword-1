@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR } from './accounts.mjs';
 import { redact } from './security.mjs';
@@ -88,7 +89,7 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
     assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
     try {
-      read();
+      const original = read();
       const initialStore = !observed;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       ensureAnchor();
@@ -97,7 +98,8 @@ export function createExecutionHistory({ file = EXECUTION_HISTORY_PATH, secrets 
       // The original evidence must still be readable after flushing. Only this
       // first write may see its own existence anchor before creating the file.
       assertWriter();
-      read(initialStore);
+      const latest = read(initialStore);
+      if (initialStore ? observed : !isDeepStrictEqual(original, latest)) throw fail('执行历史在临时文件刷盘期间变化；保留原证据');
       assertWriter();
       fs.renameSync(temporary, file); observed=true;
     } catch { throw fail('执行历史原子保存失败；停止批次，不继续发送'); }

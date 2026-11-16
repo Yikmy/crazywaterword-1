@@ -853,7 +853,7 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
     try {
       const serialized = JSON.stringify(raw, null, 2) + '\n';
       if (Buffer.byteLength(serialized, 'utf8') > maxBytes) throw unavailable();
-      read();
+      const original = read();
       const initialStore = !knownStore;
       fileSystem.mkdirSync(path.dirname(file), { recursive: true });
       ensureAnchor();
@@ -864,7 +864,8 @@ export function createWorkflowStore({ file, modules, secrets = () => [], assertW
       // silently replaced with a new history while its owner is still running.
       // Only this in-flight first write may see its own anchor before the store.
       // A fresh Store must reject an anchor without its historical file.
-      read(initialStore);
+      const latest = read(initialStore);
+      if (initialStore ? knownStore : !isDeepStrictEqual(original, latest)) throw fail('工作流历史在临时文件刷盘期间变化；保留原证据');
       assertWriter();
       fileSystem.renameSync(temporary, file);
       knownStore = true;

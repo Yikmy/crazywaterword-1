@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { DATA_DIR } from './accounts.mjs';
 import { redact } from './security.mjs';
@@ -291,7 +292,7 @@ export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = 
     assertWriter();
     const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp'; let fd;
     try {
-      read();
+      const original = read();
       const initialStore = !knownStore;
       fileSystem.mkdirSync(path.dirname(file),{recursive:true});
       ensureAnchor();
@@ -303,7 +304,8 @@ export function createExecutionMemory({ file = EXECUTION_MEMORY_PATH, secrets = 
       // only this first write may see its own anchor before the initial file.
       // A lost or corrupt established store must never be overwritten.
       assertWriter();
-      read(initialStore);
+      const latest = read(initialStore);
+      if (initialStore ? knownStore : !isDeepStrictEqual(original, latest)) throw fail('执行记忆在临时文件刷盘期间变化；保留原证据');
       assertWriter();
       fileSystem.renameSync(temporary,file); knownStore=true;
     } catch (error) { if (error?.code?.startsWith('WRITER_')) throw error; throw fail('执行记忆原子保存失败；原文件保留，不允许继续派发', 'MEMORY_UNAVAILABLE'); }
