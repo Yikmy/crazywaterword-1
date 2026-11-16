@@ -48,6 +48,7 @@ export function validateTaskRewardsParameters(v={}) {
   if(!fields(v,['kind','taskId','tierId','packId','round']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
   if(!Reflect.ownKeys(v).length)return {};
   if(v.kind==='weekly-chip-task'){if(!own(v,'kind')||!own(v,'round')||!positive(v.round)||!own(v,'taskId')||!positive(v.taskId)||own(v,'packId')||own(v,'tierId'))throw invalid('周芯片领奖须明确正整数round与taskId');return {kind:v.kind,round:v.round,taskId:v.taskId};}
+  if(v.kind==='weekly-battle-pass-task'){if(!own(v,'kind')||!own(v,'taskId')||!positive(v.taskId)||['round','packId','tierId'].some(k=>own(v,k)))throw invalid('战令只读观察须明确kind与正int32任务ID');return {kind:v.kind,taskId:v.taskId};}
   if(own(v,'round'))throw invalid('round仅用于周芯片具名任务领奖');
   if(['weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(v.kind)){if(!own(v,'kind')||!own(v,'packId')||v.packId!=='1000'||own(v,'taskId')||own(v,'tierId'))throw invalid('周活动免费礼包仅允许明确转盘/翻牌/芯片种类与packId=1000');return {kind:v.kind,packId:v.packId};}
   if(v.kind==='daily-gift'){if(!own(v,'kind')||!own(v,'packId')||v.packId!=='赠礼'||own(v,'taskId')||own(v,'tierId'))throw invalid('免费日赠礼仅允许kind=daily-gift与明确packId=赠礼');return {kind:v.kind,packId:v.packId};}
@@ -84,7 +85,7 @@ function snapshot(inputs,context,parameters) {
 }
 export async function surveyTaskRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateTaskRewardsParameters(parameters);
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war'].includes(parameters.kind))return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war','weekly-battle-pass-task'].includes(parameters.kind))return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
   const options={signal,stop},context=contextOf(client,player),notes=[],readSources=sourcesFor(parameters);
   const active=()=>assertExecutionActive(client,options); active();
   const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
@@ -150,7 +151,7 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
 }
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{});
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war','weekly-battle-pass-task'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
   ];
@@ -159,13 +160,13 @@ export function viewTaskRewards(f,options={}) {
 export function planTaskRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
   parameters=validateTaskRewardsParameters(parameters);
   if(!dense(selections)||selections.length>1||selections.some(id=>!identifier(id)))throw invalid('任务奖励每批仅允许一个精确 actionId');
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war'].includes(parameters.kind))return planDailyTaskReward(f,{...options,parameters,selections,ledger,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war','weekly-battle-pass-task'].includes(parameters.kind))return planDailyTaskReward(f,{...options,parameters,selections,ledger,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const rows=viewTaskRewards(f,{...options,parameters}).candidates,selected=rows.find(row=>row.executable&&selections.includes(row.actionId));
   return {module:moduleId,actions:selected&&ledger.reserve(selected.costs)?[selected]:[],notes:[]};
 }
 export function verifyTaskReward(operation,before,after,response) {
   const no=reason=>({confirmed:false,reason});
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war'].includes(operation?.parameters?.kind))return verifyDailyTaskReward(operation,before,after,response);
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war','weekly-battle-pass-task'].includes(operation?.parameters?.kind))return verifyDailyTaskReward(operation,before,after,response);
   if(response!==null&&response!==undefined)return no('任务领取没有专用成功响应');
   if(!authority(before)||!authority(after)||!same(before.context,after.context))return no('前后账号、库存或任务权威不可靠');
   const p=operation?.parameters;
@@ -180,8 +181,8 @@ export function verifyTaskReward(operation,before,after,response) {
 }
 export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {
   parameters=validateTaskRewardsParameters(parameters);
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war'].includes(parameters.kind))return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig),parameters});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task','open-rank-war','weekly-battle-pass-task'].includes(parameters.kind))return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig),parameters});
   return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))};
 }
-export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503','C513','C516','C517']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,
+export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503','C513','C515','C516','C517']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,
   validateConfig:validateTaskRewardsConfig,validateParameters:validateTaskRewardsParameters,survey:surveyTaskRewards,view:viewTaskRewards,plan:planTaskRewards,verify:verifyTaskReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:taskRewardsDependencyVersions});
