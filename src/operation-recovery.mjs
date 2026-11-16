@@ -1,7 +1,7 @@
 // Read-only, evidence-bound reconciliation. Never dispatch or replay a business write.
-import { parseFormation, verifyFormation } from './formation.mjs';
-import { fleetStopAction, verifyFleet } from './fleet.mjs';
-import { fleetFacts } from './naval-facts.mjs';
+import { parseFormation, verifyFormation, validateFormationParameters } from './formation.mjs';
+import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, verifyFleet } from './fleet.mjs';
+import { fleetFacts, stable } from './naval-facts.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 
@@ -93,10 +93,55 @@ function buildFleetStopVerifiedReceipt(candidate,beforeFacts,afterFacts,context)
     target:{buildingId:contract.buildingId},beforeFacts:before,afterFacts:after,expectedState:contract.expectedState,executionContext};
 }
 
+// Formation recovery keeps only the original OnWater fleet layouts. The live
+// parser and verifier remain the authority; no roster or unlock inference here.
+function fleetFormationReceiptFacts(facts) {
+  const source=facts?.formationFacts;
+  if(source?.buildingsReliable!==true||!Array.isArray(source.buildings))return null;
+  const parsed=fleetFormationBuildings({available:true,body:{building:source.buildings.map(row=>({buildingId:row?.buildingId,level:row?.level,fleet:{formation:row?.formation}}))}});
+  if(!parsed.buildingsReliable||parsed.buildings.some(row=>!row.formation))return null;
+  const buildings=parsed.buildings.map(row=>({buildingId:row.buildingId,formation:row.formation}));
+  for(const row of buildings)row.formation.heroPositions.sort((a,b)=>a.heroId.localeCompare(b.heroId));
+  buildings.sort((a,b)=>a.buildingId.localeCompare(b.buildingId));
+  return {formationFacts:{buildingsReliable:true,buildings}};
+}
+function originalFleetFormationFacts(row) {
+  if(!row.beforeState?.building||!Array.isArray(row.beforeState.otherFleets)||row.beforeState.building.buildingId!==row.target?.buildingId)return null;
+  return fleetFormationReceiptFacts({formationFacts:{buildingsReliable:true,buildings:[row.beforeState.building,...row.beforeState.otherFleets]}});
+}
+function fleetFormationContract(row) {
+  if(row?.module!=='fleet'||row.actionType!=='fleetFormation'||!Array.isArray(row.costs)||row.costs.length!==0||!text(row.target?.buildingId))return null;
+  const buildingId=row.target.buildingId,formation=row.expectedState?.formation;
+  if(!same(row.target,{buildingId})||row.actionId!=='fleet:fleetFormation:'+encodeURIComponent(buildingId)||row.identity!==stable(row.beforeState)||
+    !object(row.expectedState)||Object.keys(row.expectedState).some(key=>key!=='formation')||!object(formation)||Object.keys(formation).some(key=>!['heroPositions','presetId'].includes(key)))return null;
+  const parsed=fleetFormationBuildings({available:true,body:{building:[{buildingId,fleet:{formation}}]}}).buildings[0]?.formation;
+  if(!parsed||stable(row.expectedState)!==stable({formation:parsed})||row.beforeState?.fleet?.buildingId!==buildingId||!object(row.parameters)||row.parameters.buildingId!==buildingId)return null;
+  const {buildingId:ignored,...parameters}=row.parameters;
+  if(!Object.keys(parameters).length)return null;
+  try{validateFormationParameters(parameters);}catch{return null;}
+  return {buildingId,expectedState:{formation:parsed},parameters:structuredClone(row.parameters),action:fleetFormationAction(buildingId,formation)};
+}
+function fleetFormationReceiptProblem(row,contract,originalScope) {
+  const receipt=row.verifiedReceipt;
+  if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='fleet'||receipt.actionType!=='fleetFormation'||receipt.request!==contract.action.request||receipt.response!==null)return 'MISSING_VERIFIED_RECEIPT';
+  if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+  const before=fleetFormationReceiptFacts(receipt.beforeFacts),after=fleetFormationReceiptFacts(receipt.afterFacts),original=originalFleetFormationFacts(row);
+  if(!before||!after||!original||!same(before,receipt.beforeFacts)||!same(after,receipt.afterFacts)||!same(before,original)||
+    !same(receipt.target,row.target)||!same(receipt.parameters,contract.parameters)||!same(receipt.expectedState,contract.expectedState)||verifyFleet(row,before,after).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+  return null;
+}
+function buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context) {
+  const executionContext=scope(context),contract=fleetFormationContract(candidate);
+  if(!executionContext||!contract||!same(candidate.action,contract.action))return null;
+  const before=fleetFormationReceiptFacts(beforeFacts),after=fleetFormationReceiptFacts(afterFacts),original=originalFleetFormationFacts(candidate);
+  if(!before||!after||!original||!same(before,original)||verifyFleet(candidate,before,after).confirmed!==true)return null;
+  return {version:1,verified:true,module:'fleet',actionType:'fleetFormation',request:contract.action.request,response:null,
+    target:{buildingId:contract.buildingId},parameters:contract.parameters,beforeFacts:before,afterFacts:after,expectedState:contract.expectedState,executionContext};
+}
 // Only an already verified original execution may create this durable projection.
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
-  if(candidate?.module==='fleet')return buildFleetStopVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
+  if(candidate?.module==='fleet')return candidate.actionType==='fleetFormation'?buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context):buildFleetStopVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
   const executionContext = scope(context), expectedState = completeFormation(candidate?.expectedState);
   if (!executionContext || candidate?.module !== 'formation' || candidate?.actionType !== 'SAVE' ||
       !Array.isArray(candidate.costs) || candidate.costs.length !== 0 || candidate.target?.module !== 1 ||
@@ -134,22 +179,34 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
-  const fleetStop=fleetStopContract(row);
+  const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row);
   if(fleetStop)readMethod='READ_ONLY_FLEET_STOP_V1';
+  if(fleetFormation)readMethod='READ_ONLY_FLEET_FORMATION_V1';
   const expected = completeFormation(row.expectedState);
-  if (!fleetStop && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核明确、完整且零成本的主线阵容保存或舰队停止维修/委任');
+  if (!fleetStop && !fleetFormation && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核明确、完整且零成本的主线/舰队编组保存或舰队停止维修/委任');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
-  const requestName=fleetStop?'MyFleetsRequest':'GetFormationRequest',responseName=fleetStop?'MyFleetsResponse':'GetFormationResponse';
+  const requestName=fleetFormation?'OnWaterRequest':fleetStop?'MyFleetsRequest':'GetFormationRequest',responseName=fleetFormation?'OnWaterResponse':fleetStop?'MyFleetsResponse':'GetFormationResponse';
   if (!protocol?.[requestName] || !protocol?.[responseName]) return finish('STILL_UNKNOWN', 'PROTOCOL_MISSING', '缺少固定只读复核协议');
-  const problem = fleetStop?fleetStopReceiptProblem(row,fleetStop,originalScope):receiptProblem(row, expected, originalScope);
+  const problem = fleetFormation?fleetFormationReceiptProblem(row,fleetFormation,originalScope):fleetStop?fleetStopReceiptProblem(row,fleetStop,originalScope):receiptProblem(row, expected, originalScope);
   try {
     assertExecutionActive(client, { signal }); assertCurrent();
-    readRequest = fleetStop?{request:requestName,buildingId:fleetStop.buildingId,response:responseName}:{request:requestName,module:1,response:responseName};
-    const response = await awaitExecution(client.request(requestName, fleetStop?{}:{module:1}, responseName, 15000, { signal }), client, { signal });
+    readRequest = fleetStop||fleetFormation?{request:requestName,buildingId:(fleetStop??fleetFormation).buildingId,response:responseName}:{request:requestName,module:1,response:responseName};
+    const response = await awaitExecution(client.request(requestName, fleetStop||fleetFormation?{}:{module:1}, responseName, 15000, { signal }), client, { signal });
     assertExecutionActive(client, { signal }); assertCurrent();
     if (!same(scope(context), currentScope)) return finish('STILL_UNKNOWN', 'SESSION_CHANGED', '复读期间会话身份或连接代次发生变化');
+    if(fleetFormation){
+      const facts=fleetFormationReceiptFacts({formationFacts:fleetFormationBuildings({available:true,body:response})});
+      if(!facts)return finish('STILL_UNKNOWN','UNRELIABLE_READ','OnWater缺少完整可靠的舰队编组身份或阵容');
+      const before=originalFleetFormationFacts(row);
+      observation={buildingId:fleetFormation.buildingId,formations:facts.formationFacts.buildings,desiredStateMatches:before?verifyFleet(row,before,facts).confirmed===true:false,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前舰队编组仅供观察，缺少原同身份业务验证的持久凭据');
+      if(verifyFleet(row,row.verifiedReceipt.beforeFacts,facts).confirmed!==true)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED','独立OnWater未确认原舰队目标阵容或其他舰队保持不变');
+      assertExecutionActive(client,{signal});assertCurrent();
+      if(!same(scope(context),currentScope))return finish('STILL_UNKNOWN','SESSION_CHANGED','提交复核前会话身份发生变化');
+      return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED','原持久验证凭据与独立OnWater共同确认同一舰队编组保存；不重发、续权或恢复执行');
+    }
     if(fleetStop){
       const facts=fleetStopFacts(fleetFacts({available:true,body:response}),fleetStop.buildingId);
       if(!facts)return finish('STILL_UNKNOWN','UNRELIABLE_READ','MyFleets缺少可靠且唯一的原舰队身份');

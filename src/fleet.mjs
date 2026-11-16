@@ -124,6 +124,12 @@ export function cargoShortageView(facts, options = {}) {
 }
 
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
+// The live survey and read-only recovery consume the same OnWater projection.
+export function fleetFormationBuildings(source) {
+  const rows=source?.body?.building;
+  const buildingsReliable=source?.available===true&&fieldDense(rows)&&rows.every(row=>nonempty(row?.buildingId))&&new Set(rows.map(row=>row.buildingId)).size===rows.length;
+  return {buildingsReliable,buildings:buildingsReliable?rows.filter(row=>row.fleet).map(row=>({buildingId:row.buildingId,level:quantity(row.level),formation:parseFleetFormation(row.fleet.formation)})):[]};
+}
 export function validateFleetConfig(value = {}) { const result = moduleConfiguration(value, FLEET_DEFAULT_CONFIG); if (!Number.isFinite(result.minimumDurabilityRatio) || result.minimumDurabilityRatio <= 0 || result.minimumDurabilityRatio > 1 || quantity(result.petrolReserve) === null || !Number.isSafeInteger(result.scenarioId) || result.scenarioId < 1) throw invalid('舰队规则无效'); if (!Number.isFinite(result.repairBelowDurabilityRatio) || result.repairBelowDurabilityRatio <= 0 || result.repairBelowDurabilityRatio > 1 || !['IMMEDIATE','WAIT_NATURAL'].includes(result.repairMode) || !Number.isSafeInteger(result.maximumRepairPetrolPerPlan) || result.maximumRepairPetrolPerPlan < 0 || result.maximumRepairPetrolPerPlan > 1e9 || result.repairPriorityBuildingIds.some(id => !nonempty(id) || id.trim() !== id || id.length > 300) || new Set(result.repairPriorityBuildingIds).size !== result.repairPriorityBuildingIds.length) throw invalid('维修阈值、模式、计划预算或优先级无效'); return result; }
 const fieldOwners=new WeakMap();
 const fieldDense=value=>Array.isArray(value)&&Object.getPrototypeOf(value)===Array.prototype&&value.length<=10000&&Reflect.ownKeys(value).length===value.length+1&&Array.from({length:value.length},(_,i)=>Object.getOwnPropertyDescriptor(value,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
@@ -182,9 +188,7 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
     const names = ['OnWaterRequest', 'AllHeroRequest', 'MyFormationPresetRequest'];
     const values = await Promise.all(names.map(request => readNavalFact(client, protocol, request, {}, { signal })));
     names.forEach((name, index) => { sources[name] = values[index]; });
-    const rawBuildings = sources.OnWaterRequest.body?.building;
-    const buildingsReliable = sources.OnWaterRequest.available && Array.isArray(rawBuildings) && rawBuildings.every(row => nonempty(row.buildingId)) && new Set(rawBuildings.map(row => row.buildingId)).size === rawBuildings.length;
-    const buildings = buildingsReliable ? rawBuildings.filter(row => row.fleet).map(row => ({ buildingId: row.buildingId, level: quantity(row.level), formation: parseFleetFormation(row.fleet.formation) })) : [];
+    const {buildingsReliable,buildings}=fleetFormationBuildings(sources.OnWaterRequest);
     const rawHeroes = sources.AllHeroRequest.body?.heroes, rawPresets = sources.MyFormationPresetRequest.body?.ids;
     const heroesReliable = sources.AllHeroRequest.available && Array.isArray(rawHeroes) && rawHeroes.every(row => nonempty(row.heroId)) && new Set(rawHeroes.map(row => row.heroId)).size === rawHeroes.length;
     const presetsReliable = sources.MyFormationPresetRequest.available && Array.isArray(rawPresets) && rawPresets.every(id => Number.isSafeInteger(id) && id > 0);
@@ -230,6 +234,9 @@ export function fleetStopAction(kind, buildingId) {
   if (kind === 'fleetStopAutoFight') return { request: 'SetFleetAutoFightRequest', response: null, body: { buildingIds: [buildingId], isOn: false } };
   return null;
 }
+export function fleetFormationAction(buildingId, formation) {
+  return nonempty(buildingId)?{request:'FleetSaveFormationRequest',response:null,body:{buildingId,formation}}:null;
+}
 function candidate(kind, target, costs, costSource, beforeState, expectedState, request, response, body, parameters, reason) {
   return { actionId: 'fleet:' + kind + ':' + Object.values(target).map(value => encodeURIComponent(String(value))).join(':'), actionType: kind, target, costs, costSource, beforeState, identity: stable(beforeState), expectedState, parameters, decision: reason ? 'BLOCKED' : 'READY', reason, label: kind === 'fleetMove' ? '移动舰队到城市 ' + target.cityId : kind, action: reason ? null : { request, response, body } };
 }
@@ -269,7 +276,8 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       if (!formationReason && desired.petUid !== undefined && String(desired.petUid) !== '0') formationReason = 'FLEET_PET_BINDING_UNVERIFIED';
       const targetFormation = desired ? { heroPositions: desired.heroPositions, presetId: desired.presetId } : null;
       const before = { fleet, building: building ?? null, otherFleets: formation?.buildings?.filter(row => row.buildingId !== fleet.buildingId) ?? [], ownedHeroIds: formation?.ownedHeroIds ?? null, unlockedPresetIds: formation?.unlockedPresetIds ?? null };
-      candidates.push(candidate('fleetFormation', { buildingId: fleet.buildingId }, [], 'WorldFleetFormationView.saveFormation/onSwitchFormationType：已解锁阵型，无资源支付路径', before, { formation: targetFormation }, 'FleetSaveFormationRequest', null, { buildingId: fleet.buildingId, formation: targetFormation }, { buildingId: fleet.buildingId, ...params }, formationReason));
+      const action=fleetFormationAction(fleet.buildingId,targetFormation);
+      candidates.push(candidate('fleetFormation', { buildingId: fleet.buildingId }, [], 'WorldFleetFormationView.saveFormation/onSwitchFormationType：已解锁阵型，无资源支付路径', before, { formation: targetFormation }, action.request, action.response, action.body, { buildingId: fleet.buildingId, ...params }, formationReason));
     }
     if (parameters.cityId !== undefined) {
       const matches = (facts.cities ?? []).filter(city => city.id === parameters.cityId), city = matches.length === 1 ? matches[0] : null, petrol = city ? movementCost(facts, config, city) : null;
