@@ -66,8 +66,12 @@ export async function surveyDailyTaskReward(client,protocol,{config,player,param
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sourcesFor(parameters)[k],sourceAt,scope,reliable:['daily','week'].includes(k)?daily!==null:inventory.stockReliable})]));
  const f={module:moduleId,parameters:copy(parameters),context,configEvidence:{tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,daily,...inventory,state:daily&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes,startClock,endClock};liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
+function liveSourceAuthority(f){
+ const live=liveFacts.get(f),c=f?.context;
+ return Boolean(live&&live.digest===digest(f)&&live.client.connected===true&&same(c,contextOf(live.client,live.player))&&text(c?.accountId)&&text(c?.connectionId)&&Number.isSafeInteger(c?.generation)&&c.generation>=0&&c.playerId&&c.worldId);
+}
 function sourceAuthority(f){
- const live=liveFacts.get(f),c=f?.context;if(!live||live.digest!==digest(f)||live.client.connected!==true||!same(c,contextOf(live.client,live.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId)return false;
+ const c=f?.context;if(!liveSourceAuthority(f))return false;
  return Object.entries(sourcesFor(f.parameters)).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 function authority(f){if(!sourceAuthority(f)||!f.state||f.stockReliable!==true||!(f.stock instanceof Map)||!same(snapshot(f.inputs,f.context,f.parameters),f.state)||!same(f.daily,f.state.daily))return false;return !isOpenRank(f.parameters)||Boolean(f.state.window&&same(openRankWindow(liveFacts.get(f).client,f.context,f.parameters),f.state.window));}
@@ -295,20 +299,40 @@ function openRankTaskCandidate(f,{config,moduleConfig={enabled:false},parameters
 }
 
 export const WEEKLY_BATTLE_PASS_TASK_EVIDENCE=Object.freeze({source:'Fixed v76 WeekTaskItem.ts / WeekBattlePass.ts / WeekPassTaskCfg; existing protocol WeekBattlePassInfoResponse/WeekBattlePassTask/WeekBattlePassItem',semantics:'Exact taskId/progress(int64)/isGot; target from WeekPassTaskCfg.target. Info.score and FinishTaskResponse.score are cumulative totals. got(stage,freeGot,payGot) records are independent of tasks. WeekInfo type1 window does not prove a daily task epoch or bind an Info response to that window.',realGame:'REAL_UNVERIFIED'});
-function parseBattlePass(raw,week){
- if(!own(raw,'score')||!uint(raw.score)||!own(raw,'activePay')||typeof raw.activePay!=='boolean'||!own(raw,'task')||!dense(raw.task)||!own(raw,'got')||!dense(raw.got)||!own(week,'activityTime')||!dense(week.activityTime))return null;
+// Preserve the original Info and WeekInfo parsers as distinct read-only sources.
+// Their presence together never establishes a task epoch or a claim authority.
+function parseBattlePassInfo(raw){
+ if(!own(raw,'score')||!uint(raw.score)||!own(raw,'activePay')||typeof raw.activePay!=='boolean'||!own(raw,'task')||!dense(raw.task)||!own(raw,'got')||!dense(raw.got))return null;
  const tasks=raw.task.map(row=>{const progress=own(row,'progress')?achievementProgressCount(row.progress):null;return own(row,'taskId')&&positive(row.taskId)&&progress!==null&&own(row,'isGot')&&typeof row.isGot==='boolean'?{taskId:row.taskId,progress,isGot:row.isGot}:null;});
  const got=raw.got.map(row=>own(row,'stage')&&positive(row.stage)&&['freeGot','payGot'].every(k=>own(row,k)&&typeof row[k]==='boolean')?{stage:row.stage,freeGot:row.freeGot,payGot:row.payGot}:null);
- const activityTime=week.activityTime.map(row=>['type','period','startTime','endTime'].every(k=>own(row,k)&&positive(row[k]))&&row.startTime<row.endTime?{type:row.type,period:row.period,startTime:row.startTime,endTime:row.endTime}:null);
- if(tasks.some(row=>!row)||got.some(row=>!row)||activityTime.some(row=>!row)||new Set(tasks.map(row=>row.taskId)).size!==tasks.length||new Set(got.map(row=>row.stage)).size!==got.length||new Set(activityTime.map(row=>row.type)).size!==activityTime.length)return null;
- return {score:raw.score,activePay:raw.activePay,tasks:tasks.sort((a,b)=>a.taskId-b.taskId),got:got.sort((a,b)=>a.stage-b.stage),activityTime:activityTime.sort((a,b)=>a.type-b.type)};
+ if(tasks.some(row=>!row)||got.some(row=>!row)||new Set(tasks.map(row=>row.taskId)).size!==tasks.length||new Set(got.map(row=>row.stage)).size!==got.length)return null;
+ return {score:raw.score,activePay:raw.activePay,tasks:tasks.sort((a,b)=>a.taskId-b.taskId),got:got.sort((a,b)=>a.stage-b.stage)};
+}
+function parseBattlePassWindow(week){
+ if(!own(week,'activityTime')||!dense(week.activityTime))return null;
+ const rows=week.activityTime.map(row=>['type','period','startTime','endTime'].every(k=>own(row,k)&&positive(row[k]))&&row.startTime<row.endTime?{type:row.type,period:row.period,startTime:row.startTime,endTime:row.endTime}:null);
+ return rows.some(row=>!row)||new Set(rows.map(row=>row.type)).size!==rows.length?null:rows.sort((a,b)=>a.type-b.type);
+}
+function parseBattlePass(raw,week){
+ const info=parseBattlePassInfo(raw),activityTime=parseBattlePassWindow(week);
+ return info&&activityTime?{...info,activityTime}:null;
+}
+function battlePassSource(f,key,value){
+ if(f?.parameters?.kind!=='weekly-battle-pass-task'||!liveSourceAuthority(f)||value===null)return null;
+ const source=f.sourceFacts?.[key];
+ if(source?.provenance?.source!==sourcesFor(f.parameters)[key]||!same(source.value,f.inputs[key]))return null;
+ const fact=createStateFact(value,{...source.provenance,reliable:true});
+ return factsFreshnessPolicy(fact,{accountId:f.context.accountId,generation:f.context.generation,maxAgeMs:30000,scope}).status==='FRESH'?fact:null;
 }
 function viewBattlePassTask(f,{config,parameters=f?.parameters}={}){
- const valid=same(parameters,f?.parameters)&&sourceAuthority(f)&&same(f?.daily,parseFor(f?.inputs,parameters)),observed=valid?f.daily:null;
+ const matches=same(parameters,f?.parameters);
+ const info=matches?battlePassSource(f,'daily',parseBattlePassInfo(f?.inputs?.daily)):null;
+ const window=matches?battlePassSource(f,'week',parseBattlePassWindow(f?.inputs?.week)):null;
+ const observed=info?.value??null;
  const source=f?.configEvidence?.tables?.WeekPassTaskCfg,rows=source?.data;
  const configs=same(source,config?.tables?.WeekPassTaskCfg)&&dense(rows)&&rows.length&&rows.every(row=>own(row,'taskId')&&positive(row.taskId))&&new Set(rows.map(row=>row.taskId)).size===rows.length?rows:null;
  const row=configs?.find(row=>row.taskId===parameters.taskId),target=row&&own(row,'target')?achievementProgressCount(row.target):null;
  const known=row&&target!==null&&target!=='0'&&own(row,'type')&&text(row.type)&&own(row,'score')&&positive(row.score),task=observed?.tasks.find(task=>task.taskId===parameters.taskId);
  const completion=task&&known?BigInt(task.progress)>=BigInt(target)?'COMPLETE':'INCOMPLETE':'UNKNOWN';
- return {module:moduleId,candidates:[],targetSelection:{kind:'weekly-battle-pass-task',readOnly:true,status:observed?'OBSERVED_TASKS':'UNKNOWN',field:'taskId',targets:observed?observed.tasks.map(task=>({id:task.taskId})):null,round:null},battlePassObservation:{status:observed?'OBSERVED':'UNKNOWN',readOnly:true,taskId:parameters.taskId,taskType:known?row.type:null,description:known&&own(row,'desc')&&typeof row.desc==='string'?row.desc:null,progress:task?.progress??null,requiredProgress:known?target:null,completion,taskRewardState:task?task.isGot?'CLAIMED_RECORD':'UNCLAIMED_RECORD':'UNKNOWN',claimable:null,expectedTaskScore:known?row.score:null,totalScore:observed?.score??null,activePay:observed?.activePay??null,rewardStages:copy(observed?.got??null),activityWindow:copy(observed?.activityTime.find(row=>row.type===1)??null),periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN',executable:false,blockedReason:'WEEKLY_BATTLE_PASS_PERIOD_AND_SETTLEMENT_UNVERIFIED'},notes:[...(f?.notes??[]),'战令只读：任务完成、任务已领记录、普通/付费档位记录、累计积分各自独立；WeekInfo type1窗口不证明本任务的每日周期或绑定归属。积分不是增量，到账未知；不生成领取动作、许可或重启恢复权限。']};
+ return {module:moduleId,candidates:[],targetSelection:{kind:'weekly-battle-pass-task',readOnly:true,status:observed?'OBSERVED_TASKS':'UNKNOWN',field:'taskId',targets:observed?observed.tasks.map(task=>({id:task.taskId})):null,round:null},battlePassObservation:{status:observed?'OBSERVED':'UNKNOWN',sourceAt:info?.provenance.sourceAt??null,windowStatus:window?'OBSERVED':'UNKNOWN',windowSourceAt:window?.provenance.sourceAt??null,readOnly:true,taskId:parameters.taskId,taskType:known?row.type:null,description:known&&own(row,'desc')&&typeof row.desc==='string'?row.desc:null,progress:task?.progress??null,requiredProgress:known?target:null,completion,taskRewardState:task?task.isGot?'CLAIMED_RECORD':'UNCLAIMED_RECORD':'UNKNOWN',claimable:null,expectedTaskScore:known?row.score:null,totalScore:observed?.score??null,activePay:observed?.activePay??null,rewardStages:copy(observed?.got??null),activityWindow:copy(window?.value.find(row=>row.type===1)??null),periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN',executable:false,blockedReason:'WEEKLY_BATTLE_PASS_PERIOD_AND_SETTLEMENT_UNVERIFIED'},notes:[...(f?.notes??[]),'战令只读：任务完成、任务已领记录、普通/付费档位记录、累计积分各自独立；WeekInfo type1窗口不证明本任务的每日周期或绑定归属。积分不是增量，到账未知；不生成领取动作、许可或重启恢复权限。']};
 }

@@ -24,7 +24,7 @@ const invalid = message => Object.assign(new Error(message), {code:'INVALID_PARA
 const sources = { tasks:'MainTaskInfoResponse', items:'AllItemResponse', resources:'AllResourceResponse' };
 const configNames = ['MainTaskCfg','BranchTaskCfg','AchievementTaskCfg','ItemCfg'];
 const sourcesFor = parameters => parameters?.kind==='achievement'?{...sources,tasks:'AchievementInfoResponse'}:sources;
-const liveAchievementFacts = new WeakMap();
+const liveTaskFacts = new WeakMap();
 const sealOf = f => hash({parameters:f.parameters,inputs:f.inputs,context:f.context,configEvidence:f.configEvidence,sourceFacts:f.sourceFacts,available:f.available});
 export const ACHIEVEMENT_REWARD_EVIDENCE = Object.freeze({
   source:'Fixed v76 main/game.js; FunctionPreviewItem.initData/_toGotReward and AchievementUtil.achieveTaskCfg',
@@ -100,14 +100,14 @@ export async function surveyTaskRewards(client,protocol,{config,player,parameter
   const tasks=parseFor(raw.tasks,parameters),inventory=parseOperationInventory(raw.items,raw.resources);
   const sourceFacts=Object.fromEntries(observations.map(([key,,sourceAt])=>[key,createStateFact(inputs[key],{accountId:context.accountId,generation:context.generation,source:readSources[key],sourceAt,scope,reliable:key==='tasks'?tasks!==null:inventory.stockReliable})]));
   const facts={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))},inputs,sourceFacts,tasks,...inventory,state:tasks&&inventory.stockReliable?snapshot(inputs,context,parameters):null,available:Object.keys(protocol??{}),notes};
-  if(parameters.kind==='achievement')liveAchievementFacts.set(facts,{client,player,seal:sealOf(facts)});
+  liveTaskFacts.set(facts,{client,player,seal:sealOf(facts)});
   return facts;
 }
 function authority(f) {
   const c=f?.context;
   if(!identifier(c?.accountId)||!identifier(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
   if(f.parameters?.kind==='achievement') {
-    const live=liveAchievementFacts.get(f);
+    const live=liveTaskFacts.get(f);
     if(!live||live.client.connected!==true||!same(contextOf(live.client,live.player),c)||live.seal!==sealOf(f))return false;
   }
   const state=snapshot(f.inputs,c,f.parameters);
@@ -150,13 +150,36 @@ function candidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG}={}) {
     costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:(p.kind==='achievement'?'成就':p.kind==='main'?'主线':'支线')+'任务 '+p.taskId+' 奖励',rewards:copy(def?.rewards??null),progress:task?.progress??null,requiredProgress:def?.target??null,qualification,
     ...(blockedReason===null?{action:{request:requestOf(p.kind),response:null,body:buildBody(rewardActionFor(p.kind),p.kind==='achievement'?{id:p.taskId}:{taskId:p.taskId})}}:{})};
 }
+// Read-only progress uses the original task parsers, independent of inventory
+// or reward mapping. It cannot grant a write, prove settlement or restore a permit.
+function qualificationObservations(f,parameters,choices,config) {
+  const live=liveTaskFacts.get(f),c=f?.context,source=f?.sourceFacts?.tasks;
+  const parsed=parseFor(f?.inputs?.tasks,f?.parameters);
+  const valid=Boolean(live&&live.client.connected===true&&same(parameters,f.parameters)&&
+    same(contextOf(live.client,live.player),c)&&live.seal===sealOf(f)&&
+    identifier(c?.accountId)&&identifier(c?.connectionId)&&Number.isSafeInteger(c?.generation)&&c.generation>=0&&c.playerId&&c.worldId&&
+    parsed&&same(parsed,f.tasks)&&source?.provenance?.source===sourcesFor(f.parameters).tasks&&same(source.value,f.inputs.tasks)&&
+    factsFreshnessPolicy(source,{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
+  return choices.map(p=>{
+    const task=valid?(p.kind==='achievement'?parsed.achievements?.find(row=>row.taskId===p.taskId):p.kind==='main'?parsed.main:parsed.branch?.find(row=>row.taskId===p.taskId)):null;
+    const exact=task?.taskId===p.taskId?task:null;
+    const table={main:'MainTaskCfg',branch:'BranchTaskCfg',achievement:'AchievementTaskCfg'}[p.kind];
+    const row=same(config?.tables?.[table]??null,f?.configEvidence?.tables?.[table]??null)?taskConfigurationRow(f?.configEvidence,p.kind,p.taskId):null;
+    const target=p.kind==='achievement'?exact?.targetProgress??null:taskTarget(row);
+    const qualification=taskQualification(exact,target,p.kind);
+    return {kind:p.kind,taskId:p.taskId,status:exact?'OBSERVED':'UNKNOWN',source:sourcesFor(f.parameters).tasks,sourceAt:valid?source.provenance.sourceAt:null,
+      progress:exact?.progress??null,requiredProgress:target??null,completion:qualification.completion,rewardState:qualification.rewardState,
+      observedRequirementsMet:qualification.claimable,eligibility:null,readOnly:true,executable:false,autoResume:false,
+      settlement:'UNKNOWN',reason:!valid?'TASK_OBSERVATION_UNKNOWN':!exact?'TASK_NOT_PRESENT':qualification.completion==='UNKNOWN'?'TASK_TARGET_UNKNOWN':'READ_ONLY_QUALIFICATION'};
+  });
+}
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{});
   if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
   ];
-  return {module:moduleId,tasks:copy(f?.tasks??null),candidates:choices.map(p=>candidate(f,p,options)),notes:[...(f?.notes??[]),'主线仅确认同任务明确已领及精确奖励净入；任务前移不推定成功。成就请指定 kind=achievement 与精确 taskId，复读仅接受同 ID 已领及配置奖励净入；每日订单空请求尚未接入。']};
+  return {module:moduleId,tasks:copy(f?.tasks??null),qualificationObservations:qualificationObservations(f,p,choices,options.config),candidates:choices.map(p=>candidate(f,p,options)),notes:[...(f?.notes??[]),'主线仅确认同任务明确已领及精确奖励净入；任务前移不推定成功。成就请指定 kind=achievement 与精确 taskId，复读仅接受同 ID 已领及配置奖励净入；每日订单空请求尚未接入。']};
 }
 export function planTaskRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
   parameters=validateTaskRewardsParameters(parameters);
