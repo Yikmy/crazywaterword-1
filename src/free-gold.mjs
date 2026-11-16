@@ -65,7 +65,7 @@ export { snapshot as parseFreeGoldSources };
 export function parseFreeGoldState(value) {
  const keys=['context','gold','inventory'],c=value?.context,contextKeys=['accountId','generation','connectionId','playerId','worldId','playerLevel'];
  if(!fields(value,keys)||Reflect.ownKeys(value).length!==keys.length||!fields(c,contextKeys)||Reflect.ownKeys(c).length!==contextKeys.length||
-    !text(c.accountId)||!text(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId||!positive(c.playerLevel))return null;
+    !text(c.accountId)||!text(c.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||!roleId(c.playerId)||!roleId(c.worldId)||roleId(c.playerId)!==c.playerId||roleId(c.worldId)!==c.worldId||!positive(c.playerLevel))return null;
  const gold=parseGold({info:value.gold});
  if(!gold||!same(gold,value.gold)||!dense(value.inventory)||value.inventory.some(row=>!fields(row,['id','num'])||Reflect.ownKeys(row).length!==2||!text(row.id)||!Number.isSafeInteger(row.num)||row.num<=0)||
     new Set(value.inventory.map(row=>row.id)).size!==value.inventory.length)return null;

@@ -5,6 +5,7 @@ import {validateStageRecommendationSource} from './stage-history.mjs';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { validateTaskRewardsParameters, validateTaskQualificationObservation } from './task-rewards.mjs';
+import { summarizeBattlePassObservation, validateBattlePassObservationSummary } from './daily-task-rewards.mjs';
 import {validateFreeRecruitCooldownObservation,freeRecruitCooldownSource,summarizeRecruitTaskObservations,validateRecruitTaskObservationSummary} from './free-recruit.mjs';
 import {validateCompassInfoObservation} from './compass-wheel.mjs';
 import { readVipLevelEvent, readPlayerLevelEvent, readDailyResetEvent, readDailyTaskProgressEvent, readTaskProgressEvent, readResourceAmountEvent } from './client.mjs';
@@ -427,10 +428,12 @@ function repeatAfterStop(ctx,node){
           const compassObservation=node.module==='compass-wheel'&&ctx.survey?.view?.compassObservation?validateCompassInfoObservation(ctx.survey.view.compassObservation):null;
           if(compassObservation&&compassObservation.activityId!==(node.parameters?.activityId??null))throw fail('罗盘只读观察与原活动目标不一致','WORKFLOW_UNKNOWN');
           const taskObservation=node.module==='task-rewards'?taskSurveyTarget(node.parameters):null;
+          const battlePassObservation=taskObservation?.kind==='weekly-battle-pass-task'?summarizeBattlePassObservation(ctx.survey?.view):null;
+          if(battlePassObservation&&battlePassObservation.taskId!==taskObservation.taskId)throw fail('战令观察与原精确任务不一致','WORKFLOW_UNKNOWN');
           const taskRows=taskObservation&&['main','branch','achievement'].includes(taskObservation.kind)&&Array.isArray(ctx.survey?.view?.qualificationObservations)?ctx.survey.view.qualificationObservations.filter(row=>row.kind===taskObservation.kind&&row.taskId===taskObservation.taskId):[];
           if(taskRows.length>1)throw fail('任务只读资格身份不唯一','WORKFLOW_UNKNOWN');
           const taskQualification=taskRows.length===1?validateTaskQualificationObservation(taskRows[0]):null;
-          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(recruitTasks?{recruitTasks}:{}),...(compassObservation?{compassObservation}:{}),...(taskObservation?{taskObservation}:{}),...(taskQualification?{taskQualification}:{}),...(orderProgress?{orderProgress}:{})});
+          await trace(ctx, node, 'SURVEYED',{...(observation?{mailbox:observation}:{}),...(navalObservation?{navalObservation}:{}),...(tradeObservation?{tradeObservation}:{}),...(recruitCooldown?{recruitCooldown}:{}),...(recruitTasks?{recruitTasks}:{}),...(compassObservation?{compassObservation}:{}),...(taskObservation?{taskObservation}:{}),...(battlePassObservation?{battlePassObservation}:{}),...(taskQualification?{taskQualification}:{}),...(orderProgress?{orderProgress}:{})});
           ctx.nodeId = next(ctx); continue;
         }
         if (node.type === 'ACTION') {
@@ -633,6 +636,11 @@ function traceEvidence(row) {
   if(row.compassObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='compass-wheel'||row.result!=='SURVEYED')throw fail('罗盘Info观察仅属于原compass-wheel SURVEY');evidence.compassObservation=validateCompassInfoObservation(row.compassObservation);}
   if(row.orderProgress!==undefined){if(row.type!=='SURVEY'||row.module!=='orders'||row.result!=='SURVEYED')throw fail('订单计数观察仅属于原orders SURVEY');evidence.orderProgress=validateOrderProgressSummary(row.orderProgress);}
   if(row.taskObservation!==undefined){if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED')throw fail('任务观察目标仅属于原task-rewards SURVEY');const target=taskSurveyTarget(row.taskObservation);if(!target)throw fail('任务观察历史须有明确目标');evidence.taskObservation=target;}
+  if(row.battlePassObservation!==undefined){
+    const target=evidence.taskObservation;
+    if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED'||target?.kind!=='weekly-battle-pass-task')throw fail('战令历史仅属于原明确任务SURVEY');
+    const observation=validateBattlePassObservationSummary(row.battlePassObservation);if(observation.taskId!==target.taskId)throw fail('战令历史与原任务目标不一致');evidence.battlePassObservation=observation;
+  }
   if(row.taskQualification!==undefined){
     if(row.type!=='SURVEY'||row.module!=='task-rewards'||row.result!=='SURVEYED')throw fail('任务资格观察仅属于原task-rewards SURVEY');
     const observation=validateTaskQualificationObservation(row.taskQualification),target=evidence.taskObservation;

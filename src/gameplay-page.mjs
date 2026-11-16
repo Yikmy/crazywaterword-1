@@ -1715,6 +1715,7 @@ function wfHistoryRender(data) {
   for(const row of data.surveys||[]){
     const audit=row.mailbox,naval=row.navalObservation,cooldown=row.recruitCooldown,trade=row.tradeObservation;
     box.appendChild(gpEl('p','只读调查节点 '+row.nodeId+(row.round!==undefined?' · 第 '+row.round+' 轮':'')+' · '+(row.module||'未知模块')+' · '+(row.timestamp||'时间未知')));
+    if(row.battlePassObservation){const observed=row.battlePassObservation;box.appendChild(gpEl('p','战令任务 '+observed.taskId+' · Info '+observed.infoStatus+' · 累计积分 '+(observed.info?.score??'未知')+' · WeekInfo窗口 '+observed.windowStatus+'；两个来源分别保留，任务周期与窗口归属未证实，积分到账及可领资格未知，重启不恢复执行。'));gpDetails(box,'原战令任务与独立窗口历史',observed);}
     if(row.recruitTasks){box.appendChild(gpEl('p','英雄/古董累计招募任务的原调查记录；进度与已领标记分开，奖励资格和到账未知。读取历史不重算、不续权、不解除拒绝或UNKNOWN。'));gpDetails(box,'原招募任务计数、来源时间与配置季',row.recruitTasks);}
     if(row.compassObservation){const observed=row.compassObservation,info=observed.info;box.appendChild(gpEl('p','罗盘Info历史观察 '+observed.status+' · 活动 '+(observed.activityId??'未知')+' · 次数 '+(info?.times??'未知')+' · 积分 '+(info?.score??'未知')+' · 已领记录 '+(info?.claimedId??'未知')+'；保底仅原值，领奖资格与到账未知。读取历史不续期、授权或解除UNKNOWN。'));gpDetails(box,'原罗盘Info只读来源',observed);}
     else if(row.orderProgress){

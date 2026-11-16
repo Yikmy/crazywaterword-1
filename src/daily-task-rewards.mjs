@@ -317,6 +317,40 @@ function parseBattlePass(raw,week){
  const info=parseBattlePassInfo(raw),activityTime=parseBattlePassWindow(week);
  return info&&activityTime?{...info,activityTime}:null;
 }
+// Fixed history whitelist of the original two independent read projections.
+// Reuse their parsers; historical counters never become claim or epoch facts.
+export function validateBattlePassObservationSummary(value){
+ const keys=['version','taskId','infoStatus','infoSource','infoSourceAt','info','windowStatus','windowSource','windowSourceAt','activityWindow','readOnly','claimable','executable','autoResume','periodBinding','dailyEpoch','scoreReceipt'];
+ const exact=(v,names)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,Object.prototype].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).length===names.length&&Reflect.ownKeys(v).every(key=>names.includes(key)&&Object.getOwnPropertyDescriptor(v,key)?.enumerable&&own(v,key));
+ const time=v=>Number.isSafeInteger(v)&&v>=0;
+ if(!exact(value,keys)||value.version!==1||!positive(value.taskId)||!['OBSERVED','UNKNOWN'].includes(value.infoStatus)||!['OBSERVED','UNKNOWN'].includes(value.windowStatus)||
+    value.infoSource!=='WeekBattlePassInfoResponse'||value.windowSource!=='WeekInfoResponse'||value.readOnly!==true||value.claimable!==null||value.executable!==false||value.autoResume!==false||value.periodBinding!=='UNPROVEN'||value.dailyEpoch!=='UNKNOWN'||value.scoreReceipt!=='UNKNOWN')throw invalid('战令历史须保留两个原来源及只读边界');
+ if(value.infoStatus==='UNKNOWN'){
+  if(value.infoSourceAt!==null||value.info!==null)throw invalid('未知战令Info不得补入积分或任务');
+ }else{
+  const info=value.info;
+  if(!time(value.infoSourceAt)||!exact(info,['score','activePay','task','got'])||!dense(info.task)||info.task.length>1)throw invalid('战令Info历史缺少原时间或精确任务');
+  const parsed=parseBattlePassInfo(info);
+  if(!parsed||parsed.tasks.some(row=>row.taskId!==value.taskId)||!same({score:parsed.score,activePay:parsed.activePay,task:parsed.tasks,got:parsed.got},info))throw invalid('战令Info历史字段与原解析不一致');
+ }
+ if(value.windowStatus==='UNKNOWN'){
+  if(value.windowSourceAt!==null||value.activityWindow!==null)throw invalid('未知战令窗口不得补入活动身份');
+ }else{
+  if(!time(value.windowSourceAt))throw invalid('战令窗口历史缺少原时间');
+  const activityTime=value.activityWindow===null?[]:[value.activityWindow],parsed=parseBattlePassWindow({activityTime});
+  if(!parsed||parsed.some(row=>row.type!==1)||!same(parsed,activityTime))throw invalid('战令窗口历史与原WeekInfo type1观察不一致');
+ }
+ return copy(value);
+}
+export function summarizeBattlePassObservation(view){
+ const observation=view?.battlePassObservation;if(observation===undefined)return null;
+ const task=observation.progress===null?[]:[{taskId:observation.taskId,progress:observation.progress,isGot:observation.taskRewardState==='CLAIMED_RECORD'}];
+ if(observation.progress!==null&&!['CLAIMED_RECORD','UNCLAIMED_RECORD'].includes(observation.taskRewardState))throw invalid('战令任务历史缺少明确奖励记录');
+ return validateBattlePassObservationSummary({version:1,taskId:observation.taskId,infoStatus:observation.status,infoSource:'WeekBattlePassInfoResponse',infoSourceAt:observation.sourceAt,
+  info:observation.status==='OBSERVED'?{score:observation.totalScore,activePay:observation.activePay,task,got:copy(observation.rewardStages)}:null,
+  windowStatus:observation.windowStatus,windowSource:'WeekInfoResponse',windowSourceAt:observation.windowSourceAt,activityWindow:copy(observation.activityWindow),
+  readOnly:true,claimable:null,executable:false,autoResume:false,periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN'});
+}
 function battlePassSource(f,key,value){
  if(f?.parameters?.kind!=='weekly-battle-pass-task'||!liveSourceAuthority(f)||value===null)return null;
  const source=f.sourceFacts?.[key];
