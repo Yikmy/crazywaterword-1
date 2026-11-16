@@ -75,7 +75,8 @@ function cargoShip(raw) {
 function cargoHeaderReliable(ships) {
   return denseCargoArray(ships) && ships.every(ship=>ownCargo(ship,'index') && Number.isSafeInteger(ship.index) && ship.index>0 && ship.index<=2147483647) && new Set(ships.map(ship=>ship.index)).size===ships.length;
 }
-function fleetInventory(items, resources) {
+export { cargoShip as fleetCargoShip, cargoHeaderReliable as fleetCargoHeader, cargoAssets as fleetCargoAssets };
+export function fleetInventory(items, resources) {
   return parseOperationInventory(items?.available === true ? items.body : null,
     resources?.available === true ? resources.body : null, { allowLegacyAliases: true });
 }
@@ -89,6 +90,7 @@ function cargoInventory(facts) {
   const inventory=fleetInventory(facts.sources.AllItemRequest,facts.sources.AllResourceRequest);
   return inventory.stockReliable ? inventory.stock : null;
 }
+export { cargoInventory as fleetInventorySnapshot };
 function cargoStockAmount(stock,id) {return stock instanceof Map?quantity(stock.has(id)?stock.get(id):0):null;}
 function cargoInventoryMatches(beforeFacts,afterFacts,costs,rewards) {
   return stockMatchesDelta(cargoInventory(beforeFacts),cargoInventory(afterFacts),costs,rewards);
@@ -234,6 +236,18 @@ export function fleetStopAction(kind, buildingId) {
   if (kind === 'fleetStopAutoFight') return { request: 'SetFleetAutoFightRequest', response: null, body: { buildingIds: [buildingId], isOn: false } };
   return null;
 }
+// Existing lifecycle plans and durable receipt validation share this descriptor.
+export function fleetLifecycleAction(kind, target) {
+  if(!nonempty(target?.buildingId))return null;
+  if(kind==='fleetRepair')return {request:'RepairFleetRequest',response:null,body:{buildingId:target.buildingId}};
+  if(kind==='fleetMove')return {request:'MoveFleetsToCityRequest',response:null,body:{buildingId:[target.buildingId],cityId:target.cityId}};
+  return null;
+}
+export function fleetCargoAction(kind, target) {
+  if(kind==='cargoFill')return {request:'FillCargoShipRequest',response:'FillCargoShipResponse',body:{shipIndex:target.shipIndex,cargoIndex:[target.cargoIndex]}};
+  if(kind==='cargoClaim')return {request:'DrawShipRewardRequest',response:'DrawShipRewardResponse',body:{index:target.shipIndex}};
+  return null;
+}
 export function fleetFormationAction(buildingId, formation) {
   return nonempty(buildingId)?{request:'FleetSaveFormationRequest',response:null,body:{buildingId,formation}}:null;
 }
@@ -258,7 +272,8 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
     if (!reason && (!Number.isSafeInteger(cost) || cost < 0)) reason = 'REPAIR_COST_UNKNOWN';
     if (!reason && cost > opts.maximumRepairPetrolPerPlan) reason = 'REPAIR_PLAN_BUDGET';
     if (!reason && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < cost + opts.petrolReserve)) reason = 'INSUFFICIENT_PETROL';
-    candidates.push(candidate('fleetRepair', { buildingId: fleet.buildingId }, cost === null ? [] : [{ id: '汽油', num: cost }], paramReliable ? 'FleetRepairParamResponse.unitRepairCost × 缺失耐久，向上取整' : null, { fleet, param: param ?? null }, { maxDura: fleet.maxDura, repairingOrCompleted: true }, 'RepairFleetRequest', null, { buildingId: fleet.buildingId }, { buildingId: fleet.buildingId }, reason || (!facts.protocolReady?.RepairFleetRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
+    const repairAction=fleetLifecycleAction('fleetRepair',{buildingId:fleet.buildingId});
+    candidates.push(candidate('fleetRepair', { buildingId: fleet.buildingId }, cost === null ? [] : [{ id: '汽油', num: cost }], paramReliable ? 'FleetRepairParamResponse.unitRepairCost × 缺失耐久，向上取整' : null, { fleet, param: param ?? null }, { maxDura: fleet.maxDura, repairingOrCompleted: true }, repairAction.request, repairAction.response, repairAction.body, { buildingId: fleet.buildingId }, reason || (!facts.protocolReady?.RepairFleetRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     const stopRepairReason = disabled('stopRepair') || (!facts.fleetReliable || fleet.state !== 4 || !fleet.repairing ? 'FLEET_NOT_REPAIRING' : null) || (quantity(fleet.durability) === null ? 'FLEET_DURABILITY_UNKNOWN' : null) || (!fleet.autoFight || fleet.autoFight.isOn !== false ? 'AUTO_FIGHT_STATE_UNVERIFIED' : null) || (!facts.protocolReady?.StopRepairingRequest ? 'PROTOCOL_UNAVAILABLE' : null);
     const stopRepairAction = fleetStopAction('fleetStopRepair', fleet.buildingId), stopAutoAction = fleetStopAction('fleetStopAutoFight', fleet.buildingId);
     candidates.push(candidate('fleetStopRepair', { buildingId: fleet.buildingId }, [], 'ArmyPop._onBtnCancel: StopRepairingRequest，无购买/加速支付参数', { fleet }, { state: 1, repairing: null }, stopRepairAction.request, stopRepairAction.response, stopRepairAction.body, { buildingId: fleet.buildingId }, stopRepairReason));
@@ -286,7 +301,8 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       if (!moveReason && (fleet.state !== 1 || fleet.autoFight?.isOn !== false || fleet.repairing || fleet.treasureLootUid !== 0 || fleet.durability === null || !fleet.maxDura || fleet.durability / fleet.maxDura < opts.minimumDurabilityRatio || fleet.cityId === city.id)) moveReason = 'FLEET_UNAVAILABLE';
       if (!moveReason && petrol === null) moveReason = 'MOVE_COST_UNKNOWN';
       if (!moveReason && petrol > 0 && (quantity(inventory?.get('汽油')) === null || inventory.get('汽油') < petrol + opts.petrolReserve)) moveReason = 'INSUFFICIENT_PETROL';
-      candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, 'MoveFleetsToCityRequest', null, { buildingId: [fleet.buildingId], cityId: parameters.cityId }, { buildingId: fleet.buildingId, cityId: parameters.cityId }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
+      const moveAction=fleetLifecycleAction('fleetMove',{buildingId:fleet.buildingId,cityId:parameters.cityId});
+      candidates.push(candidate('fleetMove', { buildingId: fleet.buildingId, cityId: parameters.cityId }, petrol === null || petrol === 0 ? [] : [{ id: '汽油', num: petrol }], petrol === 0 ? 'WorldInfoResponse城市当前归属；客户端同盟城市移动无汽油费' : petrol === null ? null : '出生城→目标城地图距离 × AttackCityConsumeCfg单价，向上取整', { fleet, city, guildIdx: facts.guildIdx, petrol }, { cityId: parameters.cityId, scope: 'MOVEMENT_ONLY' }, moveAction.request, moveAction.response, moveAction.body, { buildingId: fleet.buildingId, cityId: parameters.cityId }, moveReason || (!facts.protocolReady?.MoveFleetsToCityRequest ? 'PROTOCOL_UNAVAILABLE' : null)));
     }
   }
   for (const ship of Array.isArray(facts.ships)?facts.ships:[]) {
@@ -304,10 +320,12 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       if(!reason&&(parsed.status!==0||parsed.orderItem[index].filled!==false))reason='CARGO_UNAVAILABLE';
       if(!reason&&(!asset||asset.type!==0))reason='COST_UNKNOWN';
       if(!reason&&cargoStockAmount(stock,asset.id)<asset.num)reason='INSUFFICIENT_CARGO_MATERIALS';
-      candidates.push(candidate('cargoFill',{shipIndex:ship.index,cargoIndex:index+1},costs,'CargoShipsResponse.orderItem.asset；不购买缺失物品',{ship:parsed},parsed?cargoFillExpected(parsed,index):null,'FillCargoShipRequest','FillCargoShipResponse',{shipIndex:ship.index,cargoIndex:[index+1]},{shipIndex:ship.index,cargoIndex:index+1},reason||(!facts.protocolReady?.FillCargoShipRequest?'PROTOCOL_UNAVAILABLE':null)));
+      const action=fleetCargoAction('cargoFill',{shipIndex:ship.index,cargoIndex:index+1});
+      candidates.push(candidate('cargoFill',{shipIndex:ship.index,cargoIndex:index+1},costs,'CargoShipsResponse.orderItem.asset；不购买缺失物品',{ship:parsed},parsed?cargoFillExpected(parsed,index):null,action.request,action.response,action.body,{shipIndex:ship.index,cargoIndex:index+1},reason||(!facts.protocolReady?.FillCargoShipRequest?'PROTOCOL_UNAVAILABLE':null)));
     }
     const reason=disabled('cargoClaim')||(!header||!parsed||!stock?'CARGO_FACTS_UNRELIABLE':null)||(parsed.status!==2?'CARGO_UNAVAILABLE':null)||(!facts.protocolReady?.DrawShipRewardRequest?'PROTOCOL_UNAVAILABLE':null);
-    candidates.push(candidate('cargoClaim',{shipIndex:ship.index},[],'客户端 ARRIVED 分支领取现有奖励，无购买/加速',{ship:parsed},parsed?cargoClaimExpected(parsed):null,'DrawShipRewardRequest','DrawShipRewardResponse',{index:ship.index},{shipIndex:ship.index},reason));
+    const action=fleetCargoAction('cargoClaim',{shipIndex:ship.index});
+    candidates.push(candidate('cargoClaim',{shipIndex:ship.index},[],'客户端 ARRIVED 分支领取现有奖励，无购买/加速',{ship:parsed},parsed?cargoClaimExpected(parsed):null,action.request,action.response,action.body,{shipIndex:ship.index},reason));
   }
   return candidates;
 }
@@ -383,14 +401,14 @@ export function verifyFleet(operation, beforeFacts, afterFacts, response) {
   const reward=ownCargo(response,'reward')&&ownCargo(response.reward,'asset')?cargoAssets(response.reward.asset):null;
   if(type==='cargoFill') {
     const index=target.cargoIndex-1,old=before.orderItem[index],current=after.orderItem[index];
-    const action={request:'FillCargoShipRequest',response:'FillCargoShipResponse',body:{shipIndex:target.shipIndex,cargoIndex:[target.cargoIndex]}};
+    const action=fleetCargoAction('cargoFill',target);
     if(!Number.isSafeInteger(index)||index<0||!old||!current||before.status!==0||old.filled!==false||current.filled!==true||stable(operation.target)!==stable({shipIndex:before.index,cargoIndex:index+1})||stable(operation.action)!==stable(action)||stable(operation.costs)!==stable([{id:old.asset.id,num:old.asset.num}])||stable(operation.expectedState)!==stable(cargoFillExpected(before,index)))return unconfirmed('装货请求、精确货格或原始成本/奖励不一致');
     const topology=before.orderItem.length===after.orderItem.length&&stable(before.reward)===stable(after.reward)&&before.orderItem.every((row,i)=>stable(row.asset)===stable(after.orderItem[i].asset)&&stable(row.reward)===stable(after.orderItem[i].reward)&&(i===index?after.orderItem[i].filled===true:row.filled===after.orderItem[i].filled));
     const completed=after.orderItem.every(row=>row.filled),phase=completed?after.status===1&&after.arriveTime>0:after.status===0&&after.arriveTime===0;
     const confirmed=topology&&phase&&reward!==null&&stable(reward)===stable(old.reward)&&cargoInventoryMatches(beforeFacts,afterFacts,operation.costs,old.reward);
     return {confirmed,reason:confirmed?'原航次精确货格、预定奖励及权威库存净变化一致':'货格/航次、预定奖励或库存净变化未确认；保留UNKNOWN',responseEvidence:{rewardMatched:reward!==null&&stable(reward)===stable(old.reward)}};
   }
-  const action={request:'DrawShipRewardRequest',response:'DrawShipRewardResponse',body:{index:target.shipIndex}},returned=ownCargo(response,'ship')?cargoShip(response.ship):null;
+  const action=fleetCargoAction('cargoClaim',target),returned=ownCargo(response,'ship')?cargoShip(response.ship):null;
   if(before.status!==2||after.status!==0||after.orderItem.some(row=>row.filled)||stable(operation.target)!==stable({shipIndex:before.index})||stable(operation.action)!==stable(action)||stable(operation.costs)!==stable([])||stable(operation.expectedState)!==stable(cargoClaimExpected(before)))return unconfirmed('到港航次、领奖请求或新采购状态不一致');
   const confirmed=returned!==null&&stable(returned)===stable(after)&&reward!==null&&stable(reward)===stable(before.reward)&&cargoInventoryMatches(beforeFacts,afterFacts,[],before.reward);
   return {confirmed,reason:confirmed?'到港原定奖励、精确新航次及权威库存增量一致':'奖励、返回货船或权威库存未确认；保留UNKNOWN',responseEvidence:{rewardMatched:reward!==null&&stable(reward)===stable(before.reward),shipMatched:returned!==null&&stable(returned)===stable(after)}};

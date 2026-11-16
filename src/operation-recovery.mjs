@@ -1,6 +1,8 @@
 // Read-only, evidence-bound reconciliation. Never dispatch or replay a business write.
+import { createHash } from 'node:crypto';
+import { assertPaymentAllowed } from './actions.mjs';
 import { parseFormation, verifyFormation, validateFormationParameters } from './formation.mjs';
-import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, verifyFleet } from './fleet.mjs';
+import { fleetStopAction, fleetFormationAction, fleetFormationBuildings, fleetLifecycleAction, fleetInventory, fleetInventorySnapshot, fleetCargoAction, fleetCargoShip, fleetCargoHeader, fleetCargoAssets, verifyFleet } from './fleet.mjs';
 import { fleetFacts, stable } from './naval-facts.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -138,10 +140,115 @@ function buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,con
   return {version:1,verified:true,module:'fleet',actionType:'fleetFormation',request:contract.action.request,response:null,
     target:{buildingId:contract.buildingId},parameters:contract.parameters,beforeFacts:before,afterFacts:after,expectedState:contract.expectedState,executionContext};
 }
+// Lifecycle receipts retain complete inventory counts, not source packets.
+// Costs are the original authorized declaration; only verifyFleet judges the
+// net debit and movement/repair outcome, both before persistence and on reread.
+function fleetLifecycleReceiptFacts(facts,buildingId) {
+  const inventory=fleetInventorySnapshot(facts);
+  if(facts?.fleetReliable!==true||!inventory)return null;
+  const parsed=fleetFacts({available:true,body:{fleets:facts.fleets}});
+  if(!parsed.fleetReliable)return null;
+  const rows=parsed.fleets.filter(row=>row.buildingId===buildingId);if(rows.length!==1)return null;
+  const fleet=Object.fromEntries(['buildingId','state','durability','maxDura','cityId','targetCityId','moveStartTs','moveEndTs','treasureLootUid','autoFight','repairing'].map(key=>[key,rows[0][key]]));
+  return {fleetReliable:true,fleets:[fleet],stockReliable:true,stock:[...inventory].sort(([a],[b])=>a.localeCompare(b))};
+}
+function fleetStoredInventoryFacts(value,project) {
+  if(!object(value)||!Array.isArray(value.stock)||value.stock.some(row=>!Array.isArray(row)||row.length!==2))return null;
+  try{
+    if(new Set(value.stock.map(row=>row[0])).size!==value.stock.length)return null;
+    const facts={...value,stock:new Map(value.stock)},canonical=project(facts);
+    return canonical&&same(canonical,value)?facts:null;
+  }catch{return null;}
+}
+function fleetLifecycleStoredFacts(value,buildingId) { return fleetStoredInventoryFacts(value,facts=>fleetLifecycleReceiptFacts(facts,buildingId)); }
+const fleetIdentityHash=row=>createHash('sha256').update(row.identity).digest('hex');
+function fleetLifecycleContract(row) {
+  if(row?.module!=='fleet'||!['fleetRepair','fleetMove'].includes(row.actionType)||!Array.isArray(row.costs)||!text(row.target?.buildingId)||!text(row.identity)||row.identity!==stable(row.beforeState)||!text(row.costSource))return null;
+  const buildingId=row.target.buildingId,repair=row.actionType==='fleetRepair',cityId=row.target.cityId;
+  const originalFleet=row.beforeState?.fleet;
+  if(originalFleet?.buildingId!==buildingId||originalFleet.state!==1||!Number.isSafeInteger(originalFleet.durability)||originalFleet.durability<0||!Number.isSafeInteger(originalFleet.maxDura)||originalFleet.maxDura<=0||originalFleet.durability>originalFleet.maxDura)return null;
+  if(repair&&originalFleet.durability===originalFleet.maxDura)return null;
+  const paid=row.costs.length===1&&row.costs[0]?.id==='汽油'&&Number.isSafeInteger(row.costs[0].num)&&row.costs[0].num>0;
+  if(!paid&&(repair||row.costs.length!==0))return null;
+  if(paid&&!same(row.costs,[{id:'汽油',num:row.costs[0].num}]))return null;
+  if(!repair&&(!Number.isInteger(cityId)||cityId<=0||cityId>2147483647||row.beforeState.city?.id!==cityId||row.beforeState.petrol!==(paid?row.costs[0].num:0)))return null;
+  const target=repair?{buildingId}:{buildingId,cityId};
+  const expectedState=repair?{maxDura:row.beforeState.fleet.maxDura,repairingOrCompleted:true}:{cityId,scope:'MOVEMENT_ONLY'};
+  if(!same(row.target,target)||!same(row.parameters,target)||!same(row.expectedState,expectedState)||row.actionId!=='fleet:'+row.actionType+':'+Object.values(target).map(value=>encodeURIComponent(String(value))).join(':'))return null;
+  return {buildingId,target,expectedState,action:fleetLifecycleAction(row.actionType,target)};
+}
+function fleetLifecycleReceiptProblem(row,contract,originalScope) {
+  const receipt=row.verifiedReceipt;
+  if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='fleet'||receipt.actionType!==row.actionType||receipt.request!==contract.action.request||receipt.response!==null)return 'MISSING_VERIFIED_RECEIPT';
+  if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+  const before=fleetLifecycleStoredFacts(receipt.beforeFacts,contract.buildingId),after=fleetLifecycleStoredFacts(receipt.afterFacts,contract.buildingId);
+  const original=before?fleetLifecycleReceiptFacts({...before,fleets:[row.beforeState.fleet]},contract.buildingId):null;
+  if(!before||!after||!original||!same(original,receipt.beforeFacts)||receipt.identityHash!==fleetIdentityHash(row)||!same(receipt.target,row.target)||!same(receipt.parameters,row.parameters)||
+    !same(receipt.costs,row.costs)||receipt.costSource!==row.costSource||!same(receipt.expectedState,contract.expectedState)||verifyFleet(row,before,after).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+  return null;
+}
+function buildFleetLifecycleVerifiedReceipt(candidate,beforeFacts,afterFacts,context) {
+  const executionContext=scope(context),contract=fleetLifecycleContract(candidate);
+  if(!executionContext||!contract||!same(candidate.action,contract.action))return null;
+  const before=fleetLifecycleReceiptFacts(beforeFacts,contract.buildingId),after=fleetLifecycleReceiptFacts(afterFacts,contract.buildingId);
+  const original=before?fleetLifecycleReceiptFacts({...beforeFacts,fleets:[candidate.beforeState.fleet]},contract.buildingId):null;
+  if(!before||!after||!original||!same(before,original)||verifyFleet(candidate,beforeFacts,afterFacts).confirmed!==true)return null;
+  return {version:1,verified:true,module:'fleet',actionType:candidate.actionType,request:contract.action.request,response:null,
+    target:contract.target,parameters:structuredClone(candidate.parameters),costs:structuredClone(candidate.costs),costSource:candidate.costSource,identityHash:fleetIdentityHash(candidate),
+    beforeFacts:before,afterFacts:after,expectedState:contract.expectedState,executionContext};
+}
+function cargoReceiptShip(raw) {
+  const ship=fleetCargoShip(raw);
+  return ship?{...ship,orderItem:ship.orderItem.map(row=>({asset:row.asset,filled:row.filled,reward:{asset:row.reward}}))}:null;
+}
+function fleetCargoReceiptFacts(facts,shipIndex) {
+  const inventory=fleetInventorySnapshot(facts);
+  if(facts?.cargoReliable!==true||!fleetCargoHeader(facts.ships)||!inventory)return null;
+  const ship=cargoReceiptShip(facts.ships.find(row=>row.index===shipIndex));
+  return ship?{cargoReliable:true,ships:[ship],stockReliable:true,stock:[...inventory].sort(([a],[b])=>a.localeCompare(b))}:null;
+}
+function fleetCargoStoredFacts(value,shipIndex) { return fleetStoredInventoryFacts(value,facts=>fleetCargoReceiptFacts(facts,shipIndex)); }
+function cargoReceiptResponse(response,kind) {
+  const assets=fleetCargoAssets(response?.reward?.asset);if(!assets)return null;
+  const ship=kind==='cargoClaim'?cargoReceiptShip(response?.ship):null;if(kind==='cargoClaim'&&!ship)return null;
+  return {reward:{asset:assets},...(ship?{ship}:{})};
+}
+function fleetCargoContract(row) {
+  if(row?.module!=='fleet'||!['cargoFill','cargoClaim'].includes(row.actionType)||!text(row.identity)||row.identity!==stable(row.beforeState)||!text(row.costSource)||!Array.isArray(row.costs))return null;
+  const shipIndex=row.target?.shipIndex,cargoIndex=row.target?.cargoIndex,fill=row.actionType==='cargoFill';
+  if(!Number.isInteger(shipIndex)||shipIndex<=0||shipIndex>2147483647||fill&&(!Number.isInteger(cargoIndex)||cargoIndex<=0||cargoIndex>2147483647))return null;
+  const target=fill?{shipIndex,cargoIndex}:{shipIndex},action=fleetCargoAction(row.actionType,target);
+  if(!same(row.target,target)||!same(row.parameters,target)||row.actionId!=='fleet:'+row.actionType+':'+Object.values(target).map(value=>encodeURIComponent(String(value))).join(':')||!object(row.expectedState))return null;
+  try{assertPaymentAllowed({...action,costs:row.costs});}catch{return null;}
+  return {shipIndex,target,expectedState:structuredClone(row.expectedState),action};
+}
+function fleetCargoReceiptProblem(row,contract,originalScope) {
+  const receipt=row.verifiedReceipt;
+  if(!object(receipt)||receipt.version!==1||receipt.verified!==true||receipt.module!=='fleet'||receipt.actionType!==row.actionType||receipt.request!==contract.action.request||receipt.response!==contract.action.response)return 'MISSING_VERIFIED_RECEIPT';
+  if(!same(scope(receipt.executionContext),originalScope))return 'RECEIPT_SCOPE_MISMATCH';
+  const before=fleetCargoStoredFacts(receipt.beforeFacts,contract.shipIndex),after=fleetCargoStoredFacts(receipt.afterFacts,contract.shipIndex),response=cargoReceiptResponse(receipt.responseEvidence,row.actionType);
+  if(!before||!after||!response||!same(response,receipt.responseEvidence)||stable(row.beforeState)!==stable({ship:fleetCargoShip(before.ships[0])})||
+    receipt.identityHash!==fleetIdentityHash(row)||!same(receipt.target,row.target)||!same(receipt.parameters,row.parameters)||!same(receipt.costs,row.costs)||receipt.costSource!==row.costSource||!same(receipt.expectedState,contract.expectedState)||
+    verifyFleet({...row,action:contract.action},before,after,response).confirmed!==true)return 'INCOMPLETE_VERIFIED_RECEIPT';
+  return null;
+}
+function buildFleetCargoVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context) {
+  const executionContext=scope(context),contract=fleetCargoContract(candidate);if(!executionContext||!contract||!same(candidate.action,contract.action))return null;
+  const before=fleetCargoReceiptFacts(beforeFacts,contract.shipIndex),after=fleetCargoReceiptFacts(afterFacts,contract.shipIndex),evidence=cargoReceiptResponse(response,candidate.actionType);
+  if(!before||!after||!evidence||stable(candidate.beforeState)!==stable({ship:fleetCargoShip(before.ships[0])})||verifyFleet(candidate,beforeFacts,afterFacts,response).confirmed!==true)return null;
+  return {version:1,verified:true,module:'fleet',actionType:candidate.actionType,request:contract.action.request,response:contract.action.response,
+    target:contract.target,parameters:structuredClone(candidate.parameters),costs:structuredClone(candidate.costs),costSource:candidate.costSource,identityHash:fleetIdentityHash(candidate),
+    beforeFacts:before,afterFacts:after,responseEvidence:evidence,expectedState:contract.expectedState,executionContext};
+}
 // Only an already verified original execution may create this durable projection.
 // No protocol bodies, credentials, config tables or unrelated player state are kept.
 export function buildVerifiedReceipt(candidate, beforeFacts, afterFacts, response, context) {
-  if(candidate?.module==='fleet')return candidate.actionType==='fleetFormation'?buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context):buildFleetStopVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
+  if(candidate?.module==='fleet'){
+    if(candidate.actionType==='fleetFormation')return buildFleetFormationVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
+    if(['fleetRepair','fleetMove'].includes(candidate.actionType))return buildFleetLifecycleVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
+    if(['cargoFill','cargoClaim'].includes(candidate.actionType))return buildFleetCargoVerifiedReceipt(candidate,beforeFacts,afterFacts,response,context);
+    return buildFleetStopVerifiedReceipt(candidate,beforeFacts,afterFacts,context);
+  }
   const executionContext = scope(context), expectedState = completeFormation(candidate?.expectedState);
   if (!executionContext || candidate?.module !== 'formation' || candidate?.actionType !== 'SAVE' ||
       !Array.isArray(candidate.costs) || candidate.costs.length !== 0 || candidate.target?.module !== 1 ||
@@ -179,23 +286,47 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   try { assertExecutionActive(client, { signal }); assertCurrent(); }
   catch (error) { return finish('STILL_UNKNOWN', error?.code === 'CANCELLED' || error?.name === 'AbortError' ? 'CANCELLED' : 'SESSION_CHANGED', '复核已取消或会话归属已变化'); }
   if (provenNotDispatched(row)) return finish('NOT_APPLIED', 'PROVEN_NOT_DISPATCHED', '版本化写前屏障证明业务请求从未派发；不会重用原授权');
-  const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row);
+  const fleetStop=fleetStopContract(row),fleetFormation=fleetFormationContract(row),fleetLifecycle=fleetLifecycleContract(row),fleetCargo=fleetCargoContract(row);
   if(fleetStop)readMethod='READ_ONLY_FLEET_STOP_V1';
   if(fleetFormation)readMethod='READ_ONLY_FLEET_FORMATION_V1';
+  if(fleetLifecycle)readMethod='READ_ONLY_FLEET_LIFECYCLE_V1';
+  if(fleetCargo)readMethod='READ_ONLY_CARGO_V1';
   const expected = completeFormation(row.expectedState);
-  if (!fleetStop && !fleetFormation && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
-      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核明确、完整且零成本的主线/舰队编组保存或舰队停止维修/委任');
+  if (!fleetStop && !fleetFormation && !fleetLifecycle && !fleetCargo && (row.module !== 'formation' || row.actionType !== 'SAVE' || !Array.isArray(row.costs) || row.costs.length !== 0 ||
+      row.target?.module !== 1 || !expected || row.target?.presetId !== expected.presetId)) return finish('STILL_UNKNOWN', 'UNSUPPORTED_OPERATION', '当前仅复核原主线/舰队编组保存、舰队停止、声明汽油成本的维修/移动及货船装货/领奖；均须原持久验证凭据');
   if (client?.connected !== true || typeof client.request !== 'function') return finish('STILL_UNKNOWN', 'NOT_CONNECTED', '没有可用于权威复读的当前连接');
   if (client.pending?.length || client.watchers?.length || client.promptUncertain || client.lateResponses?.size) return finish('STILL_UNKNOWN', 'READ_CONTEXT_UNCERTAIN', '当前连接存在未决或迟到响应，不能安全复读');
-  const requestName=fleetFormation?'OnWaterRequest':fleetStop?'MyFleetsRequest':'GetFormationRequest',responseName=fleetFormation?'OnWaterResponse':fleetStop?'MyFleetsResponse':'GetFormationResponse';
+  const requestName=fleetCargo?'CargoShipsRequest':fleetFormation?'OnWaterRequest':fleetStop||fleetLifecycle?'MyFleetsRequest':'GetFormationRequest',responseName=fleetCargo?'CargoShipsResponse':fleetFormation?'OnWaterResponse':fleetStop||fleetLifecycle?'MyFleetsResponse':'GetFormationResponse';
   if (!protocol?.[requestName] || !protocol?.[responseName]) return finish('STILL_UNKNOWN', 'PROTOCOL_MISSING', '缺少固定只读复核协议');
-  const problem = fleetFormation?fleetFormationReceiptProblem(row,fleetFormation,originalScope):fleetStop?fleetStopReceiptProblem(row,fleetStop,originalScope):receiptProblem(row, expected, originalScope);
+  if((fleetLifecycle||fleetCargo)&&['AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少完整库存只读复核协议');
+  const problem = fleetCargo?fleetCargoReceiptProblem(row,fleetCargo,originalScope):fleetLifecycle?fleetLifecycleReceiptProblem(row,fleetLifecycle,originalScope):fleetFormation?fleetFormationReceiptProblem(row,fleetFormation,originalScope):fleetStop?fleetStopReceiptProblem(row,fleetStop,originalScope):receiptProblem(row, expected, originalScope);
   try {
     assertExecutionActive(client, { signal }); assertCurrent();
-    readRequest = fleetStop||fleetFormation?{request:requestName,buildingId:(fleetStop??fleetFormation).buildingId,response:responseName}:{request:requestName,module:1,response:responseName};
-    const response = await awaitExecution(client.request(requestName, fleetStop||fleetFormation?{}:{module:1}, responseName, 15000, { signal }), client, { signal });
+    readRequest = fleetCargo?{request:requestName,shipIndex:fleetCargo.shipIndex,response:responseName,inventoryRequests:['AllItemRequest','AllResourceRequest']}:fleetStop||fleetFormation||fleetLifecycle?{request:requestName,buildingId:(fleetStop??fleetFormation??fleetLifecycle).buildingId,response:responseName,...(fleetLifecycle?{inventoryRequests:['AllItemRequest','AllResourceRequest']}:{})}:{request:requestName,module:1,response:responseName};
+    const response = await awaitExecution(client.request(requestName, fleetStop||fleetFormation||fleetLifecycle||fleetCargo?{}:{module:1}, responseName, 15000, { signal }), client, { signal });
     assertExecutionActive(client, { signal }); assertCurrent();
     if (!same(scope(context), currentScope)) return finish('STILL_UNKNOWN', 'SESSION_CHANGED', '复读期间会话身份或连接代次发生变化');
+    if(fleetLifecycle||fleetCargo){
+      const inventorySources=[];
+      for(const [request,response] of [['AllItemRequest','AllItemResponse'],['AllResourceRequest','AllResourceResponse']]){
+        assertExecutionActive(client,{signal});assertCurrent();
+        const body=await awaitExecution(client.request(request,{},response,15000,{signal}),client,{signal});
+        assertExecutionActive(client,{signal});assertCurrent();inventorySources.push({available:true,body});
+      }
+      if(!same(scope(context),currentScope))return finish('STILL_UNKNOWN','SESSION_CHANGED','完整库存复读期间会话身份发生变化');
+      const inventory=fleetInventory(...inventorySources);
+      const snapshot=fleetCargo?fleetCargoReceiptFacts({cargoReliable:true,ships:own(response,'ship')?response.ship:null,...inventory},fleetCargo.shipIndex):fleetLifecycleReceiptFacts({...fleetFacts({available:true,body:response}),...inventory},fleetLifecycle.buildingId);
+      const hydrate=value=>fleetCargo?fleetCargoStoredFacts(value,fleetCargo.shipIndex):fleetLifecycleStoredFacts(value,fleetLifecycle.buildingId);
+      const facts=snapshot?hydrate(snapshot):null;
+      if(!facts)return finish('STILL_UNKNOWN','UNRELIABLE_READ','舰队/货船或完整物品/资源库存缺失、冲突或身份不唯一');
+      const before=hydrate(row.verifiedReceipt?.beforeFacts),verification=before?verifyFleet(fleetCargo?{...row,action:fleetCargo.action}:row,before,facts,fleetCargo?row.verifiedReceipt?.responseEvidence:undefined):null;
+      observation={...(fleetCargo?{ship:snapshot.ships[0]}:{fleet:snapshot.fleets[0]}),inventory:{status:'COMPLETE',entries:snapshot.stock.length,hash:createHash('sha256').update(stable(snapshot.stock)).digest('hex')},desiredStateMatches:verification?verification.confirmed===true:null,authoritative:true};
+      if(problem)return finish('STILL_UNKNOWN',problem,'当前状态与库存仅供观察，缺少原同身份完整业务验证的持久凭据');
+      if(verification?.confirmed!==true)return finish('STILL_UNKNOWN','STATE_NOT_CONFIRMED',verification?.reason??'独立目标状态及完整库存未共同确认原维修/移动或货船操作');
+      assertExecutionActive(client,{signal});assertCurrent();
+      if(!same(scope(context),currentScope))return finish('STILL_UNKNOWN','SESSION_CHANGED','提交复核前会话身份发生变化');
+      return finish('APPLIED','RECEIPT_AND_AUTHORITY_CONFIRMED','原持久验证凭据及独立完整复读共同确认：'+verification.reason+'；不重发、续权或恢复执行');
+    }
     if(fleetFormation){
       const facts=fleetFormationReceiptFacts({formationFacts:fleetFormationBuildings({available:true,body:response})});
       if(!facts)return finish('STILL_UNKNOWN','UNRELIABLE_READ','OnWater缺少完整可靠的舰队编组身份或阵容');
