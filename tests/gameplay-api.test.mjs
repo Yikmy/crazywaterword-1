@@ -96,7 +96,7 @@ if(includeMuseum){
  if(name==='MuseumStartExploreRequest'){
   options.beforeDispatch?.();assert.equal(options.mutate,true);
   if(museumState.refused)throw Object.assign(Error('synthetic museum refusal'),{code:'REJECTED'});
-  if(!unconfirmed){museumState.stock-=2*body.factor;Object.assign(museumState.info.exploreStages[0].expedition,{startTime:1800000000,endTime:1800003600,heroIds:[...body.heroIds],factor:body.factor});}
+  if(!unconfirmed){museumState.stock-=2*body.factor;Object.assign(museumState.info.exploreStages.find(stage=>stage.stageId===body.stageId).expedition,{startTime:1800000000,endTime:1800003600,heroIds:[...body.heroIds],factor:body.factor});}
   return {};
  }
  const answers={MuseumInfoRequest:museumState.info,AllHeroRequest:{heroes:['A','B','C','D'].map(heroId=>({heroId}))},AllItemRequest:{items:[{itemId:'小麦',num:museumState.stock},{itemId:'人气币',num:1}]},AllResourceRequest:{list:[{res:3,amount:100}]},AllAntiqueRequest:{antiques:[]}};
@@ -1709,7 +1709,7 @@ for(const [freeAntique,count]of [[true,1],[false,1],[false,10],[false,50]])for(c
  const configOverride={tables:{ModuleOpenCfg:{data:[{moduleId:'英雄入口',playerLevel:6},{moduleId:'藏品',playerLevel:10}]},HeroCfg:{data:[{id:'tank'},{id:'ranger'}]},...Object.fromEntries(['ItemCfg','AntiqueBaseCfg','AntiqueFragReturnCfg','AntiqueSuitCfg'].map(n=>[n,structuredClone(merchantHttpActual.tables[n])]))}};
  const app=await harness({testProtocol:heroWireProtocol,includeFreeRecruit:true,recruitState:state,configOverride,unconfirmed});try{
  app.ready('A');await app.call('/api/gameplay?module=free-recruit');await app.call('/api/gameplay/config',{body:{module:'free-recruit',config:{enabled:true}}});const parameters={recruit:'antique',...(freeAntique?{}:{payment:'ticket',...(count>1?{count}:{})})},args={module:'free-recruit',parameters};
- const read=await app.call('/api/gameplay/survey',{body:args});assert.equal(read.status,200,JSON.stringify(read.data));const row=read.data.view.candidates[0];assert.equal(row.executable,true,JSON.stringify(row));assert.equal(row.target.recruit,'antique');assert.equal(row.target.type,1);assert.equal(read.data.view.cooldownObservation.status,'UNKNOWN');assert.equal(app.requests.some(r=>r.options?.mutate),false);
+ const read=await app.call('/api/gameplay/survey',{body:args});assert.equal(read.status,200,JSON.stringify(read.data));const row=read.data.view.candidates[0];assert.equal(row.executable,true,JSON.stringify(row));assert.equal(row.target.recruit,'antique');assert.equal(row.target.type,1);const cooldown=read.data.view.cooldownObservation;assert.equal(cooldown.status,'OBSERVED');assert.equal(cooldown.source,'RecruitInfoResponse.antique.freeEndTimeSeconds');assert.equal(cooldown.freeEndTimeSeconds,freeAntique?0:2000);assert.equal(cooldown.readiness,freeAntique?'READY_BY_CLOCK':'COOLDOWN');assert.equal(cooldown.eligibility,null);assert.equal(cooldown.executable,false);assert.equal(cooldown.autoResume,false);assert.equal(app.requests.some(r=>r.options?.mutate),false);
  const planned=await app.call('/api/operations/plan',{body:{...args,mode:'Manual',selections:[row.actionId]}});assert.equal(planned.status,200,JSON.stringify(planned.data));assert.deepEqual(planned.data.resourceBudget,freeAntique?[]:[{id:'藏品券',num:count}]);assert.equal(app.requests.some(r=>r.options?.mutate),false);
  const permit=await app.approve(planned.data);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');const rows=(await app.call('/api/operations/history')).data.runs;assert.equal(rows[0].finalStatus,unconfirmed?'UNKNOWN':'SUCCESS',JSON.stringify(rows[0]));
  assert.deepEqual(app.requests.filter(r=>r.options?.mutate).map(r=>({name:r.name,body:r.body})),[{name:'AntiqueRecruitRequest',body:{type:1,way:freeAntique?1:({1:2,10:3,50:4})[count]}}]);assert.deepEqual(state.recruit,data);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,403);assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);
@@ -1737,7 +1737,10 @@ for(const entry of ['tasks','dailies','loop'])test('battle pass original HTTP ex
  const read=await app.survey(parameters);assert.equal(read.status,200,JSON.stringify(read.data));assert.deepEqual(read.data.view.candidates,[]);const o=read.data.view.battlePassObservation;assert.equal(o.progress,'9007199254740993');assert.equal(o.completion,'COMPLETE');assert.equal(o.taskRewardState,'UNCLAIMED_RECORD');assert.equal(o.scoreReceipt,'UNKNOWN');assert.equal(o.claimable,null);assert.equal(o.executable,false);assert.equal(o.totalScore,300);
  const before=app.requests.length,phase=entry==='tasks'?'tasks':'dailies',intent={entry,[phase]:[{...parameters,action:'observe'}],budget:{resources:[],quotas:[],uids:[]}},prepared=await app.call('/api/workflows/prepare',{body:intent});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal(app.requests.length,before);const g=prepared.data.graph;assert.equal(g.nodes.some(n=>n.type==='ACTION'),false);assert.equal((await app.call('/api/workflows/simulate',{body:{graph:g}})).data.requestsSent,0);assert.equal((await app.call('/api/workflows/start',{body:{graph:g}})).status,200);const done=(await waitForWorkflow(app,'COMPLETED')).status;assert.equal(done.plan,null);assert.equal(done.runAuthorization,undefined);
  const detail=(await app.call('/api/workflows/history?workflowRunId='+done.runId)).data;assert.deepEqual(detail.surveys[0].taskObservation,parameters);assert.equal(detail.resumable,false);assert.deepEqual(detail.nodes,[]);assert.equal((await app.call('/api/workflows/history?workflowRunId='+done.runId,{id:'B'})).status,404);
- const {createWorkflowStore}=await import('../src/workflow.mjs'),store=createWorkflowStore({file:path.join(root,'workflows.json'),modules:GAMEPLAY_MODULES}),saved=store.history('A').find(r=>r.runId===done.runId);assert.equal(saved.resumable,false);assert.equal(saved.runAuthorization,undefined);assert.deepEqual(saved.trace.find(r=>r.taskObservation).taskObservation,parameters);assert.doesNotMatch(JSON.stringify(saved),/9007199254740993|CLAIMED_RECORD|safe task/);assert.deepEqual(store.history('B'),[]);
+ const {createWorkflowStore}=await import('../src/workflow.mjs'),store=createWorkflowStore({file:path.join(root,'workflows.json'),modules:GAMEPLAY_MODULES}),saved=store.history('A').find(r=>r.runId===done.runId);assert.equal(saved.resumable,false);assert.equal(saved.runAuthorization,undefined);assert.deepEqual(saved.trace.find(r=>r.taskObservation).taskObservation,parameters);const observation=saved.trace.find(r=>r.battlePassObservation).battlePassObservation;
+ assert.equal(Number.isSafeInteger(observation.infoSourceAt),true);assert.equal(Number.isSafeInteger(observation.windowSourceAt),true);assert.ok(observation.infoSourceAt>=o.sourceAt);assert.ok(observation.windowSourceAt>=o.windowSourceAt);
+ assert.deepEqual(observation,{version:1,taskId:1001,infoStatus:'OBSERVED',infoSource:'WeekBattlePassInfoResponse',infoSourceAt:observation.infoSourceAt,info:{score:300,activePay:false,task:[{taskId:1001,progress:'9007199254740993',isGot:false}],got:[{stage:1,freeGot:true,payGot:false}]},windowStatus:'OBSERVED',windowSource:'WeekInfoResponse',windowSourceAt:observation.windowSourceAt,activityWindow:{type:1,period:1001,startTime:900,endTime:2000},readOnly:true,claimable:null,executable:false,autoResume:false,periodBinding:'UNPROVEN',dailyEpoch:'UNKNOWN',scoreReceipt:'UNKNOWN'});
+ assert.deepEqual(detail.surveys[0].battlePassObservation,observation);assert.doesNotMatch(JSON.stringify(saved),/CLAIMED_RECORD|safe task/);assert.deepEqual(store.history('B'),[]);
  await app.enable();const p=await app.call('/api/operations/plan',{body:{module:'task-rewards',mode:'Manual',selections:['forged'],parameters}});assert.notEqual(p.status,200);assert.deepEqual((await app.call('/api/operations/history')).data.runs,[]);assert.ok(app.requests.every(r=>['WeekBattlePassInfoRequest','WeekInfoRequest'].includes(r.name)));assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
@@ -1765,4 +1768,83 @@ for(const unconfirmed of [false,true])test('compass original HTTP exact permit, 
   const record=app.history.list('A')[0];assert.equal(record.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS',record.stopReason);assert.equal(app.history.list('B').length,0);assert.equal(app.requests.filter(r=>r.mutate).length,1);assert.deepEqual(record.runBudget.reserved.resources,[{id:ticket,num:2}]);
   assert.equal((await app.call('/api/operations/execute',{body:{batchId:p.batchId,permitId:permit.permitId}})).status,403);assert.equal(app.requests.filter(r=>r.mutate).length,1);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{client?.stop();await app.close();}
+});
+
+// Exercise the existing HTTP preparation and per-node execution contracts together.
+async function museumGrowthHttpFixture(actionType,{unconfirmed=false}={}){
+ const config=structuredClone(museumDailyCfg);
+ config.tables.MuseumExpeditionTeamCfg.data[0].teamCount=2;
+ config.tables.MuseumExpeditionConditionCfg.data[0].heroCount=2;
+ config.tables.MuseumExpeditionStageCfg.data.push({stageId:2,areaLevelReq:[]});
+ config.tables.MuseumAchievementCfg={data:[{score:100,rewards:[['小麦',2]]},{score:200,rewards:[['小麦',3]]}]};
+ const app=await harness({includeMuseum:true,testProtocol:heroWireProtocol,configOverride:config,unconfirmed});
+ try{
+  const session=app.ready('A'),state=session.museumState;
+  state.info.topPopularity=200;
+  state.info.exploreStages.push({...structuredClone(state.info.exploreStages[0]),stageId:2});
+  session.client.sendWatch=async(name,body,options)=>{
+   assert.equal(actionType,'claimAchievement');assert.equal(name,'MuseumClaimAchievementRequest');heroWire(name,body);
+   options.beforeDispatch?.();app.requests.push({id:'A',name,body:structuredClone(body),response:null,options});
+   if(!unconfirmed){
+    const reward=config.tables.MuseumAchievementCfg.data.find(row=>row.score===body.popularityThreshold);
+    assert.ok(reward);assert.equal(state.info.claimedAchievements.includes(body.popularityThreshold),false);
+    state.info.claimedAchievements.push(body.popularityThreshold);state.stock+=reward.rewards[0][1];
+   }
+   return {status:'UNKNOWN'};
+  };
+  await app.call('/api/gameplay?module=museum');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'museum',config:{enabled:true,exploration:true,collection:true}}})).status,200);
+  const survey=await app.call('/api/gameplay/survey',{body:{module:'museum',parameters:{}}});
+  assert.equal(survey.status,200,JSON.stringify(survey.data));
+  const targets=actionType==='claimAchievement'?[{popularityThreshold:100},{popularityThreshold:200}]:survey.data.view.explorationSelection.stages.map((row,i)=>({stageId:row.stageId,heroIds:i?['C','D']:['A','B'],factor:i?2:1,expectedExploreHash:row.preparationHash}));
+  return {app,session,input:{actionType,targets,maxDurationMs:60000}};
+ }catch(error){await app.close();throw error;}
+}
+for(const actionType of ['claimAchievement','startExplore'])for(const unconfirmed of [false,true])test('museum growth HTTP explicit batch per-item permits and independent settlement '+actionType+' '+unconfirmed,async()=>{
+ const {app,session,input}=await museumGrowthHttpFixture(actionType,{unconfirmed});
+ try{
+  const route='/api/gameplay/museum/growth/prepare',before=app.requests.length;
+  assert.equal((await app.call(route,{body:input,authorized:false})).status,403);assert.equal(app.requests.length,before);
+  const prepared=await app.call(route,{body:input});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const result=prepared.data,g=result.graph;
+  assert.equal(result.accountId,'A');assert.equal(result.resumable,false);assert.equal(result.requiresFreshPlan,true);assert.equal(result.requiresAuthorization,true);
+  assert.deepEqual(g.nodes.map(row=>row.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+  assert.deepEqual(result.budget.resources,actionType==='startExplore'?[{id:'小麦',num:6}]:[]);
+  assert.equal(result.budget.uids.length,actionType==='startExplore'?6:2);
+  const writes=()=>app.requests.filter(row=>['MuseumClaimAchievementRequest','MuseumStartExploreRequest'].includes(row.name));
+  assert.equal(writes().length,0);assert.equal((await app.call('/api/workflows/simulate',{body:{graph:g}})).data.requestsSent,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:g}})).status,200);
+  let runId;
+  for(let i=0;i<2;i++){
+   const paused=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,p=paused.plan;runId=paused.runId;
+   assert.equal(p.actions.length,1);assert.equal(p.actions[0].actionType,actionType);
+   assert.deepEqual(p.actions[0].target,result.steps[i].target);assert.deepEqual(p.resourceBudget,result.steps[i].costs);
+   assert.equal(writes().length,i);
+   const cross=await app.call('/api/operations/authorize',{id:'B',body:{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true}});
+   assert.notEqual(cross.status,200);
+   const permit=await app.approve(p);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const replay=await app.call('/api/operations/execute',{body:permit.data});assert.equal(replay.status,unconfirmed?400:403,JSON.stringify(replay.data));if(unconfirmed)assert.equal(replay.data.code,'RUN_BUDGET_CLOSED');
+   assert.equal(writes().length,i+1);assert.deepEqual(writes()[i].body,result.steps[i].target);
+   assert.ok(app.requests.slice(app.requests.indexOf(writes()[i])+1).some(row=>row.name==='MuseumInfoRequest'));
+   assert.ok(app.requests.slice(app.requests.indexOf(writes()[i])+1).some(row=>row.name==='AllItemRequest'));
+   const record=app.history.list('A')[0];assert.equal(record.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS');
+   assert.equal(record.actions[0].verification.status,unconfirmed?'UNCONFIRMED':'CONFIRMED');
+   assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,'grow-'+i);
+   assert.equal(record.runBudget.reserved.uids.length,(i+1)*(actionType==='startExplore'?3:1));
+   await app.call('/api/workflows/resume',{body:{}});
+   if(unconfirmed){
+    assert.equal((await app.call('/api/workflows')).data.status.status,'UNKNOWN');
+    const count=app.requests.length;await app.call('/api/workflows/resume',{body:{}});
+    assert.equal(app.requests.length,count);assert.equal(writes().length,1);assert.equal(app.operations.blocked('A'),true);
+    break;
+   }
+  }
+  if(!unconfirmed){assert.equal((await waitForWorkflow(app,'COMPLETED')).status.runId,runId);assert.equal(app.history.list('A').length,2);}
+  assert.equal(session.museumState.stock,unconfirmed?10:actionType==='startExplore'?4:15);
+  assert.deepEqual(session.museumState.info.claimedAchievements,actionType==='claimAchievement'&&!unconfirmed?[100,200]:[]);
+  assert.equal(session.museumState.info.uncollectedRevenue,10);
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+  assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
 });
