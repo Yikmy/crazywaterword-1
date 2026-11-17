@@ -143,3 +143,16 @@ for(const action of ['make','pick'])test('W19 forge '+action+' refusal survives 
  await assert.rejects(next.displayed(b,parameters(action)),{code:'REJECTION_MEMORY_ACTIVE'});b.player.worldId=1000002;assert.equal((await next.displayed(b,parameters(action))).actions.length,1);b.player.worldId=1000001;await assert.rejects(next.displayed(b,parameters(action)),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(b.synthetic.writes.length,0);
  }finally{await next?.cleanup();await f.cleanup();}
 });
+
+
+for(const apply of [true,false])test('prepared multi-forge Service Workflow uses exact initial budget and stops on UNKNOWN '+apply,async()=>{
+ const f=fixture({apply}),target=f.session();try{
+ const source=await f.service.prepareEquipmentForgeSource(target,{action:'make',targets:['1装备厂','2装备厂'].map(buildingId=>({buildingId,expectedQueue:idle(),makeId:1001})),expectedEquipmentCounts:{武器:1,防具:0,饰品:0},maxDurationMs:60000});
+ assert.equal(target.synthetic.writes.length,0);assert.equal(source.graph.runPolicy.maxActions,2);assert.equal(material(source.graph.budget.resources),8);
+ const runner=f.runner(target),first=await runner.start(target.id,source.graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');
+ assert.equal((await f.execute(target,first.plan)).status.finalStatus,apply?'SUCCESS':'UNKNOWN');
+ const next=await runner.resume();
+ if(apply){assert.equal(next.status,'AWAITING_AUTHORIZATION');assert.deepEqual(next.plan.actions[0].target.buildingId,'2装备厂');assert.equal((await f.execute(target,next.plan)).status.finalStatus,'SUCCESS');assert.equal((await runner.resume()).status,'COMPLETED');assert.equal(target.synthetic.writes.length,2);}
+ else{assert.notEqual(next.status,'AWAITING_AUTHORIZATION');assert.equal(target.synthetic.writes.length,1);assert.equal(f.durable.unresolved(target.id),true);}
+ }finally{await f.cleanup();}
+});

@@ -1,7 +1,7 @@
 import {assertPaymentAllowed} from '../src/actions.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { museumModule, surveyMuseum, museumView, planMuseum, verifyMuseum, MUSEUM_SPEED_ITEM, MUSEUM_DEFAULT_CONFIG, validateMuseumConfig } from '../src/museum.mjs';
+import { museumModule, surveyMuseum, museumView, planMuseum, verifyMuseum, MUSEUM_SPEED_ITEM, MUSEUM_DEFAULT_CONFIG, validateMuseumConfig, prepareMuseumGrowthWorkflow, validateMuseumGrowthPreparation } from '../src/museum.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 const names=['MuseumInfo','AllHero','AllItem','AllResource','MuseumStartExplore','MuseumSpeedUpExplore','MuseumCollectRevenue','AllAntique'];
 const protocol=Object.fromEntries([...names.flatMap(n=>[[n+'Request',{}],[n+'Response',{}]]),...['MuseumUpgradeExhibitionRequest','MuseumClaimAchievementRequest','MuseumCompleteExploreRequest','MuseumRewardRequest'].map(n=>[n,{}])]);
@@ -117,4 +117,52 @@ test('C144 actual codec requires stageId for both requests, but no settlement id
  const f=working(await read(fake()));f.stages[0].expedition.endTime=now-1;const changed={...f,stages:[{...f.stages[0],progress:10,expedition:null}],stock:new Map(f.stock)};changed.stock.set('小麦',999);
  for(const actionType of ['completeExplore','claimExplore']){const op={actionType,target:{stageId:1},costs:[]};assert.equal(verifyMuseum(op,f,changed,{...complete,reward:{asset:[{id:'小麦',num:989}]},exploreStage:stage}),false);}
  assert.equal(view(f).candidates.some(row=>['completeExplore','claimExplore'].includes(row.actionType)),false);
+});
+
+
+async function exhibitBatchFixture(){
+ const f=exhibitFacts(await read(fake()));f.available=Object.keys(extraProtocol);f.parameters={};
+ f.exhibitions[0].cases.push({...f.exhibitions[0].cases[0],caseIndex:102,antiqueId:'藏品2'});
+ f.antiques.push('藏品2');const c=caseConfig();c.tables.AntiqueBaseCfg.data.push({antiqueId:'藏品2',isAntique:true});
+ const choices=museumView(f,{config:c,moduleConfig:expanded,parameters:{}}).exhibitPreparation;
+ const put=choices.find(r=>r.target.caseIndex===101&&r.target.antiqueId==='藏品1');
+ const remove=choices.find(r=>r.target.caseIndex===102&&r.target.antiqueId==='');
+ assert.ok(put);assert.ok(remove);
+ return {f,c,put,remove,input:{actionType:'exhibit',targets:[put.parameters,remove.parameters],maxDurationMs:60000}};
+}
+test('exhibit batch preserves explicit removal, original selections and fixed case/antique UID budget',async()=>{
+ const {f,c,put,remove,input}=await exhibitBatchFixture(),out=prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig:expanded,...input});
+ assert.deepEqual(out.steps.map(r=>r.selection),[put.selection,remove.selection]);
+ assert.deepEqual(out.graph.nodes.map(n=>n.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+ assert.equal(out.steps[1].parameters.antiqueId,'');assert.deepEqual(out.budget.resources,[]);
+ assert.equal(out.budget.uids.length,3);assert.equal(out.graph.runPolicy.maxActions,2);assert.equal(out.resumable,false);
+});
+test('exhibit batch allows prior independent success but rejects changed target, ownership and rules',async()=>{
+ const {f,c,put,remove}=await exhibitBatchFixture(),opts={config:c,moduleConfig:expanded,parameters:remove.parameters,selections:[remove.selection.actionId]};
+ const after=structuredClone(f);after.exhibitions[0].cases[0].antiqueId='藏品1';
+ assert.equal(verifyMuseum(find(f,'exhibit',{config:c,moduleConfig:expanded,parameters:put.parameters}),f,after),true);
+ assert.equal(planMuseum(after,opts).actions.length,1);
+ for(const change of [v=>v.exhibitions[0].cases[1].popularity++,v=>v.antiques.pop(),v=>v.exhibitions[0].level++]){
+  const changed=structuredClone(after);change(changed);assert.throws(()=>planMuseum(changed,opts),/候选已失效/);
+ }
+ const changedConfig=structuredClone(c);changedConfig.tables.AntiqueBaseCfg.data[0].isAntique=false;
+ assert.throws(()=>planMuseum(f,{...opts,parameters:put.parameters,selections:[put.selection.actionId],config:changedConfig}),/候选已失效/);
+});
+test('exhibit batch rejects duplicate cases, duplicate owned antique, hypothetical moves and unknown stock',async()=>{
+ const {f,c,put,remove,input}=await exhibitBatchFixture();
+ for(const targets of [[put.parameters,put.parameters],[put.parameters,{...remove.parameters,antiqueId:'藏品1'}]])assert.throws(()=>validateMuseumGrowthPreparation({...input,targets}),{code:'INVALID_INPUT'});
+ assert.throws(()=>prepareMuseumGrowthWorkflow({...f,stockReliable:false},{config:c,moduleConfig:expanded,...input}),{code:'INVALID_INPUT'});
+ assert.throws(()=>prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig:expanded,...input,targets:[remove.parameters,{...put.parameters,antiqueId:'藏品2'}]}),/候选已失效/);
+});
+
+
+test('professional exhibit graph accepts actual planner output and rejects cross-account or altered UID budget',async()=>{
+ const {GAMEPLAY_SCRIPT}=await import('../src/gameplay-page.mjs');
+ const name='gpMuseumExhibitGraph',start=GAMEPLAY_SCRIPT.indexOf('function '+name+'('),end=GAMEPLAY_SCRIPT.indexOf('\nfunction ',start+1);
+ assert.ok(start>=0&&end>start);const check=new Function(GAMEPLAY_SCRIPT.slice(start,end)+';return '+name)();
+ const {f,c,input}=await exhibitBatchFixture(),result={accountId:'A',...prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig:expanded,...input})},projection=museumView(f,{config:c,moduleConfig:expanded,parameters:{}});
+ assert.deepEqual(check(result,input,projection,'A'),result.graph);
+ assert.throws(()=>check(result,input,projection,'B'));
+ const forged=structuredClone(result);forged.budget.uids.pop();assert.throws(()=>check(forged,input,projection,'A'));
+ const changed=structuredClone(result);changed.steps[0].parameters.expectedExhibitHash='f'.repeat(64);assert.throws(()=>check(changed,input,projection,'A'));
 });

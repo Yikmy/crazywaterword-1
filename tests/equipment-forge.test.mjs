@@ -295,3 +295,46 @@ for(const wireMode of [false,true])test('forge exact last material and gold debi
  const {client,operation}=await prepared(params(),{wireMode,stock:{材料:4,GOLD:20,其他:7},afterWrite(c){assert.equal(c.stock.get('材料'),0);assert.equal(c.stock.get('GOLD'),0);c.stock.delete('材料');c.stock=new Map([...c.stock].reverse());}});
  assert.ok(operation);assert.deepEqual(operation.costs,[{id:'材料',num:4},{id:'GOLD',num:20}]);const result=await run(client,operation);assert.equal(result.status,'SUCCESS');assert.equal(result.verification.status,'CONFIRMED');assert.equal(client.writes.length,1);assert.equal(client.stock.has('材料'),false);assert.equal(client.stock.get('GOLD'),0);assert.equal(client.stock.get('其他'),7);assert.equal(client.uncertainWrites.size,0);
 });
+
+
+async function forgeBatchFixture(action='make',stock){
+ const c=prepConfig(),queue=action==='make'?idle():making(),client=fake({buildings:[building('1装备厂',queue),building('2装备厂',queue)],...(stock?{stock}:{})}),f=await survey(client,{},c);
+ const counted=prepareForge(f,c).counts;
+ const input={action,targets:client.buildings.map(b=>({buildingId:b.buildingId,expectedQueue:structuredClone(queue),...(action==='make'?{makeId:1001}:{})})),expectedEquipmentCounts:counted,maxDurationMs:60000};
+ return {c,client,f,input};
+}
+test('multi-forge make reserves combined initial cost and advances only the guarded output type count',async()=>{
+ const {c,client,f,input}=await forgeBatchFixture(),out=prepareForge(f,c,input),steps=out.graph.nodes.filter(n=>n.type==='ACTION');
+ assert.deepEqual(out.budget.resources,[{id:'材料',num:8},{id:'GOLD',num:40}]);
+ assert.deepEqual(steps[0].parameters.expectedEquipmentCounts,input.expectedEquipmentCounts);
+ assert.deepEqual(steps[1].parameters.expectedEquipmentCounts,{...input.expectedEquipmentCounts,武器:input.expectedEquipmentCounts.武器+1});
+ assert.equal(plan(f,steps[1].parameters,c).actions.length,0,'second step must wait for independently verified first output');
+ client.buildings[0].equipMaking=making({finishTime:2000});
+ const after=await survey(client,steps[1].parameters,c);assert.equal(plan(after,steps[1].parameters,c).actions.length,1);
+ assert.equal(client.writes.length,0);assert.equal(out.graph.runPolicy.maxActions,2);
+});
+test('multi-forge collection keeps total owned plus queued counts and zero resource budget',async()=>{
+ const {c,client,f,input}=await forgeBatchFixture('pick'),out=prepareForge(f,c,input);
+ assert.deepEqual(out.budget.resources,[]);assert.deepEqual(out.steps[1].parameters.expectedEquipmentCounts,input.expectedEquipmentCounts);
+ const q=client.buildings[0].equipMaking;client.buildings[0].equipMaking=idle();client.bag.push(equip('9007199254740999',{equipId:q.equipId,star:q.star}));
+ assert.equal(plan(await survey(client,out.steps[1].parameters,c),out.steps[1].parameters,c).actions.length,1);
+});
+test('multi-forge cumulative shortage, duplicate factories, stale queue/counts and missing clock fail closed',async()=>{
+ const {c,f,input}=await forgeBatchFixture();
+ for(const changed of [{...input,targets:[input.targets[0],input.targets[0]]},{...input,expectedEquipmentCounts:{...input.expectedEquipmentCounts,武器:99}},{...input,targets:[{...input.targets[0],expectedQueue:making()}]}])assert.throws(()=>prepareForge(f,c,changed),{code:'INVALID_PARAMETERS'});
+ const poor=await forgeBatchFixture('make',{材料:7,GOLD:100});assert.throws(()=>prepareForge(poor.f,poor.c,poor.input),{code:'INVALID_PARAMETERS'});
+ const mature=await forgeBatchFixture('pick');mature.client.gameClock.read=()=>null;
+ const unknown=await survey(mature.client,{},c);assert.throws(()=>prepareForge(unknown,c,mature.input),{code:'INVALID_PARAMETERS'});
+});
+
+
+for(const action of ['make','pick'])test('professional multi-forge graph accepts original '+action+' output and rejects altered sequential counts or resource budget',async()=>{
+ const {GAMEPLAY_SCRIPT}=await import('../src/gameplay-page.mjs');
+ const name='gpForgeBatchGraph',start=GAMEPLAY_SCRIPT.indexOf('function '+name+'('),end=GAMEPLAY_SCRIPT.indexOf('\nfunction ',start+1);
+ assert.ok(start>=0&&end>start);const check=new Function(GAMEPLAY_SCRIPT.slice(start,end)+';return '+name)();
+ const {c,f,input}=await forgeBatchFixture(action),result={accountId:'A',...prepareForge(f,c,input)},projection=viewEquipmentForge(f,options({},c));
+ assert.deepEqual(check(result,input,projection,'A'),result.graph);
+ assert.throws(()=>check(result,input,projection,'B'));
+ const forged=structuredClone(result);forged.graph.budget.resources.push({id:'RUBY',num:1});assert.throws(()=>check(forged,input,projection,'A'));
+ const changed=structuredClone(result);changed.steps[1].parameters.expectedEquipmentCounts.武器++;assert.throws(()=>check(changed,input,projection,'A'));
+});
