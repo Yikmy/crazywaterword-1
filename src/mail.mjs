@@ -25,15 +25,16 @@ export function validateMailConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateMailParameters(v={}) {
-  if(!fields(v,['pageNo','action','emailId','maxPages'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId、maxPages；pageNo 须为非负 int32');
+  if(!fields(v,['pageNo','action','emailId','maxPages','expectedMailHash'])||Object.hasOwn(v,'pageNo')&&!uint(v.pageNo))throw invalid('邮件仅允许 pageNo、action、emailId、maxPages、expectedMailHash；pageNo 须为非负 int32');
   if(v.action==='enumerate'){
-    if(Object.hasOwn(v,'pageNo')||Object.hasOwn(v,'emailId')||Object.hasOwn(v,'maxPages')&&(!Number.isInteger(v.maxPages)||v.maxPages<1||v.maxPages>maxEnumerationPages))throw invalid('邮箱枚举从0页开始，maxPages须为1至100的明确页数上限，不接受邮件ID');
+    if(Object.hasOwn(v,'pageNo')||Object.hasOwn(v,'emailId')||Object.hasOwn(v,'expectedMailHash')||Object.hasOwn(v,'maxPages')&&(!Number.isInteger(v.maxPages)||v.maxPages<1||v.maxPages>maxEnumerationPages))throw invalid('邮箱枚举从0页开始，maxPages须为1至100的明确页数上限，不接受邮件ID');
     return {action:'enumerate',maxPages:v.maxPages??20};
   }
   if(Object.hasOwn(v,'maxPages'))throw invalid('maxPages仅用于明确的邮箱枚举');
   if(Object.hasOwn(v,'action')&&!['claim','read'].includes(v.action))throw invalid('邮件仅支持单封 action=claim/read 或只读 enumerate');
   if(Object.hasOwn(v,'emailId')&&(typeof v.emailId!=='string'||int64(v.emailId,{positive:true})!==v.emailId))throw invalid('emailId 须为精确正 int64 字符串');
   if(Object.hasOwn(v,'action')!==Object.hasOwn(v,'emailId'))throw invalid('单封操作必须同时指定 action=claim/read 和 emailId');
+  if(Object.hasOwn(v,'expectedMailHash')&&(!['claim','read'].includes(v.action)||typeof v.expectedMailHash!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedMailHash)))throw invalid('邮件状态摘要仅用于明确单封读领');
   return {...v,pageNo:v.pageNo??0};
 }
 function int64(v,{positive=false}={}) {
@@ -73,17 +74,19 @@ export function mailPage(raw,{pageNo=0}={}) {
 export async function surveyMail(client,protocol,{config,parameters={},player,signal,stop,timeout=15000}={}) {
   parameters=validateMailParameters(parameters);if(parameters.action==='enumerate')return surveyMailbox(client,protocol,{parameters,player,signal,stop,timeout});if(['claim','read'].includes(parameters.action))return surveyClaim(client,protocol,{parameters,player,signal,stop,timeout,config});const context=contextOf(client,player),options={signal,stop},notes=[];
   const active=()=>assertExecutionActive(client,options);active();
-  let page=mailPage(null,parameters),sourceAt=null;
+  let page=mailPage(null,parameters),sourceAt=null,rawPage=null;
   const contextKnown=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
   if(!contextKnown)notes.push('MAIL_CONTEXT_UNKNOWN');
   else if(!protocol?.EmailBoxRequest||!protocol?.EmailBoxResponse)notes.push('MAIL_PROTOCOL_UNAVAILABLE');
   else try {
     const raw=await awaitExecution(client.request('EmailBoxRequest',{pageNo:parameters.pageNo},'EmailBoxResponse',timeout,{signal}),client,options);
-    sourceAt=Date.now();page=mailPage(raw,parameters);
+    sourceAt=Date.now();page=mailPage(raw,parameters);rawPage=toSnapshotJson(raw);
   }catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push('MAIL_PAGE_READ_FAILED');}
   active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('邮件采集期间账号或连接改变'),{code:'CANCELLED'});
   const fact=createStateFact(page,{accountId:context.accountId,generation:context.generation,source:'EmailBoxResponse',sourceAt,scope:{kind:'ENTITY',key:'mail-page:'+parameters.pageNo},reliable:contextKnown&&page.status==='AVAILABLE'});
-  return {module:moduleId,parameters,context,page,sourceFact:fact,notes,stockReliable:false,stock:null};
+  const f={module:moduleId,parameters,context,page,sourceFact:fact,notes,stockReliable:false,stock:null};
+  if(rawPage&&contextKnown)privatePages.set(f,{client,player,raw:rawPage,digest:hash(f)});
+  return f;
 }
 // A complete traversal proves observed page coverage only. The protocol has no
 // mailbox revision/snapshot token; even matching totals cannot prove atomicity.
@@ -119,7 +122,7 @@ async function surveyMailbox(client,protocol,{parameters,player,signal,stop,time
 }
 const hash=value=>createHash('sha256').update(stableBusinessValue(value)).digest('hex');
 const copy=value=>structuredClone(value);
-const privateClaims=new WeakMap();
+const privateClaims=new WeakMap(),privatePages=new WeakMap();
 const claimQueries=[['page','EmailBoxRequest','EmailBoxResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse']];
 const digest=f=>hash({...f,stock:[...(f.stock??[])]});
 const omitStatus=row=>Object.fromEntries(Object.entries(row).filter(([k])=>!['status','got'].includes(k)));
@@ -168,21 +171,53 @@ export function mailDependencyVersions({config,moduleConfig=MAIL_DEFAULT_CONFIG}
 function claimCandidate(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}){
  const p=validateMailParameters(parameters),enabled=validateMailConfig(moduleConfig).enabled,valid=authority(f,config),o=valid?f.observation:null,read=p.action==='read',actionType=read?'READ':'CLAIM';
  let reason=!['claim','read'].includes(p.action)?'MAIL_EXPLICIT_SINGLE_CLAIM_REQUIRED':!enabled?'MAIL_MODULE_DISABLED':!valid?'MAIL_ATTACHMENT_OR_AUTHORITY_UNKNOWN':read?(o.target.read!==false?'MAIL_ALREADY_READ':null):o.target.got!==false?'MAIL_ALREADY_CLAIMED':null;
+ if(!reason&&p.expectedMailHash&&p.expectedMailHash!==mailPreparationHash(o,p,config,f.context))reason='MAIL_SELECTED_STATE_CHANGED';
  if(!reason&&(!f.available.includes('QuickGotReadEmailRequest')||f.available.includes('QuickGotReadEmailResponse')))reason='MAIL_PROTOCOL_UNAVAILABLE';
  if(!reason&&(!same(f.parameters,p)||o.rewards.some(r=>!Number.isSafeInteger((f.stock.get(r.id)??0)+r.num))))reason='MAIL_PARAMETERS_OR_REWARD_RANGE_INVALID';
  const action={request:'QuickGotReadEmailRequest',response:null,body:{emailId:[p.emailId],all:false}};
  if(!reason)try{assertPaymentAllowed({...action,costs:[]});}catch(e){reason=e.code??'MAIL_REQUEST_NOT_ALLOWED';}
- const target={pageNo:p.pageNo,emailId:p.emailId??null,attachmentFingerprint:o?.immutable??null};
- return {module:moduleId,actionId:'mail:'+actionType+':'+hash(target),actionType,label:(read?'标记单封无附件邮件已读 ':'领取单封邮件附件 ')+(p.emailId??'')+(o&&!read?'：'+o.rewards.map(r=>r.id+' × '+r.num).join('；'):''),parameters:p,target,
+ const target=mailTarget(o,p);
+ return {module:moduleId,actionId:mailActionId(o,p),actionType,label:(read?'标记单封无附件邮件已读 ':'领取单封邮件附件 ')+(p.emailId??'')+(o&&!read?'：'+o.rewards.map(r=>r.id+' × '+r.num).join('；'):''),parameters:p,target,
   executable:reason===null,blockedReason:reason,costs:[],rewards:o?copy(o.rewards):[],costSource:read?'v76 MailDetailPop.open ES_NEW without attachments; _onBtnGotOrDelete exact emailId/all=false; independent empty attachments and unchanged inventory':'v76 MailDetailPop._onBtnGotOrDelete; exact EmailDetail.attachment; all=false, one emailId',
   identity:o?hash({context:f.context,observation:o,dependencies:mailDependencyVersions({config,moduleConfig})}):null,configEvidence:{ItemCfg:copy(config?.tables?.ItemCfg??null)},
   beforeState:o?copy(o.target):null,expectedState:o?{emailId:p.emailId,read:true,got:true,rewards:copy(o.rewards)}:null,
   budgetClaims:{resources:[],quotas:[],uids:p.emailId?[{type:'mail',id:p.emailId}]:[]},...(reason===null?{action}:{})};
 }
+function mailTarget(o,p){return {pageNo:p.pageNo,emailId:p.emailId??null,attachmentFingerprint:o?.immutable??null};}
+function mailActionId(o,p){return 'mail:'+(p.action==='read'?'READ':'CLAIM')+':'+hash(mailTarget(o,p));}
+// The guard locks only the selected original mail; prior confirmed peers may change.
+// Claims still use the original full-page and inventory comparison, one emailId per request.
+function mailPreparationHash(o,p,config,context){return hash({context,pageNo:p.pageNo,emailId:p.emailId,action:p.action,total:o.total,immutable:o.immutable,target:o.target,rewards:o.rewards,ItemCfg:config?.tables?.ItemCfg??null});}
+function mailPreparationTargets(f,{config}={}){
+ const live=privatePages.get(f),c=f?.context;
+ if(!live||live.digest!==hash(f)||!same(c,contextOf(live.client,live.player))||f.page?.status!=='AVAILABLE'||f.page.pageCount>mailPageSize||!uint(f.page.totalReported)||factsFreshnessPolicy(f.sourceFact,{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:{kind:'ENTITY',key:'mail-page:'+f.page.pageNo}}).status!=='FRESH')return [];
+ return f.page.emails.flatMap(row=>{
+  const action=row.read===false&&row.attachment?.hasAttachment===false&&typeof row.got==='boolean'?'read':row.got===false&&row.attachment?.hasAttachment===true?'claim':null;
+  if(!action)return [];const p={pageNo:f.page.pageNo,emailId:row.emailId,action},o=claimObservation(live.raw,p,config);
+  if(!o)return [];return [{...p,expectedMailHash:mailPreparationHash(o,p,config,c),selection:{actionId:mailActionId(o,p)},rewards:copy(o.rewards),subject:row.subject}];
+ });
+}
+export function validateMailPreparation(v){
+ if(!fields(v,['pageNo','mails','maxDurationMs'])||Reflect.ownKeys(v).length!==3||!uint(v.pageNo)||!dense(v.mails)||v.mails.length<1||v.mails.length>mailPageSize||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('邮件组合须明确同一页的1至10封邮件及有限总时长');
+ const mails=v.mails.map(row=>{if(!fields(row,['action','emailId','expectedMailHash'])||Reflect.ownKeys(row).length!==3)throw invalid('所选邮件须明确动作、ID及原状态摘要');const p=validateMailParameters({...row,pageNo:v.pageNo});return {action:p.action,emailId:p.emailId,expectedMailHash:p.expectedMailHash};});
+ if(new Set(mails.map(row=>row.emailId)).size!==mails.length)throw invalid('邮件组合不得重复邮件ID');return {pageNo:v.pageNo,mails,maxDurationMs:v.maxDurationMs};
+}
+export function prepareMailWorkflow(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,...input}={}){
+ const p=validateMailPreparation(input);if(!validateMailConfig(moduleConfig).enabled)throw invalid('邮件模块尚未启用');
+ if(f?.parameters?.action||f?.parameters?.pageNo!==p.pageNo)throw invalid('邮件组合须重新读取所选单页');
+ const targets=mailPreparationTargets(f,{config}),nodes=[{id:'start',type:'START'}],steps=p.mails.map((selected,i)=>{
+  const row=targets.find(row=>row.emailId===selected.emailId&&row.action===selected.action&&row.expectedMailHash===selected.expectedMailHash);
+  if(!row)throw invalid('所选邮件状态、附件、配置或身份已改变，或附件未有完整合同；请重新读取');
+  const parameters={pageNo:p.pageNo,...selected},selection=copy(row.selection);nodes.push({id:'mail-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,rewards:copy(row.rewards),costs:[]};
+ });nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:[],quotas:[],uids:p.mails.map(row=>({type:'mail',id:row.emailId}))};
+ return {...p,steps,budget,graph:{version:1,id:'mail-selected-'+hash({p,steps}).slice(0,20),name:'明确邮件逐封读领',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅处理本页明确选择的普通附件和完整空附件未读邮件，每封沿原Function重新调查、单次授权及完整库存独立验证；状态变化、拒绝或UNKNOWN停止。不使用all=true，不含实例附件、不删除邮件、不扩大预算、不恢复执行。准备只读，不授予写权限。'};
+}
+
 export function viewMail(facts,options={}) {
  const claim=privateClaims.has(facts),candidate=claim?claimCandidate(facts,options):null;
- return {module:moduleId,page:copy(facts?.page??mailPage(null)),...(facts?.mailbox?{mailbox:copy(facts.mailbox),pageProvenance:copy(facts.sourceFacts.map(f=>f.provenance))}:{}),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],
-  notes:[...(facts?.notes??[]),'普通读取只展示所选页；明确枚举按固定客户端每页10封逐页观察，页数上限内总数稳定、数量匹配且ID唯一才标为分页覆盖完成，不证明原子快照一致。单封普通道具/资源附件和完整空附件未读邮件仍须重新精确探测和授权；批量及实例附件继续冻结。']};
+ return {module:moduleId,page:copy(facts?.page??mailPage(null)),...(facts?.mailbox?{mailbox:copy(facts.mailbox),pageProvenance:copy(facts.sourceFacts.map(f=>f.provenance))}:{}),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],mailPreparation:mailPreparationTargets(facts,options),
+  notes:[...(facts?.notes??[]),'普通读取只展示所选页；明确枚举按固定客户端每页10封逐页观察，页数上限内总数稳定、数量匹配且ID唯一才标为分页覆盖完成，不证明原子快照一致。普通单页可明确选择多封普通附件或完整空附件未读邮件，准备原Workflow逐封重新调查、授权和验证；不使用all=true批量请求，实例附件继续冻结。']};
 }
 export function planMail(facts,{parameters={},selections=[],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),...options}={}) {
  const p=validateMailParameters(parameters);

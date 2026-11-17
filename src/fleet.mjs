@@ -21,7 +21,7 @@ function parametersOf(parameters = {}) {
   }
   if(Object.hasOwn(parameters,'expectedCargoHash')){
     const d=Object.getOwnPropertyDescriptor(parameters,'expectedCargoHash');
-    if(!d?.enumerable||!Object.hasOwn(d,'value')||typeof d.value!=='string'||!/^[a-f0-9]{64}$/.test(d.value)||Reflect.ownKeys(parameters).length!==3||!['shipIndex','cargoIndex'].every(k=>{const v=Object.getOwnPropertyDescriptor(parameters,k);return v?.enumerable&&Object.hasOwn(v,'value')&&Number.isInteger(v.value)&&v.value>0&&v.value<=2147483647;}))throw invalid('装货准备摘要只能绑定精确货船与货格');
+    if(!d?.enumerable||!Object.hasOwn(d,'value')||typeof d.value!=='string'||!/^[a-f0-9]{64}$/.test(d.value)||![2,3].includes(Reflect.ownKeys(parameters).length)||!Object.hasOwn(parameters,'shipIndex')||Reflect.ownKeys(parameters).length===3&&!Object.hasOwn(parameters,'cargoIndex')||!['shipIndex',...(Object.hasOwn(parameters,'cargoIndex')?['cargoIndex']:[])].every(k=>{const v=Object.getOwnPropertyDescriptor(parameters,k);return v?.enumerable&&Object.hasOwn(v,'value')&&Number.isInteger(v.value)&&v.value>0&&v.value<=2147483647;}))throw invalid('货船准备摘要只能绑定精确领取船号或装货船号与货格');
   }
   if(Object.hasOwn(parameters,'expectedRepairHash')){
     const d=Object.getOwnPropertyDescriptor(parameters,'expectedRepairHash'),id=Object.getOwnPropertyDescriptor(parameters,'buildingId');
@@ -170,6 +170,27 @@ export function prepareCargoFillWorkflow(facts,{config=facts?.config,moduleConfi
 function repairPreparationHash(row,opts){
   return cargoSnapshotHash({beforeState:row.beforeState,costs:row.costs,costSource:row.costSource,expectedState:row.expectedState,config:opts});
 }
+export function validateCargoClaimPreparation(value){
+ strictParameters(value,['action','claims','maxDurationMs']);
+ if(Reflect.ownKeys(value).length!==3||!['action','claims','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||value.action!=='claim'||!fieldDense(value.claims)||value.claims.length<1||value.claims.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('到港领取组合须明确claim、1至24艘不同货船和有限总时长');
+ const claims=value.claims.map(row=>{parametersOf(row);if(Reflect.ownKeys(row).length!==2||!Object.hasOwn(row,'shipIndex')||!Object.hasOwn(row,'expectedCargoHash'))throw invalid('到港目标须明确船号和原航次摘要');return {shipIndex:row.shipIndex,expectedCargoHash:row.expectedCargoHash};});
+ if(new Set(claims.map(row=>row.shipIndex)).size!==claims.length)throw invalid('到港领取组合不得重复货船');return {action:'claim',claims,maxDurationMs:value.maxDurationMs};
+}
+export function prepareCargoClaimWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
+ const p=validateCargoClaimPreparation(input),opts=validateFleetConfig(moduleConfig),stock=cargoInventory(facts);
+ if(!opts.enabled||!opts.cargoClaim||!stock)throw invalid('到港领取组合缺少开启配置或完整库存');
+ const rows=buildCandidates(facts,{config,moduleConfig:opts,parameters:{}}),selected=p.claims.map(target=>{
+  const row=rows.find(row=>row.actionType==='cargoClaim'&&row.target.shipIndex===target.shipIndex);
+  if(!row||row.decision!=='READY'||cargoSnapshotHash(row.beforeState.ship)!==target.expectedCargoHash)throw invalid('所选货船航次、到港状态、奖励或资格已改变；须重新调查');return {actionId:row.actionId};
+ }),planned=planFleet(facts,{config,moduleConfig:opts,parameters:{},selections:selected,ledger:new ResourceLedger(stock)});
+ if(planned.actions.length!==p.claims.length||planned.actions.some(row=>row.actionType!=='cargoClaim'||row.costs.length))throw invalid('原单船领取合同不能确认全部所选到港货船');
+ const nodes=[{id:'start',type:'START'}],steps=planned.actions.map((row,i)=>{
+  const parameters={shipIndex:row.target.shipIndex,expectedCargoHash:cargoSnapshotHash(row.beforeState.ship)},selection={actionId:row.actionId};
+  nodes.push({id:'claim-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});return {parameters,selection,costs:[],rewards:structuredClone(row.beforeState.ship.reward)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:[]};
+ return {...p,steps,budget,graph:{version:1,id:'cargo-claim-'+cargoSnapshotHash({p,steps}).slice(0,20),name:'明确到港货船逐船领取',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅领取本次明确选择的已到港航次，每船原Function重新调查、单次授权及typed奖励与完整库存精确净入验证；状态、航次或奖励变化、拒绝及UNKNOWN停止。准备只读，不预测或追加所得预算，不含装货、出航、加速、等待或下一航次，不恢复执行。'};
+}
+
 export function validateFleetRepairPreparation(value){
   strictParameters(value,['repairs','maxDurationMs']);
   if(Reflect.ownKeys(value).length!==2||!['repairs','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||!fieldDense(value.repairs)||!value.repairs.length||value.repairs.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('维修组合须明确1至24艘不同舰队及有限总时长');
@@ -426,10 +447,11 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       const action=fleetCargoAction('cargoFill',{shipIndex:ship.index,cargoIndex:index+1});
       candidates.push(candidate('cargoFill',{shipIndex:ship.index,cargoIndex:index+1},costs,'CargoShipsResponse.orderItem.asset；不购买缺失物品',{ship:parsed},parsed?cargoFillExpected(parsed,index):null,action.request,action.response,action.body,{shipIndex:ship.index,cargoIndex:index+1},reason||(!facts.protocolReady?.FillCargoShipRequest?'PROTOCOL_UNAVAILABLE':null)));
     }
-    const reason=disabled('cargoClaim')||(!header||!parsed||!stock?'CARGO_FACTS_UNRELIABLE':null)||(parsed.status!==2?'CARGO_UNAVAILABLE':null)||(!facts.protocolReady?.DrawShipRewardRequest?'PROTOCOL_UNAVAILABLE':null);
+    const reason=disabled('cargoClaim')||(!header||!parsed||!stock?'CARGO_FACTS_UNRELIABLE':null)||(parameters.expectedCargoHash!==undefined&&parameters.cargoIndex===undefined&&cargoSnapshotHash(parsed)!==parameters.expectedCargoHash?'CARGO_PREPARATION_STATE_CHANGED':null)||(parsed.status!==2?'CARGO_UNAVAILABLE':null)||(!facts.protocolReady?.DrawShipRewardRequest?'PROTOCOL_UNAVAILABLE':null);
     const action=fleetCargoAction('cargoClaim',{shipIndex:ship.index});
     candidates.push(candidate('cargoClaim',{shipIndex:ship.index},[],'客户端 ARRIVED 分支领取现有奖励，无购买/加速',{ship:parsed},parsed?cargoClaimExpected(parsed):null,action.request,action.response,action.body,{shipIndex:ship.index},reason));
   }
+  if(parameters.expectedCargoHash!==undefined&&parameters.cargoIndex===undefined)return candidates.filter(row=>row.actionType==='cargoClaim');
   if(parameters.expectedRepairHash!==undefined)return candidates.filter(row=>row.actionType==='fleetRepair').map(row=>{
     if(repairPreparationHash(row,opts)===parameters.expectedRepairHash)return row;
     return {...row,decision:'BLOCKED',reason:'REPAIR_PREPARATION_STATE_CHANGED',action:null};

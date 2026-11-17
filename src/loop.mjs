@@ -185,9 +185,9 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         steps.push({type:'SURVEY',phase,index,module:'mail',parameters});continue;
       }
       if(phase==='tasks'&&row?.kind==='mail'){
-        exact(row,['kind','pageNo','emailId','action']);
+        exact(row,['kind','pageNo','emailId','action','expectedMailHash']);
         if(!['claim','read'].includes(row.action))invalid('Tasks邮件仅支持明确单封claim/read');
-        try{parameters=validateMailParameters({pageNo:row.pageNo,emailId:row.emailId,action:row.action});}catch{invalid('Tasks邮件须明确来源页和精确正int64邮件ID');}
+        try{parameters=validateMailParameters({pageNo:row.pageNo,emailId:row.emailId,action:row.action,...(Object.hasOwn(row,'expectedMailHash')?{expectedMailHash:row.expectedMailHash}:{})});}catch{invalid('Tasks邮件须明确来源页和精确正int64邮件ID');}
         steps.push({phase,index,module:'mail',parameters,selection});continue;
       }
       if(['tasks','dailies'].includes(phase)&&OPEN_RANK_TASK_KINDS.includes(row?.kind)){
