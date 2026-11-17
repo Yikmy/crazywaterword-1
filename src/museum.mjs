@@ -33,6 +33,7 @@ const casesValid=e=>Array.isArray(e?.cases)&&e.cases.every(c=>quantity(c?.caseIn
 const keywordsValid=e=>Array.isArray(e?.keywordLevels)&&e.keywordLevels.length===3&&e.keywordLevels.every(n=>quantity(n)!==null);
 
 function parametersOf(p={}){
+  if(p&&Object.hasOwn(p,'expectedExhibitHash'))return validateMuseumExhibitParameters(p);
   if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!['stageId','heroIds','factor','exhibitionId','useNum','payment','caseIndex','keywordType','antiqueId'].includes(k)))throw Error('博物馆参数不在业务白名单');
   const out={};for(const k of ['stageId','exhibitionId','useNum','factor','caseIndex','keywordType'])if(p[k]!==undefined){if(!Number.isSafeInteger(p[k])||p[k]<=0)throw Error('博物馆数值参数无效');out[k]=p[k];}
   if(p.heroIds!==undefined){if(!Array.isArray(p.heroIds)||p.heroIds.some(id=>!text(id))||!unique(p.heroIds,id=>id))throw Error('探险英雄必须是唯一ID数组');out.heroIds=[...p.heroIds];}
@@ -117,6 +118,21 @@ function projectExplorationMaterials(f,config,parameters,display,moduleConfig){
     return {...row,status:materials.some(asset=>asset.missing>0)?'SHORTAGE':'AVAILABLE',materials};
   });
   return result;
+}
+function validateMuseumExhibitParameters(p){
+ if(!growthFields(p,['exhibitionId','caseIndex','antiqueId','expectedExhibitHash'])||Reflect.ownKeys(p).length!==4||!Number.isSafeInteger(p.exhibitionId)||p.exhibitionId<1||p.exhibitionId>2147483647||!Number.isSafeInteger(p.caseIndex)||p.caseIndex<1||p.caseIndex>2147483647||typeof p.antiqueId!=='string'||p.antiqueId.length>200||p.antiqueId!==p.antiqueId.trim()||typeof p.expectedExhibitHash!=='string'||! /^[a-f0-9]{64}$/.test(p.expectedExhibitHash))throw growthInputError('陈列组合须明确原展区/展柜、藏品ID（空串为撤下）及来源摘要');return copy(p);
+}
+function exhibitHash(f,parameters,{config,moduleConfig}){
+ const e=f.exhibitions?.find(e=>e.exhibitionId===parameters.exhibitionId),c=e?.cases?.find(c=>c.caseIndex===parameters.caseIndex);
+ if(!f.exhibitionsReliable||!Array.isArray(f.exhibitions)||!f.exhibitions.every(casesValid)||!f.antiquesReliable||!Array.isArray(f.antiques)||!c)return null;
+ return createHash('sha256').update(stable({playerId:f.playerId,exhibitionId:e.exhibitionId,level:e.level,keywordLevels:e.keywordLevels,case:c,antiques:[...f.antiques].sort(),targetAntique:parameters.antiqueId,config:rows(config,'AntiqueBaseCfg').filter(row=>row.antiqueId===parameters.antiqueId),moduleConfig:validateMuseumConfig(moduleConfig)})).digest('hex');
+}
+function exhibitPreparations(f,{config,moduleConfig,parameters,candidates}){
+ if(!f.exhibitionsReliable||!Array.isArray(f.exhibitions)||!f.exhibitions.every(casesValid)||!f.antiquesReliable||!Array.isArray(f.antiques)||!moduleConfig.enabled||!moduleConfig.exhibition||!moduleConfig.exhibit)return [];
+ // Reuse the original exhibit rules. Inner calls have an explicit antique ID,
+ // so they project their own existing candidates without recursively enumerating.
+ const rows=parameters.antiqueId===undefined?['',...f.antiques].flatMap(antiqueId=>museumView(f,{config,moduleConfig,parameters:{...(parameters.exhibitionId===undefined?{}:{exhibitionId:parameters.exhibitionId}),...(parameters.caseIndex===undefined?{}:{caseIndex:parameters.caseIndex}),antiqueId}}).candidates.filter(row=>row.actionType==='exhibit')):candidates.filter(row=>row.actionType==='exhibit');
+ return rows.flatMap(row=>{const expectedExhibitHash=exhibitHash(f,row.target,{config,moduleConfig});return expectedExhibitHash?[{parameters:{...row.target,expectedExhibitHash},selection:{actionId:row.actionId},target:copy(row.target),costs:copy(row.costs)}]:[];});
 }
 function exhibitionSelection(f){
   return {exhibitions:f.exhibitionsReliable===true?f.exhibitions.map(e=>({exhibitionId:e.exhibitionId,level:e.level,keywordLevels:keywordsValid(e)?[...e.keywordLevels]:null,cases:casesValid(e)?copy(e.cases):null})):null,antiques:f.antiquesReliable===true?[...f.antiques]:null};
@@ -225,6 +241,7 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
       }
       if(moduleConfig.exhibit&&parameters.antiqueId!==undefined&&c.unlocked&&c.upgradeFinishTime===0&&parameters.antiqueId!==c.antiqueId){
         const antiqueId=parameters.antiqueId,at={...target,antiqueId};
+        if(parameters.expectedExhibitHash&&parameters.expectedExhibitHash!==exhibitHash(f,at,{config,moduleConfig})){block('exhibit','EXHIBIT_PREPARATION_CHANGED',at);continue;}
         if(antiqueId){const cfg=rows(config,'AntiqueBaseCfg').filter(r=>r.antiqueId===antiqueId);
           if(!f.antiquesReliable||!f.antiques.includes(antiqueId)){block('exhibit','ANTIQUE_OWNERSHIP_UNKNOWN',at);continue;}
           if(cfg.length!==1||!(cfg[0].isAntique===true||cfg[0].isAntique===1)){block('exhibit','ANTIQUE_NOT_ELIGIBLE',at);continue;}
@@ -236,7 +253,8 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
     }
   }
 
-  return {candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes),exhibitionSelection:exhibitionSelection(f),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
+  if(parameters.expectedExhibitHash){const placements=candidates.filter(row=>row.actionType==='exhibit');candidates.splice(0,candidates.length,...placements);for(const row of placements)row.budgetClaims={resources:row.costs,quotas:[],uids:[{type:'museum-case',id:row.target.exhibitionId+':'+row.target.caseIndex},...(row.target.antiqueId?[{type:'antique',id:row.target.antiqueId}]:[])]};}
+  return {exhibitPreparation:exhibitPreparations(f,{config,moduleConfig,parameters,candidates}),candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes),exhibitionSelection:exhibitionSelection(f),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
 }
 export function planMuseum(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
@@ -248,7 +266,7 @@ export function planMuseum(f,options={}){
   const cfg=validateMuseumConfig(options.moduleConfig),actions=[],notes=[...view.notes];for(const op of picked){if(actions.length>=cfg.maxActionsPerPlan){notes.push(op.actionId+': 每批上限');continue;}if(op.costs.some(({id,num})=>{const i=cfg.stockItemIds.indexOf(id);return i>=0&&(quantity(ledger.available(id))===null||ledger.available(id)-num<cfg.stockReserveQuantities[i]);})||!ledger.reserve(op.costs))notes.push(op.actionId+': 共享预算或库存线不足');else actions.push(op);}return {module:'museum',actions,notes,view};
 }
 // Read-only preparation reuses current candidates and the original planner.
-const museumGrowthActions=['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase'];
+const museumGrowthActions=['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase','exhibit'];
 const growthInputError=message=>Object.assign(Error(message),{code:'INVALID_INPUT',statusCode:400});
 function growthFields(value,keys){
  if(!value||Object.getPrototypeOf(value)!==Object.prototype)return false;
@@ -256,6 +274,7 @@ function growthFields(value,keys){
 }
 export function validateMuseumGrowthPreparation(value){
  if(!growthFields(value,['actionType','targets','maxDurationMs'])||Reflect.ownKeys(value).length!==3||!museumGrowthActions.includes(value.actionType)||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw growthInputError('博物馆成长须明确一种原动作、1至24个不同目标及有限总时长');
+ if(value.actionType==='exhibit'){const targets=value.targets.map(validateMuseumExhibitParameters);if(!unique(targets,row=>row.exhibitionId+':'+row.caseIndex)||!unique(targets.filter(row=>row.antiqueId),row=>row.antiqueId))throw growthInputError('陈列组合每展柜及每个非空藏品ID仅一次');return {actionType:value.actionType,targets,maxDurationMs:value.maxDurationMs};}
  const fields=value.actionType==='upgradeExhibition'?['exhibitionId']:value.actionType==='upgradeKeyword'?['exhibitionId','keywordType']:['exhibitionId','caseIndex'];
  const targets=value.targets.map(row=>{if(!growthFields(row,fields)||Reflect.ownKeys(row).length!==fields.length||fields.some(key=>!Number.isSafeInteger(row[key])||row[key]<1)||row.keywordType>3)throw growthInputError('博物馆成长只接受该动作完整明确的原目标参数');return parametersOf(row);});
  if(!unique(targets,stable))throw growthInputError('同一展区、关键词或展柜在本批只允许一次');
@@ -264,9 +283,9 @@ export function validateMuseumGrowthPreparation(value){
 export function prepareMuseumGrowthWorkflow(facts,{config,moduleConfig=MUSEUM_DEFAULT_CONFIG,...input}={}){
  const p=validateMuseumGrowthPreparation(input);if(facts?.stockReliable!==true)throw growthInputError('完整库存未知，不能准备博物馆成长');
  const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}];
- const steps=p.targets.map((parameters,i)=>{const selection={actionId:actionIdOf(p.actionType,parameters)},plan=planMuseum(facts,{config,moduleConfig,parameters,selections:[selection.actionId],ledger});if(plan.actions.length!==1)throw growthInputError('所选博物馆目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0],budgetClaims={resources:copy(row.costs),quotas:[],uids:[]};nodes.push({id:'grow-'+i,type:'ACTION',module:'museum',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'museum'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims};});
- nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
- return {...p,steps,budget,graph:{version:1,id:'museum-growths-'+createHash('sha256').update(stable({p,steps,budget})).digest('hex').slice(0,20),name:'明确博物馆逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['museum']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批只做一种原展区、关键词、展柜升级或到期完工，每个明确目标一次。原planMuseum及共享Ledger累计核初始自有材料和保留线；每步重新调查、单次授权，并按原完整目标/非目标状态及库存精确差额验证。展柜开始计时不代表完工；资格失效、预算不足、拒绝或UNKNOWN停止，不自动重放，不连带加速、陈列、探险或结算领取。'};
+ const steps=p.targets.map((parameters,i)=>{const selection={actionId:actionIdOf(p.actionType,p.actionType==='exhibit'?{exhibitionId:parameters.exhibitionId,caseIndex:parameters.caseIndex,antiqueId:parameters.antiqueId}:parameters)},plan=planMuseum(facts,{config,moduleConfig,parameters,selections:[selection.actionId],ledger});if(plan.actions.length!==1)throw growthInputError('所选博物馆目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0],budgetClaims=row.budgetClaims?copy(row.budgetClaims):{resources:copy(row.costs),quotas:[],uids:[]};nodes.push({id:'grow-'+i,type:'ACTION',module:'museum',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'museum'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims};});
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'museum-growths-'+createHash('sha256').update(stable({p,steps,budget})).digest('hex').slice(0,20),name:p.actionType==='exhibit'?'明确博物馆逐展柜陈列':'明确博物馆逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['museum']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批只做一种原展区、关键词、展柜升级/完工或明确陈列，每目标一次。陈列支持当前已具原资格的放入、替换及空ID撤下，展柜与非空藏品ID不得重复；原展柜/归属/配置摘要逐项守卫，父UID固定，不借前项撤下来模拟后项未来资格。原planMuseum及共享Ledger累计核初始自有材料和保留线；每步重新调查、单次授权，并按原完整目标/非目标状态及库存精确差额验证。展柜开始计时不代表完工；资格失效、预算不足、拒绝或UNKNOWN停止，不自动重放，不连带其他动作、加速、探险或结算领取。'};
 }
 const inventoryMatches=(b,a,costs,rewards=[])=>b.stockReliable===true&&a.stockReliable===true&&stockMatchesDelta(b.stock,a.stock,costs,rewards);
 const consume=(b,a,costs)=>inventoryMatches(b,a,costs);
