@@ -108,5 +108,19 @@ export function verifyFormationUnlock(operation,before,after,response){
  if(!same(after.state,expected)||!same(operation.expectedState,expected))return failed('库存未精确净扣对应图纸，或其他完整状态变化');
  return {confirmed:true,reason:'MyFormationPreset完整集合仅新增指定模板，权威库存精确净扣自有图纸1张，原完整阵容与宠物保持不变',afterState:copy(after.state),responseEvidence:{typedResponse:'NOT_DEFINED',authority:['MyFormationPresetResponse','AllItemResponse','AllResourceResponse','GetFormationResponse']}};
 }
+export function validateFormationUnlockPreparation(value){
+ if(!fields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!dense(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||Reflect.ownKeys(value.targets).length!==value.targets.length+1||value.targets.length<1||value.targets.length>23||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&own(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('图纸组合须明确1至23个不同模板及有限总时长');
+ const targets=value.targets.map(row=>{const p=validateFormationUnlockParameters(row);if(!own(p,'presetId'))throw invalid('图纸组合不得自动选择模板');return p;});
+ if(new Set(targets.map(row=>row.presetId)).size!==targets.length)throw invalid('同一阵型每批仅解锁一次');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareFormationUnlockWorkflow(facts,{config,player,moduleConfig=FORMATION_UNLOCK_DEFAULT_CONFIG,...input}={}){
+ const p=validateFormationUnlockPreparation(input),ledger=new ResourceLedger(authority(facts)?facts.stock:null),nodes=[{id:'start',type:'START'}];
+ const steps=p.targets.map((parameters,i)=>{
+  const planned=planFormationUnlock(facts,{config,player,moduleConfig,parameters,ledger});if(planned.actions.length!==1)throw invalid('所选模板无原单次资格或全部对应自有图纸不足：'+(planned.notes[0]??'UNKNOWN'));
+  const row=planned.actions[0],selection={unique:true},costs=copy(row.costs);nodes.push({id:'grow-'+i,type:'ACTION',module:'formation-unlock',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'formation-unlock'});
+  return {parameters,selection,target:copy(row.target),costs,budgetClaims:{resources:costs,quotas:[],uids:[]}};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...p,steps,budget,graph:{version:1,id:'formation-unlock-'+hash({p,steps,budget}).slice(0,20),name:'明确自有图纸逐模板解锁',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['formation-unlock']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确选择的不同普通阵型，各消耗一张准备时自有对应图纸；全部须当前未解锁且已有图纸。复用原单次计划器、完整模板集合增加及图纸精确净扣/完整阵容不变验证。每项重新调查、预览并单次授权，初始图纸父预算固定；变化、拒绝或UNKNOWN停止，重启只读，不购买、兑换或自动应用阵容。'};
+}
 export function formationUnlockDependencyVersions({config,player,moduleConfig=FORMATION_UNLOCK_DEFAULT_CONFIG}={}){return {catalog:catalog(config,player),tables:Object.fromEntries(tableNames.map(name=>[name,copy(config?.tables?.[name]??null)])),config:validateFormationUnlockConfig(moduleConfig)};}
 export const formationUnlockModule=Object.freeze({id:'formation-unlock',label:'普通阵型图纸解锁',capabilities:Object.freeze(['FRM-005']),defaultConfig:FORMATION_UNLOCK_DEFAULT_CONFIG,validateConfig:validateFormationUnlockConfig,validateParameters:validateFormationUnlockParameters,survey:surveyFormationUnlock,view:viewFormationUnlock,plan:planFormationUnlock,verify:verifyFormationUnlock,rejectionIdentity:businessRejectionIdentity,dependencyVersions:formationUnlockDependencyVersions});
