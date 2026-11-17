@@ -12,7 +12,7 @@ function readOnly(wait=0){return {version:1,id:'readonly',name:'Readonly',nodes:
 function fixture(overrides={},options={}){
  const session={id:'account-1',generation:1,client:{},abort:new AbortController()},calls=[],runs=[];let released=0;
  const plan={accountId:session.id,module:'fixture',batchId:'batch-1',planHash:'hash-1',actions:[{actionId:'operation-1',costs:[]}],resourceBudget:[]};
- const operations={surveyModule:async(...args)=>{calls.push(['survey',...args]);return {available:true}},plan:async(...args)=>{calls.push(['plan',...args]);return structuredClone(plan)},history:async()=>({runs}),authorize(){throw Error('workflow must not authorize')},execute(){throw Error('workflow must not execute')},...overrides};
+ const operations={surveyModule:async(...args)=>{calls.push(['survey',...args]);return {accountId:args[0].id,module:args[1],view:{},available:true}},plan:async(...args)=>{calls.push(['plan',...args]);return structuredClone(plan)},history:async()=>({runs}),authorize(){throw Error('workflow must not authorize')},execute(){throw Error('workflow must not execute')},...overrides};
  const runner=createWorkflowRunner({operations,getSession:id=>id===session.id?session:null,modules,isCurrent:(value,generation,client)=>value===session&&session.generation===generation&&session.client===client,claim:()=>{calls.push(['claim']);return()=>{released++}},clock:options.clock??(()=>1000),onUpdate:options.onUpdate??(()=>{})});
  function success(changes={}){return {runId:'run-1',accountId:session.id,finalStatus:'SUCCESS',finishedAt:'2026-11-11T00:00:00.000Z',planSummary:{batchId:plan.batchId,planHash:plan.planHash},authorizationSummary:{batchId:plan.batchId},actions:[{actionId:'operation-1',result:'SUCCESS',verification:{confirmed:true}}],...changes}}
  return {runner,session,calls,runs,plan,success,released:()=>released};
@@ -46,19 +46,19 @@ test('examples reference only registered modules and stage has independent autho
 test('workflow scope is internal and onUpdate records before an authorization pause',async()=>{
  const session={id:'scope-account',generation:1,client:{},abort:new AbortController()},updates=[],calls=[];
  const plan={batchId:'scope-batch',planHash:'scope-hash',accountId:session.id,module:'fixture',actions:[{actionId:'operation-1'}]};
- const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(...args)=>{calls.push(['survey',args]);return {}},plan:async(...args)=>{calls.push(['plan',args]);return plan},history:()=>({runs:[]})},claim:()=>true,onUpdate:async state=>{updates.push(state)}});
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(...args)=>{calls.push(['survey',args]);return {accountId:args[0].id,module:args[1],view:{}}},plan:async(...args)=>{calls.push(['plan',args]);return plan},history:()=>({runs:[]})},claim:()=>true,onUpdate:async state=>{updates.push(state)}});
  const result=await runner.start(session.id,graph());assert.equal(result.status,'AWAITING_AUTHORIZATION');
  const runId=result.runId,signal=calls[0][1][3].signal;assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false);assert.notEqual(signal,session.abort.signal);assert.deepEqual(calls[0][1][3],{workflowId:runId,signal});assert.deepEqual(calls[1][1][2],{workflowId:runId,signal});
  assert.equal(updates[0].status,'STARTING');assert.equal(updates.at(-1).status,'AWAITING_AUTHORIZATION');assert.equal(updates.at(-1).plan.batchId,'scope-batch');runner.stop();await runner.settle();assert.equal(signal.aborted,true);assert.equal(session.abort.signal.aborted,false);
 });
 test('persistence failure stops before the next node and releases the claim',async()=>{
  const session={id:'persist-account',generation:1,client:{},abort:new AbortController()};let planned=0,released=0;
- const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async()=>({}),plan:async()=>{planned++;throw Error('must not plan')},history:()=>({runs:[]})},claim:()=>()=>{released++},onUpdate:state=>{if(state.trace.some(row=>row.type==='SURVEY'))throw Error('storage fixture failure')}});
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(session,module)=>({accountId:session.id,module,view:{}}),plan:async()=>{planned++;throw Error('must not plan')},history:()=>({runs:[]})},claim:()=>()=>{released++},onUpdate:state=>{if(state.trace.some(row=>row.type==='SURVEY'))throw Error('storage fixture failure')}});
  const result=await runner.start(session.id,graph());assert.equal(result.status,'FAILED');assert.equal(planned,0);assert.equal(released,1);
 });
 test('two ACTION nodes require separate concrete batches and independent confirmations',async()=>{
  const session={id:'two-actions',generation:1,client:{},abort:new AbortController()},runs=[];let count=0;
- const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async()=>({}),plan:async(_session,payload)=>({batchId:'batch-'+(++count),planHash:'hash-'+count,accountId:session.id,module:'fixture',actions:[{actionId:typeof payload.selections[0]==='string'?payload.selections[0]:payload.selections[0].actionId}]}),history:()=>({runs})}});
+ const runner=createWorkflowRunner({modules,getSession:()=>session,operations:{surveyModule:async(session,module)=>({accountId:session.id,module,view:{}}),plan:async(_session,payload)=>({batchId:'batch-'+(++count),planHash:'hash-'+count,accountId:session.id,module:'fixture',actions:[{actionId:typeof payload.selections[0]==='string'?payload.selections[0]:payload.selections[0].actionId}]}),history:()=>({runs})}});
  const g=graph();g.nodes.splice(4,0,{id:'a2',type:'ACTION',module:'fixture',selection:'operation-2'},{id:'v2',type:'VERIFY',module:'fixture'});g.edges=g.edges.filter(edge=>edge.from!=='v');g.edges.push({from:'v',to:'a2'},{from:'a2',to:'v2'},{from:'v2',to:'z'});
  let status=await runner.start(session.id,g);assert.equal(status.plan.batchId,'batch-1');
  runs.push({runId:'r1',accountId:session.id,finalStatus:'SUCCESS',finishedAt:'done',planSummary:{batchId:'batch-1',planHash:'hash-1'},actions:[{actionId:'operation-1',result:'SUCCESS',verification:'CONFIRMED'}]});
@@ -374,11 +374,11 @@ test('startup claim time counts towards the same deadline and late ownership is 
 });
 test('clock deadline during resume rejects even a successful exact batch without a later node',async()=>{
  let time=1000;const session={id:'A',generation:1,client:{},abort:new AbortController()},runs=[];let planned=0,released=0;
- const runner=createWorkflowRunner({modules,clock:()=>time,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:()=>({}),plan:()=>{planned++;return{accountId:'A',module:'fixture',batchId:'b',planHash:'h',actions:[{actionId:'operation-1'}]};},history:()=>({runs})}});
+ const runner=createWorkflowRunner({modules,clock:()=>time,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:(session,module)=>({accountId:session.id,module,view:{}}),plan:()=>{planned++;return{accountId:'A',module:'fixture',batchId:'b',planHash:'h',actions:[{actionId:'operation-1'}]};},history:()=>({runs})}});
  const first=await runner.start('A',boundedGraph());runs.push({accountId:'A',runId:'r',finishedAt:'done',finalStatus:'SUCCESS',planSummary:{batchId:'b',planHash:'h'},actions:[{actionId:'operation-1',result:'SUCCESS',verification:'CONFIRMED'}]});time=Date.parse(first.expiresAt);const result=await runner.resume();assert.equal(result.status,'STOPPED');assert.equal(result.trace.some(r=>r.type==='VERIFY'),false);assert.equal(planned,1);assert.equal(released,1);
 });
 test('action count must be durably recorded before plan creation',async()=>{
- const session={id:'A',generation:1,client:{},abort:new AbortController()};let planned=0,released=0;const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:()=>({}),plan:()=>{planned++;},history:()=>({runs:[]})},onUpdate:state=>{if(state.actionPlans===1)throw Error('synthetic write failure');}});
+ const session={id:'A',generation:1,client:{},abort:new AbortController()};let planned=0,released=0;const runner=createWorkflowRunner({modules,getSession:()=>session,claim:()=>()=>released++,operations:{surveyModule:(session,module)=>({accountId:session.id,module,view:{}}),plan:()=>{planned++;},history:()=>({runs:[]})},onUpdate:state=>{if(state.actionPlans===1)throw Error('synthetic write failure');}});
  assert.equal((await runner.start('A',boundedGraph())).status,'FAILED');assert.equal(planned,0);assert.equal(released,1);
 });
 test('bounded UNKNOWN stays terminal, and boundaries persist across restart without restoring execution',async t=>{
@@ -997,7 +997,7 @@ test('original no-operation Workflow audit captures start identity and survives 
 });
 
 test('condition failure and missed calendar retain original no-action reasons',async()=>{
- const f=fixture({surveyModule:async()=>({eligible:false})});f.session.player={playerId:'role',worldId:7};
+ const f=fixture({surveyModule:async(session,module)=>({accountId:session.id,module,eligible:false})});f.session.player={playerId:'role',worldId:7};
  const g={version:1,id:'condition-skip',name:'condition skip',nodes:[{id:'s',type:'START'},{id:'q',type:'SURVEY',module:'fixture'},{id:'c',type:'CONDITION',condition:{source:'survey',path:['eligible'],operator:'EQ',value:true}},{id:'b',type:'BRANCH'},{id:'a',type:'ACTION',module:'fixture',selection:'operation-1'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'q'},{from:'q',to:'c'},{from:'c',to:'b'},{from:'b',to:'a',when:'PASS'},{from:'b',to:'z',when:'FAIL'},{from:'a',to:'z'}]};
  const result=await f.runner.start(f.session.id,g),audit=projectWorkflowExecutionHistory(f.session.id,result,[]).reasonAudit;
  assert.equal(result.status,'COMPLETED');assert.ok(audit.events.some(row=>row.nodeId==='c'&&row.result==='FAIL'));assert.ok(audit.events.some(row=>row.nodeId==='b'&&row.result==='FAIL'));
@@ -1126,4 +1126,10 @@ for(const fault of ['cancel','account','player','world','generation','connection
 for(const kind of ['open-rank-order','open-rank-stage','open-rank-pirate'])for(const entry of ['tasks','dailies','loop'])test('opening task exact mode unified compile '+kind+' '+entry,async()=>{
  const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),target={kind,tierId:1000},phase=entry==='tasks'?'tasks':'dailies';for(const action of ['claim','observe']){const row={...target,...(phase==='tasks'&&action==='claim'?{}:{action})},intent={entry,[phase]:[row],budget:unifiedBudget},g=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES}).graph;assert.deepEqual(g.nodes.map(n=>n.type),['START',action==='observe'?'SURVEY':'ACTION','STOP']);assert.equal(g.nodes[1].module,'task-rewards');assert.deepEqual(g.nodes[1].parameters,target);assert.equal(simulateWorkflow(g,{modules:GAMEPLAY_MODULES}).requestsSent,0);}
  for(const extra of [{taskId:1},{round:1},{type:2},{season:1},{request:'GotOpenRankRewardRequest'},{eligible:true},{tierId:'1000'},{tierId:0}])assert.throws(()=>compileUnifiedExecution({entry,[phase]:[{...target,...extra,action:'observe'}],budget:unifiedBudget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});
+
+
+for(const fault of ['missing-account','foreign-account','missing-module','foreign-module'])test('Workflow ordinary SURVEY rejects unbound source before planning '+fault,async()=>{
+ const f=fixture({surveyModule:async(session,module)=>{const source={accountId:session.id,module,view:{}};if(fault==='missing-account')delete source.accountId;if(fault==='foreign-account')source.accountId='foreign-account';if(fault==='missing-module')delete source.module;if(fault==='foreign-module')source.module='formation';return source;}});
+ const result=await f.runner.start(f.session.id,graph());assert.equal(result.status,'UNKNOWN');assert.match(result.reason,/调查账号或原Function不一致/);assert.equal(f.calls.some(row=>row[0]==='plan'),false);assert.equal(result.trace.some(row=>row.result==='SURVEYED'),false);assert.equal(f.released(),1);
 });

@@ -44,7 +44,7 @@ function harness() {
     fetch: (url, options = {}) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject, settled: false })),
     setInterval: () => 1, clearInterval() {}, window: { confirm(text) { confirmations.push(text); return confirm; } }, prompt: () => null,
   });
-  new vm.Script(inline, { filename: 'assembled-page-inline.js' }).runInContext(context);
+  new vm.Script(inline.replace('Object.assign(globalThis,{captureStageRecommendationEditor,', 'Object.assign(globalThis,{gpGet,gpControls,gpRenderDomain,gpRenderPlan,gpAuthorize,captureStageRecommendationEditor,'), { filename: 'assembled-page-inline.js' }).runInContext(context);
   const matches = (entry, path, module) => {
     const url = new URL(entry.url, 'http://localhost');
     return url.pathname === path && (module === undefined || url.searchParams.get('module') === module);
@@ -141,14 +141,26 @@ async function loaded(spec, options) {
   h.respond('/api/gameplay', data(spec, options), { module: spec.module }); await task;
   return h;
 }
+async function selectFresh(h,spec){
+  let controls=domainButtons(h,spec);assert.equal(controls.length,2);
+  assert.equal(controls[0].disabled,false);assert.equal(controls[1].disabled,true);
+  const before=h.requests.length;controls[0].click();assert.equal(h.requests.length,before);
+  assert.deepEqual(JSON.parse(h.node('gp-'+spec.module+'-parameters').value),spec.parameters);
+  if(h.node('gp-'+spec.module+'-plan').disabled){
+    assert.equal(h.node('gp-'+spec.module+'-authorize').disabled,true);
+    const survey=h.node('gp-'+spec.module+'-survey').onclick();
+    assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:spec.module,parameters:spec.parameters});
+    h.respond('/api/gameplay/survey',data(spec));await survey;
+    controls=domainButtons(h,spec);controls[0].click();
+  }
+  assert.equal(h.node('gp-'+spec.module+'-plan').disabled,false);
+  return domainButtons(h,spec)[0];
+}
 async function preview(h, spec) {
-  const controls = domainButtons(h, spec); assert.equal(controls.length, 2);
-  assert.equal(controls[0].disabled, false); assert.equal(controls[1].disabled, true);
-  const before = h.requests.length; controls[0].click();
-  assert.equal(h.requests.length, before); assert.deepEqual(JSON.parse(h.node('gp-' + spec.module + '-parameters').value), spec.parameters);
+  const control=await selectFresh(h,spec);
   const task = h.node('gp-' + spec.module + '-plan').onclick();
   assertMutation(h.pending('/api/operations/plan'), '/api/operations/plan', { module: spec.module, mode: 'Manual', selections: [spec.actionId], parameters: spec.parameters });
-  assert.equal(controls[0].disabled, true, 'professional selector is locked during preview');
+  assert.equal(control.disabled, true, 'professional selector is locked during preview');
   h.respond('/api/operations/plan', plan(spec)); await task;
   assert.equal(h.node('gp-' + spec.module + '-authorize').disabled, false);
   assert.equal(writes(h, '/api/operations/authorize').length, 0); assert.equal(writes(h, '/api/operations/execute').length, 0);
@@ -180,7 +192,7 @@ for (const spec of cases) {
     assert.doesNotMatch(h.node('gp-' + spec.module + '-hint').textContent, /执行成功|验证成功/);
     assert.equal(h.node('gp-' + spec.module + '-authorize').disabled, true);
     await h.node('gp-' + spec.module + '-authorize').onclick();
-    assert.deepEqual(writes(h).map((request) => new URL(request.url, 'http://localhost').pathname), ['/api/operations/plan', '/api/operations/authorize', '/api/operations/execute']);
+    assert.deepEqual(writes(h).map((request) => new URL(request.url, 'http://localhost').pathname), [...(Object.keys(spec.parameters).length?['/api/gameplay/survey']:[]), '/api/operations/plan', '/api/operations/authorize', '/api/operations/execute']);
   });
 
   test(testLabel + ': A→B→A late permit cannot reach execute or restore an old account token', async () => {
@@ -197,7 +209,7 @@ for (const spec of cases) {
   });
 
   test(testLabel + ': an edited draft discards a late full-page preview and detached domain controls', async () => {
-    const h = await loaded(spec), control = domainButtons(h, spec)[0]; control.click();
+    const h = await loaded(spec), control = await selectFresh(h,spec);
     const task = h.node('gp-' + spec.module + '-plan').onclick();
     h.node('gp-' + spec.module + '-parameters').value = JSON.stringify({ buildingId: 'edited-local-draft' });
     h.node('gp-' + spec.module + '-parameters').oninput(); control.click();
@@ -209,7 +221,7 @@ for (const spec of cases) {
   });
 
   test(testLabel + ': a response with a different action cannot promote a preview into authorization', async () => {
-    const h = await loaded(spec); domainButtons(h, spec)[0].click();
+    const h = await loaded(spec); await selectFresh(h,spec);
     const task = h.node('gp-' + spec.module + '-plan').onclick(), wrong = plan(spec); wrong.actions[0].actionId = 'formation:not-the-selected-action';
     h.respond('/api/operations/plan', wrong); await task;
     assert.equal(h.node('gp-' + spec.module + '-authorize').disabled, true);
@@ -978,6 +990,17 @@ async function parameterPage(module='pet',parameters={},type='ACTION') {
 const parameterControl=(h,key,control='value')=>descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowParameter==='business'&&n.dataset.parameterField===key&&n.dataset.parameterControl===control);
 const parameterApply=h=>descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowParameterApply==='business');
 const businessNode=h=>conditionGraph(h).nodes.find(n=>n.id==='business');
+function parameterGraphForValidation(h){
+ const graph=conditionGraph(h),node=graph.nodes.find(n=>n.id==='business');
+ if(node?.type==='ACTION'&&node.selection===undefined){
+  const card=h.node('wf-nodes').children.find(c=>c.children.some(n=>n.tagName==='h3'&&n.textContent==='节点 2'));
+  const selection=descendants(card).find(n=>n.tagName==='textarea'&&n.value==='');
+  assert.ok(selection,'explicit selection editor remains available after target changes');
+  selection.value=JSON.stringify({actionId:'explicitly-reselected-action'});selection.onchange();
+ }
+ return conditionGraph(h);
+}
+
 function parameterSet(h,key,value,{type,enabled=true}={}) {
  const include=parameterControl(h,key,'enabled');assert.ok(include,key);include.checked=enabled;include.onchange();
  if(type){const select=parameterControl(h,key,'type');select.value=type;select.onchange();}
@@ -986,7 +1009,7 @@ function parameterSet(h,key,value,{type,enabled=true}={}) {
 
 test('Workflow parameter form creates explicit Pet feed including queue zero and preserves precise mail UID strings',async()=>{
  const pet=await parameterPage();const before=pet.node('wf-json').value;parameterSet(pet,'action',JSON.stringify('feed'));parameterSet(pet,'buildingId','1宠物培育室');parameterSet(pet,'jobIdx','0');
- assert.equal(pet.node('wf-json').value,before);parameterApply(pet).click();assert.deepEqual(businessNode(pet).parameters,{action:'feed',buildingId:'1宠物培育室',jobIdx:0});assert.equal(businessNode(pet).selection.actionId,'exact-action');assert.equal(writes(pet).length,0);
+ assert.equal(pet.node('wf-json').value,before);parameterApply(pet).click();assert.deepEqual(businessNode(pet).parameters,{action:'feed',buildingId:'1宠物培育室',jobIdx:0});assert.equal(businessNode(pet).selection,undefined,'edited target must discard the prior action');assert.equal(writes(pet).length,0);
  const mail=await parameterPage('mail',{},'SURVEY');parameterSet(mail,'action',JSON.stringify('claim'));parameterSet(mail,'pageNo','0');parameterSet(mail,'emailId','9007199254740995');parameterApply(mail).click();assert.deepEqual(businessNode(mail).parameters,{action:'claim',pageNo:0,emailId:'9007199254740995'});assert.equal(writes(mail).length,0);
 });
 
@@ -1049,11 +1072,11 @@ test('switching a node module rerenders parameter choices and rejects retained c
 
 test('parameter forms feed real Pet and mail adapters while domain cross-field rules remain authoritative',async()=>{
  const pet=await parameterPage();parameterSet(pet,'action',JSON.stringify('feed'));parameterSet(pet,'buildingId','1宠物培育室');parameterSet(pet,'jobIdx','0');parameterApply(pet).click();
- assert.equal(validateWorkflow(conditionGraph(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}).valid,true);
- parameterSet(pet,'jobIdx','-1');parameterApply(pet).click();assert.throws(()=>validateWorkflow(conditionGraph(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}),/jobIdx/);assert.equal(writes(pet).length,0);
+ assert.equal(validateWorkflow(parameterGraphForValidation(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}).valid,true);
+ parameterSet(pet,'jobIdx','-1');parameterApply(pet).click();assert.throws(()=>validateWorkflow(parameterGraphForValidation(pet),{modules:{pet:GAMEPLAY_MODULES.pet}}),/jobIdx/);assert.equal(writes(pet).length,0);
  const mail=await parameterPage('mail');parameterSet(mail,'pageNo','0');parameterSet(mail,'action',JSON.stringify('claim'));parameterSet(mail,'emailId','9007199254740995');parameterApply(mail).click();
- assert.equal(validateWorkflow(conditionGraph(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}).valid,true);
- parameterSet(mail,'emailId',undefined,{enabled:false});parameterApply(mail).click();assert.throws(()=>validateWorkflow(conditionGraph(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}),/同时指定/);assert.equal(writes(mail).length,0);
+ assert.equal(validateWorkflow(parameterGraphForValidation(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}).valid,true);
+ parameterSet(mail,'emailId',undefined,{enabled:false});parameterApply(mail).click();assert.throws(()=>validateWorkflow(parameterGraphForValidation(mail),{modules:{mail:GAMEPLAY_MODULES.mail}}),/同时指定/);assert.equal(writes(mail).length,0);
 });
 
 
@@ -1132,15 +1155,15 @@ test('list editor respects the existing hundred-item Function limit without drop
 
 test('list form uses production alliance identity normalization and rejects duplicate aliases without weakening domain validation',async()=>{
  const h=await parameterPage('alliance');parameterListAdd(h,'memberIds','9007199254740995','string');parameterListAdd(h,'reqIds','7','integer');parameterListAdd(h,'itemIds','wood');
- parameterApply(h).click();assert.equal(validateWorkflow(conditionGraph(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}).valid,true);
- parameterListAdd(h,'reqIds','7','string');parameterApply(h).click();assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}),/联盟身份无效或重复/);assert.equal(writes(h).length,0);
+ parameterApply(h).click();assert.equal(validateWorkflow(parameterGraphForValidation(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}).valid,true);
+ parameterListAdd(h,'reqIds','7','string');parameterApply(h).click();assert.throws(()=>validateWorkflow(parameterGraphForValidation(h),{modules:{alliance:GAMEPLAY_MODULES.alliance}}),/联盟身份无效或重复/);assert.equal(writes(h).length,0);
 });
 
-test('list edits invalidate original candidates but preserve nested formation objects and exact action selection',async()=>{
+test('list edits invalidate original candidates and action selection while preserving nested formation objects',async()=>{
  const positions=[{heroId:'A',pos:{x:0,y:2}}],h=await parameterPage('formation',{presetId:1,heroIds:['A'],heroPositions:positions});
  const reading=descendants(h.node('wf-nodes')).find(n=>n.dataset.workflowCandidate==='business').click();await tick();h.respond('/api/gameplay/survey',{accountId:'A',module:'formation',view:{candidates:[{actionId:'exact-action',actionType:'SAVE',parameters:{presetId:1,heroIds:['A'],heroPositions:positions},costs:[],executable:true}]}});await reading;
  assert.ok(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'));parameterListAdd(h,'heroIds','B');parameterApply(h).click();
- assert.deepEqual(businessNode(h).parameters.heroPositions,positions);assert.deepEqual(businessNode(h).parameters.heroIds,['A','B']);assert.equal(businessNode(h).selection.actionId,'exact-action');assert.equal(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'),false);assert.equal(writes(h,'/api/operations/plan').length,0);
+ assert.deepEqual(businessNode(h).parameters.heroPositions,positions);assert.deepEqual(businessNode(h).parameters.heroIds,['A','B']);assert.equal(businessNode(h).selection,undefined,'applied target change discards old action');assert.equal(descendants(h.node('wf-nodes')).some(n=>n.dataset.workflowSelection==='business'),false);assert.equal(writes(h,'/api/operations/plan').length,0);
 });
 
 test('list add and row callbacks lock during Workflow requests and running status then expire across graph or account replacement',async()=>{
@@ -1165,7 +1188,7 @@ test('structured Workflow parameters author explicit formation positions and reu
  const h=await parameterPage('formation',{presetId:1});parameterEnable(h,'heroPositions');parameterListButton(h,'heroPositions','add').click();
  nestedSet(h,'heroPositions',['heroId'],'A',{index:0});nestedSet(h,'heroPositions',['pos'],undefined,{index:0});nestedSet(h,'heroPositions',['pos','x'],'0',{index:0});nestedSet(h,'heroPositions',['pos','y'],'-1',{index:0});
  const before=h.node('wf-json').value;assert.deepEqual(businessNode(h).parameters,{presetId:1});parameterApply(h).click();assert.notEqual(h.node('wf-json').value,before);
- assert.deepEqual(businessNode(h).parameters,{presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:-1}}]});assert.equal(validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
+ assert.deepEqual(businessNode(h).parameters,{presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:-1}}]});assert.equal(validateWorkflow(parameterGraphForValidation(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
 });
 
 test('nested coordinate fields preserve missing separately from zero and never infer required fields',async()=>{
@@ -1209,10 +1232,10 @@ test('nested object edits preserve unknown original fields and malformed origina
 
 test('structured inputs never resolve conflicting hero lists or duplicate formation positions automatically',async()=>{
  const h=await parameterPage('formation',{presetId:1,heroPositions:[{heroId:'A',pos:{x:0,y:0}}]});parameterListAdd(h,'heroIds','A');parameterApply(h).click();
- assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能同时提供/);
+ assert.throws(()=>validateWorkflow(parameterGraphForValidation(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能同时提供/);
  parameterControl(h,'heroIds','enabled').checked=false;parameterControl(h,'heroIds','enabled').onchange();parameterListButton(h,'heroPositions','add').click();nestedSet(h,'heroPositions',['heroId'],'B',{index:1});nestedSet(h,'heroPositions',['pos'],undefined,{index:1});nestedSet(h,'heroPositions',['pos','x'],'0',{index:1});nestedSet(h,'heroPositions',['pos','y'],'0',{index:1});parameterApply(h).click();
- assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能重复/);
- nestedSet(h,'heroPositions',['pos','y'],'1',{index:1});parameterApply(h).click();assert.equal(validateWorkflow(conditionGraph(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
+ assert.throws(()=>validateWorkflow(parameterGraphForValidation(h),{modules:{formation:GAMEPLAY_MODULES.formation}}),/不能重复/);
+ nestedSet(h,'heroPositions',['pos','y'],'1',{index:1});parameterApply(h).click();assert.equal(validateWorkflow(parameterGraphForValidation(h),{modules:{formation:GAMEPLAY_MODULES.formation}}).valid,true);assert.equal(writes(h).length,0);
 });
 
 test('nested controls and object list buttons lock during running requests and stale graph or account handlers cannot apply',async()=>{
@@ -1444,7 +1467,7 @@ function fleetMoveDraft(h,building='f1',city='2') {fleetMoveControl(h,'building'
 test('professional fleet maintenance table selects the existing precise repair candidate and previews original rounded cost',async()=>{
  const next=fleetOperationsData(),h=await fleetEditorPage(next),button=fleetOperationButton(h,'fleetRepair');assert.equal([...PAGE.matchAll(/id="gp-fleet-operations"/g)].length,1);assert.equal(button.disabled,false);assert.match(h.node('gp-fleet-operations').textContent,/维修.*汽油/);
  const requests=h.requests.length;button.click();assert.deepEqual(JSON.parse(h.node('gp-fleet-parameters').value),{buildingId:'f1'});assert.equal(h.requests.length,requests);
- const candidate=next.view.candidates.find(row=>row.actionId===button.dataset.fleetOperation);assert.deepEqual(candidate.costs,[{id:'汽油',num:13}]);const request=h.node('gp-fleet-plan').click();assertMutation(h.pending('/api/operations/plan'),'/api/operations/plan',{module:'fleet',mode:'Manual',selections:[candidate.actionId],parameters:{buildingId:'f1'}});
+ const candidate=next.view.candidates.find(row=>row.actionId===button.dataset.fleetOperation);assert.deepEqual(candidate.costs,[{id:'汽油',num:13}]);assert.equal(h.node('gp-fleet-plan').disabled,true);const survey=h.node('gp-fleet-survey').click();h.respond('/api/gameplay/survey',next);await survey;fleetOperationButton(h,'fleetRepair').click();const request=h.node('gp-fleet-plan').click();assertMutation(h.pending('/api/operations/plan'),'/api/operations/plan',{module:'fleet',mode:'Manual',selections:[candidate.actionId],parameters:{buildingId:'f1'}});
  h.respond('/api/operations/plan',plan({module:'fleet',actionId:candidate.actionId,actionType:candidate.actionType,costs:candidate.costs,target:candidate.target,parameters:{buildingId:'f1'}}));await request;assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
 
@@ -2084,8 +2107,8 @@ test('event history renders persisted metadata as safe text without restoring li
 for(const level of ['0','3','2147483647'])test('player event form preserves explicit target and business graph '+level,async()=>{
  const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);eventPolicyDraft(h,level,'PLAYER_LEVEL_CHANGED');h.node('wf-policy-apply').click();const g=conditionGraph(h);assert.deepEqual(g.runPolicy.eventTrigger,{kind:'PLAYER_LEVEL_CHANGED',level:Number(level)});assert.equal(validateWorkflow(g,{modules:GAMEPLAY_MODULES}).valid,true);assert.deepEqual(g.nodes,before.nodes);assert.deepEqual(g.edges,before.edges);assert.deepEqual(g.budget,before.budget);unifiedLoad(h,{entry:'dailies',dailies:[{taskId:1006}],budget:{resources:[],quotas:[],uids:[]}});h.node('wf-unified-policy-copy').click();assert.deepEqual(unifiedDraft(h).runPolicy,g.runPolicy);assert.equal(h.node('wf-policy-event-kind').value,'PLAYER_LEVEL_CHANGED');assert.equal(writes(h).length,0);
 });
-test('switching event source keeps the typed level and unsupported sources leave graph untouched',async()=>{
- const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);eventPolicyDraft(h,'3','PLAYER_LEVEL_CHANGED');h.node('wf-policy-event-kind').value='VIP_LEVEL_CHANGED';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-level').value,'3');h.node('wf-policy-apply').click();const before=conditionGraph(h);assert.deepEqual(before.runPolicy.eventTrigger,{kind:'VIP_LEVEL_CHANGED',level:3});eventPolicyDraft(h,'4','SCPlayerExpUpdate');h.node('wf-policy-apply').click();assert.deepEqual(conditionGraph(h),before);assert.equal(writes(h).length,0);
+test('switching event source clears old conditions and unsupported sources leave graph untouched',async()=>{
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);eventPolicyDraft(h,'3','PLAYER_LEVEL_CHANGED');h.node('wf-policy-event-kind').value='VIP_LEVEL_CHANGED';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-level').value,'');h.node('wf-policy-event-level').value='3';h.node('wf-policy-event-level').oninput();h.node('wf-policy-apply').click();const before=conditionGraph(h);assert.deepEqual(before.runPolicy.eventTrigger,{kind:'VIP_LEVEL_CHANGED',level:3});eventPolicyDraft(h,'4','SCPlayerExpUpdate');h.node('wf-policy-apply').click();assert.deepEqual(conditionGraph(h),before);assert.equal(writes(h).length,0);
 });
 test('player event scope shows exact source and cursor and only grants the original bounded run',async()=>{
  const {h,offer,status}=await finiteRunPage({eventTrigger:{kind:'PLAYER_LEVEL_CHANGED',level:3}});assert.equal(h.node('wf-authorize-run').disabled,false);assert.equal(h.node('wf-policy-event-kind').disabled,true);assert.match(h.node('wf-run-scope').textContent,/角色等级变为明确值 3/);const pending=h.node('wf-authorize-run').click();assertMutation(h.pending('/api/workflows/authorize-run'),'/api/workflows/authorize-run',{offer,batchId:null,planHash:null,confirm:true});assert.match(h.confirmations.at(-1),/角色等级变为明确值 3/);h.respond('/api/workflows/authorize-run',{accountId:'A',status:{...status,runAuthorization:{scope:offer,approvedAt:new Date().toISOString(),resumable:false}},graphs:[],history:[]});await pending;assert.equal(h.node('wf-authorize-run').disabled,true);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
@@ -2138,7 +2161,7 @@ test('chip task page requires explicit round and task, displays exact activity a
  assert.ok(round);kind.value='weekly-chip-task';input.value='1';round.value='';prepare.click();assert.match(h.node('gp-task-rewards-hint').textContent,/当前轮次/);assert.equal(h.requests.length,before);
  round.value='2';input.value='0';prepare.click();assert.equal(h.requests.length,before);input.value='1';prepare.click();assert.deepEqual(JSON.parse(h.node('gp-task-rewards-parameters').value),{kind:'weekly-chip-task',round:2,taskId:1});assert.equal(h.node('gp-task-rewards-plan').disabled,true);assert.equal(h.node('gp-task-rewards-authorize').disabled,true);assert.equal(h.requests.length,before);
  const survey=h.node('gp-task-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'task-rewards',parameters:{kind:'weekly-chip-task',round:2,taskId:1}});h.respond('/api/gameplay/survey',data(chipTaskPageSpec));await survey;
- assert.match(h.node('gp-task-rewards-facts').textContent,/当前轮次 2.*累计积分 9000.*已领任务 2.*活动期数 3001.*900 至 2000/);assert.match(h.node('gp-task-rewards-facts').textContent,/最后一项换轮/);
+ assert.match(h.node('gp-task-rewards-facts').textContent,/当前轮次 2.*累计积分 9000.*已领任务 2.*活动期数 3001.*900 至 2000/);assert.match(h.node('gp-task-rewards-facts').textContent,/WEEKLY_CHIP_ROUND_TRANSITION_UNVERIFIED/);
  h.run("selectAccount('B'); snapshot={connected:true,state:'READY'}");prepare.click();assert.equal(h.node('gp-task-rewards-parameters').value,'{}');assert.equal(writes(h,'/api/operations/execute').length,0);
 });
 test('chip task unified form separates activity round from Loop rounds and preserves exact claim aliases',async()=>{
@@ -2449,7 +2472,7 @@ test('cooldown Workflow history shows original seconds and unknown without imply
 
 function dailyProgressPolicyDraft(h,taskId='1001',progress='2'){eventPolicyDraft(h,progress,'DAILY_TASK_PROGRESS');h.node('wf-policy-event-task').value=taskId;h.node('wf-policy-event-task').oninput();}
 for(const progress of ['0','2','2147483647'])test('daily progress form preserves exact task and threshold across original editor and unified entries '+progress,async()=>{
- const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);dailyProgressPolicyDraft(h,'1001',progress);assert.equal(h.node('wf-policy-event-task').disabled,false);h.node('wf-policy-event-kind').value='PLAYER_LEVEL_CHANGED';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-task').disabled,true);h.node('wf-policy-event-kind').value='DAILY_TASK_PROGRESS';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-task').value,'1001');assert.equal(h.node('wf-policy-event-level').value,progress);h.node('wf-policy-apply').click();const g=conditionGraph(h);assert.deepEqual(g.runPolicy.eventTrigger,{kind:'DAILY_TASK_PROGRESS',taskId:1001,progress:Number(progress)});assert.equal(validateWorkflow(g,{modules:GAMEPLAY_MODULES}).valid,true);assert.deepEqual(g.nodes,before.nodes);assert.deepEqual(g.edges,before.edges);assert.deepEqual(g.budget,before.budget);
+ const h=await parameterPage('free-gold');graphBudgetEnable(h);h.node('wf-budget-apply').click();policyDraft(h);const before=conditionGraph(h);dailyProgressPolicyDraft(h,'1001',progress);assert.equal(h.node('wf-policy-event-task').disabled,false);h.node('wf-policy-event-kind').value='PLAYER_LEVEL_CHANGED';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-task').disabled,true);h.node('wf-policy-event-kind').value='DAILY_TASK_PROGRESS';h.node('wf-policy-event-kind').onchange();assert.equal(h.node('wf-policy-event-task').value,'');assert.equal(h.node('wf-policy-event-level').value,'');h.node('wf-policy-event-task').value='1001';h.node('wf-policy-event-task').oninput();h.node('wf-policy-event-level').value=progress;h.node('wf-policy-event-level').oninput();h.node('wf-policy-apply').click();const g=conditionGraph(h);assert.deepEqual(g.runPolicy.eventTrigger,{kind:'DAILY_TASK_PROGRESS',taskId:1001,progress:Number(progress)});assert.equal(validateWorkflow(g,{modules:GAMEPLAY_MODULES}).valid,true);assert.deepEqual(g.nodes,before.nodes);assert.deepEqual(g.edges,before.edges);assert.deepEqual(g.budget,before.budget);
  for(const entry of ['tasks','dailies','loop']){unifiedLoad(h,{entry,...(entry==='tasks'?{tasks:[{kind:'main',taskId:1}]}:{dailies:[{taskId:1006}]}),budget:{resources:[],quotas:[],uids:[]}});h.node('wf-unified-policy-copy').click();assert.deepEqual(unifiedDraft(h).runPolicy,g.runPolicy);}
  assert.equal(h.node('wf-policy-event-task').value,'1001');assert.equal(h.node('wf-policy-event-level').value,progress);assert.equal(writes(h).length,0);
 });
@@ -2491,7 +2514,7 @@ test('named cooldown WAIT stale editor callbacks cannot change a replacement gra
  const h=await namedWaitPage(),old=namedWaitControl(h,'mode');old.value='FREE_RECRUIT';old.onchange();const limit=namedWaitControl(h,'limit');h.run("selectAccount('B');selectAccount('A')");const before=h.node('wf-json').value;limit.value='1';limit.onchange();old.value='DURATION';old.onchange();assert.equal(h.node('wf-json').value,before);assert.equal(writes(h).length,0);
 });
 test('named cooldown WAIT history renders original bounds safely and never restores waiting or authorization',async()=>{
- const h=await boot(),loading=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'cooldown-history',workflowId:'cooldown-flow',status:'RECOVERED_STOPPED'}]});await loading;const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',{accountId:'A',workflowRunId:'cooldown-history',workflowDefinitionId:'cooldown-flow',status:'RECOVERED_STOPPED',readOnly:true,resumable:false,nodes:[],waits:[{nodeId:'wait',result:'WAIT_STARTED',durationMs:1000,cooldownWait:{kind:'FREE_RECRUIT',maxWaitMs:60000,observation:{source:'<img src=x onerror=alert(1)>',freeEndTimeSeconds:1001,serverBounds:{earliestMs:1000000,latestMs:1000001},readiness:'COOLDOWN'}}}],surveys:[]});await reading;const box=h.node('wf-history-detail');assert.match(box.textContent,/具名免费招募冷却等待 1000 毫秒/);assert.match(box.textContent,/不证明当前可招募.*不解除拒绝或UNKNOWN/);assert.ok(box.textContent.includes('<img src=x onerror=alert(1)>'));assert.equal(descendants(box).some(n=>String(n.tagName).toLowerCase()==='img'),false);assert.equal(h.node('wf-authorize-run').disabled,true);assert.equal(writes(h).length,0);
+ const h=await boot(),loading=h.node('wf-load').click();h.respond('/api/workflows',{accountId:'A',csrfToken:'synthetic-csrf',status:{status:'IDLE',running:false},graphs:[],history:[{accountId:'A',runId:'cooldown-history',workflowId:'cooldown-flow',status:'RECOVERED_STOPPED'}]});await loading;const reading=h.node('wf-history-read').click();await tick();h.respond('/api/workflows/history',{accountId:'A',workflowRunId:'cooldown-history',workflowDefinitionId:'cooldown-flow',status:'RECOVERED_STOPPED',readOnly:true,resumable:false,nodes:[],waits:[{nodeId:'wait',result:'WAIT_STARTED',durationMs:1000,cooldownWait:{kind:'FREE_RECRUIT',maxWaitMs:60000,observation:{source:'<img src=x onerror=alert(1)>',freeEndTimeSeconds:1001,serverBounds:{earliestMs:1000000,latestMs:1000001},readiness:'COOLDOWN'}}}],surveys:[]});await reading;const box=h.node('wf-history-detail');assert.match(box.textContent,/具名英雄免费招募冷却等待 1000 毫秒/);assert.match(box.textContent,/不证明当前可招募.*不解除拒绝或UNKNOWN/);assert.ok(box.textContent.includes('<img src=x onerror=alert(1)>'));assert.equal(descendants(box).some(n=>String(n.tagName).toLowerCase()==='img'),false);assert.equal(h.node('wf-authorize-run').disabled,true);assert.equal(writes(h).length,0);
 });
 
 for(const entry of ['tasks','dailies','loop'])test('unified named cooldown form retains explicit wait without authorizing '+entry,async()=>{
@@ -2799,7 +2822,7 @@ test('Pet PAGE action-mode controls create read-only drafts and stale controls c
  const f=await loaded(spec),feed=descendants(f.node('gp-pet-facts')).find(n=>n.dataset.petMode==='feed');feed.click();assert.deepEqual(JSON.parse(f.node('gp-pet-parameters').value),{action:'feed'});assert.equal(writes(f).length,0);
 });
 test('Pet LEVEL Workflow parameter editor preserves exact decimal UID and rejects feed job selectors',async()=>{
- const h=await parameterPage();parameterSet(h,'action',JSON.stringify('level'));parameterSet(h,'buildingId','1宠物');parameterSet(h,'uid','9007199254740993');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{action:'level',buildingId:'1宠物',uid:'9007199254740993'});assert.equal(validateWorkflow(conditionGraph(h),{modules:{pet:GAMEPLAY_MODULES.pet}}).valid,true);parameterSet(h,'jobIdx','0');parameterApply(h).click();assert.throws(()=>validateWorkflow(conditionGraph(h),{modules:{pet:GAMEPLAY_MODULES.pet}}),/混用/);assert.equal(writes(h).length,0);
+ const h=await parameterPage();parameterSet(h,'action',JSON.stringify('level'));parameterSet(h,'buildingId','1宠物');parameterSet(h,'uid','9007199254740993');parameterApply(h).click();assert.deepEqual(businessNode(h).parameters,{action:'level',buildingId:'1宠物',uid:'9007199254740993'});assert.equal(validateWorkflow(parameterGraphForValidation(h),{modules:{pet:GAMEPLAY_MODULES.pet}}).valid,true);parameterSet(h,'jobIdx','0');parameterApply(h).click();assert.throws(()=>validateWorkflow(parameterGraphForValidation(h),{modules:{pet:GAMEPLAY_MODULES.pet}}),/混用/);assert.equal(writes(h).length,0);
 });
 
 
@@ -3196,8 +3219,8 @@ for(const id of ['orders','city','production'])test(id+' Workflow settings reuse
 
 
 test('professional and Workflow action preview and confirmation show exact bound identity, expiry and original costs',async()=>{
- const spec=cases.find(row=>row.module==='farm'),h=await loaded(spec),context={accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',generation:7,connectionId:'bound-original-connection'};
- const buttons=domainButtons(h,spec);buttons[0].click();const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);expected.executionContext=context;h.respond('/api/operations/plan',expected);await pending;
+ const spec=cases.find(row=>row.module==='farm'&&row.actionType==='PLANT'),h=await loaded(spec),context={accountId:'A',playerId:'9007199254740993',worldId:'9007199254740995',generation:7,connectionId:'bound-original-connection'};
+ await selectFresh(h,spec);const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);expected.executionContext=context;h.respond('/api/operations/plan',expected);await pending;
  const box=h.node('gp-'+spec.module+'-plan-view');for(const text of ['角色 9007199254740993','世界 9007199254740995','连接 bound-original-connection','代次 7'])assert.ok(box.textContent.includes(text));
  h.setConfirm(false);await h.node('gp-'+spec.module+'-authorize').onclick();const confirm=h.confirmations.at(-1);for(const text of ['角色 9007199254740993','世界 9007199254740995','连接 bound-original-connection','代次 7',expected.expiresAt,expected.planHash,spec.costs[0].id])assert.ok(confirm.includes(String(text)));assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  h.run('wfPlan='+JSON.stringify(expected)+';gpRenderPlan($("wf-plan"),wfPlan)');assert.ok(h.node('wf-plan').textContent.includes('角色 9007199254740993'));
@@ -3212,7 +3235,7 @@ for(const [name,context]of [
 
 
 test('plan resource balance table and confirmation share original totals without treating expected remainder as settlement',async()=>{
- const spec=cases.find(row=>row.module==='farm'),h=await loaded(spec);domainButtons(h,spec)[0].click();const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);
+ const spec=cases.find(row=>row.module==='farm'&&row.actionType==='PLANT'),h=await loaded(spec);await selectFresh(h,spec);const pending=h.node('gp-'+spec.module+'-plan').onclick(),expected=plan(spec);
  expected.resourcePreview={readOnly:true,source:'PLAN_SURVEY_STOCK',includesExpectedRewards:false,rows:expected.resourceBudget.map(row=>({id:row.id,plannedCost:row.num,status:'OBSERVED',observed:row.num,projectedRemaining:0}))};h.respond('/api/operations/plan',expected);await pending;
  const box=h.node('gp-'+spec.module+'-plan-view');assert.match(box.textContent,/计划调查时持有/);assert.match(box.textContent,/预计余量（非结算）/);assert.match(box.textContent,/不改变保留线或父预算/);
  h.setConfirm(false);await h.node('gp-'+spec.module+'-authorize').onclick();assert.match(h.confirmations.at(-1),/预计余量 0/);assert.match(h.confirmations.at(-1),/不是实际结算/);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
