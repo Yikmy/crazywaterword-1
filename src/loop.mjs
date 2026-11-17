@@ -10,7 +10,7 @@ import { validateMailParameters } from './mail.mjs';
 import { validatePirateSweepParameters } from './pirate-operations.mjs';
 import { validateAfkLevelRewardsParameters } from './afk-level-rewards.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
-import { surveyDailies, runDailies } from './dailies.mjs';
+import { DAILY_DRIVERS, surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorld } from './world.mjs';
 import { assertExecutionActive, awaitExecution, executionDelay, executionOutcome, stopsExecution } from './execution.mjs';
 
@@ -228,7 +228,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         }else{
           // Preserve legacy missing-target declarations as blocked; never infer today's interval.
           if(row.taskId===1004&&!Object.hasOwn(row,'parameters')){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
-          module=({1002:'free-recruit',1003:'stage',1004:'afk-level-rewards',1006:'free-gold',1008:'fleet',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance',1016:'museum'})[row.taskId];
+          module=Object.hasOwn(DAILY_DRIVERS,row.taskId)?DAILY_DRIVERS[row.taskId].functionId:null;
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
           if(module==='free-recruit'){parameters=validateFreeRecruitParameters(parameters);if(parameters.recruit==='antique')invalid('日常1002仅代表英雄招募，古董请用原Workflow独立ACTION');}

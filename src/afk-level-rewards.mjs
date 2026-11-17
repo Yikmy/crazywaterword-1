@@ -158,11 +158,27 @@ function incomeDefinitions(f,config) {
  const row=rows.find(r=>r.level===f?.afk?.level);if(!row||!own(row,'goldSpeed')||!Number.isFinite(row.goldSpeed)||row.goldSpeed<=0||!own(row,'reward')||!dense(row.reward)||row.reward.some(a=>!dense(a)||a.length!==2||!items.some(r=>r.id===a[0])||!Number.isFinite(a[1])||a[1]<=0))return null;
  return {row:copy(row),items:items.map(r=>r.id).sort(),badges:badges.map(r=>r.id).sort()};
 }
+// Read-only time eligibility shared with the legacy Daily driver. This alone
+// never proves inventory, configuration, task completion or permission to write.
+export function afkIncomeReadiness(raw,clock) {
+ const afk=parseAfk(raw),parameters=afk&&positive(afk.afkStartTime)&&positive(afk.afkFinishTime)&&afk.afkFinishTime>afk.afkStartTime?{action:'income',level:afk.level,afkStartTime:afk.afkStartTime,afkFinishTime:afk.afkFinishTime}:null;
+ const result={parameters,minimumElapsedSeconds:61,remainingSeconds:null};
+ if(!parameters)return {...result,status:'UNKNOWN',reason:'AFK_INTERVAL_UNKNOWN'};
+ if(!clock||!['earliestMs','nowMs','latestMs'].every(k=>own(clock,k)&&Number.isFinite(clock[k])&&clock[k]>=0&&clock[k]<=Number.MAX_SAFE_INTEGER)||clock.earliestMs>clock.nowMs||clock.nowMs>clock.latestMs)return {...result,status:'UNKNOWN',reason:'AFK_TRUSTED_CLOCK_UNKNOWN'};
+ const remainingSeconds=Math.max(0,61-(Math.floor(clock.earliestMs/1000)-afk.afkStartTime));
+ return {...result,remainingSeconds,status:remainingSeconds?'WAITING':'READY_BY_CLOCK',reason:remainingSeconds?'AFK_INCOME_TOO_EARLY':null};
+}
+export function observeAfkIncome(client,raw,player,sourceContext) {
+ const context=contextOf(client,player),known=identifier(context.accountId)&&Number.isSafeInteger(context.generation)&&identifier(context.connectionId)&&context.playerId!==null&&context.worldId!==null;
+ const result=afkIncomeReadiness(raw,known&&(sourceContext===undefined||same(sourceContext,context))?readIncomeClock(client,context):null);
+ return {...result,context,...(!known||sourceContext!==undefined&&!same(sourceContext,context)?{status:'UNKNOWN',reason:'AFK_CONTEXT_CHANGED'}:{})};
+}
 function incomeCandidate(f,p,{config,moduleConfig=AFK_LEVEL_REWARDS_DEFAULT_CONFIG}={}) {
  const valid=authority(f),clock=valid?incomeClock(f):null,defs=incomeDefinitions(f,config),a=f?.afk,upgrade=p.upgradePreparation?upgradePreparationView(f,config,moduleConfig).options.find(r=>r.levels===p.upgradePreparation.levels):null;
+ const readiness=afkIncomeReadiness({afkInfo:a},clock);
  const target={action:'income',level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime},beforeState=copy(f?.state??null),expectedState=beforeState?{context:copy(beforeState.context),rule:'NORMAL_AFK_INTERVAL_SETTLEMENT',interval:'EXPLICIT_NEW_START_AND_SAME_DURATION_MATCH_REREAD',reward:'TYPED_ITEM_RESOURCE_AND_BADGE_NET_CREDITS',otherState:'UNCHANGED',amount:'SERVER_RECEIPT_ONLY'}:null;
  const identity=hash({target,beforeState,defs}),budgetClaims={resources:[],quotas:[],uids:[{type:'afk-income-interval',id:p.level+':'+p.afkStartTime+':'+p.afkFinishTime}]};
- const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_INCOME_CONFIG_UNKNOWN':p.upgradePreparation&&(!upgrade||upgrade.blockedReason||upgrade.costs?.[0]?.num!==p.upgradePreparation.expectedCost)?'AFK_UPGRADE_PRECONDITION_CHANGED':!same({level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},{level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime})?'AFK_INTERVAL_CHANGED':!clock?'AFK_TRUSTED_CLOCK_UNKNOWN':Math.floor(clock.earliestMs/1000)-a.afkStartTime-1<60?'AFK_INCOME_TOO_EARLY':![ACTIONS.afkDraw.request,ACTIONS.afkDraw.response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=!validateAfkLevelRewardsConfig(moduleConfig).enabled?'AFK_LEVEL_REWARDS_DISABLED':!valid?'AFK_AUTHORITY_UNKNOWN':!defs?'AFK_INCOME_CONFIG_UNKNOWN':p.upgradePreparation&&(!upgrade||upgrade.blockedReason||upgrade.costs?.[0]?.num!==p.upgradePreparation.expectedCost)?'AFK_UPGRADE_PRECONDITION_CHANGED':!same({level:a.level,afkStartTime:a.afkStartTime,afkFinishTime:a.afkFinishTime},{level:p.level,afkStartTime:p.afkStartTime,afkFinishTime:p.afkFinishTime})?'AFK_INTERVAL_CHANGED':readiness.reason?readiness.reason:![ACTIONS.afkDraw.request,ACTIONS.afkDraw.response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  return {module:moduleId,actionId:moduleId+':income:'+identity,actionType:'INCOME',target,parameters:copy(p),identity,beforeState,expectedState,costs:[],costSource:'Fixed v76 ordinary DrawAfkRewardRequest has no useAdvCard; zero debit, receipt-only income',budgetClaims,executable:blockedReason===null,blockedReason,label:'普通挂机本段收益',rewards:null,...(blockedReason===null?{action:{request:ACTIONS.afkDraw.request,response:ACTIONS.afkDraw.response,body:buildBody(ACTIONS.afkDraw)}}:{})};
 }
 function incomeView(f,p,options) {

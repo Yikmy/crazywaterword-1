@@ -16,6 +16,7 @@
 
 import { freeGoldLimit, freeGoldRemaining } from './free-gold.mjs';
 import { freeRecruitReadiness, heroRecruitCosts } from './free-recruit.mjs';
+import { observeAfkIncome } from './afk-level-rewards.mjs';
 import { nextTrialStage } from './trial-challenge.mjs';
 import { normalize } from './worlds.mjs';
 import { ACTIONS, buildBody, buildDailyDriverBody, FREE_DAILY_PACK_ID } from './actions.mjs';
@@ -248,7 +249,7 @@ function configuredCount(config, name) {
 // 每个驱动声明它要的只读前置请求，框架统一批量取一遍。
 export const DAILY_DRIVERS = {
   1002: {
-    id: 1002,
+    id: 1002, functionId:"free-recruit", actionTypes:["CLAIM","RECRUIT"],
     title: '招募英雄',
     probes: [['RecruitInfoRequest', {}]],
     evaluate({ task, probe, items, now }) {
@@ -280,7 +281,7 @@ export const DAILY_DRIVERS = {
   },
 
   1003: {
-    id: 1003,
+    id: 1003, functionId:"stage", actionTypes:["RUN_MAINLINE"],
     title: '主线战斗',
     probes: [],
     evaluate({ task, player }) {
@@ -296,20 +297,14 @@ export const DAILY_DRIVERS = {
   },
 
   1004: {
-    id: 1004,
-    title: '领取挂机收益',
-    probes: [['AfkInfoRequest', {}]],
-    evaluate({ task, probe, now }) {
-      if (task.progress >= task.targetProgress) return { status: 'done' };
-      const afk = probe('AfkInfoRequest')?.afkInfo;
-      if (!afk) return { status: 'blocked', reason: '没有挂机信息' };
-      if (!(afk.afkFinishTime > 0 && afk.afkFinishTime <= now)) {
-        return { status: 'waiting', reason: `本段挂机还有 ${Math.ceil(afk.afkFinishTime - now)} 秒` };
-      }
-      return { status: 'ready', actions: [{ request: ACTIONS.afkDraw.request, body: buildBody(ACTIONS.afkDraw), response: ACTIONS.afkDraw.response, costs: [], cost: '无', note: '领取挂机本段收益' }] };
+    id:1004, functionId:'afk-level-rewards', actionTypes:['INCOME'], title:'领取挂机收益', probes:[['AfkInfoRequest',{}]],
+    evaluate({task,afkIncome}) {
+      if(task.progress>=task.targetProgress)return {status:'done'};
+      if(!afkIncome||afkIncome.status==='UNKNOWN')return {status:'unknown',reason:afkIncome?.reason??'AFK_INCOME_OBSERVATION_UNKNOWN',actions:[]};
+      if(afkIncome.status!=='READY_BY_CLOCK')return {status:'waiting',reason:'普通收益至少经过61秒；尚需 '+afkIncome.remainingSeconds+' 秒，不要求整段到期',actions:[]};
+      return {status:'ready',functionId:'afk-level-rewards',parameters:afkIncome.parameters,qualificationScope:'TIME_ONLY',reason:'仅时钟条件已满足；须按明确原区间重新调查库存、配置与资格，预览并单次授权',actions:[{request:ACTIONS.afkDraw.request,body:buildBody(ACTIONS.afkDraw),response:ACTIONS.afkDraw.response,costs:[],cost:'无',note:'普通挂机本段收益；不证明日常完成或到账'}]};
     },
   },
-
   1005: {
     id: 1005,
     title: '竞技场战斗',
@@ -333,7 +328,7 @@ export const DAILY_DRIVERS = {
   },
 
   1006: {
-    id: 1006,
+    id: 1006, functionId:"free-gold", actionTypes:["CLAIM"],
     title: '点金次数',
     probes: [['ClickGoldInfoRequest', {}]],
     evaluate({ task, probe, config, ruby }) {
@@ -404,7 +399,7 @@ export const DAILY_DRIVERS = {
   },
 
   1008: {
-    id: 1008,
+    id: 1008, functionId:"fleet", actionTypes:["cargoFill"],
     title: '累计贸易次数',
     probes: [['CargoShipsRequest', {}]],
     evaluate({ task }) {
@@ -414,7 +409,7 @@ export const DAILY_DRIVERS = {
   },
 
   1009: {
-    id: 1009,
+    id: 1009, functionId:"trial-challenge", actionTypes:["CHALLENGE"],
     title: '累计试炼挑战',
     probes: [['TrialRaidInfoRequest', { raidId: 1 }]],
     evaluate({ task, probe, config, player }) {
@@ -441,7 +436,7 @@ export const DAILY_DRIVERS = {
   },
 
   1010: {
-    id: 1010,
+    id: 1010, functionId:"pirate-sweep", actionTypes:["SWEEP"],
     title: '累计击败野怪',
     probes: [],
     evaluate({ task }) {
@@ -452,14 +447,24 @@ export const DAILY_DRIVERS = {
   },
 
   1011: { id: 1011, title: '累计联盟情报', probes: [['TradeGuildRadarRequest', {}]], evaluate: lockedReason('联盟情报（雷达）') },
-  1012: { id: 1012, title: '累计联盟订单', probes: [['GuildCityInfoRequest', {}]], evaluate: lockedReason('联盟城市募兵') },
+  1012: { id: 1012, functionId:"alliance", actionTypes:["finishOrder"], title: '累计联盟订单', probes: [['GuildCityInfoRequest', {}]], evaluate: taskFunctionRequired('alliance','请明确城市ID，经原联盟订单Function重新调查、计划和单次授权；任务进度及领奖独立核实') },
   1013: { id: 1013, title: '累计联盟互助', probes: [['GuildAidListRequest', { type: 0 }]], evaluate: lockedReason('联盟互助') },
   1014: { id: 1014, title: '累计请求帮助', probes: [], evaluate: lockedReason('联盟求助') },
   1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: lockedReason('城战（20:00-21:00 限时）') },
-  1016: { id: 1016, title: '博物馆探险', probes: [['MuseumInfoRequest', {}]], evaluate: lockedReason('博物馆') },
+  1016: { id: 1016, functionId:"museum", actionTypes:["startExplore"], title: '博物馆探险', probes: [['MuseumInfoRequest', {}]], evaluate: taskFunctionRequired('museum','请明确关卡、英雄与倍率，经原探险出发Function重新调查、计划和单次授权；出发不证明完成或领奖') },
   1017: { id: 1017, title: '参与积分赛', probes: [['LeagueInfoRequest', {}]], evaluate: lockedReason('跨服积分赛') },
 };
 
+function taskFunctionRequired(functionId,reason) {
+ return ({task})=>task.progress>=task.targetProgress?{status:'done',actions:[]}:{status:'blocked',functionId,reason,actions:[]};
+}
+// Compatibility accepts only concrete actions already used by daily declarations.
+// Exact permits, fresh plans and settlement remain in the original Service.
+export function dailyDriverAllowsOperation(operation) {
+ return Object.values(DAILY_DRIVERS).some(driver=>driver.functionId===operation?.module&&driver.actionTypes?.includes(operation.actionType))
+  &&(operation.module!=='free-recruit'||!Object.hasOwn(operation.parameters??{},'recruit')||operation.parameters.recruit==='hero')
+  &&(operation.module!=='afk-level-rewards'||operation.parameters?.action==='income');
+}
 // 这类任务的入口请求被服务端直接拒绝（未入盟 / 未开放 / 限时），探测结果只用来确认原因。
 function lockedReason(feature) {
   return ({ task }) => {
@@ -477,6 +482,7 @@ function lowPower(power) {
 // 只读调研：跑一遍前置请求，给出每个日常任务能不能做、要发什么。
 export async function surveyDailies(client, protocol, options = {}) {
   const { config = null, player = null, timeout = 8000 } = options;
+  const afkSourceContext=observeAfkIncome(client,null,player).context;
   const query = (name, body, response, duration = timeout) => dailyQuery(client, name, body, response, { ...options, timeout: duration });
   const daily = await query('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
   const rows=dailyTaskRows(daily),validList=rows!==null;
@@ -527,6 +533,7 @@ export async function surveyDailies(client, protocol, options = {}) {
   };
 
   const now = Date.now() / 1000;
+  const afkIncome=observeAfkIncome(client,probe('AfkInfoRequest'),player,afkSourceContext);
   const evaluations = [];
   for (const {task,qualification} of tasks) {
     if(qualification.completion==='UNKNOWN'){evaluations.push({task,qualification,status:'unknown',reason:'任务进度或目标未知，未生成驱动建议',actions:[]});continue;}
@@ -546,7 +553,7 @@ export async function surveyDailies(client, protocol, options = {}) {
     }
     let verdict;
     try {
-      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player }));
+      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, afkIncome }));
     } catch (error) {
       verdict = { status: 'error', reason: error.message };
     }

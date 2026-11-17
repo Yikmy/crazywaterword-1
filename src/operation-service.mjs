@@ -1,3 +1,4 @@
+import { dailyDriverAllowsOperation } from './dailies.mjs';
 import { fleetCacheOverview, prepareCargoFillWorkflow, validateCargoFillPreparation } from './fleet.mjs';
 import { allianceId, allianceCacheOverview } from './alliance.mjs';
 import {prepareFarmHarvestWorkflow,validateFarmHarvestPreparation,prepareFarmPlantWorkflow,validateFarmPlantPreparation} from './farm-operations.mjs';
@@ -667,7 +668,7 @@ function authorizeWorkflowPlan(session,payload){
   }
   function executeDailyDriver(session, payload) {
     const entry = lookup(session, payload);
-    if (!['free-recruit','free-gold','trial-challenge'].includes(entry.public.module) || !entry.operations.length || entry.operations.some(row => row.module !== entry.public.module)) throw error('旧Daily Driver仅转交原注册免费领域批次；其他未迁移范围保持只读', 'INVALID_INPUT', 400);
+    if (!entry.operations.length || entry.operations.some(row => row.module !== entry.public.module || !dailyDriverAllowsOperation(row))) throw error('旧Daily Driver仅转交原日常已接Function的精确动作批次；不替代任务完成观察或领奖', 'INVALID_INPUT', 400);
     return execute(session, payload);
   }
   function executeDailyRewards(session, payload) {
