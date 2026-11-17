@@ -1,7 +1,7 @@
 // W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
 import { ACTIONS, buildBody } from './actions.mjs';
-import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
+import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, activityTaskClosingFact, activityTaskClosingChoices, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
 import { taskTarget, achievementProgressCount, parseTaskObservation, taskConfigurationRow, taskQualification } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
@@ -227,8 +227,9 @@ function qualificationObservations(f,parameters,choices,config) {
   });
 }
 // Rebind only original already-collected task facts; no new source, write or future state.
-function taskClosingFact(f,p){
+function taskClosingFact(f,p,config){
  const owner=liveTaskFacts.get(f),achievement=p.kind==='achievement';
+ if(p.kind==='weekly-chip-task'||OPEN_RANK_TASK_KINDS.includes(p.kind))return activityTaskClosingFact(f,p,config);
  if(!owner||owner.seal!==sealOf(f)||owner.client.connected!==true||!same(contextOf(owner.client,owner.player),f.context)||achievement!==(f.parameters?.kind==='achievement'))return null;
  const target={...f,parameters:p};liveTaskFacts.set(target,{client:owner.client,player:owner.player,seal:sealOf(target)});return target;
 }
@@ -238,18 +239,20 @@ function taskClosingRows(f,options){
 }
 export function validateTaskRewardClosingPreparation(v){
  if(!fields(v,['targets','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.targets)||v.targets.length<1||v.targets.length>24||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('任务收尾须明确1至24个当前任务及有限总时长');
- const targets=v.targets.map(row=>{const p=validateTaskRewardsParameters(row);if(!['main','branch','achievement'].includes(p.kind))throw invalid('本收尾只接受当前主线、支线或同源成就；日常与活动继续原入口');return p;});
- if(new Set(targets.map(p=>p.kind+':'+p.taskId)).size!==targets.length||targets.some(p=>(p.kind==='achievement')!==(targets[0].kind==='achievement')))throw invalid('任务目标不得重复或混合主支与成就来源');
+ const targets=v.targets.map(row=>{const p=validateTaskRewardsParameters(row);if(!['main','branch','achievement','weekly-chip-task',...OPEN_RANK_TASK_KINDS].includes(p.kind))throw invalid('本收尾只接受当前主支线、同源成就、同轮周芯片或同模式开服任务；其他日常与活动继续原入口');return p;});
+ const source=p=>p.kind==='achievement'?'achievement':p.kind==='weekly-chip-task'?'chip:'+p.round:OPEN_RANK_TASK_KINDS.includes(p.kind)?p.kind:'tasks';
+ if(new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId))).size!==targets.length||targets.some(p=>source(p)!==source(targets[0])))throw invalid('任务目标不得重复，主支/成就/周芯片/开服各模式来源及芯片轮次必须隔离');
  return {targets,maxDurationMs:v.maxDurationMs};
 }
 export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,...input}={}){
  const p=validateTaskRewardClosingPreparation(input),nodes=[{id:'start',type:'START'}],totals=new Map(f?.stock??[]);
- const steps=p.targets.map((parameters,i)=>{const facts=taskClosingFact(f,parameters);if(!facts)throw invalid('任务收尾原账号、连接或任务来源变化，须重新调查');const row=candidate(facts,parameters,{config,moduleConfig});
+ const chip=p.targets[0].kind==='weekly-chip-task',activity=chip||OPEN_RANK_TASK_KINDS.includes(p.targets[0].kind),choices=activity?activityTaskClosingChoices(f,{config,moduleConfig}):null;if(activity&&(choices.status!=='OBSERVED'||chip&&choices.round!==p.targets[0].round||p.targets.length>choices.maximumClaims))throw invalid('活动任务组合须同一当前来源；周芯片须保留至少一项未领，末任务跨轮仍缺证');
+ const steps=p.targets.map((parameters,i)=>{const facts=taskClosingFact(f,parameters,config);if(!facts)throw invalid('任务收尾原账号、连接或任务来源变化，须重新调查');const row=activity?viewDailyTaskReward(facts,{config,moduleConfig,parameters}).candidates[0]:candidate(facts,parameters,{config,moduleConfig});
   if(!row.executable)throw Object.assign(new Error('所选任务当前资格未确认：'+row.blockedReason),{code:row.blockedReason,statusCode:409});
   for(const reward of row.rewards){const next=(totals.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(next))throw invalid('所选任务累计奖励超过原安全整数余额范围');totals.set(reward.id,next);}
   const selection={unique:true};nodes.push({id:'reward-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,costs:[],rewards:copy(row.rewards),budgetClaims:copy(row.budgetClaims)};
  });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
- return {...p,steps,budget,graph:{version:1,id:'task-rewards-closing-'+hash({p,steps}).slice(0,20),name:'明确当前任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅当前明确已合格的主线/支线或同源成就，复用原任务身份、资格、配置奖励和完整库存净入验证；每项重新调查、单次授权并验证后继续。主线前移不证明原任务成功；资格不明、拒绝或UNKNOWN停止，任务/配置变化仍须原重新预览与授权，不领取未来任务、不重发或续权，奖励不扩父预算，日常/赛季活动仍走原独立入口。'};
+ return {...p,steps,budget,graph:{version:1,id:'task-rewards-closing-'+hash({p,steps}).slice(0,20),name:chip?'明确同轮周芯片任务逐项收尾':activity?'明确同模式开服任务逐档收尾':'明确当前任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:chip?'仅本次明确同轮周芯片当前已合格任务，原WeekInfo窗口/轮次/任务父UID预算固定且至少保留一个未领任务，不进入末任务跨轮。复用原任务定义、资格、typed轮次/完整已领ID回执及完整库存净入验证，每项重新调查、单次授权后继续；变化、拒绝或UNKNOWN停止，零重领/开箱/未来任务/续权，奖励不扩父预算，准备不执行。':activity?'仅同一开服模式的明确当前合格score档位，原世界/赛季/配置规则和私有活动窗口不变，原UID父预算固定对应窗口及档位。复用原候选、请求、同源进度/唯一已领档位和完整库存净入验证；每档重新调查/单次授权，窗口/资格变化、拒绝或UNKNOWN停止，不领取排名奖励、其他模式或未来任务，不新增恢复分支，奖励不扩父预算。':'仅当前明确已合格的主线/支线或同源成就，复用原任务身份、资格、配置奖励和完整库存净入验证；每项重新调查、单次授权并验证后继续。主线前移不证明原任务成功；资格不明、拒绝或UNKNOWN停止，任务/配置变化仍须原重新预览与授权，不领取未来任务、不重发或续权，奖励不扩父预算，日常/赛季活动仍走原独立入口。'};
 }
 
 export function viewTaskRewards(f,options={}) {
