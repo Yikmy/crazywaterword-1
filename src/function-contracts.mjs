@@ -163,7 +163,7 @@ export const FUNCTION_CONTRACTS = freeze({
     dependencyVersions: dependencies(['moduleConfig', ...['MuseumExpeditionStageCfg', 'MuseumExpeditionTeamCfg', 'MuseumExpeditionConditionCfg', 'MuseumExploreTimeFactorCfg', 'MuseumAchievementCfg', 'MuseumAreaCfg', 'MuseumAreaIndicatorCfg', 'MuseumDisplayCaseCfg', 'AntiqueBaseCfg'].map(name => 'config.' + name)]),
   }),
   fleet: contract('fleet', ['C131', 'C132', 'C133', 'C134', 'C401', 'C402', 'C406', 'C407', 'C408', 'C409'], ['P1-4', 'P2-6', 'P5-1', 'P5-2'], ['src/fleet.mjs#fleetModule', 'src/fleet.mjs#parametersOf'], {
-    buildingId: string, cityId: integer, shipIndex: integer, cargoIndex: integer, expectedCargoHash:string, resourceFieldGridIdx:integer, screenCenter:point, ...formationParameters,
+    buildingId: string, cityId: integer, shipIndex: integer, cargoIndex: integer, expectedCargoHash:string, expectedRepairHash:string, resourceFieldGridIdx:integer, screenCenter:point, ...formationParameters,
   }, {
     additionalRequirementIds: ['BIZ-W16'],
     implementation: { mode: 'CONTROLLED_WRITE', actions: ['fleetRepair', 'fleetStopRepair', 'fleetMove', 'fleetFormation', 'fleetStopAutoFight', 'cargoFill', 'cargoClaim', 'giveUpField'],
