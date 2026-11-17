@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { planHeroes, buildHeroAction } from './heroes.mjs';
 import { stockMatchesDelta } from './naval-facts.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
-import { ResourceLedger, resourceCosts, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES } from './resource-ledger.mjs';
+import { ResourceLedger, operationBudgetClaims, resourceCosts, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
 import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
@@ -252,6 +252,20 @@ export function viewHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_
     candidates, blocked: candidates.filter(row => !row.executable), notes: [...(facts?.notes ?? [])], universalExchange: 'BLOCKED_EVIDENCE', fragmentExchange: 'EXPLICIT_1_TO_1',
     fragments: (facts?.heroes ?? []).map(hero => { const cfg = rows(config, 'HeroCfg')?.find(row => row.id === hero.heroId), sourceId = cfg?.universalItemId, targetId = hero.heroId + '碎片'; return { heroId: hero.heroId, sourceId: sourceId ?? null, sourceNum: facts?.stockReliable && id(sourceId) ? facts.stock.get(sourceId) ?? 0 : null, targetId, targetNum: facts?.stockReliable ? facts.stock.get(targetId) ?? 0 : null }; }) };
 }
+export function validateHeroGrowthPreparation(value) {
+  if (!plainFields(value,['targets','maxDurationMs']) || Reflect.ownKeys(value).length!==2 || !dense(value.targets) || Object.getPrototypeOf(value.targets)!==Array.prototype || value.targets.length<1 || value.targets.length>24 || Reflect.ownKeys(value.targets).length!==value.targets.length+1 || !Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&own(d,'value')) || !Number.isSafeInteger(value.maxDurationMs) || value.maxDurationMs<1 || value.maxDurationMs>86400000) throw invalid('英雄成长组合须明确1至24个不同英雄目标及有限总时长');
+  const targets=value.targets.map(row=>{if(!plainFields(row,['heroId','action','skillIdx']))throw invalid('成长组合只使用原heroId/action/skillIdx，不混入碎片兑换或升星前置');const p=validateHeroParameters(row);if(!p.heroId||!['level','skill',...exclusiveKinds].includes(p.action)||p.action==='skill'&&!p.skillIdx)throw invalid('须明确英雄及等级、技能槽或已激活专武动作');return p;});
+  if(new Set(targets.map(p=>p.heroId)).size!==targets.length||targets.some(p=>p.action!==targets[0].action))throw invalid('每英雄仅一次，同批须为同一种成长动作');
+  return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareHeroGrowthWorkflow(facts,{config,moduleConfig=HERO_DEFAULT_CONFIG,...input}={}) {
+  const p=validateHeroGrowthPreparation(input);if(!exclusiveAuthority(facts)||facts?.parameters?.action!==p.targets[0].action)throw invalid('英雄组合缺少当前完整英雄/库存/身份或原动作来源不一致');
+  const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}];
+  const steps=p.targets.map((parameters,i)=>{const plan=planHeroOperations(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('所选英雄无当前成长资格或共享自有材料不足；须重新调查并明确选择');const row=plan.actions[0],selection={unique:true};nodes.push({id:'grow-'+i,type:'ACTION',module:'heroes',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'heroes'});return {parameters,selection,target:clone(row.target),costs:clone(row.costs),budgetClaims:operationBudgetClaims(row)};});
+  nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+  return {...p,steps,budget,graph:{version:1,id:'hero-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确英雄逐名单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['heroes']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批一种原成长动作，每英雄只一次等级、明确技能槽或已激活专武成长；复用原planHeroes/planHeroOperations、成本和完整英雄池/库存验证，共享Ledger仅预留准备时自有材料。每步重新调查、预览、单次授权并独立复读；资格变化、拒绝或UNKNOWN停止。不跨升星推导技能资格，不兑换/激活专武/补购/重放或恢复执行；原单次及兑换升星入口保留。'};
+}
+
 export function planHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_CONFIG, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable === true ? facts.stock : null) } = {}) {
   parameters = validateHeroParameters(parameters);
   if (selections !== undefined && (!dense(selections) || selections.some(value => typeof value !== 'string') || new Set(selections).size !== selections.length)) throw invalid('selections 必须为唯一 actionId 数组');
