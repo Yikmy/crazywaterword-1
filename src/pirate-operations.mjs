@@ -15,7 +15,7 @@ import { ResourceLedger } from './resource-ledger.mjs';
 const moduleId = 'pirate-sweep', capabilityId = 'C151', request = 'PirateSweepRequest';
 const maxAgeMs = 30000;
 const costSource = 'v76 WeChat PiratePop; one ordinary daily PirateSweep, no item/resource debit';
-const parameterKeys = ['uid', 'cityId', 'allowLowerLevel'];
+const parameterKeys = ['uid', 'cityId', 'allowLowerLevel', 'expectedSweep'];
 const tables = ['PirateParamCfg', 'VipLevelCfg', 'MonthCardCfg'];
 const responseNames = ['MonthCardResponse', 'PirateKillRecordResponse', 'AllItemResponse', 'AllResourceResponse', 'AllPirateResponse'];
 const piratePushes = new Set([
@@ -51,11 +51,16 @@ export function validatePirateSweepConfig(value = {}) {
   return { enabled: value.enabled ?? false };
 }
 
+function validateExpectedSweep(value){
+ if(!plainFields(value,['dayKey','used','total','sourceHash'])||Reflect.ownKeys(value).length!==4||typeof value.dayKey!=='string'||! /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value.dayKey)||!uint(value.used)||!positive(value.total)||value.used>=value.total||typeof value.sourceHash!=='string'||! /^[a-f0-9]{64}$/.test(value.sourceHash))throw invalid('扫荡来源须为原游戏日、完整计次及精确来源摘要');
+ return {dayKey:value.dayKey,used:value.used,total:value.total,sourceHash:value.sourceHash};
+}
 export function validatePirateSweepParameters(value = {}) {
   if (!plainFields(value, parameterKeys) || ['uid', 'cityId'].some(key => Object.hasOwn(value, key) && !positive(value[key]))
       || Object.hasOwn(value, 'uid') !== Object.hasOwn(value, 'cityId')
       || Object.hasOwn(value, 'allowLowerLevel') && (!Object.hasOwn(value, 'uid') || typeof value.allowLowerLevel !== 'boolean'))
     throw invalid('海盗扫荡参数要求同时指定正 int32 uid、cityId，可选 allowLowerLevel 布尔值');
+  if(Object.hasOwn(value,'expectedSweep')){if(!Object.hasOwn(value,'uid'))throw invalid('扫荡来源守卫须绑定明确目标');validateExpectedSweep(value.expectedSweep);}
   return Object.fromEntries(parameterKeys.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
 }
 
@@ -247,6 +252,10 @@ function targetsOf(facts) {
   });
 }
 
+function sweepSourceHash(facts,seal){
+ return seal?hash({context:facts.context,pirates:facts.pirates,records:facts.records,quotaBreakdown:facts.quotaBreakdown,dayKey:facts.quota.dayKey,total:facts.quota.total,vipLevel:seal.vipLevel,cards:seal.cards,config:seal.config}):null;
+}
+function sweepExpectation(facts,seal){return seal?{dayKey:facts.quota.dayKey,used:facts.quota.used,total:facts.quota.total,sourceHash:sweepSourceHash(facts,seal)}:null;}
 function candidate(facts, parameters, moduleConfig, seal) {
   const target = targetsOf(facts).find(row => row.uid === parameters.uid && row.cityId === parameters.cityId)
     ?? { uid: parameters.uid ?? null, cityId: parameters.cityId ?? null };
@@ -255,6 +264,7 @@ function candidate(facts, parameters, moduleConfig, seal) {
   else if (!moduleConfig.enabled) blockedReason = 'PIRATE_SWEEP_MODULE_DISABLED';
   else if (!seal) blockedReason = facts?.quota?.reason ?? 'PIRATE_FRESH_AUTHORITY_NOT_CONFIRMED';
   else if (!seal.protocolKnown) blockedReason = 'PIRATE_SWEEP_PROTOCOL_CONTRACT_UNKNOWN';
+  else if(parameters.expectedSweep&&!same(parameters.expectedSweep,sweepExpectation(facts,seal)))blockedReason='PIRATE_SWEEP_SOURCE_OR_SEQUENCE_CHANGED';
   else if (!target.levelRelation) blockedReason = 'PIRATE_TARGET_UID_AND_CITY_NOT_CURRENT';
   else if (target.levelRelation === 'FIRST_KILL_REQUIRED') blockedReason = 'PIRATE_FIRST_KILL_REQUIRED';
   else if (target.levelRelation === 'LOWER' && parameters.allowLowerLevel !== true) blockedReason = 'PIRATE_LOWER_LEVEL_CONFIRMATION_REQUIRED';
@@ -283,7 +293,7 @@ export function viewPirateSweep(facts, { config, parameters = facts?.parameters 
   const candidates = parameters.uid ? [row] : [];
   const quota = seal || facts?.quota?.reason ? facts.quota : unknownQuota('PIRATE_FRESH_AUTHORITY_NOT_CONFIRMED', facts?.quota);
   return { module: moduleId, quota: copy(quota), quotaBreakdown: copy(facts?.quotaBreakdown ?? null),
-    targets: targetsOf(facts), candidates, blocked: candidates.filter(row => !row.executable),
+    targets: targetsOf(facts), preparation:{expectedSweep:sweepExpectation(facts,seal)}, candidates, blocked: candidates.filter(row => !row.executable),
     notes: [...new Set([quota.reason, row.blockedReason].filter(Boolean))], evidence: PIRATE_SWEEP_OPERATION_EVIDENCE };
 }
 
@@ -327,6 +337,25 @@ export function verifyPirateSweep(operation, before, after, response) {
   if (after.quota.used !== before.quota.used + 1) return fail('PIRATE_EXACT_DAILY_COUNTER_INCREMENT_NOT_CONFIRMED');
   return { confirmed: true, reason: '同一游戏日完整复读确认扫荡次数恰好加一，海盗池及首杀记录保持一致；奖励归属未确认',
     afterState: copy(contract.expectedState), responseEvidence: { namedResponse: 'NONE', reward: 'UNATTRIBUTED' } };
+}
+
+export function validatePirateSweepPreparation(value){
+ if(!plainFields(value,['expectedSweep','targets','maxDurationMs'])||Reflect.ownKeys(value).length!==3||!dense(value.targets)||value.targets.length<1||value.targets.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('扫荡组合须明确当前来源、1至24个不同目标及有限总时长');
+ const expectedSweep=validateExpectedSweep(value.expectedSweep),targets=value.targets.map(row=>{const p=validatePirateSweepParameters(row);if(!p.uid||p.expectedSweep)throw invalid('组合每目标须明确UID/城市，来源只由同一准备绑定');return p;});
+ if(new Set(targets.map(row=>row.uid)).size!==targets.length||targets.length>expectedSweep.total-expectedSweep.used)throw invalid('扫荡目标UID不得重复或超过当前剩余额度');return {expectedSweep,targets,maxDurationMs:value.maxDurationMs};
+}
+export function preparePirateSweepWorkflow(facts,{config,moduleConfig=PIRATE_SWEEP_DEFAULT_CONFIG,...input}={}){
+ const payload=validatePirateSweepPreparation(input),seal=liveAuthority(facts,config),nodes=[{id:'start',type:'START'}];
+ if(!seal||!same(payload.expectedSweep,sweepExpectation(facts,seal)))throw invalid('扫荡准备来源、游戏日、配额或完整目标池变化，须重新调查');
+ const steps=payload.targets.map((target,i)=>{
+  // Bind only original collected facts and preserve the original seal times/revision.
+  const source={...facts,parameters:copy(target)};seals.set(source,{...seal,digest:evidenceDigest(source)});
+  const plan=planPirateSweep(source,{config,moduleConfig,parameters:target});if(plan.actions.length!==1)throw invalid('所选扫荡目标当前无原单次资格：'+(plan.notes[0]??'UNKNOWN'));
+  const row=plan.actions[0],parameters={...target,expectedSweep:{...payload.expectedSweep,used:payload.expectedSweep.used+i}},selection={unique:true};
+  nodes.push({id:'sweep-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});
+  return {parameters,selection,target:copy(row.target),costs:[],budgetClaims:copy(row.budgetClaims)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[{id:moduleId+':'+payload.expectedSweep.dayKey,num:steps.length}],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...payload,steps,budget,graph:{version:1,id:'pirate-sweep-'+hash({payload,steps}).slice(0,20),name:'明确同日多目标逐项扫荡',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确不同UID/城市的当前合格普通扫荡，较低等级须逐目标确认。固定原游戏日、总额度、计次顺序、目标池/首杀记录及权益配置摘要，父配额和UID不扩额。每项重新调查、单次授权及原独立计次验证；任何变化、拒绝或UNKNOWN停止，不跨日、不首杀、不购买次数、不重放。扫荡计次不证明奖励归属，奖励不作为收入或预算，重启不续跑。'};
 }
 
 export const pirateSweepModule = Object.freeze({
