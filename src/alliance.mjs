@@ -7,7 +7,7 @@ import { stockMatchesDelta } from './naval-facts.mjs';
 // Alliance adapter only; the shared service owns authorization and transport.
 // Evidence: cached GuildHelpRequest/Pop:1455-1459, GuildCityArmyPop:1445,
 // GuildChestPop:1441, GuildUtil:1533, static protocol and configuration.
-import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
+import { ResourceLedger, operationBudgetClaims, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 import { allianceFortContext, parseAllianceFortObservations, validateAllianceFortParameters, viewAllianceFort, planAllianceFort, verifyAllianceFort } from './alliance-fort.mjs';
@@ -131,10 +131,23 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
     else if(unlocked.preTech&&(current.get(unlocked.preTech)??0)<unlocked.preTechLevel)blockedReason='TECH_PREREQUISITE_LOCKED';
     else if(!f.stockReliable)blockedReason='TECH_STOCK_UNKNOWN';
     else if(!new ResourceLedger(f.stock).canReserve(costs))blockedReason='TECH_RESOURCES_INSUFFICIENT';
-    technologies.push({techId:c.techId,name:c.name??null,type:c.type??null,group:c.group??null,level,targetLevel:level===null?null:level+1,maxLevel:unlocked?.maxLevel??null,openStage:unlocked?.openStage??null,preTech:unlocked?.preTech??null,preTechLevel:unlocked?.preTechLevel??null,prerequisiteLevel:unlocked?.preTech?(current.get(unlocked.preTech)??0):0,itemId,costs,costSource:techCostSource,blockedReason});
+    technologies.push({parameters:{techId:c.techId,targetLevel:level===null?null:level+1},selection:{actionId:actionIdOf('upgradeTech',{techId:c.techId,targetLevel:level===null?null:level+1})},techId:c.techId,name:c.name??null,type:c.type??null,group:c.group??null,level,targetLevel:level===null?null:level+1,maxLevel:unlocked?.maxLevel??null,openStage:unlocked?.openStage??null,preTech:unlocked?.preTech??null,preTechLevel:unlocked?.preTechLevel??null,prerequisiteLevel:unlocked?.preTech?(current.get(unlocked.preTech)??0):0,itemId,costs,costSource:techCostSource,blockedReason});
   }
   const target=p.techId===undefined?null:technologies.find(t=>t.techId===p.techId);
   return {technologies,state,target,blockedReason:p.techId!==undefined&&!target?'TECH_TARGET_NOT_IN_SEASON':target?.blockedReason??(target&&p.targetLevel!==target.targetLevel?'TECH_EXACT_SINGLE_LEVEL_REQUIRED':null)};
+}
+
+const techPreparationFields=(value,allowed)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value))&&Reflect.ownKeys(value).every(key=>typeof key==='string'&&allowed.includes(key)&&Object.getOwnPropertyDescriptor(value,key)?.enumerable&&Object.hasOwn(Object.getOwnPropertyDescriptor(value,key),'value'));
+const techPreparationError=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
+export function validateAllianceTechPreparation(value){
+ if(!techPreparationFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw techPreparationError('科技组合须明确1至24项不同科技的下一等级及有限总时长');
+ const targets=value.targets.map(row=>{if(!techPreparationFields(row,['techId','targetLevel'])||Reflect.ownKeys(row).length!==2)throw techPreparationError('科技目标只允许原techId/targetLevel');return parametersOf(row);});if(new Set(targets.map(row=>row.techId)).size!==targets.length)throw techPreparationError('同一科技每批仅一次明确单级升级');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareAllianceTechWorkflow(facts,{config,moduleConfig,...input}={}){
+ const p=validateAllianceTechPreparation(input),ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),nodes=[{id:'start',type:'START'}];
+ const steps=p.targets.map((parameters,i)=>{const view=allianceView(facts,{config,moduleConfig,parameters}),source=view.candidates.find(row=>row.actionType==='upgradeTech'&&row.target.techId===parameters.techId&&row.target.targetLevel===parameters.targetLevel);if(!source)throw techPreparationError('科技无当前原合同资格；不得借未来升级解锁前置');const selection={actionId:source.actionId},plan=planAlliance(facts,{config,moduleConfig,parameters,selections:[source.actionId],ledger});if(plan.actions.length!==1)throw techPreparationError('科技共享自有点数不足或原单级计划不可执行');const row=plan.actions[0];nodes.push({id:'tech-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:operationBudgetClaims(row)};});
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]},techState=allianceTechView(facts,{config}).state;
+ return {...p,guildId:facts.guildId,playerId:facts.playerId,techState,steps,budget,graph:{version:1,id:'alliance-tech-'+createHash('sha256').update(stable({p,steps,budget,techState})).digest('hex').slice(0,20),name:'明确联盟科技逐项单级升级',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['alliance']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'只升级明确勾选且当前已满足原前置的不同科技，每项一级；复用原allianceTechView/planAlliance、真实科技点成本及完整技术表/库存验证。共享Ledger累计核准备时自有点数，每项仍重新调查、预览和单次授权，原父预算/History/拒绝/UNKNOWN保持。不模拟未来解锁，不重置/兑换/补购/自动选树或恢复执行。'};
 }
 
 // WorldIdRule.ts:3603; retain exact integer parsing used by the original alliance survey.
