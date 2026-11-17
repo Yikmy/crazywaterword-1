@@ -427,6 +427,20 @@ export function viewBadgeGrowth(facts, { config, moduleConfig, parameters = fact
   return { module: moduleId, mode: isStar(params) ? 'star' : 'level', heroes: heroChoices(roster), candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: isStar(params) ? BADGE_STAR_EVIDENCE : BADGE_GROWTH_EVIDENCE };
 }
 
+export function validateBadgeGrowthPreparation(value){
+ if(!plainFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&own(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('徽章成长组合须明确1至24个已佩戴UID及有限总时长');
+ const targets=value.targets.map(row=>{const p=validateBadgeGrowthParameters(row);if(!p.heroId||!p.uid||isPutOn(p))throw invalid('徽章组合只支持明确已佩戴UID的单次等级或升星；穿戴保留原入口');return p;});
+ if(new Set(targets.map(p=>p.uid)).size!==targets.length||targets.some(p=>(p.action??'level')!==(targets[0].action??'level')))throw invalid('徽章UID不得重复，同批须为同一种成长动作');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareBadgeGrowthWorkflow(facts,{config,moduleConfig=BADGE_GROWTH_DEFAULT_CONFIG,...input}={}){
+ const p=validateBadgeGrowthPreparation(input),nodes=[{id:'start',type:'START'}],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null);
+ if((facts?.parameters?.action??'level')!==(p.targets[0].action??'level'))throw invalid('徽章组合原采集模式不一致，不跨配置或业务来源');
+ const steps=p.targets.map((parameters,i)=>{const plan=planBadgeGrowth(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('所选徽章无当前成长资格或共享自有材料不足；须重新调查并明确选择');const row=plan.actions[0],selection={unique:true};
+  nodes.push({id:'grow-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:copy(row.budgetClaims)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'badge-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确已佩戴徽章逐件单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批仅原徽章等级或升星，每个已佩戴UID只一次，复用原planBadgeGrowth及共享ResourceLedger累计核自有经验/金币或升星石。原残余经验、等级上限、红徽章星级资格与完整英雄/徽章/库存结算保持；每件重新调查、预览和单次授权，父资源与UID固定。资格变化、拒绝或UNKNOWN停止，不穿戴替换/分解/补购，不自动重发或恢复执行。'};
+}
+
 export function planBadgeGrowth(facts, { config, moduleConfig, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable ? facts.stock : null) } = {}) {
   const params = validateBadgeGrowthParameters(parameters);
   const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config, params) };
