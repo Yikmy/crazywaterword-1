@@ -275,9 +275,9 @@ const shipTables=['GuildShipParamCfg','GuildShipCfg','ModuleOpenCfg','ItemCfg'];
 const shipSource='v76 GuildShipCargoPop._onConfirm/_sendOrderRequest; GuildShipModel.setData/_fillBoradingShipsToMine; GuildShipUtil.maxShipNum/isOpen; ModelManager._onSCGuildShipAct';
 export const ALLIANCE_SHIP_EVIDENCE=Object.freeze({source:shipSource,requirement:'BIZ-R05',request:'GuildShipOrderRequest',response:'NO_DEDICATED_RESPONSE',scope:'EXPLICIT_OWNED_CARGO_SINGLE_CABIN',captain:'SINGLE_SHIP_OWNED_HERO_QUALIFICATION',captainSource:'v76 GuildShipLeaderPop._checkCanSeek/_onConfirm; GuildShipModel._onSCGuildShipLeader',heroAssignment:'NO_HERO_SELECTOR_IN_REQUEST; QUALIFICATION_UIDS_RESERVED_ONLY',reward:'NOT_CLAIMED_OR_PREDICTED',realGame:'REAL_UNVERIFIED'});
 function shipParameters(p) {
- const keys=Reflect.ownKeys(p??{}),expected=p?.action==='ship-seek'?['action','shipId']:['action','shipId','crewId'];
+ const guarded=shipOwn(p,'expectedPeriod')||shipOwn(p,'expectedShipHash'),keys=Reflect.ownKeys(p??{}),expected=p?.action==='ship-seek'?['action','shipId']:['action','shipId','crewId',...(guarded?['expectedPeriod','expectedShipHash']:[])];
  if(!p||![Object.prototype,null].includes(Object.getPrototypeOf(p))||keys.length!==expected.length||keys.some(k=>!expected.includes(k)||!Object.hasOwn(Object.getOwnPropertyDescriptor(p,k)??{},'value'))||
-    !['ship-order','ship-seek'].includes(p.action)||!shipPos(p.shipId)||p.action==='ship-order'&&!shipPos(p.crewId))throw Object.assign(Error('商船操作须明确ship-order/ship-seek和正int32目标，禁止购买补料或额外参数'),{code:'INVALID_PARAMETERS',statusCode:400});
+    !['ship-order','ship-seek'].includes(p.action)||!shipPos(p.shipId)||p.action==='ship-order'&&!shipPos(p.crewId)||guarded&&(p.action!=='ship-order'||!shipPos(p.expectedPeriod)||typeof p.expectedShipHash!=='string'||! /^[a-f0-9]{64}$/.test(p.expectedShipHash)))throw Object.assign(Error('商船操作须明确ship-order/ship-seek和正int32目标，禁止购买补料或额外参数'),{code:'INVALID_PARAMETERS',statusCode:400});
  return Object.fromEntries(expected.map(k=>[k,p[k]]));
 }
 const shipConfigSnapshot=c=>Object.fromEntries(shipTables.map(n=>[n,structuredClone(c?.tables?.[n]??null)]));
@@ -367,12 +367,33 @@ function shipQualifications(f,ship) {
  }
  return {rows,reason,source:shipCaptainSource};
 }
+// Original participation algorithm and exact selected-ship planning guard. Neither
+// is a new settlement identity or permission to replay an operation.
+function shipParticipation(f,time){return f.decoded.allShips.filter(row=>(row.leaderId===f.context.playerId||row.cabin.some(c=>c.playerId===f.context.playerId))&&(row.state===1||row.mvEndTime>time.earliest)).length;}
+function shipPreparationHash(f,p){return createHash('sha256').update(stable({context:f.context,period:f.activity.period,config:f.configSnapshot,level:f.playerLevel,ship:f.decoded?.ships.find(row=>row.shipId===p.shipId),parameters:{action:p.action,shipId:p.shipId,crewId:p.crewId}})).digest('hex');}
+export function validateAllianceShipPreparation(value){
+ if(!techPreparationFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw techPreparationError('商船组合须明确1至24艘不同商船的单舱及有限总时长');
+ const targets=value.targets.map(row=>{if(!techPreparationFields(row,['action','shipId','crewId','expectedPeriod','expectedShipHash']))throw techPreparationError('商船组合目标字段不可靠');const p=shipParameters(row);if(p.action!=='ship-order'||!shipOwn(p,'expectedPeriod')||!shipOwn(p,'expectedShipHash'))throw techPreparationError('商船组合须绑定原补货动作、周期及目标摘要');return p;});
+ if(new Set(targets.map(row=>row.shipId)).size!==targets.length||new Set(targets.map(row=>row.expectedPeriod)).size!==1)throw techPreparationError('每船每批仅一舱且全部须属于同一原活动周期');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareAllianceShipWorkflow(facts,{config,moduleConfig,...input}={}){
+ const p=validateAllianceShipPreparation(input),live=shipLiveFacts.get(facts),time=live?gameTimeBounds(readGameTime(live.client)):{earliest:null,latest:null};
+ if(!shipAuthority(facts,config)||facts.parameters.action!=='ship-order'||time.earliest===null||time.latest===null||p.targets[0].expectedPeriod!==facts.decoded.period)throw techPreparationError('商船组合缺原同周期、同身份活体调查及可信时钟');
+ const count=shipParticipation(facts,time),remaining=facts.catalog.maximum-count;if(p.targets.length>remaining)throw techPreparationError('所选不同商船超过当前参与余量；不预测已参与船只未来到港');
+ const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}],steps=p.targets.map((parameters,i)=>{
+  const row=shipCandidate(facts,{config,moduleConfig,parameters});if(!row.executable)throw techPreparationError('所选商船当前无原单舱资格：'+row.blockedReason);
+  const selection={actionId:row.actionId},plan=planAlliance(facts,{config,moduleConfig,parameters,selections:[row.actionId],ledger});if(plan.actions.length!==1)throw techPreparationError('原单舱计划器不可执行或全部自有材料累计不足');const action=plan.actions[0];
+  nodes.push({id:'ship-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});return {parameters,selection,target:copy(action.target),costs:copy(action.costs),budgetClaims:operationBudgetClaims(action)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]},period=copy(facts.activity.period),participation={current:count,maximum:facts.catalog.maximum,remaining};
+ return {...p,guildId:facts.context.guildId,playerId:facts.context.playerId,period,participation,steps,budget,graph:{version:1,id:'alliance-ships-'+createHash('sha256').update(stable({p,steps,budget,period,participation})).digest('hex').slice(0,20),name:'明确联盟商船逐船单舱补货',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['alliance']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅本次明确选择的不同商船各一舱，原活动周期/选定船只摘要固定，全部须当前有资格且不超过原参与余量。原planAlliance及共享Ledger累计核自有普通材料；每船重新调查、原单舱计划授权和完整库存/本人舱位独立验证。父材料预算固定，不补购、不追加船只、不预测到港或航行奖励；周期/目标变化、资格失效、拒绝或UNKNOWN停止，重启只读不重发。'};
+}
 function shipCandidate(f,{config,parameters=f.parameters,moduleConfig={},settlement=false}={}) {
  const p=shipParameters(parameters),captain=p.action==='ship-seek',live=shipLiveFacts.get(f),time=live?gameTimeBounds(readGameTime(live.client)):{earliest:null,latest:null},d=f.decoded,period=f.activity.period,cat=f.catalog;
  const ship=d?.ships.find(row=>row.shipId===p.shipId),cabin=ship?.cabin.find(row=>row.crewId===p.crewId),costs=captain?[]:cabin?.order??[],qualification=captain?shipQualifications(f,ship):null;
  let reason=null;
  if(!moduleConfig.enabled||!moduleConfig.ship)reason='MODULE_DISABLED';
  else if(f.parameters.action!==p.action||!shipAuthority(f,config,{settlement}))reason='SHIP_SOURCE_OR_CONTEXT_UNKNOWN';
+ else if(shipOwn(p,'expectedPeriod')&&(p.expectedPeriod!==d?.period||p.expectedShipHash!==shipPreparationHash(f,p)))reason='SHIP_PREPARATION_TARGET_CHANGED';
  else if(!Number.isSafeInteger(f.playerLevel)||f.playerLevel<cat.minimumLevel)reason='SHIP_MODULE_LOCKED';
  else if(!shipPos(period?.period)||period.period!==d.period||time.earliest===null||time.latest===null||time.earliest<period.startTime||time.latest>=period.endTime)reason='SHIP_PERIOD_OR_CLOCK_UNKNOWN';
  else if(!ship||!captain&&!cabin)reason='SHIP_EXACT_CABIN_UNKNOWN';
@@ -380,8 +401,8 @@ function shipCandidate(f,{config,parameters=f.parameters,moduleConfig={},settlem
  else if(captain?ship.leaderId!==null:cabin.playerId!==null)reason=captain?'SHIP_CAPTAIN_OCCUPIED':'SHIP_CABIN_OCCUPIED';
  else if(d.allShips.some(row=>row.shipId===p.shipId&&(row.leaderId===f.context.playerId||row.cabin.some(c=>c.playerId===f.context.playerId))))reason='SHIP_ALREADY_BOARDED';
  else {
-  const mine=d.allShips.filter(row=>(row.leaderId===f.context.playerId||row.cabin.some(c=>c.playerId===f.context.playerId))&&(row.state===1||row.mvEndTime>time.earliest));
-  if(mine.length>=cat.maximum)reason='SHIP_PARTICIPATION_LIMIT';
+  const mine=shipParticipation(f,time);
+  if(mine>=cat.maximum)reason='SHIP_PARTICIPATION_LIMIT';
   else if(captain&&qualification.reason)reason=qualification.reason;
   else if(costs.some(c=>(f.stock.get(c.id)??0)<c.num))reason='SHIP_OWNED_MATERIAL_INSUFFICIENT';
  }
@@ -396,8 +417,10 @@ function shipCandidate(f,{config,parameters=f.parameters,moduleConfig={},settlem
   executable:reason===null,blockedReason:reason,label:captain?'联盟商船应聘船长 '+p.shipId:'联盟商船补货并登船 '+p.shipId+' / '+p.crewId,...(reason===null?{action:{request:captain?'GuildShipSeekRequest':'GuildShipOrderRequest',response:null,body:captain?{shipId:p.shipId}:{shipId:p.shipId,crewId:p.crewId}}}:{})};
 }
 function shipView(f,options) {
- const row=shipCandidate(f,options);return {guildId:f.context.guildId,playerId:f.context.playerId,candidates:row.executable?[row]:[],blocked:row.executable?[]:[row],notes:f.notes,members:[],technologies:[],dailyLimits:{ask:null,help:null},
-  ship:{selected:structuredClone(f.parameters),qualification:row.qualification??null,period:structuredClone(f.activity.period),source:f.activity.source,status:f.activity.status,maximum:f.catalog?.maximum??null,ships:structuredClone(f.decoded?.ships??[]),evidence:ALLIANCE_SHIP_EVIDENCE}};
+ const row=shipCandidate(f,options),live=shipLiveFacts.get(f),time=live?gameTimeBounds(readGameTime(live.client)):{earliest:null,latest:null},reliable=shipAuthority(f,options.config)&&time.earliest!==null&&time.latest!==null,participation=reliable?{current:shipParticipation(f,time),maximum:f.catalog.maximum,remaining:Math.max(0,f.catalog.maximum-shipParticipation(f,time))}:null;
+ const preparation=f.parameters.action==='ship-order'?(f.decoded?.ships??[]).flatMap(ship=>ship.cabin.map(cabin=>{const parameters={action:'ship-order',shipId:ship.shipId,crewId:cabin.crewId,expectedPeriod:f.decoded.period,expectedShipHash:shipPreparationHash(f,{action:'ship-order',shipId:ship.shipId,crewId:cabin.crewId})},candidate=shipCandidate(f,{...options,parameters});return {parameters,selection:{actionId:candidate.actionId},target:candidate.target,costs:candidate.costs,budgetClaims:operationBudgetClaims(candidate),executable:candidate.executable,blockedReason:candidate.blockedReason};})):[];
+ return {guildId:f.context.guildId,playerId:f.context.playerId,candidates:row.executable?[row]:[],blocked:row.executable?[]:[row],notes:f.notes,members:[],technologies:[],dailyLimits:{ask:null,help:null},
+  ship:{selected:structuredClone(f.parameters),preparation,participation,qualification:row.qualification??null,period:structuredClone(f.activity.period),source:f.activity.source,status:f.activity.status,maximum:f.catalog?.maximum??null,ships:structuredClone(f.decoded?.ships??[]),evidence:ALLIANCE_SHIP_EVIDENCE}};
 }
 function verifyAllianceShip(op,b,a,options={}) {
  const failed=reason=>({confirmed:false,reason}),live=shipLiveFacts.get(b);
