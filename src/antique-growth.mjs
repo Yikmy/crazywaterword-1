@@ -451,6 +451,18 @@ export function viewAntiqueGrowth(facts, { config, parameters = facts?.parameter
   return { module: moduleId, antiques, candidates, blocked: candidates.filter(row => !row.executable),
     notes: [...(facts?.notes ?? []), ...(!authoritative ? ['ANTIQUE_AUTHORITY_OR_CONTEXT_UNKNOWN'] : [])], evidence: ANTIQUE_GROWTH_EVIDENCE };
 }
+export function validateAntiqueGrowthPreparation(value){
+ if(!plainFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('藏品组合须明确1至24个不同目标及有限总时长');
+ const targets=value.targets.map(row=>{const p=validateAntiqueGrowthParameters(row);if(!['activate','star','suit','exchange'].includes(p.action)||(p.action==='suit'?!p.suitId:!p.antiqueId))throw invalid('藏品组合仅原明确藏品激活/升星/兑换或套装单级，精通保留原独立入口');if(p.action==='exchange'&&!p.num)throw invalid('每个藏品兑换须明确原正整数num');return p;});
+ if(targets.some(p=>p.action!==targets[0].action)||new Set(targets.map(p=>p.antiqueId??p.suitId)).size!==targets.length)throw invalid('同批仅一种原动作，每个藏品或套装仅一次');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareAntiqueGrowthWorkflow(facts,{config,moduleConfig=ANTIQUE_GROWTH_DEFAULT_CONFIG,...input}={}){
+ const p=validateAntiqueGrowthPreparation(input);if(facts?.parameters?.action!==p.targets[0].action)throw invalid('藏品组合不跨原调查模式或配置来源');const ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),nodes=[{id:'start',type:'START'}];
+ const steps=p.targets.map((parameters,i)=>{const plan=planAntiqueGrowth(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('藏品无当前原合同资格或共享自有材料不足；须重新调查并明确选择');const row=plan.actions[0],selection={unique:true};nodes.push({id:'grow-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:copy(row.budgetClaims)};});
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'antique-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确藏品逐项单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批一种原藏品激活、升星、套装单级或明确数量1:1兑换，每目标一次。复用原私有封印调查、planAntiqueGrowth、配置成本及完整藏品/套装/精通/库存验证，共享Ledger仅累计初始自有材料，不把兑换收入补额度。每步重新调查、预览和单次授权；资格变化、拒绝或UNKNOWN停止，不跨模式模拟未来资格、不联动精通/补购/重放或恢复执行。'};
+}
+
 export function planAntiqueGrowth(facts, { config, parameters = facts?.parameters ?? {}, moduleConfig = ANTIQUE_GROWTH_DEFAULT_CONFIG, selections, ledger = new ResourceLedger(facts?.stock) } = {}) {
   parameters = validateAntiqueGrowthParameters(parameters);
   moduleConfig = validateAntiqueGrowthConfig(moduleConfig);
