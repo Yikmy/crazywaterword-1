@@ -1,5 +1,6 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
+import { validateTrialChallengeParameters } from './trial-challenge.mjs';
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
@@ -231,6 +232,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           module=Object.hasOwn(DAILY_DRIVERS,row.taskId)?DAILY_DRIVERS[row.taskId].functionId:null;
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
+          if(module==='trial-challenge')parameters=validateTrialChallengeParameters(parameters);
           if(module==='free-recruit'){parameters=validateFreeRecruitParameters(parameters);if(parameters.recruit==='antique')invalid('日常1002仅代表英雄招募，古董请用原Workflow独立ACTION');}
           if(module==='afk-level-rewards')try{parameters=validateAfkLevelRewardsParameters(row.parameters);if(parameters.action!=='income')invalid('必须明确income');}catch{invalid('日常1004普通挂机收益须明确action=income、当前等级和完整区间');}
           if(module==='fleet')try{selection=fleetCargoFillSelection(parameters);}catch{invalid('日常1008仅支持明确货轮和货格的单次装货；任务进度需独立观察');}

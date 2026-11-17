@@ -8,7 +8,7 @@ import { freeGoldAction, freeGoldExpectedState, freeGoldRecoveryClock, parseFree
 import { validateTaskRewardsParameters, taskRewardAction, parseTaskRewardState, parseTaskRewardSources, verifyTaskReward, verifyTaskRewardOutcome } from './task-rewards.mjs';
 import { compassWheelAction, parseCompassWheelState, parseCompassWheelSources, compassWheelRecoveryWindow, compassWheelExpectedState, compassWheelReceipt, verifyCompassWheel, verifyCompassWheelOutcome } from './compass-wheel.mjs';
 import { validateFreeRecruitParameters, parseFreeRecruitState, freeRecruitReadSources, parseFreeRecruitSources, freeRecruitRecoveryClock, freeRecruitVerificationClock, freeRecruitContractParts, freeRecruitSettlement, verifyFreeRecruit, verifyFreeRecruitOutcome } from './free-recruit.mjs';
-import { trialChallengeAction, parseTrialChallengeState, parseTrialChallengeSources, trialChallengeReceipt, verifyTrialChallenge, verifyTrialChallengeOutcome } from './trial-challenge.mjs';
+import { trialChallengeAction, validateTrialChallengeParameters, parseTrialChallengeState, parseTrialChallengeSources, trialChallengeReceipt, verifyTrialChallenge, verifyTrialChallengeOutcome } from './trial-challenge.mjs';
 import { dailyTaskRewardRecoveryParts, parseDailyTaskRewardState, dailyTaskRewardReadSources, parseDailyTaskRewardSources, dailyTaskRewardSettlement, verifyDailyTaskRewardOutcome, dailyTaskRewardRecoveryClock, dailyTaskRewardVerificationClock } from './daily-task-rewards.mjs';
 import { assertExecutionActive, awaitExecution } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -327,10 +327,10 @@ function buildDailyTaskRewardVerifiedReceipt(candidate,beforeFacts,afterFacts,re
  return {version:1,verified:true,module:'task-rewards',request:contract.action.request,response:contract.action.response,identityHash:contract.identityHash,beforeFacts:before,afterFacts:after,settlement,verifiedClock:verified.clock,balancesBefore:[...beforeFacts.stock].sort(([a],[b])=>a.localeCompare(b)),executionContext};
 }
 function trialChallengeContract(row) {
- if(row?.module!=='trial-challenge'||row.actionType!=='CHALLENGE'||!same(row.parameters,{})||!same(row.costs,[])||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||!text(row.costSource))return null;
- let action;try{action=trialChallengeAction(row.target);}catch{return null;}
- const before=parseTrialChallengeState(row.beforeState),expected=parseTrialChallengeState(row.expectedState),stageId=row.target.stageId;
- if(!before||!expected||!same(scope(before.context),scope(expected.context))||row.target.passedStage!==before.raid.passedStage||expected.raid.passedStage!==stageId||row.actionId!=='trial-challenge:1:'+stageId+':'+row.identity||stable(row.budgetClaims)!==stable({resources:[],quotas:[{id:'trial-challenge:first-clear:1:'+stageId,num:1}],uids:[{type:'trial-challenge',id:'1:'+stageId}]}))return null;
+ if(row?.module!=='trial-challenge'||row.actionType!=='CHALLENGE'||!same(row.costs,[])||!text(row.identity)||!/^[0-9a-f]{64}$/.test(row.identity)||!text(row.costSource))return null;
+ let action;try{action=trialChallengeAction(row.target);const p=validateTrialChallengeParameters(row.parameters);if(!same(p,row.parameters)||(p.raidId??1)!==row.target.raidId)return null;}catch{return null;}
+ const before=parseTrialChallengeState(row.beforeState),expected=parseTrialChallengeState(row.expectedState),stageId=row.target.stageId,raidId=row.target.raidId;
+ if(!before||!expected||!same(scope(before.context),scope(expected.context))||before.raid.raidId!==raidId||expected.raid.raidId!==raidId||row.target.passedStage!==before.raid.passedStage||expected.raid.passedStage!==stageId||row.actionId!=='trial-challenge:'+raidId+':'+stageId+':'+row.identity||stable(row.budgetClaims)!==stable({resources:[],quotas:[{id:'trial-challenge:first-clear:'+raidId+':'+stageId,num:1}],uids:[{type:'trial-challenge',id:raidId+':'+stageId}]}))return null;
  try{assertPaymentAllowed({...action,costs:[]});}catch{return null;}
  return {before,action,identityHash:businessReceiptIdentityHash(row)};
 }
@@ -520,12 +520,12 @@ export async function collectOperationRecovery(client, protocol, run, row, { sig
   }
   if(trialChallenge){
     const problem=trialChallengeReceiptProblem(row,trialChallenge,originalScope);
-    if(['TrialRaidInfoRequest','TrialRaidInfoResponse','AllHeroRequest','AllHeroResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原经验试炼及完整英雄/库存只读协议');
+    if(['TrialRaidInfoRequest','TrialRaidInfoResponse','AllHeroRequest','AllHeroResponse','AllItemRequest','AllItemResponse','AllResourceRequest','AllResourceResponse'].some(name=>!protocol?.[name]))return finish('STILL_UNKNOWN','PROTOCOL_MISSING','缺少原试炼及完整英雄/库存只读协议');
     try{
       const current=()=>{assertExecutionActive(client,{signal});assertCurrent();if(!same(scope(context),currentScope))throw Error('SESSION_CHANGED');};
-      current();readRequest={request:'TrialRaidInfoRequest',response:'TrialRaidInfoResponse',raidId:1,additionalRequests:['AllHeroRequest','AllItemRequest','AllResourceRequest'],bracketRequest:'TrialRaidInfoRequest'};
+      current();readRequest={request:'TrialRaidInfoRequest',response:'TrialRaidInfoResponse',raidId:row.target.raidId,additionalRequests:['AllHeroRequest','AllItemRequest','AllResourceRequest'],bracketRequest:'TrialRaidInfoRequest'};
       const inputs={};let repeated;
-      for(const [key,request,response]of [['raid','TrialRaidInfoRequest','TrialRaidInfoResponse'],['heroes','AllHeroRequest','AllHeroResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse'],['repeat','TrialRaidInfoRequest','TrialRaidInfoResponse']]){current();const body=await awaitExecution(client.request(request,key==='raid'||key==='repeat'?{raidId:1}:{},response,15000,{signal}),client,{signal});current();if(key==='repeat')repeated=body;else inputs[key]=body;}
+      for(const [key,request,response]of [['raid','TrialRaidInfoRequest','TrialRaidInfoResponse'],['heroes','AllHeroRequest','AllHeroResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse'],['repeat','TrialRaidInfoRequest','TrialRaidInfoResponse']]){current();const body=await awaitExecution(client.request(request,key==='raid'||key==='repeat'?{raidId:row.target.raidId}:{},response,15000,{signal}),client,{signal});current();if(key==='repeat')repeated=body;else inputs[key]=body;}
       const after=parseTrialChallengeSources(inputs,trialChallenge.before.context),bracket=parseTrialChallengeSources({...inputs,raid:repeated},trialChallenge.before.context);
       if(!after||!bracket||stable(after)!==stable(bracket))return finish('STILL_UNKNOWN','UNRELIABLE_READ','试炼双读进度/次数变化，或完整英雄/库存不可靠');
       const verification=verifyTrialChallengeOutcome(row,trialChallenge.before,after,row.verifiedReceipt?.settlement),hash=value=>createHash('sha256').update(stable(value)).digest('hex');

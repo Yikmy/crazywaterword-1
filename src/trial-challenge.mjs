@@ -1,4 +1,4 @@
-// W16/BIZ-D09: one explicit next first-clear stage of the hero experience trial.
+// W16/BIZ-D09: one explicit next first-clear stage of a selected original trial.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
 import { buildDailyDriverBody } from './actions.mjs';
@@ -18,22 +18,23 @@ const text=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()===v;
 const fields=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&[null,Object.prototype].includes(Object.getPrototypeOf(v))&&Reflect.ownKeys(v).every(k=>keys.includes(k)&&Object.getOwnPropertyDescriptor(v,k)?.enumerable&&own(v,k));
 const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
+const trialRaidId=n=>[1,2,3].includes(n),raidIdOf=p=>p?.raidId??1;
 const configNames=['ModuleOpenCfg','TrialRaidCfg','TrialRaidStageCfg','ItemCfg'];
 const sources={raid:'TrialRaidInfoResponse',heroes:'AllHeroResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
 const liveFacts=new WeakMap(),costSource='Fixed v76 RaidItem._onBtnGo: only the next unpassed stage uses TrialRaidChallengeRequest; sweep/buy/advert branches use a different request';
 export const TRIAL_CHALLENGE_EVIDENCE=Object.freeze({
  source:'Fixed v76 main/game.js RaidItem/TrialRaidUtil',challengeByteOffset:5480841,nextStageByteOffset:6766819,
- semantics:'Explicit passedStage=0 sentinel or exact configured predecessor; only raid1 next first-clear stage, zero resource cost. Confirmation requires matching typed raid/stage/reward and independent exact passedStage and full net rewards.',
+ semantics:'Explicit passedStage=0 sentinel or exact configured predecessor; explicit raid1/raid2/raid3 next first-clear stage, zero resource cost. Omitted raidId preserves legacy raid1. Confirmation requires matching typed raid/stage/reward and independent exact passedStage and full net rewards.',
  realGame:'REAL_UNVERIFIED'
 });
 export const TRIAL_CHALLENGE_DEFAULT_CONFIG=Object.freeze({enabled:false});
 export function validateTrialChallengeConfig(v={}) {
- if(!fields(v,['enabled'])||own(v,'enabled')&&typeof v.enabled!=='boolean')throw invalid('经验试炼配置只接受 enabled 布尔值');
+ if(!fields(v,['enabled'])||own(v,'enabled')&&typeof v.enabled!=='boolean')throw invalid('试炼配置只接受 enabled 布尔值');
  return {enabled:v.enabled??false};
 }
 export function validateTrialChallengeParameters(v={}) {
- if(!fields(v,[]))throw invalid('经验试炼只接受空参数，固定英雄经验副本下一首通关，禁止扫荡购买');
- return {};
+ if(!fields(v,['raidId'])||own(v,'raidId')&&!trialRaidId(v.raidId))throw invalid('首通试炼仅接受明确raidId=1/2/3；省略保留英雄经验副本，禁止扫荡购买');
+ return own(v,'raidId')?{raidId:v.raidId}:{};
 }
 function roleId(v) {
  if(typeof v==='number'&&(!Number.isSafeInteger(v)||v<=0))return null;
@@ -47,7 +48,7 @@ function contextOf(client,player) {
 }
 function parseRaid(raw) {
  const r=own(raw,'raid')?raw.raid:null;
- return ['raidId','passedStage','sweepTimes','buySweepTimes'].every(k=>own(r,k)&&uint(r[k]))&&r.raidId===1?{raidId:1,passedStage:r.passedStage,sweepTimes:r.sweepTimes,buySweepTimes:r.buySweepTimes}:null;
+ return ['raidId','passedStage','sweepTimes','buySweepTimes'].every(k=>own(r,k)&&uint(r[k]))&&trialRaidId(r.raidId)?{raidId:r.raidId,passedStage:r.passedStage,sweepTimes:r.sweepTimes,buySweepTimes:r.buySweepTimes}:null;
 }
 function parseHeroes(raw) {
  if(!own(raw,'heroes')||!dense(raw.heroes)||!raw.heroes.length)return null;
@@ -67,12 +68,12 @@ export async function surveyTrialChallenge(client,protocol,{config,player,parame
  const observations=await Promise.all(Object.entries(sources).map(async([key,response])=>{
   const name=response.replace(/Response$/,'Request');active();
   if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return[key,null,null];}
-  try{const value=await awaitExecution(client.request(name,key==='raid'?{raidId:1}:{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}
+  try{const value=await awaitExecution(client.request(name,key==='raid'?{raidId:raidIdOf(parameters)}:{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}
   catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return[key,null,null];}
  }));
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('试炼采集期间账号或连接变化'),{code:'CANCELLED'});
  const raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),raid=parseRaid(raw.raid),heroes=parseHeroes(raw.heroes),inventory=parseOperationInventory(raw.items,raw.resources);
- const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:k==='raid'?raid!==null:k==='heroes'?heroes!==null:inventory.stockReliable})]));
+ const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:sources[k],sourceAt,scope,reliable:k==='raid'?raid!==null&&raid.raidId===raidIdOf(parameters):k==='heroes'?heroes!==null:inventory.stockReliable})]));
  const f={module:moduleId,parameters,context,configEvidence:{tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context),available:Object.keys(protocol??{}),notes};
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
@@ -80,16 +81,16 @@ export async function surveyTrialChallenge(client,protocol,{config,player,parame
 function authority(f) {
  const live=liveFacts.get(f),c=f?.context;
  if(!live||live.digest!==digest(f)||live.client.connected!==true||!same(c,contextOf(live.client,live.player))||!text(c?.accountId)||!text(c?.connectionId)||!Number.isSafeInteger(c?.generation)||c.generation<0||!c.playerId||!c.worldId||!f.state||f.stockReliable!==true||!(f.stock instanceof Map))return false;
- if(!same(snapshot(f.inputs,c),f.state))return false;
+ if(!same(snapshot(f.inputs,c),f.state)||f.state.raid.raidId!==raidIdOf(f.parameters))return false;
  return Object.entries(sources).every(([k,source])=>f.sourceFacts?.[k]?.provenance?.source===source&&same(f.sourceFacts[k].value,f.inputs[k])&&factsFreshnessPolicy(f.sourceFacts[k],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
 
-function catalog(config) {
+function catalog(config,raidId) {
  const modules=config?.tables?.ModuleOpenCfg?.data,raids=config?.tables?.TrialRaidCfg?.data,stages=config?.tables?.TrialRaidStageCfg?.data,items=config?.tables?.ItemCfg?.data;
  if(!dense(modules)||!dense(raids)||!dense(stages)||!dense(items))return null;
  const gates=modules.filter(r=>own(r,'moduleId')&&r.moduleId==='试炼副本');
- if(gates.length!==1||!own(gates[0],'playerLevel')||!positive(gates[0].playerLevel)||raids.filter(r=>own(r,'raidId')&&r.raidId===1).length!==1||items.some(r=>!own(r,'id')||!text(r.id))||new Set(items.map(r=>r.id)).size!==items.length)return null;
- const rows=stages.filter(r=>own(r,'raidId')&&r.raidId===1).map(copy).sort((a,b)=>a.stageLevel-b.stageLevel);
+ if(gates.length!==1||!own(gates[0],'playerLevel')||!positive(gates[0].playerLevel)||raids.filter(r=>own(r,'raidId')&&r.raidId===raidId).length!==1||items.some(r=>!own(r,'id')||!text(r.id))||new Set(items.map(r=>r.id)).size!==items.length)return null;
+ const rows=stages.filter(r=>own(r,'raidId')&&r.raidId===raidId).map(copy).sort((a,b)=>a.stageLevel-b.stageLevel);
  if(!rows.length||new Set(rows.map(r=>r.stageId)).size!==rows.length)return null;
  for(let i=0;i<rows.length;i++){
   const r=rows[i];if(!own(r,'stageId')||!positive(r.stageId)||!own(r,'stageLevel')||r.stageLevel!==i+1||!own(r,'openLevel')||!positive(r.openLevel)||!own(r,'reward')||!dense(r.reward)||!r.reward.length)return null;
@@ -104,8 +105,8 @@ export function nextTrialStage(rows,passedStage) {
  return passedStage!==0&&index===-1?{known:false,stage:null}:{known:true,stage:rows[index+1]??null};
 }
 export function trialChallengeAction(target) {
- if(!fields(target,['raidId','stageId','passedStage'])||Reflect.ownKeys(target).length!==3||target.raidId!==1||!positive(target.stageId)||!uint(target.passedStage)||target.stageId===target.passedStage)throw invalid('经验试炼复核仅支持原raid1精确下一首通目标');
- return {request,response,body:buildDailyDriverBody(request,{raidId:1,stageId:target.stageId})};
+ if(!fields(target,['raidId','stageId','passedStage'])||Reflect.ownKeys(target).length!==3||!trialRaidId(target.raidId)||!positive(target.stageId)||!uint(target.passedStage)||target.stageId===target.passedStage)throw invalid('试炼复核仅支持原三类副本精确下一首通目标');
+ return {request,response,body:buildDailyDriverBody(request,{raidId:target.raidId,stageId:target.stageId})};
 }
 export function parseTrialChallengeState(value) {
  const keys=['context','raid','heroes','inventory'],c=value?.context,contextKeys=['accountId','generation','connectionId','playerId','worldId','playerLevel'];
@@ -122,36 +123,37 @@ export function trialChallengeExpectedState(before,stageId,rewards) {
 }
 export function trialChallengeReceipt(result,target) {
  const no=reason=>({confirmed:false,reason});
- if(!own(result,'raidId')||result.raidId!==1||!own(result,'stageId')||result.stageId!==target?.stageId||!own(result,'reward')||!own(result.reward,'asset')||!dense(result.reward.asset))return no('缺少相同副本、关卡及明确奖励回执');
+ if(!own(result,'raidId')||!trialRaidId(target?.raidId)||result.raidId!==target.raidId||!own(result,'stageId')||result.stageId!==target?.stageId||!own(result,'reward')||!own(result.reward,'asset')||!dense(result.reward.asset))return no('缺少相同副本、关卡及明确奖励回执');
  const assets=[];for(const a of result.reward.asset){const n=own(a,'num')?safeResourceQuantity(a.num):null;if(!own(a,'type')||a.type!==0||!own(a,'id')||!text(a.id)||n===null||n<=0)return no('奖励身份或数量不明确');assets.push({id:a.id,num:n});}
  let rewards;try{rewards=resourceCosts(assets).sort((a,b)=>a.id.localeCompare(b.id));}catch{return no('奖励数值无效');}
- return {raidId:1,stageId:target.stageId,rewards};
+ return {raidId:target.raidId,stageId:target.stageId,rewards};
 }
 export function verifyTrialChallengeOutcome(operation,before,after,receipt) {
- const no=reason=>({confirmed:false,reason}),b=parseTrialChallengeState(before),a=parseTrialChallengeState(after);try{trialChallengeAction(operation?.target);validateTrialChallengeParameters(operation?.parameters);}catch{return no('试炼原精确首通目标未知');}
- if(!b||!a||!same(b.context,a.context)||!same(operation.beforeState,b)||operation.target.passedStage!==b.raid.passedStage||!fields(receipt,['raidId','stageId','rewards'])||Reflect.ownKeys(receipt).length!==3||receipt.raidId!==1||receipt.stageId!==operation.target.stageId)return no('缺少原副本、关卡及完整typed结算凭据');
+ const no=reason=>({confirmed:false,reason}),b=parseTrialChallengeState(before),a=parseTrialChallengeState(after);try{trialChallengeAction(operation?.target);const p=validateTrialChallengeParameters(operation?.parameters);if(raidIdOf(p)!==operation.target.raidId)return no('试炼参数与原副本目标不一致');}catch{return no('试炼原精确首通目标未知');}
+ if(!b||!a||!same(b.context,a.context)||!same(operation.beforeState,b)||operation.target.raidId!==b.raid.raidId||operation.target.passedStage!==b.raid.passedStage||!fields(receipt,['raidId','stageId','rewards'])||Reflect.ownKeys(receipt).length!==3||receipt.raidId!==b.raid.raidId||receipt.stageId!==operation.target.stageId)return no('缺少原副本、关卡及完整typed结算凭据');
  const expected=trialChallengeExpectedState(b,receipt.stageId,receipt.rewards);
  if(!expected||!same(operation.expectedState,expected)||!same(a,expected))return no('独立首通进度、完整净入或无关英雄/次数未精确确认');
  return {confirmed:true,afterState:copy(a),reason:'精确关卡回执、独立首通进度与配置奖励净入共同确认',responseEvidence:copy(receipt)};
 }
-function candidate(f,{config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {
- const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence):null;
- const valid=authority(f),beforeState=copy(f?.state??null),passed=f?.state?.raid?.passedStage??null;
+function candidate(f,{config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}) {
+ parameters=validateTrialChallengeParameters(parameters);const raidId=raidIdOf(parameters);
+ const matches=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence,raidId):null;
+ const valid=authority(f)&&same(parameters,f.parameters),beforeState=copy(f?.state??null),passed=f?.state?.raid?.passedStage??null;
  const next=nextTrialStage(defs?.rows,passed),row=next.stage;
  let blockedReason=!validateTrialChallengeConfig(moduleConfig).enabled?'TRIAL_CHALLENGE_DISABLED':!valid?'TRIAL_CHALLENGE_AUTHORITY_UNKNOWN':!defs?'TRIAL_CHALLENGE_CONFIG_UNKNOWN':!next.known?'TRIAL_CHALLENGE_PROGRESS_UNKNOWN':!row?'TRIAL_CHALLENGE_COMPLETE':!positive(f.context.playerLevel)?'TRIAL_CHALLENGE_LEVEL_UNKNOWN':f.context.playerLevel<Math.max(defs.requiredLevel,row.openLevel)?'TRIAL_CHALLENGE_LEVEL_LOCKED':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const identity=hash({beforeState,defs}),stageId=row?.stageId??null;
- const budgetClaims={resources:[],quotas:[{id:moduleId+':first-clear:1:'+stageId,num:1}],uids:[{type:moduleId,id:'1:'+stageId}]};
+ const budgetClaims={resources:[],quotas:[{id:moduleId+':first-clear:'+raidId+':'+stageId,num:1}],uids:[{type:moduleId,id:raidId+':'+stageId}]};
  const expectedState=beforeState&&row?trialChallengeExpectedState(beforeState,stageId,row.rewards):null;if(valid&&positive(f.context.playerLevel)&&row&&!expectedState)blockedReason='TRIAL_CHALLENGE_REWARD_OVERFLOW';
- return {module:moduleId,actionId:moduleId+':1:'+stageId+':'+identity,actionType:'CHALLENGE',target:{raidId:1,stageId,passedStage:passed},parameters:{},identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'英雄经验试炼首通 '+stageId,requiredLevel:row?Math.max(defs.requiredLevel,row.openLevel):null,rewards:copy(row?.rewards??[]),
- ...(blockedReason===null?{action:trialChallengeAction({raidId:1,stageId,passedStage:passed})}:{})};
+ return {module:moduleId,actionId:moduleId+':'+raidId+':'+stageId+':'+identity,actionType:'CHALLENGE',target:{raidId,stageId,passedStage:passed},parameters:copy(parameters),identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:({1:'英雄经验',2:'强化石',3:'海兽经验'}[raidId])+'试炼首通 '+stageId,requiredLevel:row?Math.max(defs.requiredLevel,row.openLevel):null,rewards:copy(row?.rewards??[]),
+ ...(blockedReason===null?{action:trialChallengeAction({raidId,stageId,passedStage:passed})}:{})};
 }
 export function viewTrialChallenge(f,options={}) {
  validateTrialChallengeParameters(options.parameters??{});
- return {module:moduleId,raid:copy(f?.state?.raid??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅英雄经验副本下一首通关；当前阵容由服务器结算，不预测胜负。扫荡/购买/广告及其他副本未接入，结果不明不重放。']};
+ return {module:moduleId,raid:copy(f?.state?.raid??null),raidSelection:[1,2,3].flatMap(raidId=>{const defs=catalog(options.config,raidId);return defs?[{raidId,label:{1:'英雄经验',2:'强化石',3:'海兽经验'}[raidId],requiredLevel:Math.max(defs.requiredLevel,defs.rows[0].openLevel)}]:[];}),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅明确所选英雄经验/强化石/海兽经验副本下一首通关；默认仍为英雄经验。当前阵容由服务器结算，不预测胜负。扫荡/购买/广告及其他副本未接入，结果不明不重放。']};
 }
 export function planTrialChallenge(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateTrialChallengeParameters(parameters);
- if(!dense(selections)||selections.length>1||selections.some(v=>!text(v)))throw invalid('经验试炼每批只允许一个精确 actionId');
+ if(!dense(selections)||selections.length>1||selections.some(v=>!text(v)))throw invalid('试炼每批只允许一个精确 actionId');
  const row=viewTrialChallenge(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));
  return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};
 }
@@ -165,4 +167,4 @@ export function verifyTrialChallenge(operation,before,after,result) {
  return verifyTrialChallengeOutcome(operation,before.state,after.state,receipt);
 }
 export function trialChallengeDependencyVersions({config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {return {moduleConfig:validateTrialChallengeConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const trialChallengeModule=Object.freeze({id:moduleId,label:'英雄经验试炼首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:businessRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});
+export const trialChallengeModule=Object.freeze({id:moduleId,label:'试炼副本首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:businessRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});
