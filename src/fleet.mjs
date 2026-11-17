@@ -168,7 +168,7 @@ export function prepareCargoFillWorkflow(facts,{config=facts?.config,moduleConfi
 // petrol limit. Hashes constrain planning; actions and recovery retain their
 // original parameters, identity, costs, beforeState and verifier.
 function repairPreparationHash(row,opts){
-  return cargoSnapshotHash({beforeState:row.beforeState,costs:row.costs,costSource:row.costSource,expectedState:row.expectedState,config:opts});
+  return cargoSnapshotHash({...(row.actionType==='fleetRepair'?{}:{actionType:row.actionType}),beforeState:row.beforeState,costs:row.costs,costSource:row.costSource,expectedState:row.expectedState,config:opts});
 }
 export function validateCargoClaimPreparation(value){
  strictParameters(value,['action','claims','maxDurationMs']);
@@ -192,30 +192,30 @@ export function prepareCargoClaimWorkflow(facts,{config=facts?.config,moduleConf
 }
 
 export function validateFleetRepairPreparation(value){
-  strictParameters(value,['repairs','maxDurationMs']);
-  if(Reflect.ownKeys(value).length!==2||!['repairs','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||!fieldDense(value.repairs)||!value.repairs.length||value.repairs.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('维修组合须明确1至24艘不同舰队及有限总时长');
-  const repairs=value.repairs.map(row=>{parametersOf(row);if(!Object.hasOwn(row,'expectedRepairHash'))throw invalid('维修组合缺少原状态摘要');return {buildingId:row.buildingId,expectedRepairHash:row.expectedRepairHash};});
-  if(new Set(repairs.map(row=>row.buildingId)).size!==repairs.length)throw invalid('维修组合不得重复舰队');
-  return {repairs,maxDurationMs:value.maxDurationMs};
+  strictParameters(value,['action','repairs','maxDurationMs']);
+  const hasAction=Object.hasOwn(value,'action');
+  if(Reflect.ownKeys(value).length!==(hasAction?3:2)||!['repairs','maxDurationMs',...(hasAction?['action']:[])].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||hasAction&&!['repair','stop-repair','stop-auto-fight'].includes(value.action)||!fieldDense(value.repairs)||!value.repairs.length||value.repairs.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('舰队维护组合须明确repair/stop-repair/stop-auto-fight之一、1至24艘不同舰队及有限总时长；旧省略action仍维修');
+  const repairs=value.repairs.map(row=>{parametersOf(row);if(!Object.hasOwn(row,'expectedRepairHash'))throw invalid('维护组合缺少原状态摘要');return {buildingId:row.buildingId,expectedRepairHash:row.expectedRepairHash};});
+  if(new Set(repairs.map(row=>row.buildingId)).size!==repairs.length)throw invalid('维护组合不得重复舰队');
+  return {...(hasAction?{action:value.action}:{}),repairs,maxDurationMs:value.maxDurationMs};
 }
 export function prepareFleetRepairWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
-  const p=validateFleetRepairPreparation(input),opts=validateFleetConfig(moduleConfig),stock=cargoInventory(facts);
-  if(!stock)throw invalid('维修组合缺少完整库存');
+  const p=validateFleetRepairPreparation(input),opts=validateFleetConfig(moduleConfig),stock=cargoInventory(facts),kind=p.action??'repair',actionType={repair:'fleetRepair','stop-repair':'fleetStopRepair','stop-auto-fight':'fleetStopAutoFight'}[kind];
+  if(!stock)throw invalid('维护组合缺少完整库存');
   const rows=buildCandidates(facts,{config,moduleConfig:opts,parameters:{}}),selected=p.repairs.map(target=>{
-    const row=rows.find(row=>row.actionType==='fleetRepair'&&row.target.buildingId===target.buildingId);
-    if(!row||row.decision!=='READY'||repairPreparationHash(row,opts)!==target.expectedRepairHash)throw invalid('所选舰队的维修资格、状态、成本或配置已改变；须重新调查');
+    const row=rows.find(row=>row.actionType===actionType&&row.target.buildingId===target.buildingId);
+    if(!row||row.decision!=='READY'||repairPreparationHash(row,opts)!==target.expectedRepairHash)throw invalid('所选舰队的维护资格、状态、成本或配置已改变；须重新调查');
     return {actionId:row.actionId};
   }),ledger=new ResourceLedger(stock),planned=planFleet(facts,{config,moduleConfig:opts,parameters:{},selections:selected,ledger});
-  if(planned.actions.length!==p.repairs.length||planned.actions.some(row=>row.actionType!=='fleetRepair'))throw invalid('原累计维修上限、汽油保留线或资格不允许完成全部所选舰队');
+  if(planned.actions.length!==p.repairs.length||planned.actions.some(row=>row.actionType!==actionType||kind!=='repair'&&row.costs.length))throw invalid('原维护资格、累计维修上限或汽油保留线不允许完成全部所选舰队');
   const nodes=[{id:'start',type:'START'}],steps=planned.actions.map((row,i)=>{
     const parameters={buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,opts)},selection={actionId:row.actionId};
-    nodes.push({id:'repair-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});
+    nodes.push({id:kind+'-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});
     return {parameters,selection,costs:structuredClone(row.costs)};
-  });
-  nodes.push({id:'stop',type:'STOP'});
+  });nodes.push({id:'stop',type:'STOP'});
   const budget={resources:[...ledger.reserved].sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num})),quotas:[],uids:[]};
-  return {...p,steps,budget,graph:{version:1,id:'fleet-repair-'+cargoSnapshotHash({payload:p,steps,budget}).slice(0,20),name:'明确舰队有限维修',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
-    limitation:'仅维修本次明确选择且符合原阈值的舰队，顺序、累计汽油上限及保留线均使用原计划器。每舰重新调查、核对原状态及成本、独立计划授权并验证完整库存净扣和维修开始或完成；不推断全部维修到期、不派遣、不加速、不补油。状态或配置变化、拒绝及UNKNOWN停止，准备不执行、不授权，重启只读。'};
+  return {...p,steps,budget,graph:{version:1,id:'fleet-'+kind+'-'+cargoSnapshotHash({payload:p,steps,budget}).slice(0,20),name:kind==='repair'?'明确舰队有限维修':kind==='stop-repair'?'明确舰队逐舰停止维修':'明确舰队逐舰关闭委任',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+    limitation:kind==='repair'?'仅维修本次明确选择且符合原阈值的舰队，顺序、累计汽油上限及保留线均使用原计划器。每舰重新调查、核对原状态及成本、独立计划授权并验证完整库存净扣和维修开始或完成；不推断全部维修到期、不派遣、不加速、不补油。状态或配置变化、拒绝及UNKNOWN停止，准备不执行、不授权，重启只读。':'仅对明确所选且当前合格舰队逐一'+(kind==='stop-repair'?'停止维修':'关闭委任')+'；每舰原Function重新调查、核对原动作/状态/配置摘要、单次授权及原MyFleets独立停止验证。原请求零资源支出，父预算不扩额；状态变化、拒绝或UNKNOWN停止，不重发、不恢复执行，不开启委任、维修、派遣或加速。'};
 }
 
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
@@ -452,13 +452,13 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
     candidates.push(candidate('cargoClaim',{shipIndex:ship.index},[],'客户端 ARRIVED 分支领取现有奖励，无购买/加速',{ship:parsed},parsed?cargoClaimExpected(parsed):null,action.request,action.response,action.body,{shipIndex:ship.index},reason));
   }
   if(parameters.expectedCargoHash!==undefined&&parameters.cargoIndex===undefined)return candidates.filter(row=>row.actionType==='cargoClaim');
-  if(parameters.expectedRepairHash!==undefined)return candidates.filter(row=>row.actionType==='fleetRepair').map(row=>{
+  if(parameters.expectedRepairHash!==undefined)return candidates.filter(row=>['fleetRepair','fleetStopRepair','fleetStopAutoFight'].includes(row.actionType)).map(row=>{
     if(repairPreparationHash(row,opts)===parameters.expectedRepairHash)return row;
     return {...row,decision:'BLOCKED',reason:'REPAIR_PREPARATION_STATE_CHANGED',action:null};
   });
   return candidates;
 }
-export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, repairPreparation:candidates.filter(row=>row.actionType==='fleetRepair').map(row=>({buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), worldScope:{source:'WorldInfoResponse.cities',completeness:'CURRENT_RESPONSE_ONLY',query:facts.worldQuery?structuredClone(facts.worldQuery):null,sourceAt:facts.sourceAt?.WorldInfoRequest??null,status:facts.citiesReliable===true?'OBSERVED':'UNKNOWN'}, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, maintenancePreparation:candidates.filter(row=>['fleetStopRepair','fleetStopAutoFight'].includes(row.actionType)).map(row=>({actionType:row.actionType,buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), repairPreparation:candidates.filter(row=>row.actionType==='fleetRepair').map(row=>({buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), worldScope:{source:'WorldInfoResponse.cities',completeness:'CURRENT_RESPONSE_ONLY',query:facts.worldQuery?structuredClone(facts.worldQuery):null,sourceAt:facts.sourceAt?.WorldInfoRequest??null,status:facts.citiesReliable===true?'OBSERVED':'UNKNOWN'}, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
   { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },
