@@ -218,6 +218,19 @@ export function prepareFleetRepairWorkflow(facts,{config=facts?.config,moduleCon
     limitation:kind==='repair'?'仅维修本次明确选择且符合原阈值的舰队，顺序、累计汽油上限及保留线均使用原计划器。每舰重新调查、核对原状态及成本、独立计划授权并验证完整库存净扣和维修开始或完成；不推断全部维修到期、不派遣、不加速、不补油。状态或配置变化、拒绝及UNKNOWN停止，准备不执行、不授权，重启只读。':'仅对明确所选且当前合格舰队逐一'+(kind==='stop-repair'?'停止维修':'关闭委任')+'；每舰原Function重新调查、核对原动作/状态/配置摘要、单次授权及原MyFleets独立停止验证。原请求零资源支出，父预算不扩额；状态变化、拒绝或UNKNOWN停止，不重发、不恢复执行，不开启委任、维修、派遣或加速。'};
 }
 
+export function validateFleetMovePreparation(value){
+ strictParameters(value,['buildingIds','cityId','screenCenter','maxDurationMs']);const hasCenter=Object.hasOwn(value,'screenCenter');
+ if(Reflect.ownKeys(value).length!==(hasCenter?4:3)||!['buildingIds','cityId','maxDurationMs',...(hasCenter?['screenCenter']:[])].every(key=>{const d=Object.getOwnPropertyDescriptor(value,key);return d?.enumerable&&Object.hasOwn(d,'value');})||!fieldDense(value.buildingIds)||value.buildingIds.length<1||value.buildingIds.length>24||value.buildingIds.some(id=>!nonempty(id)||id.trim()!==id||id.length>300)||new Set(value.buildingIds).size!==value.buildingIds.length||(hasCenter&&value.screenCenter===undefined)||!Number.isSafeInteger(value.cityId)||value.cityId<1||value.cityId>2147483647||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('移动组合须明确1至24艘不同舰队、同一当前视野城市及有限总时长');
+ return {buildingIds:[...value.buildingIds],cityId:value.cityId,...(hasCenter?worldObservationQuery(value.screenCenter):{}),maxDurationMs:value.maxDurationMs};
+}
+export function prepareFleetMoveWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
+ const p=validateFleetMovePreparation(input),parameters={cityId:p.cityId,...(p.screenCenter===undefined?{}:worldObservationQuery(p.screenCenter))},stock=cargoInventory(facts);if(!stock||stable(facts.worldQuery)!==stable(worldObservationQuery(p.screenCenter)))throw invalid('移动组合缺少当前完整库存或原查询视野不一致');
+ const rows=buildCandidates(facts,{config,moduleConfig,parameters}),selections=p.buildingIds.map(id=>{const row=rows.find(row=>row.actionType==='fleetMove'&&row.target.buildingId===id&&row.target.cityId===p.cityId);if(row?.decision!=='READY')throw invalid('所选舰队无当前原移动资格或成本未知；须重新调查');return {actionId:row.actionId};}),ledger=new ResourceLedger(stock),plan=planFleet(facts,{config,moduleConfig,parameters,selections,ledger});
+ if(plan.actions.length!==p.buildingIds.length||plan.actions.some(row=>row.actionType!=='fleetMove'))throw invalid('原移动计划器的累计汽油或保留线不足，不得用预计收入补足');
+ const nodes=[{id:'start',type:'START'}],steps=plan.actions.map((row,i)=>{const parameters=structuredClone(row.parameters),selection={actionId:row.actionId};nodes.push({id:'move-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});return {parameters,selection,target:structuredClone(row.target),costs:structuredClone(row.costs)};});nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};return {...p,worldQuery:structuredClone(facts.worldQuery),steps,budget,graph:{version:1,id:'fleet-moves-'+cargoSnapshotHash({p,steps,budget}).slice(0,20),name:'明确舰队逐舰定点移动',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确舰队向同一当前视野城市逐舰移动；复用原planFleet、城市归属/地图汽油算法及累计保留线，父汽油上限固定为准备时原总成本。每舰重新调查并单独预览授权当前具体成本，独立确认完整库存净扣及移动或到达；资格失效、预算不足、拒绝或UNKNOWN停止。不扩视野、自动追踪、攻城、占田、维修、补油、加速或恢复执行；到达不表示战斗胜利。'};
+}
+
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
 // The live survey and read-only recovery consume the same OnWater projection.
 export function fleetFormationBuildings(source) {
