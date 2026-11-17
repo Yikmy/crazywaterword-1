@@ -224,11 +224,40 @@ function preparationRecipes(f,config){
     return {...copy(recipe),qualityIndex:reliable?first.qualityIndex:null,qualityName:reliable?first.qualityName:null,qualityReliable:reliable};
   });
 }
+function validateForgeBatchPreparation(v){
+  if(!fields(v,['action','targets','expectedEquipmentCounts','maxDurationMs'])||Reflect.ownKeys(v).length!==4||!['make','pick'].includes(v.action)||!dense(v.targets)||Object.getPrototypeOf(v.targets)!==Array.prototype||v.targets.length<1||v.targets.length>24||Reflect.ownKeys(v.targets).length!==v.targets.length+1||!Array.from({length:v.targets.length},(_,i)=>own(Object.getOwnPropertyDescriptor(v.targets,String(i)),'value')).every(Boolean)||!validCounts(v.expectedEquipmentCounts)||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('制造/收取组合须明确1至24个不同装备厂、完整部位数量及有限时长');
+  const targets=v.targets.map(row=>{
+    const keys=['buildingId','expectedQueue',...(v.action==='make'?['makeId']:[])];
+    if(!fields(row,keys)||Reflect.ownKeys(row).length!==keys.length)throw invalid('每厂须明确原建筑、队列及制造配方（仅制造模式）');
+    const p=validateForgeParameters({...row,action:v.action});if(!p.buildingId||!p.expectedQueue)throw invalid('目标缺少明确建筑或原批次');return {buildingId:p.buildingId,expectedQueue:p.expectedQueue,...(v.action==='make'?{makeId:p.makeId}:{})};
+  });if(new Set(targets.map(row=>row.buildingId)).size!==targets.length)throw invalid('同一装备厂每组合仅操作一次');
+  return {action:v.action,targets,expectedEquipmentCounts:copy(v.expectedEquipmentCounts),maxDurationMs:v.maxDurationMs};
+}
+function prepareEquipmentForgeBatch(f,{config,moduleConfig,...input}){
+  const payload=validateForgeBatchPreparation(input),counted=equipmentCounts(f,config),ledger=new ResourceLedger(f?.stockReliable?f.stock:null),nodes=[{id:'start',type:'START'}];
+  if(!counted.reliable||!same(counted.counts,payload.expectedEquipmentCounts))throw invalid('装备完整部位数量或原来源变化，须重新调查');
+  const counts=copy(payload.expectedEquipmentCounts),making=payload.action==='make';
+  const steps=payload.targets.map((target,i)=>{
+    const current={buildingId:target.buildingId,action:payload.action,expectedQueue:copy(target.expectedQueue),expectedEquipmentCounts:copy(payload.expectedEquipmentCounts),...(making?{makeId:target.makeId,allowUniversal:false}:{})},selection={unique:true},plan=planEquipmentForge(f,{config,moduleConfig,parameters:current,ledger});
+    if(plan.actions.length!==1)throw invalid('所选厂当前队列/资格或累计初始材料不满足原合同：'+(plan.notes[0]??'UNKNOWN'));
+    const row=plan.actions[0],parameters={...current,expectedEquipmentCounts:copy(counts)};
+    if(!making&&row.costs.length!==0)throw invalid('原装备收取不得增加成本');
+    nodes.push({id:payload.action+'-'+i,type:'ACTION',module:'equipment-forge',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'equipment-forge'});
+    // The original verified MAKE creates exactly one queue of the recipe's proven type.
+    // No hypothetical future queue, result UID or finish time is added to the facts.
+    if(making){const type=f.catalog.recipes.find(recipe=>recipe.makeId===target.makeId)?.type;if(!equipmentTypes.includes(type)||!uint(counts[type]+1))throw invalid('制造部位数量来源无效或溢出');counts[type]++;}
+    return {parameters,selection,target:copy(row.target),costs:copy(row.costs)};
+  });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+  return {...payload,steps,budget,graph:{version:1,id:'forge-'+payload.action+'-'+hash(payload).slice(0,20),name:making?'明确多个空闲装备厂逐厂单份制造':'明确多个成熟装备厂逐厂收取',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:['equipment-forge']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'明确不同厂的同一种原制造/收取动作，每厂一次；制造仅原空闲队列、自有普通材料和明确配方，不使用通用材料，固定初始材料父预算。部位数量沿原闲置背包＋在产队列：制造在原验证确认一个指定部位队列后才递增后项守卫，收取只转入背包。逐厂重新调查、单次授权及原队列/typed收取产物/新唯一UID/完整库存及其他建筑英雄不变验证；变化、拒绝或UNKNOWN停止。不等待未来成熟、不推测随机产物或时长、不预支收入、不重放，重启只读。'};
+}
+
 export function validateForgePreparation(value){
+  if(['make','pick'].includes(Object.getOwnPropertyDescriptor(value??{},'action')?.value))return validateForgeBatchPreparation(value);
   if(!fields(value,['buildingId','makeIds','maxDurationMs'])||!own(value,'buildingId')||!id(value.buildingId)||!own(value,'makeIds')||!dense(value.makeIds)||Object.getPrototypeOf(value.makeIds)!==Array.prototype||value.makeIds.length<1||value.makeIds.length>50||Reflect.ownKeys(value.makeIds).length!==value.makeIds.length+1||!Array.from({length:value.makeIds.length},(_,i)=>own(Object.getOwnPropertyDescriptor(value.makeIds,String(i)),'value')).every(Boolean)||!value.makeIds.every(positive)||new Set(value.makeIds).size!==value.makeIds.length||!own(value,'maxDurationMs')||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('准备须明确装备厂、1至50个不同允许配方和1至86400000毫秒总时长');
   return {buildingId:value.buildingId,makeIds:[...value.makeIds],maxDurationMs:value.maxDurationMs};
 }
 export function prepareEquipmentForgeWorkflow(f,{config,moduleConfig=FORGE_DEFAULT_CONFIG,...input}={}){
+  if(['make','pick'].includes(Object.getOwnPropertyDescriptor(input,'action')?.value))return prepareEquipmentForgeBatch(f,{config,moduleConfig,...input});
   const payload=validateForgePreparation(input),counted=equipmentCounts(f,config),b=f?.buildings?.find(row=>row.buildingId===payload.buildingId);
   if(!validateForgeConfig(moduleConfig).enabled||!counted.reliable||b?.type!=='装备厂'||!baseBuilding(b)||!b.queue||clock(f).earliest===null||f.season===null)throw invalid('准备缺少完整部位数量、装备厂、开启配置、赛季或可信时钟');
   const recipes=preparationRecipes(f,config),allowed=payload.makeIds.map(makeId=>recipes.find(row=>row.makeId===makeId));

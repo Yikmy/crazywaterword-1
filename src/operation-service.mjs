@@ -642,7 +642,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       plans.delete(session.id);
       const adapter=adapterFor('equipment-forge'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'equipment-forge').config;
       const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'equipment-forge').config})),dependency=dependencies();
-      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:{buildingId:payload.buildingId},signal:session.abort.signal});current(session,generation,client);
+      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:payload.action?{}:{buildingId:payload.buildingId},signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('装备厂准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=prepareEquipmentForgeWorkflow(facts,{config,moduleConfig,...payload});
       return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
