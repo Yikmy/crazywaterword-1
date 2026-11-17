@@ -255,6 +255,19 @@ export function viewPet(f,{config,moduleConfig,parameters=f?.parameters??{}}={})
   return {module:moduleId,mode:p.action??'feed',serving:valid?f.buildings.filter(b=>['宠物','宠物B','宠物C'].includes(makeTypeResolver(config)(b.buildingId))).map(b=>({buildingId:b.buildingId,uid:b.petServe?.petUid??null})):[],playerLevel:f?.levelSource?.playerLevel??null,rooms:rooms.map(b=>({buildingId:b.buildingId,level:b.level,queue:copy(b.petBreed)})),pets:valid?copy(f.pets):[],secondsReduced:valid?f.catalog.seconds:null,
     breeding:petBreedQualification(f,{config}),candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
 }
+export function validatePetGrowthPreparation(value){
+ if(!fields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!dense(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('海兽组合须明确1至24个不同目标及有限总时长');
+ const targets=value.targets.map(row=>{const p=validatePetParameters(row),keys=p.action==='level'?['action','buildingId','uid']:['action','buildingId','jobIdx'];if(!['level','feed'].includes(p.action)||Reflect.ownKeys(p).length!==3||keys.some(key=>!own(p,key)))throw invalid('海兽组合只允许完整明确的原在岗UID升级或建筑/队列投喂参数');return p;});
+ if(targets.some(p=>p.action!==targets[0].action)||targets[0].action==='level'&&(!unique(targets,p=>p.uid)||!unique(targets,p=>p.buildingId))||targets[0].action==='feed'&&(!unique(targets,p=>p.jobIdx)||!unique(targets,p=>p.buildingId+':'+p.jobIdx)))throw invalid('同批只允许一种原动作，每在岗海兽/建筑或明确队列仅一次');
+ return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function preparePetGrowthWorkflow(facts,{config,moduleConfig=PET_DEFAULT_CONFIG,...input}={}){
+ const p=validatePetGrowthPreparation(input);if(facts?.parameters?.action!==p.targets[0].action||!authority(facts,config)||liveFacts.get(facts)?.client.connected!==true)throw invalid('海兽组合不得跨原调查模式或失效来源');
+ const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}];
+ const steps=p.targets.map((parameters,i)=>{const plan=planPet(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('海兽目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0],selection={actionId:row.actionId};nodes.push({id:'grow-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:copy(row.budgetClaims)};});
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'pet-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确海兽逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批一种原动作，每个明确在岗海兽UID升一级，或每个明确建筑/队列只投喂一次（原idx含0）。原私有来源、planPet和共享Ledger累计核初始自有材料，原海兽/建筑或队列UID父预算固定；固定原actionId中的在岗等级或队列开始/完成/海兽身份，逐项重新调查、单次授权和完整目标/非目标状态及库存精确净扣验证。资格变化、拒绝或UNKNOWN停止，不替换在岗海兽、不培育、领取成熟奖励、补购或重放，不新增恢复权限。'};
+}
 export function planPet(f,{config,moduleConfig,parameters={},selections,ledger=new ResourceLedger(f?.stockReliable?f.stock:null)}={}){
   const c=candidate(f,parameters,{config,moduleConfig});
   return c.executable&&(selections===undefined||selections.includes(c.actionId))&&ledger.reserve(c.costs)?{module:moduleId,actions:[c],notes:[]}:{module:moduleId,actions:[],notes:[c.blockedReason??'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_INSUFFICIENT']};
