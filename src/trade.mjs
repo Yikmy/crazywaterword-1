@@ -23,8 +23,9 @@ export function validateTradeParameters(v={}){
  if(plain(v,['action','cityId','mvToCityId','num'])&&v.action==='speed'&&['cityId','mvToCityId','num'].every(k=>positive(get(v,k))))return {action:'speed',cityId:v.cityId,mvToCityId:v.mvToCityId,num:v.num};
  if(plain(v,['action','cityId','mvToCityId'])&&v.action==='move'&&positive(get(v,'cityId'))&&positive(get(v,'mvToCityId'))&&v.cityId!==v.mvToCityId)return {action:'move',cityId:v.cityId,mvToCityId:v.mvToCityId};
  if(plain(v,['action','goodsId','cityId','num'])&&v.action==='buy'&&['goodsId','cityId','num'].every(k=>own(v,k)&&positive(v[k])))return {action:'buy',goodsId:v.goodsId,cityId:v.cityId,num:v.num};
- if(!plain(v,['action','pid','cityId','num'])||v.action!=='sell'||!['pid','cityId','num'].every(k=>own(v,k)&&positive(v[k])))throw invalid('海商王只接受空观察参数，或 sell 与明确正int32 pid/cityId/num；buy须明确goodsId/cityId/num；move须明确不同的cityId/mvToCityId；speed须明确当前cityId/mvToCityId/num；禁止自动数量或原始请求');
- return {action:'sell',pid:v.pid,cityId:v.cityId,num:v.num};
+ if(!plain(v,['action','pid','cityId','num','expectedPeriod','expectedSaleHash'])||v.action!=='sell'||!['pid','cityId','num'].every(k=>own(v,k)&&positive(v[k])))throw invalid('海商王只接受空观察参数，或 sell 与明确正int32 pid/cityId/num；buy须明确goodsId/cityId/num；move须明确不同的cityId/mvToCityId；speed须明确当前cityId/mvToCityId/num；禁止自动数量或原始请求');
+ const guarded=own(v,'expectedPeriod')||own(v,'expectedSaleHash');if(guarded&&(!positive(get(v,'expectedPeriod'))||typeof get(v,'expectedSaleHash')!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedSaleHash)))throw invalid('出售守卫须同时明确原活动期数与64位原报价身份摘要');
+ return {action:'sell',pid:v.pid,cityId:v.cityId,num:v.num,...(guarded?{expectedPeriod:v.expectedPeriod,expectedSaleHash:v.expectedSaleHash}:{})};
 }
 export function validateTradeConfig(v={}){if(!plain(v,['enabled'])||own(v,'enabled')&&typeof v.enabled!=='boolean')throw invalid('海商王配置只接受 enabled 布尔值');return {enabled:get(v,'enabled')??false};}
 function id(v){
@@ -140,6 +141,7 @@ function saleCandidate(f,{config=f?.configEvidence,moduleConfig={enabled:false}}
  const liveState=live.get(f),time=liveState?clockOf(liveState.client,f.context):null,window=f?.activity?.period;
  const configMatches=same(tables.map(n=>config?.tables?.[n]??null),tables.map(n=>f?.configEvidence?.tables?.[n]??null));
  let reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!configMatches?'TRADE_CONFIG_CHANGED':view.status!=='OBSERVED'?'TRADE_PORT_OBSERVATION_UNKNOWN':minimum===null?'TRADE_MODULE_LEVEL_UNKNOWN':f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!time||!f.clock.start||!f.clock.end||!positive(window?.period)||window.period!==period||[f.clock.start,f.clock.end,time].some(c=>c.earliestMs<window.startTime*1000||c.latestMs>=window.endTime*1000)?'TRADE_PERIOD_OR_CLOCK_UNKNOWN':view.tradingHours.status!=='OPEN'?view.tradingHours.reason:!holding||holding.cityId===p.cityId||beforeState.cargo.cityId!==p.cityId||p.num>holding.num?'TRADE_EXACT_HOLDING_OR_PORT_UNKNOWN':!quote||quote.status!=='PREVIEW'?'TRADE_NON_LOSS_QUOTE_UNKNOWN':quote.total+beforeState.player.coins>2147483647?'TRADE_COINS_OVERFLOW':!['gotAchieveRwdId','gotReportRwdId','guildReportNum'].every(k=>get(f.first,k)===get(f.last,k))?'TRADE_CLAIM_STATE_CHANGED':![saleRequest,saleResponse].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ if(!reason&&own(p,'expectedPeriod')&&(p.expectedPeriod!==period||salePreparationHash(f,view,p.pid)!==p.expectedSaleHash))reason='TRADE_SALE_PREPARATION_CHANGED';
  const goods=holding?beforeState.player.goods.flatMap(r=>r.pid!==p.pid?[copy(r)]:r.num===p.num?[]:[{...r,num:r.num-p.num}]):[];
  const expectedState=holding&&quote?.status==='PREVIEW'?{context:copy(beforeState.context),period,cargo:copy(beforeState.cargo),claims:copy(beforeState.claims),inventory:copy(beforeState.inventory),player:{coins:beforeState.player.coins+quote.total,buySpeedTimes:beforeState.player.buySpeedTimes,goods},receiptRule:{source:'TradeSellResponse.player',fields:['maxCoins','profit'],constraint:'EXACT_TYPED_AND_INDEPENDENT_TRADE_INFO',predicted:false}}:null;
  const target={period,cityId:p.cityId,pid:p.pid,num:p.num},budgetClaims={resources:[],quotas:[{id:'trade:'+period+':holding:'+p.pid,num:p.num}],uids:[{type:'trade-holding',id:period+':'+p.pid}]};
@@ -230,8 +232,37 @@ function tradeLegClockObservation(f){
  const known=Boolean(cargo&&positive(cargo.moveStartTime)&&cargo.moveStartTime<cargo.moveEndTime&&cargo.cityId===p.cityId&&cargo.moveToCityId===p.mvToCityId&&clock&&clock.earliestMs>=cargo.moveStartTime*1000),leg=known?{period:f.state.period,...cargo}:null,bounds=known?{earliestMs:clock.earliestMs,latestMs:clock.latestMs}:null;
  return validateTradeLegClockObservation({status:known?'OBSERVED':'UNKNOWN',source:legClockSource,leg,sourceAt:known?f.sourceAt.findLast(row=>row.name==='TradeInfoRequest').at:null,serverBounds:bounds,readiness:known?legClockReadiness(leg,bounds):'UNKNOWN',arrivalConfirmed:false,eligibility:null,executable:false,autoResume:false});
 }
+
+function salePreparationHash(f,view,pid){
+ const info=infoOf(f?.first),holding=info.goods?.find(row=>row.pid===pid),ship=info.cargo?configRow(f?.configEvidence,'TradeShipCfg','lv',info.cargo.cargoLv):null,price=holding?view.prices?.find(row=>row.goodsId===holding.goodsId)?.price:null;
+ return current(f)&&view.status==='OBSERVED'&&holding&&ship&&uint(price)&&f.activityStable?hash({context:f.context,period:info.period,window:f.activity?.period??null,cargo:info.cargo,holding,price,config:f.configEvidence}):null;
+}
+function tradeSaleTargets(f,view){
+ if(!['sell',undefined].includes(f?.parameters?.action)||view.status!=='OBSERVED')return [];
+ return (view.quotes??[]).filter(quote=>quote.status==='PREVIEW').flatMap(quote=>{const holding=view.holdings.find(row=>row.pid===quote.pid),guard=salePreparationHash(f,view,quote.pid);return holding&&guard?[{parameters:{action:'sell',cityId:view.cargo.cityId,pid:holding.pid,num:holding.num,expectedPeriod:view.period,expectedSaleHash:guard},quote:copy(quote),readOnly:true,preparationRequired:true}]:[];});
+}
+export function validateTradeSalePreparation(v){
+ if(!plain(v,['cityId','expectedPeriod','sales','maxDurationMs'])||Reflect.ownKeys(v).length!==4||!positive(v.cityId)||!positive(v.expectedPeriod)||!dense(v.sales)||!v.sales.length||v.sales.length>24||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('出售组合须明确当前港口/活动期数、1至24个不同持货批次和有限总时长');
+ const sales=v.sales.map(row=>{if(!plain(row,['pid','num','expectedSaleHash'])||Reflect.ownKeys(row).length!==3)throw invalid('出售目标须明确pid/全批数量/原报价身份摘要');const p=validateTradeParameters({action:'sell',cityId:v.cityId,expectedPeriod:v.expectedPeriod,...row});return {pid:p.pid,num:p.num,expectedSaleHash:p.expectedSaleHash};});
+ if(new Set(sales.map(row=>row.pid)).size!==sales.length)throw invalid('出售组合不得重复持货PID');return {cityId:v.cityId,expectedPeriod:v.expectedPeriod,sales,maxDurationMs:v.maxDurationMs};
+}
+export function prepareTradeSaleWorkflow(f,{config=f?.configEvidence,moduleConfig={enabled:false},...input}={}){
+ const p=validateTradeSalePreparation(input),view=observationTrade(f,{config}),owner=live.get(f);
+ if(!owner||f?.parameters?.action!=='sell'||!tradeAuthority(f)||view.status!=='OBSERVED'||view.period!==p.expectedPeriod||view.cargo?.cityId!==p.cityId)throw invalid('出售组合的当前活动、港口或完整原始来源已改变；须重新调查');
+ const nodes=[{id:'start',type:'START'}];let coins=f.state.player.coins;
+ const steps=p.sales.map((sale,i)=>{const parameters={action:'sell',cityId:p.cityId,expectedPeriod:p.expectedPeriod,...sale},holding=f.state.player.goods.find(row=>row.pid===sale.pid);
+  if(!holding||holding.num!==sale.num)throw invalid('仅支持明确所选持货全批数量；持货变化须重新调查，部分出售保留原单次入口');
+  const target={...f,parameters};live.set(target,{client:owner.client,player:owner.player,digest:digest(target)});
+  const row=saleCandidate(target,{config,moduleConfig},view);if(!row.executable)throw Object.assign(new Error('明确持货尚无当前出售资格：'+row.blockedReason),{code:row.blockedReason,statusCode:409});
+  coins+=row.quote.total;if(!uint(coins))throw invalid('所选全批出售超过原贸易币int32余额边界');
+  const selection={unique:true};nodes.push({id:'sale-'+i,type:'ACTION',module:'trade',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'trade'});return {parameters,selection,costs:[],quote:copy(row.quote),budgetClaims:copy(row.budgetClaims)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:steps.flatMap(row=>row.budgetClaims.quotas),uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'trade-sales-'+hash({p,steps}).slice(0,20),name:'当前港口明确持货逐批出售',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['trade']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅当前港口明确勾选的持货全批非亏损出售；原Function每批重新调查活动窗口、港口、持货、价格与配置身份，单次授权、专用TradeSell回执及独立TradeInfo完整结算验证。活动/航次/持货/报价变化、拒绝或UNKNOWN停止，不重发、不移动或购买。固定原持货quota/UID父预算，预计售得不补额度，maxCoins/profit沿原专用回执独立确认，不猜公式或目的港行情。'};
+}
+
 export function viewTrade(f,options={}){
  const parameters=validateTradeParameters(options.parameters??f?.parameters??{}),view=observationTrade(f,options);
+ view.salePreparation=tradeSaleTargets(f,view);
  view.cooldownObservation=tradeLegClockObservation(f);view.route=routeObservation(f);view.speed={policy:speedPolicy(options.config??f?.configEvidence),owned:f?.stockReliable?f.stock.get(tradeSpeedItem)??0:null,arrivalConfirmed:false};
  if(parameters.action){const speeding=parameters.action==='speed',moving=parameters.action==='move',buy=parameters.action==='buy';view.candidates=[speeding?speedCandidate(f,options):moving?moveCandidate(f,options):(buy?buyCandidate:saleCandidate)(f,options,view)];view.blocked=view.blocked.filter(row=>row.actionType!==(speeding?'SPEED':moving?'MOVE':buy?'BUY':'SELL'));}
  view.notes.push('卖出须明确港口、持货批次和数量，单次非亏损；预计售得不进入预算。maxCoins/profit仅采纳专用回执并独立复读，不猜测更新公式。');return view;
