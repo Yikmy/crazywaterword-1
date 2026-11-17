@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Museum adapter; no separate executor or speculative free-acceleration path.
 // Cached client: MuseumModel:2207, MuseumUtil:2225, BuildTeamPop:439,
@@ -245,6 +246,27 @@ export function planMuseum(f,options={}){
   // Occupancy and hero availability change on start; one authoritative re-read per start.
   if(picked.filter(a=>a.actionType==='startExplore').length>1)throw Error('每批仅允许一次探险出发');
   const cfg=validateMuseumConfig(options.moduleConfig),actions=[],notes=[...view.notes];for(const op of picked){if(actions.length>=cfg.maxActionsPerPlan){notes.push(op.actionId+': 每批上限');continue;}if(op.costs.some(({id,num})=>{const i=cfg.stockItemIds.indexOf(id);return i>=0&&(quantity(ledger.available(id))===null||ledger.available(id)-num<cfg.stockReserveQuantities[i]);})||!ledger.reserve(op.costs))notes.push(op.actionId+': 共享预算或库存线不足');else actions.push(op);}return {module:'museum',actions,notes,view};
+}
+// Read-only preparation reuses current candidates and the original planner.
+const museumGrowthActions=['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase'];
+const growthInputError=message=>Object.assign(Error(message),{code:'INVALID_INPUT',statusCode:400});
+function growthFields(value,keys){
+ if(!value||Object.getPrototypeOf(value)!==Object.prototype)return false;
+ return Reflect.ownKeys(value).every(key=>typeof key==='string'&&keys.includes(key)&&Object.getOwnPropertyDescriptor(value,key)?.enumerable&&Object.hasOwn(Object.getOwnPropertyDescriptor(value,key),'value'));
+}
+export function validateMuseumGrowthPreparation(value){
+ if(!growthFields(value,['actionType','targets','maxDurationMs'])||Reflect.ownKeys(value).length!==3||!museumGrowthActions.includes(value.actionType)||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw growthInputError('博物馆成长须明确一种原动作、1至24个不同目标及有限总时长');
+ const fields=value.actionType==='upgradeExhibition'?['exhibitionId']:value.actionType==='upgradeKeyword'?['exhibitionId','keywordType']:['exhibitionId','caseIndex'];
+ const targets=value.targets.map(row=>{if(!growthFields(row,fields)||Reflect.ownKeys(row).length!==fields.length||fields.some(key=>!Number.isSafeInteger(row[key])||row[key]<1)||row.keywordType>3)throw growthInputError('博物馆成长只接受该动作完整明确的原目标参数');return parametersOf(row);});
+ if(!unique(targets,stable))throw growthInputError('同一展区、关键词或展柜在本批只允许一次');
+ return {actionType:value.actionType,targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareMuseumGrowthWorkflow(facts,{config,moduleConfig=MUSEUM_DEFAULT_CONFIG,...input}={}){
+ const p=validateMuseumGrowthPreparation(input);if(facts?.stockReliable!==true)throw growthInputError('完整库存未知，不能准备博物馆成长');
+ const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}];
+ const steps=p.targets.map((parameters,i)=>{const selection={actionId:actionIdOf(p.actionType,parameters)},plan=planMuseum(facts,{config,moduleConfig,parameters,selections:[selection.actionId],ledger});if(plan.actions.length!==1)throw growthInputError('所选博物馆目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0],budgetClaims={resources:copy(row.costs),quotas:[],uids:[]};nodes.push({id:'grow-'+i,type:'ACTION',module:'museum',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'museum'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims};});
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...p,steps,budget,graph:{version:1,id:'museum-growths-'+createHash('sha256').update(stable({p,steps,budget})).digest('hex').slice(0,20),name:'明确博物馆逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['museum']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批只做一种原展区、关键词、展柜升级或到期完工，每个明确目标一次。原planMuseum及共享Ledger累计核初始自有材料和保留线；每步重新调查、单次授权，并按原完整目标/非目标状态及库存精确差额验证。展柜开始计时不代表完工；资格失效、预算不足、拒绝或UNKNOWN停止，不自动重放，不连带加速、陈列、探险或结算领取。'};
 }
 const inventoryMatches=(b,a,costs,rewards=[])=>b.stockReliable===true&&a.stockReliable===true&&stockMatchesDelta(b.stock,a.stock,costs,rewards);
 const consume=(b,a,costs)=>inventoryMatches(b,a,costs);
