@@ -109,6 +109,7 @@ export function parseDailyTaskRewardSources(inputs,context,p){const state=snapsh
 export function dailyTaskRewardExpectedState(before,p,rewards,activityGain,balances){
  const next=parseDailyTaskRewardState(before,p);
  if(!next||!(balances instanceof Map)||balances.size>10000||[...balances].some(([id,num])=>!text(id)||!Number.isSafeInteger(num)||num<0)||!same(stockState(balances),next.inventory)||!dense(rewards)||!rewards.length||rewards.some(r=>!rewardFields(r,['id','num'])||!text(r.id)||!Number.isSafeInteger(r.num)||r.num<=0)||new Set(rewards.map(r=>r.id)).size!==rewards.length)return null;
+ if(own(p,'expectedResetTime')&&(!['daily','daily-activity'].includes(p.kind)||!positive(p.expectedResetTime)||p.expectedResetTime!==next.daily.resetTime))return null;
  if(p.kind==='daily'){
   const task=next.daily.tasks.find(r=>r.taskId===p.taskId);
   if(!task||task.rewardClaimed!==false||task.progress<task.targetProgress||!positive(activityGain)||rewards.length!==1||rewards[0].id!=='EXP'||!uint(next.daily.dailyActivity+activityGain)||!uint(next.daily.weeklyActivity+activityGain))return null;
@@ -167,10 +168,10 @@ export function dailyTaskRewardRecoveryClock(client,context,p,state,previous){
 }
 export function dailyTaskRewardVerificationClock(f){const live=liveFacts.get(f);return live&&authority(f)?dailyTaskRewardRecoveryClock(live.client,f.context,f.parameters,f.state,f.parameters.kind==='daily-gift'?null:f.endClock):null;}
 function candidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
- const taskId=parameters?.taskId,p={kind:'daily',taskId},valid=authority(f),def=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null))?definition(f?.configEvidence,taskId):null;
+ const taskId=parameters?.taskId,p={kind:'daily',taskId,...(own(parameters,'expectedResetTime')?{expectedResetTime:parameters.expectedResetTime}:{})},valid=authority(f),def=same(configNames.map(n=>config?.tables?.[n]??null),configNames.map(n=>f?.configEvidence?.tables?.[n]??null))?definition(f?.configEvidence,taskId):null;
  const task=f?.daily?.tasks?.find(r=>r.taskId===taskId),beforeState=copy(f?.state??null);
  const expectedState=valid&&def&&task?dailyTaskRewardExpectedState(beforeState,p,[{id:'EXP',num:def.exp}],def.point,f.stock):null;
- const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_TASK_AUTHORITY_UNKNOWN':!def?'DAILY_TASK_CONFIG_UNKNOWN':!task?'TASK_NOT_PRESENT':task.rewardClaimed?'TASK_ALREADY_CLAIMED':task.progress<task.targetProgress?'TASK_INCOMPLETE':!currentPeriod(f)?'DAILY_TASK_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_TASK_AUTHORITY_UNKNOWN':!def?'DAILY_TASK_CONFIG_UNKNOWN':!task?'TASK_NOT_PRESENT':task.rewardClaimed?'TASK_ALREADY_CLAIMED':task.progress<task.targetProgress?'TASK_INCOMPLETE':own(p,'expectedResetTime')&&p.expectedResetTime!==f.daily.resetTime?'DAILY_TASK_PERIOD_CHANGED':!currentPeriod(f)?'DAILY_TASK_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':![request,response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
  const reset=f?.daily?.resetTime??null,identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),budgetClaims={resources:[],quotas:[],uids:[{type:'task-reward',id:'daily:'+reset+':'+taskId}]};
  return {module:moduleId,capabilityId:'C503',actionId:moduleId+':daily:'+reset+':'+taskId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset},parameters:p,identity,beforeState,expectedState,costs:[],costSource,budgetClaims,executable:blockedReason===null,blockedReason,label:'日常任务 '+taskId+' 奖励',rewards:def?[{id:'EXP',num:def.exp}]:null,activityGain:def?.point??null,progress:task?.progress??null,requiredProgress:task?.targetProgress??null,...(blockedReason===null?{action:dailyTaskRewardAction(p)}:{})};
 }
@@ -189,7 +190,38 @@ function taskTargetSelection(f,config,parameters=f?.parameters){
  }
  return targets.length?{kind,readOnly:true,status:'OBSERVED_DEFINITIONS',field:kind==='weekly-chip-task'?'taskId':'tierId',targets,round:kind==='weekly-chip-task'?f.daily.round:null}:unknown;
 }
-export function viewDailyTaskReward(f,options={}){if((options.parameters??f?.parameters)?.kind==='weekly-battle-pass-task')return viewBattlePassTask(f,options);const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),targetSelection:taskTargetSelection(f,options.config,options.parameters??f?.parameters),candidates:[row],notes:[...(f?.notes??[]),isOpenRank(row.parameters)?'仅领取当前可信对应type窗口中的明确score任务档位；订单/闯关直接配置，剿匪/战争精确当前季否则取最大配置季；进度与已领分离，独立OpenRankInfo及完整库存净入共同确认，不将通用奖励包当同次回执或排名奖励。':row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
+
+function closingTargetFact(f,parameters,config){
+ const owner=liveFacts.get(f);
+ if(!owner||!['daily','daily-activity'].includes(f?.parameters?.kind)||!authority(f)||!currentPeriod(f)||!same(configNamesFor(f.parameters).map(n=>config?.tables?.[n]??null),configNamesFor(f.parameters).map(n=>f.configEvidence?.tables?.[n]??null)))return null;
+ const target={...f,parameters:copy(parameters),configEvidence:{tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))}};
+ liveFacts.set(target,{client:owner.client,player:owner.player,digest:digest(target)});return target;
+}
+export function dailyRewardClosingChoices(f,{config,moduleConfig={enabled:false}}={}){
+ if(!['daily','daily-activity'].includes(f?.parameters?.kind)||!authority(f)||!currentPeriod(f))return {status:'UNKNOWN',expectedResetTime:null,targets:[]};
+ const reset=f.daily.resetTime,targets=[];
+ const add=parameters=>{const target=closingTargetFact(f,{...parameters,expectedResetTime:reset},config);if(!target)return;const row=candidateFor(target,{config,moduleConfig});targets.push({parameters:copy(row.parameters),selection:{unique:true},costs:[],rewards:copy(row.rewards),activityGain:row.activityGain,progress:row.progress,requiredProgress:row.requiredProgress,budgetClaims:copy(row.budgetClaims),executable:row.executable,blockedReason:row.blockedReason});};
+ for(const task of f.daily.tasks)add({kind:'daily',taskId:task.taskId});
+ const rows=config?.tables?.DailyActivityRewardCfg?.data;
+ if(dense(rows))for(const tierId of [...new Set(rows.map(row=>own(row,'id')?row.id:null))].filter(positive)){if(activityRewardDefinition(config,{worldId:f.context.worldId,tierId}))add({kind:'daily-activity',tierId});}
+ return {status:'OBSERVED',expectedResetTime:reset,targets};
+}
+export function validateDailyRewardPreparation(v){
+ const keys=['expectedResetTime','taskIds','tierIds','maxDurationMs'];
+ if(!v||typeof v!=='object'||![Object.prototype,null].includes(Object.getPrototypeOf(v))||Reflect.ownKeys(v).some(k=>!keys.includes(k)||!Object.getOwnPropertyDescriptor(v,k)?.enumerable||!own(v,k))||!['expectedResetTime','taskIds','tierIds'].every(k=>Object.getOwnPropertyDescriptor(v,k)?.enumerable&&own(v,k))||!positive(v.expectedResetTime)||!dense(v.taskIds)||!dense(v.tierIds)||v.taskIds.length+v.tierIds.length<1||v.taskIds.length+v.tierIds.length>24||[v.taskIds,v.tierIds].some(ids=>ids.some(id=>!positive(id))||new Set(ids).size!==ids.length)||own(v,'maxDurationMs')&&(!Number.isInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000))throw Object.assign(new Error('日常收尾须明确原重置秒、taskIds/tierIds数组，共1至24个唯一正int32目标及1至86400000毫秒时长'),{code:'INVALID_PARAMETERS',statusCode:400});
+ return {expectedResetTime:v.expectedResetTime,taskIds:[...v.taskIds],tierIds:[...v.tierIds],maxDurationMs:v.maxDurationMs??300000};
+}
+export function prepareDailyRewardWorkflow(f,{config,moduleConfig={enabled:false},...input}={}){
+ const p=validateDailyRewardPreparation(input),choices=dailyRewardClosingChoices(f,{config,moduleConfig});
+ if(choices.status!=='OBSERVED'||choices.expectedResetTime!==p.expectedResetTime)throw Object.assign(new Error('原日常周期或完整来源已变化，须重新调查'),{code:'DAILY_TASK_PERIOD_CHANGED',statusCode:409});
+ const targets=[...p.taskIds.map(taskId=>({kind:'daily',taskId,expectedResetTime:p.expectedResetTime})),...p.tierIds.map(tierId=>({kind:'daily-activity',tierId,expectedResetTime:p.expectedResetTime}))];
+ const steps=targets.map(parameters=>{const row=choices.targets.find(row=>same(row.parameters,parameters));if(!row?.executable)throw Object.assign(new Error('所选日常目标没有当前明确领取资格：'+(row?.blockedReason??'TARGET_UNKNOWN')),{code:row?.blockedReason??'DAILY_REWARD_TARGET_UNKNOWN',statusCode:409});return copy(row);});
+ const nodes=[{id:'start',type:'START'}];steps.forEach((row,i)=>nodes.push({id:'reward-'+i,type:'ACTION',module:moduleId,parameters:row.parameters,selection:row.selection},{id:'verify-'+i,type:'VERIFY',module:moduleId}));nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:[],quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,steps,budget,graph:{version:1,id:'daily-rewards-'+hash({context:f.context,p,steps}).slice(0,20),name:'同周期明确日常奖励收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅领取明确所选且准备时已合格的日常任务及日活跃档位；先逐任务、后逐档，原Function每步重新调查、单次授权、typed回执及完整库存净入验证。同一服务器重置标记固定，周期变化、拒绝或UNKNOWN停止，不重试或跨日重领；未达档不使用预期活跃度生成资格，收入不补预算，不开包、不领取周活跃。准备只读，不授予执行权限。'};
+}
+
+export function viewDailyTaskReward(f,options={}){if((options.parameters??f?.parameters)?.kind==='weekly-battle-pass-task')return viewBattlePassTask(f,options);const row=candidateFor(f,options);return {module:moduleId,daily:copy(f?.daily??null),dailyClosing:dailyRewardClosingChoices(f,options),targetSelection:taskTargetSelection(f,options.config,options.parameters??f?.parameters),candidates:[row],notes:[...(f?.notes??[]),isOpenRank(row.parameters)?'仅领取当前可信对应type窗口中的明确score任务档位；订单/闯关直接配置，剿匪/战争精确当前季否则取最大配置季；进度与已领分离，独立OpenRankInfo及完整库存净入共同确认，不将通用奖励包当同次回执或排名奖励。':row.parameters.kind==='weekly-chip-task'?'仅领取明确轮次与任务ID，可信type6活动窗口、typed回执及完整库存独立确认。末个未领任务涉及轮次转换，证据未闭合时保持阻断；不打开宝箱。':weeklyKinds.includes(row.parameters.kind)?'仅领取服务器明确未领的1000号免费周礼包；绑定type/period/startTime/endTime，可信Ping时间范围须完全位于本活动窗口；不推算跨周重领。':row.parameters.kind==='daily-gift'?'仅领取本次明确未领的免费赠礼，绑定服务器原样标记/英雄及完整领取列表，不推断resetTime的时间单位或周期，不定时重领。':row.parameters.kind==='daily-activity'?'仅领取明确日活跃档位，以服务器dailyResetTime绑定周期，完整库存净入和唯一档位新增共同确认；不打开所得包，不推算周界。':'只领取明确日常任务；以本次服务器dailyResetTime绑定任务周期，不推算周界。typed活跃增量、同周期任务已领、日/周活跃精确增量和EXP净入共同确认。']};}
 export function planDailyTaskReward(f,{parameters,selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){const row=viewDailyTaskReward(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId));return {module:moduleId,actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[]};}
 export function verifyDailyTaskReward(operation,before,after,result){const no=reason=>({confirmed:false,reason});
  if([operation?.parameters?.kind,before?.parameters?.kind,after?.parameters?.kind].includes('weekly-battle-pass-task'))return no('战令任务仅只读观察；每日周期和独立积分结算缺证');
@@ -215,10 +247,10 @@ function activityDefinition(f,config,tierId){
  return activityRewardDefinition(f?.configEvidence,{worldId:f?.context?.worldId,tierId});
 }
 function activityCandidate(f,{config,moduleConfig={enabled:false},parameters=f?.parameters}={}){
- const p={kind:'daily-activity',tierId:parameters?.tierId},valid=authority(f),def=activityDefinition(f,config,p.tierId),beforeState=copy(f?.state??null);
+ const p={kind:'daily-activity',tierId:parameters?.tierId,...(own(parameters,'expectedResetTime')?{expectedResetTime:parameters.expectedResetTime}:{})},valid=authority(f),def=activityDefinition(f,config,p.tierId),beforeState=copy(f?.state??null);
  const claimed=f?.daily?.dailyRewardClaimed;
  const expectedState=valid&&def&&claimed.every(id=>def.tierIds.includes(id))?dailyTaskRewardExpectedState(beforeState,p,def.rewards,0,f.stock):null;
- const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_ACTIVITY_AUTHORITY_UNKNOWN':!def?'DAILY_ACTIVITY_CONFIG_OR_SEASON_UNKNOWN':claimed.includes(p.tierId)?'ACTIVITY_TIER_ALREADY_CLAIMED':!activityTierAvailable({id:p.tierId,activity:def.requiredActivity},f.daily.dailyActivity,claimed)?'ACTIVITY_INCOMPLETE':!currentPeriod(f)?'DAILY_TASK_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('DrawDailyRewardRequest')?'PROTOCOL_UNAVAILABLE':null;
+ const blockedReason=moduleConfig.enabled!==true?'TASK_REWARDS_DISABLED':!valid?'DAILY_ACTIVITY_AUTHORITY_UNKNOWN':!def?'DAILY_ACTIVITY_CONFIG_OR_SEASON_UNKNOWN':claimed.includes(p.tierId)?'ACTIVITY_TIER_ALREADY_CLAIMED':!activityTierAvailable({id:p.tierId,activity:def.requiredActivity},f.daily.dailyActivity,claimed)?'ACTIVITY_INCOMPLETE':own(p,'expectedResetTime')&&p.expectedResetTime!==f.daily.resetTime?'DAILY_TASK_PERIOD_CHANGED':!currentPeriod(f)?'DAILY_TASK_PERIOD_UNKNOWN':!expectedState?'REWARD_BALANCE_UNKNOWN':!f.available.includes('DrawDailyRewardRequest')?'PROTOCOL_UNAVAILABLE':null;
  const reset=f?.daily?.resetTime??null,identity=hash({p,beforeState,def,configEvidence:f?.configEvidence}),source='Fixed v76 DailyProgressReward index and SeasonUtil selected DailyActivityRewardCfg; one exact eligible daily tier, zero debit, independent full claimed list and inventory';
  return {module:moduleId,capabilityId:'C516',actionId:moduleId+':daily-activity:'+reset+':'+p.tierId+':'+identity,actionType:'CLAIM',target:{...p,resetTime:reset,season:def?.season??null,configuredSeason:def?.configuredSeason??null},parameters:p,identity,beforeState,expectedState,costs:[],costSource:source,budgetClaims:{resources:[],quotas:[],uids:[{type:'daily-activity-reward',id:reset+':'+p.tierId}]},executable:blockedReason===null,blockedReason,label:'日活跃宝箱 '+p.tierId,rewards:copy(def?.rewards??null),activityGain:0,progress:f?.daily?.dailyActivity??null,requiredProgress:def?.requiredActivity??null,...(blockedReason===null?{action:dailyTaskRewardAction(p)}:{})};
 }

@@ -1,3 +1,4 @@
+import { prepareDailyRewardWorkflow, validateDailyRewardPreparation } from './daily-task-rewards.mjs';
 import { prepareFreeGoldWorkflow, validateFreeGoldPreparation } from './free-gold.mjs';
 import { prepareTrialWorkflow, validateTrialPreparation } from './trial-challenge.mjs';
 import { prepareMailWorkflow, validateMailPreparation } from './mail.mjs';
@@ -360,6 +361,19 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:{expectedGold:payload.expectedGold},signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('点金准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=prepareFreeGoldWorkflow(facts,{config,moduleConfig,...payload});return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
+    }finally{release();}
+  }
+  async function prepareDailyRewardSource(session,payload){
+    payload=validateDailyRewardPreparation(payload);
+    const release=acquire(session,'operations:DAILY_REWARDS_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
+    try{
+      plans.delete(session.id);
+      const adapter=adapterFor('task-rewards'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'task-rewards').config;
+      const parameters=payload.taskIds.length?{kind:'daily',taskId:payload.taskIds[0],expectedResetTime:payload.expectedResetTime}:{kind:'daily-activity',tierId:payload.tierIds[0],expectedResetTime:payload.expectedResetTime};
+      const dependencies=()=>operationDigest(['daily','daily-activity'].map(kind=>adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'task-rewards').config,parameters:{kind}}))),dependency=dependencies();
+      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters,signal:session.abort.signal});current(session,generation,client);
+      if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('日常收尾准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+      const result=prepareDailyRewardWorkflow(facts,{config,moduleConfig,...payload});return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
     }finally{release();}
   }
   async function prepareTrialSource(session,payload){
@@ -817,7 +831,7 @@ function authorizeWorkflowPlan(session,payload){
     return workflowId === undefined || typeof workflowId === 'string' && workflowId.length > 0 && run?.record.workflowId === workflowId ? run : null;
   };
   function stop(accountId, workflowId) { const run = scopedRun(accountId, workflowId); if (run?.running) run.stop.aborted = true; return status(accountId); }
-  return { prepareTrialSource, prepareMailSource, prepareFleetRepairSource, prepareFreeGoldSource, prepareCargoFillSource, readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, fleetOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, executeTaskRewards, stop, status,
+  return { prepareDailyRewardSource, prepareTrialSource, prepareMailSource, prepareFleetRepairSource, prepareFreeGoldSource, prepareCargoFillSource, readMaterialProductionCoverage, prepareMaterialProductionSource, prepareFarmPlantSource, prepareFarmHarvestSource, prepareAfkUpgradeSource, prepareEquipmentForgeSource, prepareHeroStarSource, prepareStageRecommendationSource, activateWorkflowEvent, workflowAuthorizationOffer, authorizeWorkflow, authorizeWorkflowPlan, surveyAntiqueAttributes, extremeFormations, prepareExtremeFormationSource, namedFormations, saveNamedFormation, renameNamedFormation, overwriteNamedFormation, deleteNamedFormation, prepareNamedFormation, bindWorkflowNode, executionMemory, closeWorkflowBudget(accountId,runId,outcome='STOPPED') { const parent=workflowBudgets.get(accountId); if(parent?.runId===runId)return parent.context?.close(outcome)??null;return null; }, workflowBudget: accountId => workflowBudgets.get(accountId)?.context?.snapshot() ?? null, previewRecovery, confirmRecovery, view, survey: surveyAccount, moduleView, surveyModule, allianceOverview, fleetOverview, saveModuleConfig, claimWorkflow, assertFormationReady, formationContext, modules, plan, authorize, execute, executeDailyDriver, executeDailyRewards, executeTaskRewards, stop, status,
     history: (accountId, runId, options = {}) => {
       exact(options, ['date']);
       const date = options.date === undefined ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(clock())) : validateProductionReportDate(options.date);

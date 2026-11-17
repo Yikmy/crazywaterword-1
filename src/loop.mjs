@@ -205,19 +205,21 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           exact(row,['kind','packId']);if(row.packId!==(row.kind==='daily-gift'?'赠礼':'1000'))invalid('仅允许明确固定免费礼包');
           module='task-rewards';parameters={kind:row.kind,packId:row.packId};
         }else if(row?.kind==='daily-activity'){
-          exact(row,['kind','tierId']);
+          exact(row,['kind','tierId','expectedResetTime']);
           if(!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647)invalid('日活跃领奖需要精确档位ID');
-          module='task-rewards';parameters={kind:'daily-activity',tierId:row.tierId};
+          module='task-rewards';parameters=validateTaskRewardsParameters({kind:'daily-activity',tierId:row.tierId,...(Object.hasOwn(row,'expectedResetTime')?{expectedResetTime:row.expectedResetTime}:{})});
         }else{
-          exact(row,['kind','taskId']);
+          exact(row,['kind','taskId','expectedResetTime']);
+          if(Object.hasOwn(row,'expectedResetTime')&&row.kind!=='daily')invalid('原重置标记仅用于日常领奖');
           if(!Number.isSafeInteger(row.taskId)||row.taskId<1)invalid('Tasks 需要精确任务ID');
           if(row.kind==='orderDaily'){blocked.push({phase,index,reason:'DAILY_ORDER_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           if(!['main','branch','achievement','daily'].includes(row.kind))invalid('任务种类无效');
-          module='task-rewards';parameters={kind:row.kind,taskId:row.taskId};
+          module='task-rewards';parameters=validateTaskRewardsParameters({kind:row.kind,taskId:row.taskId,...(Object.hasOwn(row,'expectedResetTime')?{expectedResetTime:row.expectedResetTime}:{})});
         }
       } else if(phase==='dailies'){
         const activity=row?.kind==='daily-activity',gift=['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'].includes(row?.kind);
-        exact(row,gift?['kind','packId','parameters','action']:activity?['kind','tierId','parameters','action']:['taskId','parameters','action']);
+        exact(row,gift?['kind','packId','parameters','action']:activity?['kind','tierId','parameters','action','expectedResetTime']:['taskId','parameters','action','expectedResetTime']);
+        if(Object.hasOwn(row,'expectedResetTime')&&(gift||row.action!=='claim'))invalid('原重置标记仅用于日常任务或日活跃领奖');
         if(gift){if(row.packId!==(row.kind==='daily-gift'?'赠礼':'1000')||row.action!=='claim')invalid('免费礼包须明确固定packId与action=claim');}
         else if(activity){
           if(row.action!=='claim'||!Number.isSafeInteger(row.tierId)||row.tierId<1||row.tierId>2147483647)invalid('日活跃宝箱仅允许明确action=claim与精确档位ID');
@@ -225,7 +227,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         if(Object.hasOwn(row,'action')&&!['perform','claim'].includes(row.action))invalid('Dailies action 只允许 perform 或 claim');
         if(row.action==='claim'){
           if(Object.hasOwn(row,'parameters')&&(!object(row.parameters)||![Object.prototype,null].includes(Object.getPrototypeOf(row.parameters))||Reflect.ownKeys(row.parameters).length))invalid('日常领奖仅使用明确任务或档位ID，不接受驱动或协议参数');
-          module='task-rewards';parameters=gift?{kind:row.kind,packId:row.packId}:activity?{kind:'daily-activity',tierId:row.tierId}:{kind:'daily',taskId:row.taskId};
+          module='task-rewards';parameters=validateTaskRewardsParameters(gift?{kind:row.kind,packId:row.packId}:{kind:activity?'daily-activity':'daily',...(activity?{tierId:row.tierId}:{taskId:row.taskId}),...(Object.hasOwn(row,'expectedResetTime')?{expectedResetTime:row.expectedResetTime}:{})});
         }else{
           // Preserve legacy missing-target declarations as blocked; never infer today's interval.
           if(row.taskId===1004&&!Object.hasOwn(row,'parameters')){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}

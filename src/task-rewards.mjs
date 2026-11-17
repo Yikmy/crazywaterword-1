@@ -52,8 +52,10 @@ export function validateTaskRewardsConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateTaskRewardsParameters(v={}) {
-  if(!fields(v,['kind','taskId','tierId','packId','round']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
+  if(!fields(v,['kind','taskId','tierId','packId','round','expectedResetTime']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
   if(!Reflect.ownKeys(v).length)return {};
+  const period=own(v,'expectedResetTime')?{expectedResetTime:v.expectedResetTime}:{};
+  if(own(v,'expectedResetTime')&&(!['daily','daily-activity'].includes(v.kind)||!positive(v.expectedResetTime)))throw invalid('expectedResetTime仅用于明确日常任务或日活跃，须为服务器原正int32重置秒');
   if(v.kind==='weekly-chip-task'){if(!own(v,'kind')||!own(v,'round')||!positive(v.round)||!own(v,'taskId')||!positive(v.taskId)||own(v,'packId')||own(v,'tierId'))throw invalid('周芯片领奖须明确正整数round与taskId');return {kind:v.kind,round:v.round,taskId:v.taskId};}
   if(v.kind==='weekly-battle-pass-task'){if(!own(v,'kind')||!own(v,'taskId')||!positive(v.taskId)||['round','packId','tierId'].some(k=>own(v,k)))throw invalid('战令只读观察须明确kind与正int32任务ID');return {kind:v.kind,taskId:v.taskId};}
   if(own(v,'round'))throw invalid('round仅用于周芯片具名任务领奖');
@@ -61,9 +63,9 @@ export function validateTaskRewardsParameters(v={}) {
   if(v.kind==='daily-gift'){if(!own(v,'kind')||!own(v,'packId')||v.packId!=='赠礼'||own(v,'taskId')||own(v,'tierId'))throw invalid('免费日赠礼仅允许kind=daily-gift与明确packId=赠礼');return {kind:v.kind,packId:v.packId};}
   if(own(v,'packId'))throw invalid('packId仅用于明确免费赠礼');
   if(OPEN_RANK_TASK_KINDS.includes(v.kind)){if(!own(v,'kind')||own(v,'taskId')||!own(v,'tierId')||!positive(v.tierId))throw invalid('开服任务领奖须明确种类与正整数score档位tierId');return {kind:v.kind,tierId:v.tierId};}
-  if(v.kind==='daily-activity'){if(!own(v,'kind')||own(v,'taskId')||!own(v,'tierId')||!positive(v.tierId))throw invalid('日活跃宝箱须明确kind=daily-activity与正整数tierId');return {kind:v.kind,tierId:v.tierId};}
+  if(v.kind==='daily-activity'){if(!own(v,'kind')||own(v,'taskId')||!own(v,'tierId')||!positive(v.tierId))throw invalid('日活跃宝箱须明确kind=daily-activity与正整数tierId');return {kind:v.kind,tierId:v.tierId,...period};}
   if(!own(v,'kind')||!['main','branch','achievement','daily'].includes(v.kind)||!own(v,'taskId')||!positive(v.taskId)||own(v,'tierId'))throw invalid('任务奖励须同时指定kind(main/branch/achievement/daily)与正整数taskId');
-  return {kind:v.kind,taskId:v.taskId};
+  return {kind:v.kind,taskId:v.taskId,...period};
 }
 function roleId(value) {
   if (typeof value === 'number' && (!Number.isSafeInteger(value) || value <= 0)) return null;
