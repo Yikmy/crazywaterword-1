@@ -70,6 +70,7 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
 }
 
 function parametersOf(p={}) {
+  if(p&&Object.hasOwn(p,'expectedOrder'))return validateAllianceOrderParameters(p);
   if(p&&['action','shipId','crewId'].some(k=>Object.hasOwn(p,k)))return shipParameters(p);
   if(p&&Object.hasOwn(p,'expectedFortHash'))return validateAllianceFortParameters(p);
   if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'].includes(k))) throw Error('联盟参数不在业务白名单');
@@ -144,6 +145,36 @@ export function validateAllianceTechPreparation(value){
  if(!techPreparationFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw techPreparationError('科技组合须明确1至24项不同科技的下一等级及有限总时长');
  const targets=value.targets.map(row=>{if(!techPreparationFields(row,['techId','targetLevel'])||Reflect.ownKeys(row).length!==2)throw techPreparationError('科技目标只允许原techId/targetLevel');return parametersOf(row);});if(new Set(targets.map(row=>row.techId)).size!==targets.length)throw techPreparationError('同一科技每批仅一次明确单级升级');return {targets,maxDurationMs:value.maxDurationMs};
 }
+function validateOrderExpectation(v){
+ if(!techPreparationFields(v,['dayKey','used','sourceHash'])||Reflect.ownKeys(v).length!==3||typeof v.dayKey!=='string'||! /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(v.dayKey)||!Number.isSafeInteger(v.used)||v.used<0||typeof v.sourceHash!=='string'||! /^[a-f0-9]{64}$/.test(v.sourceHash))throw techPreparationError('联盟订单须绑定当前同日计数及完整来源摘要');return copy(v);
+}
+function validateAllianceOrderParameters(v){
+ if(!techPreparationFields(v,['cityId','expectedOrder'])||Reflect.ownKeys(v).length!==2||!Number.isSafeInteger(v.cityId)||v.cityId<1||v.cityId>2147483647)throw techPreparationError('订单组合仅接受明确城市与原同日来源');return {cityId:v.cityId,expectedOrder:validateOrderExpectation(v.expectedOrder)};
+}
+function allianceOrderPreparation(f,{config,moduleConfig}={}){
+ const time=gameTimeBounds(f),dayKey=allianceBudgetDay(time.earliest),used=counter(f,'DAILY_FINISH_GUILD_ORDER'),limit=maxOrders(config,f.playerLevel,f.season);
+ if(dayKey===null||dayKey!==allianceBudgetDay(time.latest)||used===null||limit===null||!f.guildId||!f.playerId||!Array.isArray(f.cities)||f.cities.some(c=>!Number.isSafeInteger(c?.cityId)||c.cityId<1||c.cityId>2147483647)||!unique(f.cities,c=>c.cityId)||!assetsValid(f.order?.requirements)||!f.order.requirements.length||quantity(f.order?.nextRefreshTime)===null)return null;
+ const source={guildId:f.guildId,playerId:f.playerId,worldId:f.worldId,season:f.season,playerLevel:f.playerLevel,limit,order:f.order,cities:f.cities,moduleConfig:validateAllianceConfig(moduleConfig),config:rows(config,'GuildOrderNumCfg')};
+ return {expectedOrder:{dayKey,used,sourceHash:createHash('sha256').update(stable(source)).digest('hex')},remaining:limit===-1?'UNLIMITED':Math.max(0,limit-used),costs:resourceCosts(f.order.requirements)};
+}
+export function validateAllianceOrderPreparation(v){
+ if(!techPreparationFields(v,['cityIds','expectedOrder','maxDurationMs'])||Reflect.ownKeys(v).length!==3||!Array.isArray(v.cityIds)||Object.getPrototypeOf(v.cityIds)!==Array.prototype||v.cityIds.length<1||v.cityIds.length>24||Reflect.ownKeys(v.cityIds).length!==v.cityIds.length+1||!Array.from({length:v.cityIds.length},(_,i)=>Object.getOwnPropertyDescriptor(v.cityIds,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||v.cityIds.some(id=>!Number.isSafeInteger(id)||id<1||id>2147483647)||new Set(v.cityIds).size!==v.cityIds.length||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw techPreparationError('联盟订单须明确1至24个不同城市及有限时长');return {cityIds:[...v.cityIds],expectedOrder:validateOrderExpectation(v.expectedOrder),maxDurationMs:v.maxDurationMs};
+}
+export function prepareAllianceOrderWorkflow(f,{config,moduleConfig,...input}={}){
+ const payload=validateAllianceOrderPreparation(input),source=allianceOrderPreparation(f,{config,moduleConfig}),ledger=new ResourceLedger(f.stockReliable?f.stock:null),nodes=[{id:'start',type:'START'}];
+ if(!source||stable(source.expectedOrder)!==stable(payload.expectedOrder)||source.remaining!=='UNLIMITED'&&source.remaining<payload.cityIds.length||!Number.isSafeInteger(payload.expectedOrder.used+payload.cityIds.length))throw techPreparationError('订单、同日计数、额度或来源变化，请重新调查');
+ const steps=payload.cityIds.map((cityId,i)=>{
+  // Prepare against the actual current counter; only fresh execution may observe its increment.
+  const current={cityId,expectedOrder:payload.expectedOrder},selection=allianceOrderSelection({cityId}),plan=planAlliance(f,{config,moduleConfig,parameters:current,selections:[selection.actionId],ledger});
+  if(plan.actions.length!==1||plan.actions[0].actionType!=='finishOrder')throw techPreparationError('所选城市或累计初始材料不满足原订单合同');
+  const row=plan.actions[0],parameters={cityId,expectedOrder:{...payload.expectedOrder,used:payload.expectedOrder.used+i}};
+  nodes.push({id:'order-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});
+  return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:operationBudgetClaims(row)};
+ });nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[{id:'alliance-order:'+f.guildId+':'+payload.expectedOrder.dayKey,num:steps.length}],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...payload,guildId:f.guildId,playerId:f.playerId,steps,budget,graph:{version:1,id:'alliance-orders-'+createHash('sha256').update(stable(payload)).digest('hex').slice(0,20),name:'明确联盟城市逐项交付当前订单',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:['alliance']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确不同城市交付当前同一订单；每项仍由原Function重新调查、单次授权及同日计数/材料消耗验证。绑定原同日、顺序计数、订单/截止、等级赛季额度、联盟及城市来源，累计仅用初始自有材料；收入不扩预算。换档、跨日、变化、拒绝或UNKNOWN停止，不自动刷新、补购、重复城市或恢复执行；订单进度和奖励到账保持独立。'};
+}
+
 export function prepareAllianceTechWorkflow(facts,{config,moduleConfig,...input}={}){
  const p=validateAllianceTechPreparation(input),ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),nodes=[{id:'start',type:'START'}];
  const steps=p.targets.map((parameters,i)=>{const view=allianceView(facts,{config,moduleConfig,parameters}),source=view.candidates.find(row=>row.actionType==='upgradeTech'&&row.target.techId===parameters.techId&&row.target.targetLevel===parameters.targetLevel);if(!source)throw techPreparationError('科技无当前原合同资格；不得借未来升级解锁前置');const selection={actionId:source.actionId},plan=planAlliance(facts,{config,moduleConfig,parameters,selections:[source.actionId],ledger});if(plan.actions.length!==1)throw techPreparationError('科技共享自有点数不足或原单级计划不可执行');const row=plan.actions[0];nodes.push({id:'tech-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:operationBudgetClaims(row)};});
@@ -211,6 +242,7 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
   if(enabled('orders')){
     if(cap===null||done===null)block('finishOrder','ORDER_DAILY_LIMIT_UNKNOWN');
     else if(cap!==-1&&done>=cap)block('finishOrder','ORDER_DAILY_LIMIT_EXHAUSTED');
+    else if(parameters.expectedOrder&&stable(parameters.expectedOrder)!==stable(allianceOrderPreparation(f,{config,moduleConfig})?.expectedOrder))block('finishOrder','ORDER_PREPARATION_SOURCE_CHANGED');
     else if(!nowKnown||!dayKnown||quantity(order?.nextRefreshTime)===null||order.nextRefreshTime<=time.latest||!assetsValid(order?.requirements)||!order.requirements.length||order.requirements.some(a=>quantity(a.num)===0))block('finishOrder','ORDER_STATE_UNKNOWN_OR_EXPIRED');
     else if(!Array.isArray(f.cities)||f.cities.some(c=>!Number.isSafeInteger(c?.cityId)||c.cityId<=0)||!unique(f.cities,c=>c.cityId))block('finishOrder','ORDER_CITY_UNKNOWN');
     else for(const city of f.cities.filter(c=>parameters.cityId===undefined||c.cityId===parameters.cityId))add('orders','finishOrder',{cityId:city.cityId},{order,done},resourceCosts(order.requirements),'GuildOrderResponse.order.requirements; GuildCityArmyPop.ts:1445','FinishGuildOrderRequest',{cityId:city.cityId},'FinishGuildOrderResponse',{counterIncrement:1});
@@ -228,7 +260,11 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
     else {const t=tech.target;add('tech','upgradeTech',{techId:t.techId,targetLevel:parameters.targetLevel},{worldId:f.worldId,season:f.season,stage:f.seasonStage,techId:t.techId,level:t.level,preTech:t.preTech,prerequisiteLevel:t.prerequisiteLevel},t.costs,t.costSource,'UpgradeGuildTechRequest',{techId:t.techId},'UpgradeGuildTechResponse',{techId:t.techId,level:parameters.targetLevel});}
   }
   if(enabled('fort'))block('donateFort',fort?'FORT_EXPLICIT_SINGLE_DONATION_REQUIRED':'FORT_IS_INDEPENDENT_CONSTRUCTION_REQUIRES_CITY_FORT_SURVEY');
-  return {candidates,blocked,notes,fort,cities:f.cities??[],guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
+  if(parameters.expectedOrder){
+    const orders=candidates.filter(row=>row.actionType==='finishOrder');candidates.splice(0,candidates.length,...orders);
+    for(const row of orders)row.budgetClaims={resources:row.costs,quotas:[{id:'alliance-order:'+f.guildId+':'+parameters.expectedOrder.dayKey,num:1}],uids:[{type:'alliance-order',id:f.guildId+':'+parameters.expectedOrder.dayKey+':'+row.target.cityId}]};
+  }
+  return {orderPreparation:allianceOrderPreparation(f,{config,moduleConfig}),candidates,blocked,notes,fort,cities:f.cities??[],guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
 }
 export function planAlliance(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
