@@ -32,8 +32,8 @@ export function validateFreeGoldConfig(v={}) {
  return {enabled:v.enabled??false};
 }
 export function validateFreeGoldParameters(v={}) {
- if(!fields(v,[]))throw invalid('普通免费点金只接受空参数，固定单次且禁止付费');
- return {};
+ if(!fields(v,['expectedGold'])||own(v,'expectedGold')&&(!parseGold({info:v.expectedGold})||!fields(v.expectedGold,['freeTimes','paidTimes','minGold','resetTime','maxPaidTimes'])||Reflect.ownKeys(v.expectedGold).length!==5))throw invalid('普通免费点金仅接受空参数或明确预期的完整点金状态；每次仍固定单次且禁止付费');
+ return own(v,'expectedGold')?{expectedGold:copy(v.expectedGold)}:{};
 }
 function roleId(v) {
  if(typeof v==='number'&&(!Number.isSafeInteger(v)||v<=0))return null;
@@ -134,8 +134,9 @@ function candidate(f,{config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {
   ...(blockedReason===null?{action:freeGoldAction()}:{})};
 }
 export function viewFreeGold(f,options={}) {
- validateFreeGoldParameters(options.parameters??{});
- return {module:moduleId,gold:copy(f?.gold??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'仅普通免费单次，按服务器 resetTime 标记绑定本次额度，不推定游戏日；奖励金额仅由本次 typed gold 回执与完整库存净入共同确认。']};
+ const parameters=validateFreeGoldParameters(options.parameters??{}),row=candidate(f,options);
+ if(parameters.expectedGold&&!same(parameters.expectedGold,f?.gold)){row.executable=false;row.blockedReason='FREE_GOLD_PREPARATION_CHANGED';delete row.action;}
+ return {module:moduleId,gold:copy(f?.gold??null),candidates:[row],notes:[...(f?.notes??[]),'仅普通免费单次，按服务器 resetTime 标记绑定本次额度，不推定游戏日；奖励金额仅由本次 typed gold 回执与完整库存净入共同确认。']};
 }
 export function planFreeGold(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeGoldParameters(parameters);
@@ -166,6 +167,24 @@ export function verifyFreeGoldOutcome(operation,beforeState,afterState,result,go
  const expected={context:copy(before.context),gold:copy(operation.expectedState.gold),inventory:stockState(stock)};
  if(!same(after,expected))return no('独立复读未同时确认同重置标记免费次数加一和精确 GOLD 净入，或无关状态变化');
  return {confirmed:true,afterState:copy(after),reason:'单次免费 typed GOLD 回执与同周期计次、完整库存净入共同确认',responseEvidence:{gold:receipt.gold,resetTime:before.gold.resetTime,usedBefore:before.gold.freeTimes,usedAfter:after.gold.freeTimes}};
+}
+// A finite selection of original single claims. Each later state is only a
+// planning expectation; every actual claim independently surveys and verifies.
+export function validateFreeGoldPreparation(v) {
+ if(!fields(v,['expectedGold','count','maxDurationMs'])||Reflect.ownKeys(v).length!==3||!own(v,'expectedGold')||!own(v,'count')||!own(v,'maxDurationMs')||!positive(v.count)||v.count>24||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('点金组合须明确当前完整状态、1至24次和有限总时长');
+ const parameters=validateFreeGoldParameters({expectedGold:v.expectedGold});return {...parameters,count:v.count,maxDurationMs:v.maxDurationMs};
+}
+export function prepareFreeGoldWorkflow(f,{config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG,...input}={}) {
+ const p=validateFreeGoldPreparation(input),row=viewFreeGold(f,{config,moduleConfig,parameters:{expectedGold:p.expectedGold}}).candidates[0];
+ if(row?.executable!==true||!Number.isInteger(row.remaining)||p.count>row.remaining)throw invalid('普通免费点金组合超过当前同周期可靠剩余次数或原单次资格未满足');
+ const nodes=[{id:'start',type:'START'}],uids=[];
+ for(let i=0;i<p.count;i++){const slot=p.expectedGold.freeTimes+i+1;if(!positive(slot))throw invalid('点金组合计次溢出');
+  nodes.push({id:'claim-'+slot,type:'ACTION',module:moduleId,parameters:{expectedGold:{...p.expectedGold,freeTimes:slot-1}},selection:{unique:true}},{id:'verify-'+slot,type:'VERIFY',module:moduleId});
+  uids.push({type:moduleId,id:p.expectedGold.resetTime+':'+slot});
+ }
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[{id:moduleId+':reset:'+p.expectedGold.resetTime,num:p.count}],uids};
+ return {...p,budget,graph:{version:1,id:'free-gold-'+hash({payload:p,budget}).slice(0,20),name:'普通免费点金明确 '+p.count+' 次',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:p.count,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+ limitation:'仅当前明确resetTime和免费次数内的有限普通单次；每次重新调查、核对完整计次状态、独立计划授权并确认原typed金币及完整库存净入。金额不预测，不补付费、不跨周期或重启续领；拒绝、UNKNOWN或其他状态变化停止，准备不执行、不授权。'};
 }
 export function freeGoldDependencyVersions({config,moduleConfig=FREE_GOLD_DEFAULT_CONFIG}={}) {return {moduleConfig:validateFreeGoldConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const freeGoldModule=Object.freeze({id:moduleId,label:'普通免费点金',capabilities:Object.freeze(['BIZ-D06']),defaultConfig:FREE_GOLD_DEFAULT_CONFIG,validateConfig:validateFreeGoldConfig,validateParameters:validateFreeGoldParameters,survey:surveyFreeGold,view:viewFreeGold,plan:planFreeGold,verify:verifyFreeGold,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeGoldDependencyVersions});

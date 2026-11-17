@@ -360,6 +360,14 @@ function gpMaterialProductionGraph(data,payload,view,accountId){
  nodes.push({id:'produce',type:'ACTION',module:'production',parameters:{buildingId:payload.buildingId,productId:payload.productId,materialSource:source},selection:{unique:true}},{id:'verify-produce',type:'VERIFY',module:'production'},{id:'stop',type:'STOP'});
  if(graph?.version!==1||typeof graph.id!=='string'||!graph.id||!same(graph.nodes,nodes)||!same(graph.edges,nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})))||!same(graph.budget,budget)||!same(graph.runPolicy,{maxDurationMs:payload.maxDurationMs,maxActions:choices.length+1,modules:['material-packs','production']}))throw Error('返回的有限兑换生产链或父预算不匹配');return graph;
 }
+function gpFreeGoldGraph(data,payload,accountId){
+ const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b),graph=data.graph;
+ if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||!same(data.expectedGold,payload.expectedGold)||data.count!==payload.count||data.maxDurationMs!==payload.maxDurationMs)throw Error('免费点金组合账号、原计次状态或次数不匹配');
+ const nodes=[{id:'start',type:'START'}],uids=[];
+ for(let i=0;i<payload.count;i++){const slot=payload.expectedGold.freeTimes+i+1;nodes.push({id:'claim-'+slot,type:'ACTION',module:'free-gold',parameters:{expectedGold:{...payload.expectedGold,freeTimes:slot-1}},selection:{unique:true}},{id:'verify-'+slot,type:'VERIFY',module:'free-gold'});uids.push({type:'free-gold',id:payload.expectedGold.resetTime+':'+slot});}
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[{id:'free-gold:reset:'+payload.expectedGold.resetTime,num:payload.count}],uids};
+ if(graph?.version!==1||!same(graph.nodes,nodes)||!same(graph.edges,nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})))||!same(data.budget,budget)||!same(graph.budget,budget)||!same(graph.runPolicy,{maxDurationMs:payload.maxDurationMs,maxActions:payload.count,modules:['free-gold']}))throw Error('免费点金组合顺序、固定周期额度或原UID预算不匹配');return graph;
+}
 function gpAfkUpgradeGraph(data,payload,view,accountId){
  const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b),source={level:payload.level,afkStartTime:payload.afkStartTime,afkFinishTime:payload.afkFinishTime},quote=view?.upgradePreparation?.options?.find(row=>row.levels===payload.levels),graph=data.graph;
  if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||view?.upgradePreparation?.reliable!==true||!same(source,{level:view?.afk?.level,afkStartTime:view?.afk?.afkStartTime,afkFinishTime:view?.afk?.afkFinishTime})||!same(data.source,source)||data.levels!==payload.levels||!quote||quote.blockedReason!==null||quote.targetLevel!==payload.level+payload.levels||data.targetLevel!==quote.targetLevel||data.mainlineStage!==view.upgradePreparation.mainlineStage||!same(data.costs,quote.costs)||!Array.isArray(data.costs)||data.costs.length!==1||data.costs[0].id!=='挂机徽章'||!Number.isSafeInteger(data.costs[0].num)||data.costs[0].num<=0)throw Error('返回的账号、原收益来源、升级增量、主线或成本不匹配');
@@ -807,6 +815,24 @@ function gpRenderDomain(id,view){
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='free-gold'){
   table('普通免费点金',['已用','上限','剩余','服务器重置标记','当前状态'],(view?.candidates||[]).map(row=>[view.gold?.freeTimes,row.limit,row.remaining,view.gold?.resetTime,row.executable?'可预览免费单次':row.blockedReason]));
+  const scope=viewGuard.capture(),revision=gpRevision,row=view?.candidates?.[0],count=gpEl('input'),duration=gpEl('input'),prepare=gpEl('button','准备明确次数免费点金');
+  const enabled=row?.executable===true&&Number.isInteger(row.remaining)&&row.remaining>0;
+  count.type='number';count.min='1';count.max=String(Math.min(24,row?.remaining??0));count.step='1';count.value='';count.dataset.freeGoldCount='true';duration.type='number';duration.min='1';duration.max='86400';duration.step='1';duration.value='';duration.dataset.freeGoldDuration='true';prepare.type='button';prepare.dataset.freeGoldPrepare='true';
+  const label=(text,input)=>{const label=gpEl('label',text);label.appendChild(input);box.appendChild(label);};label('本次明确次数',count);label('本次总时长（秒）',duration);box.appendChild(prepare);
+  const live=()=>gpSafe(scope,revision)&&gpGet(id)===s&&s.data?.view===view&&Array.from(box.children).includes(prepare)&&gpDomainSelectable(id)&&wfEditorEditable();
+  for(const control of [count,duration,prepare]){control._workflowPrepare=true;control._blocked=!enabled;s.actionControls.push(control);control.disabled=!enabled||!gpDomainSelectable(id)||!wfEditorEditable();}
+  const changed=control=>{if(control.disabled||!live())return;gpInvalidate(id,false);wfInvalidateSettingPlans();$('gp-'+id+'-hint').textContent='点金组合草稿已改变，旧预览和授权已失效；重新准备同周期明确次数。';};count.oninput=count.onchange=()=>changed(count);duration.oninput=duration.onchange=()=>changed(duration);
+  prepare.onclick=async()=>{
+   if(prepare.disabled||!live())return;const countText=count.value,durationText=duration.value,n=Number(countText),seconds=Number(durationText);
+   if(!/^[1-9][0-9]*$/.test(countText)||!Number.isInteger(n)||n>Math.min(24,row.remaining)||!/^[1-9][0-9]*$/.test(durationText)||!Number.isInteger(seconds)||seconds>86400){$('gp-'+id+'-hint').textContent='请明确1至当前剩余额度内的次数（最多24）和1至86400秒总时长。';return;}
+   const payload={expectedGold:JSON.parse(JSON.stringify(view.gold)),count:n,maxDurationMs:seconds*1000},requestScope=viewGuard.begin('free-gold-prepare'),editor=captureStageRecommendationEditor(),edit=++s.revision;
+   const active=()=>gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===edit&&s.data?.view===view&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&count.value===countText&&duration.value===durationText&&Array.from(box.children).includes(prepare);
+   s.plan=null;s.selected.clear();gpClear($('gp-'+id+'-plan-view'));s.pending=true;gpControls(id);
+   try{const data=await operationMutation('/api/gameplay/free-gold/prepare',payload,requestScope);if(!active())return;editor.accept(gpFreeGoldGraph(data,payload,requestScope.account));$('wf-hint').textContent='已载入同周期明确次数免费点金；核对次数、总时长及原配额/UID预算，每次重新调查、计划和授权。';$('gp-'+id+'-hint').textContent=data.limitation;}
+   catch(cause){if(gpSafe(requestScope,revision)&&gpGet(id)===s&&s.revision===edit)$('gp-'+id+'-hint').textContent='免费点金组合未准备：'+cause.message;}
+   finally{if(gpSafe(requestScope,revision)&&gpGet(id)===s){s.pending=false;gpControls(id);}}
+  };
+  box.appendChild(gpEl('p','每个动作仍为原普通免费单次，不发送批量或付费请求；不预测金币，不跨周期续领，不证明日常完成或领奖。准备不执行、不授权，拒绝或UNKNOWN停止后续。'));
   for(const note of view?.notes||[])box.appendChild(gpEl('p',note));
  }else if(id==='afk-level-rewards'){
   const scope=viewGuard.capture(),revision=gpRevision,afk=view?.afk,prepare=gpEl('button','准备普通时段收益');prepare.dataset.afkIncomePrepare='true';prepare._blocked=!afk||!['level','afkStartTime','afkFinishTime'].every(k=>Number.isInteger(afk[k])&&afk[k]>0)||afk.afkFinishTime<=afk.afkStartTime;prepare.disabled=prepare._blocked||!gpDomainSelectable(id);
