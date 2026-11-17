@@ -142,6 +142,24 @@ export function projectMaterialPackPreparations(f,selections,options={}){
  return quotes;
 }
 
+export function validateMaterialPackPreparation(value){
+ if(!fields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!dense(value.targets)||value.targets.length<1||value.targets.length>13||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('材料包组合须明确1至13项不同包/材料及有限总时长');
+ const targets=value.targets.map(row=>{const p=validateMaterialPackParameters(row);if(!own(p,'packId'))throw invalid('每项须明确包、材料和包数');return p;});
+ if(new Set(targets.map(p=>p.packId+':'+p.itemId)).size!==targets.length)throw invalid('同一包/材料每批仅兑换一次');
+ return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareMaterialPackWorkflow(f,{config,moduleConfig=MATERIAL_PACK_DEFAULT_CONFIG,...input}={}){
+ const payload=validateMaterialPackPreparation(input),steps=projectMaterialPackPreparations(f,payload.targets,{config,moduleConfig}),ledger=new ResourceLedger(f.stock),totals=new Map(),nodes=[{id:'start',type:'START'}];
+ for(const [i,step] of steps.entries()){
+  if(!ledger.reserve(step.costs))throw invalid('组合累计消耗超过准备时自有材料包');
+  for(const cost of step.costs){const num=(totals.get(cost.id)??0)+cost.num;if(!Number.isSafeInteger(num))throw invalid('组合材料包成本溢出');totals.set(cost.id,num);}
+  // Fresh planning must reproduce the original sequential full-inventory quote.
+  nodes.push({id:'exchange-'+i,type:'ACTION',module:moduleId,parameters:step.parameters,selection:step.actionId},{id:'verify-'+i,type:'VERIFY',module:moduleId});
+ }
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...totals].map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...payload,steps,budget,graph:{version:1,id:'material-packs-'+hash({context:f.context,payload,steps}).slice(0,20),name:'明确自有材料包逐项兑换',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'只兑换明确所选自有原料/工事材料包，包数按初始持有量累计预留。原有序报价固定每步完整库存和精确actionId，每项重新调查、单次授权及精确扣包得料验证；来源变化、拒绝或UNKNOWN停止。准备不执行，不补购、不自动排产、不以预计所得扩大预算，重启不续跑。'};
+}
+
 // Each predecessor must independently pass the original settlement proof.
 export function confirmedMaterialPackSequence(runs,context,identities,config){
  try{
