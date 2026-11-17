@@ -2,11 +2,12 @@ import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Museum adapter; no separate executor or speculative free-acceleration path.
 // Cached client: MuseumModel:2207, MuseumUtil:2225, BuildTeamPop:439,
 // SpeedPop:2949, MusuemUpgradePop:2247, MuseumRecruitTaskItem:2219.
-import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity, stockFromResponses } from './resource-ledger.mjs';
+import { ResourceLedger, resourceCosts, safeResourceQuantity as quantity } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { allianceId } from './alliance.mjs';
 import { readGameTime, gameTimeBounds } from './state-facts.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
 const rows=(c,n)=>c?.tables?.[n]?.data??[];
 const text=s=>typeof s==='string'&&s.trim().length>0;
 const unique=(a,key)=>Array.isArray(a)&&new Set(a.map(key)).size===a.length;
@@ -56,15 +57,14 @@ export async function surveyMuseum(client,protocol,{player=null,signal,parameter
   const [info,heroesRes,items,resources,antiquesRes]=await Promise.all([get('MuseumInfoRequest'),get('AllHeroRequest'),get('AllItemRequest'),get('AllResourceRequest'),get('AllAntiqueRequest')]);
   const stages=Array.isArray(info?.exploreStages)?info.exploreStages.map(stageOf):null;
   const heroes=Array.isArray(heroesRes?.heroes)?heroesRes.heroes.map(h=>h?.heroId):null;
-  const itemsValid=Array.isArray(items?.items)&&items.items.every(a=>text(a?.itemId??a?.id)&&quantity(field(a,'num')??field(a,'count'))!==null)&&unique(items.items,a=>a.itemId??a.id),resourcesValid=Array.isArray(resources?.list)&&resources.list.every(a=>quantity(a?.res)!==null&&quantity(field(a,'amount'))!==null)&&unique(resources.list,a=>a.res);
-  const stock=stockFromResponses(itemsValid?items:null,resourcesValid?resources:null),stockReliable=itemsValid&&resourcesValid&&[...stock.values()].every(n=>n!==null);
+  const {stock,stockReliable}=parseOperationInventory(items,resources);
   const exhibitions=Array.isArray(info?.exhibitions)?info.exhibitions.map(e=>({exhibitionId:quantity(field(e,'exhibitionId')),level:quantity(field(e,'level')),keywordLevels:e?.keywordLevels,cases:Array.isArray(e?.cases)?e.cases.map(c=>({caseIndex:quantity(field(c,'caseIndex')),level:quantity(field(c,'level')),unlocked:field(c,'unlocked'),antiqueId:field(c,'antiqueId'),upgradeFinishTime:quantity(field(c,'upgradeFinishTime'))})):null})):null;
   const antiques=Array.isArray(antiquesRes?.antiques)?antiquesRes.antiques.map(a=>a?.id):null;
   const claimed=Array.isArray(info?.claimedAchievements)?info.claimedAchievements.map(quantity):null;
   return {module:'museum',available,playerId:allianceId(player?.id??player?.playerId),playerLevel:quantity(player?.level),...readGameTime(client),
     antiques,antiquesReliable:!!antiques&&antiques.every(text)&&unique(antiques,id=>id),stages,stagesReliable:!!stages&&stages.every(stageValid)&&unique(stages,s=>s.stageId),heroes,heroesReliable:!!heroes&&heroes.every(text)&&unique(heroes,id=>id),exhibitions,
     exhibitionsReliable:!!exhibitions&&exhibitions.every(e=>e.exhibitionId!==null&&e.exhibitionId>0&&e.level!==null)&&unique(exhibitions,e=>e.exhibitionId),
-    shortageStockReliable:parseOperationInventory(items,resources).stockReliable,uncollectedRevenue:quantity(field(info,'uncollectedRevenue')),topPopularity:quantity(field(info,'topPopularity')),claimedAchievements:claimed,claimedReliable:!!claimed&&claimed.every(n=>n!==null)&&unique(claimed,n=>n),stock,stockReliable,parameters,notes};
+    shortageStockReliable:stockReliable,uncollectedRevenue:quantity(field(info,'uncollectedRevenue')),topPopularity:quantity(field(info,'topPopularity')),claimedAchievements:claimed,claimedReliable:!!claimed&&claimed.every(n=>n!==null)&&unique(claimed,n=>n),stock,stockReliable,parameters,notes};
 }
 const stateOf=(s,f)=>{const time=gameTimeBounds(f);return !stageValid(s)||time.now===null?'UNKNOWN':!s.expedition||s.expedition.endTime===0?'IDLE':s.expedition.endTime>time.latest?'EXPLORING':s.expedition.endTime<=time.earliest?'COMPLETE_UNSETTLED':'UNKNOWN';};
 function unlocked(f,c,s){const cfg=rows(c,'MuseumExpeditionStageCfg').filter(r=>r.stageId===s.stageId);if(cfg.length!==1||!Array.isArray(cfg[0].areaLevelReq))return null;const req=cfg[0].areaLevelReq;if(req.length===0)return true;if(req.length!==2||!f.exhibitionsReliable||quantity(req[0])===null||quantity(req[1])===null)return null;return f.exhibitions.some(e=>e.exhibitionId===req[0]&&e.level>=req[1]);}
@@ -246,8 +246,13 @@ export function planMuseum(f,options={}){
   if(picked.filter(a=>a.actionType==='startExplore').length>1)throw Error('每批仅允许一次探险出发');
   const cfg=validateMuseumConfig(options.moduleConfig),actions=[],notes=[...view.notes];for(const op of picked){if(actions.length>=cfg.maxActionsPerPlan){notes.push(op.actionId+': 每批上限');continue;}if(op.costs.some(({id,num})=>{const i=cfg.stockItemIds.indexOf(id);return i>=0&&(quantity(ledger.available(id))===null||ledger.available(id)-num<cfg.stockReserveQuantities[i]);})||!ledger.reserve(op.costs))notes.push(op.actionId+': 共享预算或库存线不足');else actions.push(op);}return {module:'museum',actions,notes,view};
 }
-const increase=(b,a,id,n)=>b.stockReliable&&a.stockReliable&&quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(a.stock.get(id)??0)-(b.stock.get(id)??0)>=n;
-const consume=(b,a,c)=>b.stockReliable&&a.stockReliable&&c.every(({id,num})=>quantity(b.stock.get(id)??0)!==null&&quantity(a.stock.get(id)??0)!==null&&(b.stock.get(id)??0)-(a.stock.get(id)??0)>=num);
+const inventoryMatches=(b,a,costs,rewards=[])=>b.stockReliable===true&&a.stockReliable===true&&stockMatchesDelta(b.stock,a.stock,costs,rewards);
+const consume=(b,a,costs)=>inventoryMatches(b,a,costs);
+function exhibitionPeersUnchanged(op,b,a){
+ if(!b.exhibitionsReliable||!a.exhibitionsReliable||!Array.isArray(b.exhibitions)||!Array.isArray(a.exhibitions)||![b,a].every(f=>f.exhibitions.every(e=>keywordsValid(e)&&casesValid(e)))||!b.exhibitions.some(e=>e.exhibitionId===op.target.exhibitionId)||!a.exhibitions.some(e=>e.exhibitionId===op.target.exhibitionId))return false;
+ const project=f=>f.exhibitions.map(e=>{const next=copy(e);next.cases.sort((x,y)=>x.caseIndex-y.caseIndex);if(e.exhibitionId===op.target.exhibitionId){if(op.actionType==='upgradeExhibition')delete next.level;else if(op.actionType==='upgradeKeyword'){const i=op.target.keywordType-1;if(!Number.isInteger(i)||i<0||i>2)return null;next.keywordLevels[i]=null;}else{const target=next.cases.find(c=>c.caseIndex===op.target.caseIndex);if(!target)return null;if(['upgradeCase','finishCase'].includes(op.actionType)){delete target.level;delete target.upgradeFinishTime;}else if(op.actionType==='speedCase')delete target.upgradeFinishTime;else if(op.actionType==='exhibit')delete target.antiqueId;}}return next;}).sort((x,y)=>(x?.exhibitionId??0)-(y?.exhibitionId??0));
+ const old=project(b),next=project(a);return !old.includes(null)&&!next.includes(null)&&stable(old)===stable(next);
+}
 export function verifyMuseum(op,b,a,response){
   if(!b.playerId||b.playerId!==a.playerId)return false;const beforeTime=gameTimeBounds(b),afterTime=gameTimeBounds(a);
   if(['startExplore','speedExplore','upgradeCase','finishCase','speedCase'].includes(op.actionType)&&(beforeTime.now===null||afterTime.now===null))return false;
@@ -259,8 +264,9 @@ export function verifyMuseum(op,b,a,response){
     const before=b.stages?.find(s=>s.stageId===op.target.stageId)?.expedition,after=a.stages?.find(s=>s.stageId===op.target.stageId)?.expedition;
     return b.stagesReliable&&a.stagesReliable&&before&&after&&before.startTime===after.startTime&&stable(before.heroIds)===stable(after.heroIds)&&before.factor===after.factor&&after.endTime<before.endTime&&after.endTime>0&&consume(b,a,op.costs);
   }
-  if(op.actionType==='collectRevenue'){const n=quantity(response?.collected);return b.uncollectedRevenue>0&&a.uncollectedRevenue===0&&n!==null&&n>=b.uncollectedRevenue&&increase(b,a,'人气币',n);}
-  if(op.actionType==='claimAchievement')return b.claimedReliable&&a.claimedReliable&&!b.claimedAchievements.includes(op.target.popularityThreshold)&&a.claimedAchievements.includes(op.target.popularityThreshold)&&op.expectedState.rewards.every(({id,num})=>increase(b,a,id,num));
+  if(op.actionType==='collectRevenue'){const n=quantity(response?.collected);return b.uncollectedRevenue>0&&a.uncollectedRevenue===0&&n!==null&&n>=b.uncollectedRevenue&&inventoryMatches(b,a,op.costs,[{id:'人气币',num:n}]);}
+  if(op.actionType==='claimAchievement')return b.claimedReliable&&a.claimedReliable&&!b.claimedAchievements.includes(op.target.popularityThreshold)&&a.claimedAchievements.includes(op.target.popularityThreshold)&&stable([...a.claimedAchievements].sort((x,y)=>x-y))===stable([...b.claimedAchievements,op.target.popularityThreshold].sort((x,y)=>x-y))&&inventoryMatches(b,a,op.costs,op.expectedState.rewards);
+  if(['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase','speedCase','exhibit'].includes(op.actionType)&&(!exhibitionPeersUnchanged(op,b,a)||!consume(b,a,op.costs)))return false;
   if(op.actionType==='upgradeExhibition'){const before=b.exhibitions?.find(e=>e.exhibitionId===op.target.exhibitionId),after=a.exhibitions?.find(e=>e.exhibitionId===op.target.exhibitionId);return b.exhibitionsReliable&&a.exhibitionsReliable&&before&&after&&after.level===before.level+1&&consume(b,a,op.costs);}
 
   if(['upgradeKeyword','upgradeCase','finishCase','speedCase','exhibit'].includes(op.actionType)){
