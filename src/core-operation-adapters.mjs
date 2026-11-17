@@ -143,7 +143,7 @@ function viewCityDomain(id, facts, options = {}) {
   const args = context(options,id), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
   const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='production'?validateProductionParameters(row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
-    : { module: id, ...planning, stock: view.stock, stockReliable: facts.stockReliable===true&&facts.productionInventoryReliable===true, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
+    : { module: id, ...planning, startPreparation:productionStartTargets(facts,args), stock: view.stock, stockReliable: facts.stockReliable===true&&facts.productionInventoryReliable===true, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };
 }
 function planCityDomain(id, facts, options = {}) {
@@ -294,6 +294,29 @@ function boundProductionCandidates(f,options,rows){
  const consumed=runs.some(run=>run?.accountId===live.context.accountId&&!(settlement.runIds??[settlement.runId]).includes(run.runId)&&productionSame(run.executionContext&&{...run.executionContext,playerId:productionRole(run.executionContext.playerId),worldId:productionRole(run.executionContext.worldId)},live.context)&&run.actions?.some(row=>row.dispatched===true&&(Date.parse(run.finishedAt??run.startedAt)>=Date.parse(settlement.finishedAt)||row.parameters?.materialSource?.exchangeIdentity===settlement.identity)));
  if(consumed)return [];
  return rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId&&productionSame(row.costs,quote.costs));
+}
+
+// Explicit finite starts reuse the original production quote, city planner and shared ledger.
+function productionStartTargets(f,options){
+ if(options.parameters?.materialSource||!settings(options.moduleConfig).enabled||!productionAuthority(f,options))return [];
+ return cityView(f,options).candidates.filter(row=>row.actionType==='startProduce').flatMap(row=>{const parameters={buildingId:row.target.buildingId,productId:row.target.productId},quote=productionQuote(f,options,parameters.buildingId,parameters.productId);return quote&&productionSame(quote.costs,row.costs)?[{parameters,costs:structuredClone(row.costs),executable:true}]:[];});
+}
+export function validateProductionStartPreparation(value){
+ if(!productionFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!productionArray(value.targets)||value.targets.length<1||value.targets.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('生产组合须明确1至24个工厂配方及有限总时长');
+ const targets=value.targets.map(row=>{const p=validateProductionParameters(row);if(!p.buildingId||p.materialSource)throw invalid('本组合仅使用当前自有材料，各厂须明确一个普通单份配方');return p;});
+ if(new Set(targets.map(row=>row.buildingId)).size!==targets.length)throw invalid('每个明确工厂只允许一份生产，不重复占用队列位');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareProductionStartWorkflow(f,{config,moduleConfig=defaultConfig,...input}={}){
+ const p=validateProductionStartPreparation(input),options={config,moduleConfig},targets=productionStartTargets(f,options),ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),nodes=[{id:'start',type:'START'}];
+ if(!productionAuthority(f,options)||!settings(moduleConfig).enabled)throw invalid('须使用当前账号完整生产来源并启用原生产模块');
+ const steps=p.targets.map((parameters,i)=>{const source=targets.find(row=>productionSame(row.parameters,parameters));if(!source)throw invalid('所选工厂或配方当前不能按原合同启动一份生产');
+  const candidates=domainCandidates('production',f,{...options,parameters}),matches=candidates.filter(row=>row.actionType==='startProduce'&&row.target.buildingId===parameters.buildingId&&row.target.productId===parameters.productId);
+  if(matches.length!==1)throw invalid('生产目标须对应唯一原候选');
+  const planned=planCityDomain('production',f,{...options,mode:'Manual',parameters,selections:[matches[0].actionId],ledger});
+  if(planned.actions.length!==1||!productionSame(planned.actions[0].costs,source.costs))throw invalid('当前自有材料不足以覆盖所选工厂累计单份生产成本');
+  const selection={unique:true};nodes.push({id:'produce-'+i,type:'ACTION',module:'production',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'production'});return {parameters,selection,costs:structuredClone(source.costs)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...p,steps,budget,graph:{version:1,id:'production-starts-'+productionHash({p,steps,budget}).slice(0,20),name:'明确多工厂各单份生产',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['production']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'每个明确工厂只启动指定配方一份，原planCityOperations与共享ResourceLedger按初始自有材料累计预留；每步原Function重新调查队列、配方、完整库存，重新预览及单次授权，由原生产执行器独立验证精确扣料与队列新增。预算不足、资格变化、拒绝或UNKNOWN停止，不重复生产、不领取/加速/补购/兑换，不预测产出或全天收益，收入不扩父预算，重启只读。'};
 }
 
 export function validateMaterialProductionPreparation(value){
