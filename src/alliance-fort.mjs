@@ -28,9 +28,10 @@ const source='v76 FortExchangePop._onBtnDonate/_calcRewardNum; WorldFortCfg.dona
 export const ALLIANCE_FORT_DEFAULT_CONFIG=Object.freeze({enabled:false,fort:false});
 export const ALLIANCE_FORT_EVIDENCE=Object.freeze({capabilityId:'PRO-002',ordinaryOwnedMaterials:'STATIC_VERIFIED',realGame:'REAL_UNVERIFIED',responseProcess:'SHAPE_ONLY_SEMANTICS_UNPROVEN',build:'EXCLUDED',finish:'EXCLUDED',demolish:'EXCLUDED',selectPack:'EXCLUDED_D6',automaticExchange:'EXCLUDED_D6'});
 export function validateAllianceFortParameters(v={}){
- if(!fields(v,['cityId','itemId','num'])||own(v,'cityId')&&!positive(v.cityId)||own(v,'itemId')&&!materials.includes(v.itemId)||own(v,'num')&&!positive(v.num))throw invalid('堡垒普通材料捐赠只接受明确 cityId、六种普通 itemId 和正整数 num');
+ if(!fields(v,['cityId','itemId','num','expectedFortHash'])||own(v,'cityId')&&!positive(v.cityId)||own(v,'itemId')&&!materials.includes(v.itemId)||own(v,'num')&&!positive(v.num))throw invalid('堡垒普通材料捐赠只接受明确 cityId、六种普通 itemId 和正整数 num');
  if((own(v,'itemId')||own(v,'num'))&&(!own(v,'cityId')||!own(v,'itemId')||!own(v,'num')))throw invalid('堡垒捐赠必须同时指定 cityId、itemId、num');
- return Object.fromEntries(['cityId','itemId','num'].filter(k=>own(v,k)).map(k=>[k,v[k]]));
+ if(own(v,'expectedFortHash')&&(!own(v,'itemId')||typeof v.expectedFortHash!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedFortHash)))throw invalid('堡垒来源摘要须绑定明确普通材料捐赠');
+ return Object.fromEntries(['cityId','itemId','num','expectedFortHash'].filter(k=>own(v,k)).map(k=>[k,v[k]]));
 }
 function configEnabled(c={}){if(!object(c)||![Object.prototype,null].includes(Object.getPrototypeOf(c))||['enabled','fort'].some(k=>own(c,k)&&(!own(Object.getOwnPropertyDescriptor(c,k),'value')||typeof c[k]!=='boolean')))throw invalid('联盟和堡垒开关必须为布尔值');return c.enabled===true&&c.fort===true;}
 function exactId(v){if(typeof v==='number'&&!Number.isSafeInteger(v))return null;const n=toSnapshotJson(v);if(!(typeof n==='number'&&Number.isSafeInteger(n))&&!(typeof n==='string'&&/^[1-9]\d*$/.test(n)))return null;try{const id=BigInt(n);return id>0n&&id<(1n<<63n)?id.toString():null;}catch{return null;}}
@@ -114,6 +115,41 @@ function authority(f){try{
  return Object.entries(names).every(([key,name])=>{const fact=f.sourceFacts?.[key],clock=f.sourceClocks?.[key],age=Date.now()-fact?.provenance?.sourceAt,margin=Math.max(0,age)*0.00005,projected=clock?{...clock,earliestMs:clock.earliestMs+age-margin,nowMs:clock.nowMs+age,latestMs:clock.latestMs+age+margin}:null;return fact?.provenance?.source===name&&fact.provenance.serverTime===Math.floor(clock?.nowMs)&&same(fact.value,f.inputs[key])&&factsFreshnessPolicy(fact,{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:scope(key,f.parameters.cityId)}).status==='FRESH'&&dayOf(projected,c)===f.dayKey;});
  }catch{return false;}
 }
+// Preparation guard only: other selected materials and the same-day merit counter
+// may change after a verified earlier step. Exact live costs/rewards are still
+// recomputed and separately authorized by the original single-donation contract.
+function donationSourceHash(f,itemId){
+ const fort=f?.fort,progress=fort?.process?.find(row=>row.itemId===itemId);
+ if(!authority(f)||!progress)return null;
+ const {process,...identity}=fort;
+ return hash({context:f.identityContext,dayKey:f.dayKey,guildId:f.guildId,season:f.season,cities:f.cities,fort:identity,progress,catalog:f.catalog});
+}
+function donationFacts(f,parameters,config){
+ if(!authority(f)||parameters.cityId!==f.parameters.cityId)throw invalid('堡垒组合须使用同城原活体调查');
+ const session=liveSessions.get(f),observations=Object.fromEntries(Object.keys(names).map(key=>[key,{value:f.inputs[key],sourceAt:f.sourceFacts[key].provenance.sourceAt,source:names[key],gameTime:f.sourceClocks[key]}]));
+ return parseAllianceFortObservations(observations,{context:f.identityContext,parameters,config,available:f.available,notes:f.notes,...session});
+}
+export function validateAllianceFortPreparation(value){
+ if(!fields(value,['cityId','donations','maxDurationMs'])||Reflect.ownKeys(value).length!==3||!positive(value.cityId)||!dense(value.donations)||Object.getPrototypeOf(value.donations)!==Array.prototype||Reflect.ownKeys(value.donations).length!==value.donations.length+1||value.donations.length<1||value.donations.length>6||!Array.from({length:value.donations.length},(_,i)=>Object.getOwnPropertyDescriptor(value.donations,i)).every(d=>d?.enumerable&&own(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('堡垒组合须明确同城1至6种不同自有普通材料及有限总时长');
+ const donations=value.donations.map(row=>{
+  if(!fields(row,['itemId','num','expectedFortHash'])||Reflect.ownKeys(row).length!==3)throw invalid('材料组合须绑定原材料、数量和来源摘要');
+  const {cityId,...p}=validateAllianceFortParameters({cityId:value.cityId,...row});return p;
+ });
+ if(new Set(donations.map(row=>row.itemId)).size!==donations.length)throw invalid('每种材料每批仅一次明确捐赠');
+ return {cityId:value.cityId,donations,maxDurationMs:value.maxDurationMs};
+}
+export function prepareAllianceFortWorkflow(facts,{config,moduleConfig,...input}={}){
+ const p=validateAllianceFortPreparation(input),ledger=new ResourceLedger(authority(facts)?facts.stock:null),nodes=[{id:'start',type:'START'}];
+ const steps=p.donations.map((donation,i)=>{
+  const parameters={cityId:p.cityId,...donation},f=donationFacts(facts,parameters,config),planned=planAllianceFort(f,{config,moduleConfig,parameters,ledger});
+  if(planned.actions.length!==1)throw invalid('所选堡垒材料无原单次资格、来源已变化或累计自有材料不足：'+(planned.notes[0]??'UNKNOWN'));
+  const row=planned.actions[0],selection={unique:true},costs=copy(row.costs);
+  nodes.push({id:'fort-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});
+  return {parameters,selection,target:copy(row.target),costs,budgetClaims:{resources:costs,quotas:[],uids:[]}};
+ });
+ nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...p,guildId:facts.guildId,steps,budget,graph:{version:1,id:'alliance-fort-'+hash({p,steps,budget}).slice(0,20),name:'明确堡垒自有普通材料逐项捐献',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['alliance']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅同城明确选择的不同自有普通材料，每种一次；来源摘要绑定原账号联盟、可信游戏日、堡垒状态、该材料进度及配置。前项确认后允许其他所选材料进度及同日衰减计数变化；每项仍由原单次合同重新计算实际功勋、调查、预览和单次授权，完整typed结算及全库存验证保持。固定初始材料父预算，拒绝或UNKNOWN停止，不建造、兑换、用礼包、预测完成或恢复执行。'};
+}
 // Match the client's single floor after the reduced subtotal, using exact math.
 export function allianceFortReward(base,num,used,threshold,ratio){
  if([base,num,used,threshold,ratio].some(v=>quantity(v)!==v)||!base||!num||ratio>10000)return null;
@@ -133,6 +169,7 @@ function candidate(f,p,{config,moduleConfig=ALLIANCE_FORT_DEFAULT_CONFIG}={}){
  else if(!enabled)reason='FORT_DISABLED';
  else if(!known)reason='FORT_AUTHORITY_OR_TRUSTED_DAY_UNKNOWN';
  else if(!same(f.parameters,p))reason='FORT_SURVEY_TARGET_MISMATCH';
+ else if(p.expectedFortHash!==undefined&&p.expectedFortHash!==donationSourceHash(f,p.itemId))reason='FORT_SOURCE_CHANGED';
  else if(!same(c,catalog(config))||!definition||!material)reason='FORT_CONFIG_UNKNOWN';
  else if(!f.available?.includes('DonateFortRequest')||!f.available?.includes('DonateFortResponse'))reason='PROTOCOL_UNAVAILABLE';
  else if(f.season<c.unlockSeason)reason='FORT_SEASON_LOCKED';
@@ -143,7 +180,7 @@ function candidate(f,p,{config,moduleConfig=ALLIANCE_FORT_DEFAULT_CONFIG}={}){
  const target={guildId:f?.guildId??null,cityId:p.cityId??null,fortType:f?.fort?.type??null,itemId:p.itemId??null,num:p.num??null},beforeState=copy(f?.state??null),identity=hash({beforeState,target,catalog:c??null,costs,reward});
  return {module:'alliance',capabilityId:'PRO-002',actionId:'alliance:donateFort:'+String(p.cityId??'?')+':'+identity,actionType:'donateFort',target,parameters:p,costs,costSource:source,beforeState,identity,expectedState,reward:reward===null?null:{type:0,id:'功勋',num:reward},executable:reason===null,blockedReason:reason,label:'堡垒普通材料捐赠 '+String(p.itemId??''),...(reason===null?{action:{request:'DonateFortRequest',response:'DonateFortResponse',body:{cityId:p.cityId,item:{itemId:p.itemId,num:p.num},selectPackNum:0}}}:{})};
 }
-export function viewAllianceFort(f,options={}){const p=validateAllianceFortParameters(options.parameters??f?.parameters??{});return {module:'alliance',fort:copy(f?.fort??null),materials:(f?.catalog?.forts?.find(r=>r.type===f?.fort?.type)?.requirements??[]).map(r=>({itemId:r.id,required:r.num,donated:f.fort.process.find(p=>p.itemId===r.id)?.num??null,owned:f.stockReliable?f.stock.get(r.id)??0:null})),dailyDonateNum:f?.dailyDonateNum??null,dayKey:f?.dayKey??null,candidates:[candidate(f,p,options)],reliability:{authority:authority(f),catalog:f?.catalog?.reliable===true},evidence:ALLIANCE_FORT_EVIDENCE,notes:[...(f?.notes??[]),'仅捐赠已经持有的六种普通材料；当日计数仅计算功勋衰减，不视为每日硬配额。']};}
+export function viewAllianceFort(f,options={}){const p=validateAllianceFortParameters(options.parameters??f?.parameters??{});return {module:'alliance',fort:copy(f?.fort??null),donationSources:authority(f)?(f.catalog.forts.find(row=>row.type===f.fort.type)?.requirements??[]).map(row=>({itemId:row.id,expectedFortHash:donationSourceHash(f,row.id)})):[],materials:(f?.catalog?.forts?.find(r=>r.type===f?.fort?.type)?.requirements??[]).map(r=>({itemId:r.id,required:r.num,donated:f.fort.process.find(p=>p.itemId===r.id)?.num??null,owned:f.stockReliable?f.stock.get(r.id)??0:null})),dailyDonateNum:f?.dailyDonateNum??null,dayKey:f?.dayKey??null,candidates:[candidate(f,p,options)],reliability:{authority:authority(f),catalog:f?.catalog?.reliable===true},evidence:ALLIANCE_FORT_EVIDENCE,notes:[...(f?.notes??[]),'仅捐赠已经持有的六种普通材料；当日计数仅计算功勋衰减，不视为每日硬配额。']};}
 export function planAllianceFort(f,{parameters=f?.parameters??{},selections,ledger=new ResourceLedger(f?.stockReliable?f.stock:null),...options}={}){
  parameters=validateAllianceFortParameters(parameters);if(selections!==undefined&&(!dense(selections)||selections.some(v=>!text(v))||new Set(selections).size!==selections.length))throw invalid('selections 必须为不重复的明确 actionId');
  const row=candidate(f,parameters,options);if(row.executable&&(selections===undefined||selections.includes(row.actionId))&&ledger.reserve(row.costs))return {module:'alliance',actions:[row],notes:[]};return {module:'alliance',actions:[],notes:[row.blockedReason??'ACTION_NOT_SELECTED_OR_SHARED_BUDGET_EXHAUSTED']};
@@ -151,6 +188,7 @@ export function planAllianceFort(f,{parameters=f?.parameters??{},selections,ledg
 export function verifyAllianceFort(operation,before,after,response){
  const failed=reason=>({confirmed:false,reason}),p=operation?.parameters;let parameters;try{parameters=validateAllianceFortParameters(p);}catch{return failed('捐赠参数不在单目标白名单');}
  if(!parameters.cityId||!parameters.itemId||!parameters.num||operation.actionType!=='donateFort'||operation.module!=='alliance'||operation.costSource!==source||!same(operation.action,{request:'DonateFortRequest',response:'DonateFortResponse',body:{cityId:p.cityId,item:{itemId:p.itemId,num:p.num},selectPackNum:0}}))return failed('捐赠请求必须为明确单城市单普通材料且selectPackNum=0');
+ if(p.expectedFortHash!==undefined&&p.expectedFortHash!==donationSourceHash(before,p.itemId))return failed('原材料来源、可信日或堡垒状态已变化');
  if(!authority(before)||!authority(after)||!same(before.identityContext,after.identityContext)||!same(before.catalog,after.catalog)||!same(before.parameters,p)||!same(after.parameters,p)||before.dayKey!==after.dayKey)return failed('权威事实、账号联盟代次、配置或可信游戏日不一致');
  if(Object.keys(names).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt||after.sourceClocks[k].nowMs<before.sourceClocks[k].nowMs))return failed('写后来源早于原始写前观察');
  const material=before.catalog.materials.find(r=>r.id===p.itemId),definition=before.catalog.forts.find(r=>r.type===before.fort.type),progress=before.fort.process.find(r=>r.itemId===p.itemId)?.num,limit=definition?.requirements.find(r=>r.id===p.itemId)?.num;

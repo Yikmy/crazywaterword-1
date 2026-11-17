@@ -71,6 +71,7 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
 
 function parametersOf(p={}) {
   if(p&&['action','shipId','crewId'].some(k=>Object.hasOwn(p,k)))return shipParameters(p);
+  if(p&&Object.hasOwn(p,'expectedFortHash'))return validateAllianceFortParameters(p);
   if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'].includes(k))) throw Error('联盟参数不在业务白名单');
   if(Object.hasOwn(p,'itemId')||Object.hasOwn(p,'num'))return validateAllianceFortParameters(p);
   const out={};
@@ -163,7 +164,7 @@ export async function surveyAlliance(client,protocol,{config=null,player=null,si
     get('GuildInfoRequest'),get('GuildMemberRequest'),get('GuildAidListRequest',{type:0}),get('MyGuildAidRequest',{type:0}),get('GuildOrderRequest'),get('GuildCityInfoRequest'),get('CounterInfoRequest'),get('AllItemRequest'),get('AllResourceRequest'),get('GuildTechInfoRequest'),get('SeasonTaskStageRequest'),parameters.cityId?get('CityFortInfoRequest',{cityId:parameters.cityId}):null]);
   assertExecutionActive(client,options);
   if(parameters.cityId&&stable(context)!==stable(allianceFortContext(client,player)))throw Object.assign(new Error('联盟采集期间账号、联盟或连接上下文变化'),{code:'CANCELLED'});
-  const fortParameters=Object.fromEntries(['cityId','itemId','num'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]));
+  const fortParameters=Object.fromEntries(['cityId','itemId','num','expectedFortHash'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]));
   const fortFacts=parameters.cityId?parseAllianceFortObservations(observations,{context,parameters:fortParameters,config,available,notes,currentGameTime:()=>readGameTime(client).gameTime,currentContext:()=>allianceFortContext(client,player)}):null;
   const asks=Array.isArray(aidRes?.askItems)?aidRes.askItems.map(a=>aidRow(a,true)):null,ownAids=Array.isArray(ownRes?.aids)?ownRes.aids.map(a=>aidRow(a)):null;
   const groups=membersRes?.titleList,members=Array.isArray(groups)&&groups.every(g=>Array.isArray(g?.members))?groups.flatMap(g=>g.members.map(m=>({playerId:allianceId(m?.playerId),nickname:m?.nickname,online:typeof field(m,'online')==='boolean'?m.online:null,title:g.guildTitle}))):null;
@@ -184,7 +185,7 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
   parameters=parametersOf(parameters);moduleConfig=validateAllianceConfig(moduleConfig);const candidates=[],blocked=[],notes=[...(f.notes??[])];
   if(['ship-order','ship-seek'].includes(parameters.action))return shipView(f,{config,parameters,moduleConfig});
   const tech=allianceTechView(f,{config,parameters});
-  const fort=f.fortFacts?viewAllianceFort(f.fortFacts,{config,moduleConfig,parameters:Object.fromEntries(['cityId','itemId','num'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]))}):null;
+  const fort=f.fortFacts?viewAllianceFort(f.fortFacts,{config,moduleConfig,parameters:Object.fromEntries(['cityId','itemId','num','expectedFortHash'].filter(k=>parameters[k]!==undefined).map(k=>[k,parameters[k]]))}):null;
   if(parameters.itemId!==undefined)return {guildId:f.guildId,playerId:f.playerId,fort,candidates:(fort?.candidates??[]).filter(c=>c.executable),blocked:(fort?.candidates??[]).filter(c=>!c.executable),notes:[...notes,...(fort?.notes??[])],members:[],technologies:[],dailyLimits:{ask:null,help:null}};
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason});
   const enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),chosen=(k,v)=>parameters[k]===undefined||parameters[k].includes(v),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
