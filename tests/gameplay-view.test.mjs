@@ -503,3 +503,29 @@ test('Workflow legacy history displays unavailable provenance and keeps recovery
  task=h.node('wf-history-read').onclick();const detail=workflowHistoryDetail();detail.workflowDefinitionId='definition';detail.reasonAudit={...originalWorkflowAudit(),originalStatus:null,executionContext:null,reason:{source:'Workflow.run.reason',coverage:'RECOVERY_ONLY',text:null},events:[]};h.respond(workflowHistoryPath('run/one'),detail);await task;
  assert.match(h.node('wf-history-detail').textContent,/角色 未知 · 世界 未知/);assert.match(h.node('wf-history-detail').textContent,/未知（仅有恢复提示）/);
 });
+
+
+async function museumExploreUiFixture(){
+ const {museumView,prepareMuseumGrowthWorkflow}=await import('../src/museum.mjs'),now=1800000000;
+ const facts={playerId:'1',playerLevel:30,now,stockReliable:true,shortageStockReliable:true,stock:new Map([['小麦',10]]),heroesReliable:true,heroes:['A','B','C','D'],stagesReliable:true,stages:[1,2].map(stageId=>({stageId,progress:0,expedition:{startTime:0,endTime:0,heroIds:[],cost:[{id:'小麦',num:2}],conditionId:100,factor:1}})),exhibitionsReliable:true,exhibitions:[],antiquesReliable:true,antiques:[],claimedReliable:true,claimedAchievements:[],topPopularity:0,uncollectedRevenue:0,available:['MuseumStartExploreRequest','MuseumStartExploreResponse'],notes:[]};
+ const config={tables:{MuseumExpeditionTeamCfg:{data:[{teamCount:2,playerLevel:1}]},MuseumExpeditionStageCfg:{data:[{stageId:1,areaLevelReq:[]},{stageId:2,areaLevelReq:[]}]},MuseumExpeditionConditionCfg:{data:[{conditionId:100,heroCount:2}]},MuseumExploreTimeFactorCfg:{data:[{factor:1,playerLevel:1},{factor:2,playerLevel:1}]}}},moduleConfig={enabled:true,exploration:true},body={...data('museum'),config:moduleConfig,view:museumView(facts,{config,moduleConfig,parameters:{}})};
+ body.view.candidates=body.view.candidates.map(({action,...row})=>({...row,executable:Boolean(action)}));const h=harness(),pending=h.run("refreshGameplay('museum')");h.respond('/api/gameplay?module=museum',body);await pending;
+ const result=payload=>({accountId:'A',...prepareMuseumGrowthWorkflow(facts,{config,moduleConfig,...payload})});return {h,result};
+}
+function museumExploreControl(h,key,value='true'){const all=[],visit=node=>{if(node.dataset[key]===value)all.push(node);node.children.forEach(visit);};visit(h.node('gp-museum-facts'));assert.equal(all.length,1,key+':'+value);return all[0];}
+function addMuseumUiTeam(h,stageId,heroIds,factor){
+ const stage=museumExploreControl(h,'museumExploreBatchStage'),multiplier=museumExploreControl(h,'museumExploreBatchFactor');stage.value=String(stageId);stage.onchange();multiplier.value=String(factor);multiplier.onchange();
+ for(const id of heroIds){const check=museumExploreControl(h,'museumExploreBatchHero',id);assert.equal(check.disabled,false);check.checked=true;check.onchange();}museumExploreControl(h,'museumExploreBatchAdd').onclick();
+}
+test('professional Museum multi-team controls prepare the actual finite graph with explicit teams and no implicit operation',async()=>{
+ const {h,result}=await museumExploreUiFixture();assert.equal(h.requests.length,1);addMuseumUiTeam(h,1,['A','B'],1);assert.equal(museumExploreControl(h,'museumExploreBatchHero','A').disabled,true);addMuseumUiTeam(h,2,['C','D'],2);assert.equal(museumExploreControl(h,'museumExploreBatchAdd').disabled,true);
+ const duration=museumExploreControl(h,'museumExploreBatchDuration');duration.value='60';duration.oninput();const pending=museumExploreControl(h,'museumExploreBatchPrepare').onclick(),request=h.pending('/api/gameplay/museum/growth/prepare'),payload=JSON.parse(JSON.stringify(request.body));
+ assert.equal(payload.actionType,'startExplore');assert.deepEqual(payload.targets.map(({stageId,heroIds,factor})=>({stageId,heroIds,factor})),[{stageId:1,heroIds:['A','B'],factor:1},{stageId:2,heroIds:['C','D'],factor:2}]);const prepared=result(payload);h.respond('/api/gameplay/museum/growth/prepare',prepared);await pending;
+ assert.deepEqual(JSON.parse(h.node('wf-json').value),prepared.graph);assert.deepEqual(prepared.budget.resources,[{id:'小麦',num:6}]);assert.equal(h.pending('/api/operations/plan'),undefined);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+test('Museum multi-team preparation discards late account, duration and workflow-editor changes',async()=>{
+ for(const change of ['account','duration','graph']){const {h,result}=await museumExploreUiFixture();addMuseumUiTeam(h,1,['A','B'],1);const duration=museumExploreControl(h,'museumExploreBatchDuration');duration.value='60';duration.oninput();const button=museumExploreControl(h,'museumExploreBatchPrepare'),pending=button.onclick(),payload=JSON.parse(JSON.stringify(h.pending('/api/gameplay/museum/growth/prepare').body)),prepared=result(payload);
+  if(change==='account'){h.select('B');h.select('A');}else if(change==='duration')duration.value='61';else h.node('wf-json').value='{"id":"local-draft"}';
+  h.respond('/api/gameplay/museum/growth/prepare',prepared);await pending;assert.notEqual(JSON.parse(h.node('wf-json').value).id,prepared.graph.id);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+ }
+});

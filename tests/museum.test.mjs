@@ -166,3 +166,49 @@ test('professional exhibit graph accepts actual planner output and rejects cross
  const forged=structuredClone(result);forged.budget.uids.pop();assert.throws(()=>check(forged,input,projection,'A'));
  const changed=structuredClone(result);changed.steps[0].parameters.expectedExhibitHash='f'.repeat(64);assert.throws(()=>check(changed,input,projection,'A'));
 });
+
+
+async function exploreBatchFixture(){
+ const client=fake();client.answers.MuseumInfoRequest.exploreStages=[idle(1),idle(2)];
+ const f=await read(client,{}),c=structuredClone(config);c.tables.MuseumExpeditionTeamCfg.data[0].teamCount=2;c.tables.MuseumExpeditionConditionCfg.data[0].heroCount=2;c.tables.MuseumExpeditionStageCfg.data[1].areaLevelReq=[];
+ const projection=museumView(f,{config:c,moduleConfig,parameters:{}}),input={actionType:'startExplore',targets:projection.explorationSelection.stages.map((row,i)=>({stageId:row.stageId,heroIds:i?['C','D']:['A','B'],factor:i?2:1,expectedExploreHash:row.preparationHash})),maxDurationMs:60000};
+ return {f,c,projection,input};
+}
+test('explicit multi-team preparation reserves initial materials and distinct stage/hero UIDs without changing the single-start contract',async()=>{
+ const {f,c,input}=await exploreBatchFixture(),out=prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input});
+ assert.deepEqual(out.budget.resources,[{id:'小麦',num:6}]);assert.equal(out.budget.uids.length,6);assert.equal(new Set(out.budget.uids.map(row=>row.type+':'+row.id)).size,6);
+ assert.deepEqual(out.graph.nodes.map(row=>row.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+ const single=planMuseum(f,{config:c,moduleConfig,parameters:{stageId:1,heroIds:['A','B'],factor:1},selections:[out.steps[0].selection.actionId]}).actions[0];assert.ok(single);assert.equal(Object.hasOwn(single,'budgetClaims'),false);
+ const {validateWorkflow}=await import('../src/workflow.mjs'),{GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');validateWorkflow(out.graph,{modules:GAMEPLAY_MODULES});
+ for(const step of out.steps){const op=planMuseum(f,{config:c,moduleConfig,parameters:step.parameters,selections:[step.selection.actionId]}).actions[0];assert.equal(op.action.request,'MuseumStartExploreRequest');assert.deepEqual(op.action.body,step.target);assert.deepEqual(op.budgetClaims,step.budgetClaims);assert.equal(Object.hasOwn(op.action.body,'expectedExploreHash'),false);}
+});
+test('a verified first expedition permits the second fresh plan while changed target, ownership or configuration is rejected',async()=>{
+ const {f,c,input}=await exploreBatchFixture(),out=prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input}),first=planMuseum(f,{config:c,moduleConfig,parameters:input.targets[0],selections:[out.steps[0].selection.actionId]}).actions[0],after=structuredClone(f);
+ Object.assign(after.stages[0].expedition,{startTime:now,endTime:now+3600,heroIds:['A','B']});after.stock.set('小麦',8);assert.equal(verifyMuseum(first,f,after),true);
+ const next=()=>planMuseum(after,{config:c,moduleConfig,parameters:input.targets[1],selections:[out.steps[1].selection.actionId]});assert.equal(next().actions.length,1);
+ after.stages[1].progress++;assert.throws(next,/候选已失效/);after.stages[1].progress--;
+ after.heroes.push('E');assert.throws(next,/候选已失效/);after.heroes.pop();c.tables.MuseumExploreTimeFactorCfg.data[1].playerLevel++;assert.throws(next,/候选已失效/);
+});
+test('multi-team preparation rejects cumulative shortage, reservations, initial capacity, duplicate stages/heroes and unknown time',async()=>{
+ const {f,c,input}=await exploreBatchFixture(),prepare=(facts=f,options={})=>prepareMuseumGrowthWorkflow(facts,{config:c,moduleConfig,...input,...options});
+ assert.throws(()=>prepare({...f,stock:new Map([['小麦',5]])}),/预算|材料/);
+ assert.throws(()=>prepare(f,{moduleConfig:{...moduleConfig,stockItemIds:['小麦'],stockReserveQuantities:[5]}}));
+ const capped=structuredClone(c);capped.tables.MuseumExpeditionTeamCfg.data[0].teamCount=1;assert.throws(()=>prepare(f,{config:capped}),/队伍空位不足/);
+ for(const targets of [[input.targets[0],input.targets[0]],[input.targets[0],{...input.targets[1],heroIds:['A','D']}],[input.targets[0],{...input.targets[1],heroIds:['C','C']}]])assert.throws(()=>prepare(f,{targets}));
+ assert.throws(()=>prepare({...f,gameTime:{status:'UNKNOWN',reliable:false}}));
+ assert.throws(()=>prepare(f,{targets:[{...input.targets[0],payment:'FREE'}]}),{code:'INVALID_INPUT'});
+ const bad={...input.targets[0]},heroes=[...bad.heroIds];let accessed=false;Object.defineProperty(heroes,'0',{enumerable:true,get(){accessed=true;throw Error('accessor must not run');}});bad.heroIds=heroes;assert.throws(()=>prepare(f,{targets:[bad]}),{code:'INVALID_INPUT'});assert.equal(accessed,false);
+});
+test('professional multi-team graph validates actual output and rejects changed account, heroes, costs, UIDs or skipped VERIFY',async()=>{
+ const {GAMEPLAY_SCRIPT}=await import('../src/gameplay-page.mjs'),extract=name=>{const start=GAMEPLAY_SCRIPT.indexOf('function '+name+'('),end=GAMEPLAY_SCRIPT.indexOf('\nfunction ',start+1);assert.ok(start>=0&&end>start);return GAMEPLAY_SCRIPT.slice(start,end);},check=new Function(['gpBudget','gpMuseumExploreSources','gpMuseumExploreGraph'].map(extract).join('\n')+';return gpMuseumExploreGraph')();
+ const {f,c,input,projection}=await exploreBatchFixture(),out={accountId:'A',...prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input})};assert.deepEqual(check(out,input,projection,'A'),out.graph);assert.throws(()=>check(out,input,projection,'B'));
+ for(const mutate of [out=>out.steps[0].target.heroIds.push('C'),out=>out.steps[0].costs[0].num++,out=>out.budget.uids.pop(),out=>out.graph.nodes.splice(2,1)]){const changed=structuredClone(out);mutate(changed);assert.throws(()=>check(changed,input,projection,'A'));}
+});
+test('explicit popularity claims isolate each threshold and reserve fixed claim UIDs while preserving ordinary single claims',async()=>{
+ const f=await read(fake(),{});f.topPopularity=200;const c=structuredClone(config);c.tables.MuseumAchievementCfg.data.push({score:200,rewards:[['小麦',3]]});
+ const projection=museumView(f,{config:c,moduleConfig,parameters:{}}),input={actionType:'claimAchievement',targets:[{popularityThreshold:100},{popularityThreshold:200}],maxDurationMs:60000},out=prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input});
+ assert.equal(projection.achievementPreparation.length,2);assert.equal(projection.candidates.filter(row=>row.actionType==='claimAchievement').some(row=>Object.hasOwn(row,'budgetClaims')),false);assert.deepEqual(out.budget.resources,[]);assert.equal(out.budget.uids.length,2);
+ const after=structuredClone(f);after.claimedAchievements.push(100);after.stock.set('小麦',12);const next=planMuseum(after,{config:c,moduleConfig,parameters:input.targets[1],selections:[out.steps[1].selection.actionId]});assert.equal(next.actions.length,1);assert.deepEqual(next.actions[0].action.body,{popularityThreshold:200});
+ assert.throws(()=>prepareMuseumGrowthWorkflow({...f,stock:new Map([['小麦',Number.MAX_SAFE_INTEGER-4]])},{config:c,moduleConfig,...input}),/累计奖励/);
+ const duplicate=structuredClone(c);duplicate.tables.MuseumAchievementCfg.data.push(duplicate.tables.MuseumAchievementCfg.data[0]);assert.throws(()=>prepareMuseumGrowthWorkflow(f,{config:duplicate,moduleConfig,...input}));
+});
