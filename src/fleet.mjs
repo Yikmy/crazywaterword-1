@@ -292,6 +292,21 @@ function resourceFieldCandidate(f,parameters,opts,settlement=false){
  const row=candidate('giveUpField',{gridIdx:parameters.resourceFieldGridIdx},[],'Fixed v76 LandUtil.toGiveUpResField: exact grid only, no payment or reward claim',beforeState,expectedState,action.request,action.response,action.body,parameters,reason);
  row.executable=reason===null;row.budgetClaims={resources:[],quotas:[],uids:context?[{type:'resource-field',id:context.worldId+':'+parameters.resourceFieldGridIdx}]:[]};return row;
 }
+export function validateFleetFieldPreparation(value){
+ strictParameters(value,['gridIndices','maxDurationMs']);if(!['gridIndices','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');}))throw invalid('资源田组合仅接受明确自有数据字段');const rows=value.gridIndices;
+ if(Reflect.ownKeys(value).length!==2||!fieldDense(rows)||rows.length<1||rows.length>24||rows.some(gridIdx=>!fieldUint(gridIdx))||new Set(rows).size!==rows.length||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('须明确1至24个不同已占资源田网格及有限总时长，网格0有效');
+ return {gridIndices:[...rows],maxDurationMs:value.maxDurationMs};
+}
+export function prepareFleetFieldWorkflow(f,{moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
+ const p=validateFleetFieldPreparation(input),opts=validateFleetConfig(moduleConfig),owner=fieldOwners.get(f);
+ if(!fieldCurrent(f)||!f.resourceFields||!f.stockReliable||!owner?.context||Object.values(owner.context).some(v=>v===null||v===undefined)||!opts.enabled||!opts.giveUpResourceField)throw invalid('资源田组合须有原完整私有来源及明确启用的放弃配置');
+ const nodes=[{id:'start',type:'START'}],steps=p.gridIndices.map((gridIdx,i)=>{const parameters={resourceFieldGridIdx:gridIdx},target={...f,parameters};fieldOwners.set(target,{client:owner.client,player:owner.player,context:owner.context,digest:fieldDigest(target)});
+  const candidate=resourceFieldCandidate(target,parameters,opts),plan=planFleet(target,{moduleConfig,parameters,selections:[candidate.actionId]});if(plan.actions.length!==1||!candidate.executable)throw invalid('所选网格当前无完整放弃资格；须重新调查原已占列表');
+  const selection={unique:true};nodes.push({id:'give-up-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});return {parameters,selection,field:structuredClone(f.resourceFields.fields.find(row=>row.gridIdx===gridIdx)),costs:[],budgetClaims:structuredClone(candidate.budgetClaims)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...p,context:structuredClone(owner.context),resourceFields:structuredClone(f.resourceFields),steps,budget,graph:{version:1,id:'fleet-fields-'+createHash('sha256').update(stable({p,steps})).digest('hex').slice(0,20),name:'明确已占资源田逐田放弃',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'只放弃明确已占网格，原GiveUpResField请求、活体来源、planFleet及独立完整MyResFields/库存验证保持。逐田重新调查、预览和单次授权，确认仅本田移除、上限及其他田和库存不变后继续；零资源支出，固定原world:grid父UID。资格变化、拒绝或UNKNOWN停止，不占田、不领取收益、不自动重发或续权，重启只读，无新增恢复分支。'};
+}
+
 function verifyResourceField(operation,before,after){
  const no=reason=>({confirmed:false,reason}),owner=fieldOwners.get(before),other=fieldOwners.get(after);
  // Pre-write revision may change because of the write itself; identity and the
