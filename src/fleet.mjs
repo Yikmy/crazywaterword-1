@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ACTIONS, buildBody } from './actions.mjs';
 import { businessRejectionIdentityFromHistory } from './business-functions.mjs';
 // Fleet/cargo adapters. Existing GameClient, Session and shared executor own execution.
@@ -12,11 +13,15 @@ import { toSnapshotJson } from './game.mjs';
 
 export const FLEET_DEFAULT_CONFIG = Object.freeze({ enabled: false, repair: false, repairBelowDurabilityRatio: 0.8, repairMode: 'IMMEDIATE', maximumRepairPetrolPerPlan: 0, repairPriorityBuildingIds: [], stopRepair: false, move: false, cargoFill: false, cargoClaim: false, giveUpResourceField: false, formation: false, autoFight: false, speedUp: false, minimumDurabilityRatio: 0.8, petrolReserve: 0, scenarioId: 1 });
 function parametersOf(parameters = {}) {
-  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx', 'screenCenter']);
+  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx', 'screenCenter', 'expectedCargoHash']);
   if(Object.hasOwn(parameters,'resourceFieldGridIdx')){
     const keys=Reflect.ownKeys(parameters),d=Object.getOwnPropertyDescriptor(parameters,'resourceFieldGridIdx');
     if(keys.length!==1||!d?.enumerable||!Object.hasOwn(d,'value')||!Number.isInteger(d.value)||d.value<0||d.value>2147483647)throw invalid('放弃资源田须仅声明明确的非负int32 resourceFieldGridIdx');
     return {resourceFieldGridIdx:d.value};
+  }
+  if(Object.hasOwn(parameters,'expectedCargoHash')){
+    const d=Object.getOwnPropertyDescriptor(parameters,'expectedCargoHash');
+    if(!d?.enumerable||!Object.hasOwn(d,'value')||typeof d.value!=='string'||!/^[a-f0-9]{64}$/.test(d.value)||Reflect.ownKeys(parameters).length!==3||!['shipIndex','cargoIndex'].every(k=>{const v=Object.getOwnPropertyDescriptor(parameters,k);return v?.enumerable&&Object.hasOwn(v,'value')&&Number.isInteger(v.value)&&v.value>0&&v.value<=2147483647;}))throw invalid('装货准备摘要只能绑定精确货船与货格');
   }
   if (parameters.screenCenter !== undefined) worldObservationQuery(parameters.screenCenter);
   if (parameters.buildingId !== undefined && !nonempty(parameters.buildingId)) throw invalid('舰队 ID 无效');
@@ -96,6 +101,7 @@ function cargoStockAmount(stock,id) {return stock instanceof Map?quantity(stock.
 function cargoInventoryMatches(beforeFacts,afterFacts,costs,rewards) {
   return stockMatchesDelta(cargoInventory(beforeFacts),cargoInventory(afterFacts),costs,rewards);
 }
+const cargoSnapshotHash=ship=>createHash('sha256').update(stable(ship)).digest('hex');
 function cargoFillExpected(ship,index) {return {cargoIndex:index+1,filled:true,reward:ship.orderItem[index].reward};}
 function cargoClaimExpected(ship) {return {oldArrivalConsumed:true,reward:ship.reward};}
 export function cargoShortageView(facts, options = {}) {
@@ -119,11 +125,39 @@ export function cargoShortageView(facts, options = {}) {
       }
     }
     const claim=candidates.find(row=>row.actionType==='cargoClaim'&&row.target.shipIndex===raw.index);
-    ships.push({shipIndex:raw.index,status:ownCargo(raw,'status')&&[0,1,2].includes(raw.status)?raw.status:null,statusText:ownCargo(raw,'status')?cargoStatusText[raw.status]??'未知':'未知',arriveTime:ownCargo(raw,'arriveTime')&&quantity(raw.arriveTime)!==null?quantity(raw.arriveTime):null,voyageIdentity:parsed?stable(parsed):null,reliable:Boolean(parsed),reason:parsed?null:'CARGO_SHIP_UNRELIABLE',claimActionId:claim?.actionId??null,claimReason:claim?.reason??null,reward:parsed?.reward??null,slots});
+    ships.push({shipIndex:raw.index,status:ownCargo(raw,'status')&&[0,1,2].includes(raw.status)?raw.status:null,statusText:ownCargo(raw,'status')?cargoStatusText[raw.status]??'未知':'未知',arriveTime:ownCargo(raw,'arriveTime')&&quantity(raw.arriveTime)!==null?quantity(raw.arriveTime):null,voyageIdentity:parsed?stable(parsed):null,preparationHash:parsed?cargoSnapshotHash(parsed):null,reliable:Boolean(parsed),reason:parsed?null:'CARGO_SHIP_UNRELIABLE',claimActionId:claim?.actionId??null,claimReason:claim?.reason??null,reward:parsed?.reward??null,slots});
   }
   const shortages=[...totals.values()].sort((a,b)=>a.id.localeCompare(b.id)).map(row=>{const have=cargoStockAmount(stock,row.id),reliable=row.required!==null&&have!==null;return {...row,have,missing:reliable?Math.max(0,row.required-have):null,reliable};});
   if(!stock)notes.push('CARGO_INVENTORY_UNRELIABLE');
   return {reliable:header&&ships.every(ship=>ship.reliable),inventoryReliable:Boolean(stock),source:'CargoShipsResponse',ships,shortages,notes};
+}
+
+// This is a finite composition of original single-slot plans, not a new executor.
+// The preparation hash guards planning only; the original action retains its exact
+// beforeState/identity and unchanged parameters for execution and receipt recovery.
+export function validateCargoFillPreparation(value){
+  strictParameters(value,['shipIndex','cargoIndices','expectedCargoHash','maxDurationMs']);
+  if(Reflect.ownKeys(value).length!==4||!['shipIndex','cargoIndices','expectedCargoHash','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||!Number.isInteger(value.shipIndex)||value.shipIndex<1||value.shipIndex>2147483647||!fieldDense(value.cargoIndices)||!value.cargoIndices.length||value.cargoIndices.length>24||value.cargoIndices.some(v=>!Number.isInteger(v)||v<1||v>2147483647)||new Set(value.cargoIndices).size!==value.cargoIndices.length||typeof value.expectedCargoHash!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedCargoHash)||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('装货组合须明确一艘货船、1至24个不同货格、当前状态摘要和有限总时长');
+  return {shipIndex:value.shipIndex,cargoIndices:[...value.cargoIndices].sort((a,b)=>a-b),expectedCargoHash:value.expectedCargoHash,maxDurationMs:value.maxDurationMs};
+}
+export function prepareCargoFillWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
+  const p=validateCargoFillPreparation(input),opts=validateFleetConfig(moduleConfig),stock=cargoInventory(facts);
+  const raw=facts?.cargoReliable===true&&cargoHeaderReliable(facts.ships)?facts.ships.find(s=>s.index===p.shipIndex):null,ship=cargoShip(raw);
+  if(!opts.enabled||!opts.cargoFill||!stock||!ship||ship.status!==0||cargoSnapshotHash(ship)!==p.expectedCargoHash)throw invalid('装货组合缺少开启配置、完整库存或与所选摘要一致的采购状态');
+  const simulated=structuredClone(raw),ledger=new ResourceLedger(stock),nodes=[{id:'start',type:'START'}],steps=[];
+  for(const cargoIndex of p.cargoIndices){
+    const state=cargoShip(simulated);if(!state||!state.orderItem[cargoIndex-1]||state.orderItem[cargoIndex-1].filled!==false)throw invalid('所选货格不是当前采购状态中明确未装的一格');
+    const parameters={shipIndex:p.shipIndex,cargoIndex,expectedCargoHash:cargoSnapshotHash(state)},selection=fleetCargoFillSelection({shipIndex:p.shipIndex,cargoIndex});
+    const planned=planFleet({...facts,ships:facts.ships.map(s=>s.index===p.shipIndex?simulated:s)}, {config,moduleConfig:opts,parameters,selections:[selection],ledger});
+    const action=planned.actions?.[0];if(planned.actions?.length!==1||action.actionType!=='cargoFill')throw invalid('装货组合不能按当前自有材料与原单格合同完成全部选择；不使用预期奖励扩充预算');
+    steps.push({cargoIndex,parameters:structuredClone(parameters),costs:structuredClone(action.costs)});
+    nodes.push({id:'fill-'+cargoIndex,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+cargoIndex,type:'VERIFY',module:'fleet'});
+    simulated.orderItem[cargoIndex-1].filled=true;
+  }
+  nodes.push({id:'stop',type:'STOP'});
+  const budget={resources:[...ledger.reserved].sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num})),quotas:[],uids:[]},fingerprint=cargoSnapshotHash({payload:p,budget,steps});
+  return {...p,steps,budget,graph:{version:1,id:'cargo-fill-'+fingerprint.slice(0,20),name:'货船 '+p.shipIndex+' 明确货格有限装货',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+    limitation:'仅处理本次明确采购状态中的所选货格，每格重新调查、核对预期状态、独立计划授权并验证原typed奖励和完整库存；预算只用准备时已持有材料。货船状态/需求变化、拒绝或UNKNOWN停止后续执行，不补购、不加速、不领取到港奖励、不循环到新采购状态。摘要只比较本次完整状态，不是服务端唯一航次ID；准备不执行、不授权，重启只读。'};
 }
 
 function parseFleetFormation(value) { const formation = parseFormation(value); if (formation && String(formation.petUid) === '0') delete formation.petUid; return formation; }
@@ -348,6 +382,7 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
       let reason=disabled('cargoFill');
       if(!reason&&['RUBY','钻石'].includes(orders[index]?.asset?.id))reason='PREMIUM_BLOCKED';
       if(!reason&&(!header||!parsed||!stock))reason='CARGO_FACTS_UNRELIABLE';
+      if(!reason&&parameters.expectedCargoHash!==undefined&&cargoSnapshotHash(parsed)!==parameters.expectedCargoHash)reason='CARGO_PREPARATION_STATE_CHANGED';
       if(!reason&&(parsed.status!==0||parsed.orderItem[index].filled!==false))reason='CARGO_UNAVAILABLE';
       if(!reason&&(!asset||asset.type!==0))reason='COST_UNKNOWN';
       if(!reason&&cargoStockAmount(stock,asset.id)<asset.num)reason='INSUFFICIENT_CARGO_MATERIALS';
