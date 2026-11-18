@@ -195,7 +195,7 @@ export function validateFleetRepairPreparation(value){
   strictParameters(value,['action','repairs','maxDurationMs']);
   const hasAction=Object.hasOwn(value,'action');
   if(Reflect.ownKeys(value).length!==(hasAction?3:2)||!['repairs','maxDurationMs',...(hasAction?['action']:[])].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||hasAction&&!['repair','stop-repair','stop-auto-fight'].includes(value.action)||!fieldDense(value.repairs)||!value.repairs.length||value.repairs.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('舰队维护组合须明确repair/stop-repair/stop-auto-fight之一、1至24艘不同舰队及有限总时长；旧省略action仍维修');
-  const repairs=value.repairs.map(row=>{parametersOf(row);if(!Object.hasOwn(row,'expectedRepairHash'))throw invalid('维护组合缺少原状态摘要');return {buildingId:row.buildingId,expectedRepairHash:row.expectedRepairHash};});
+  const repairs=value.repairs.map(row=>{strictParameters(row??null,['buildingId','expectedRepairHash']);if(Reflect.ownKeys(row).length!==2||!['buildingId','expectedRepairHash'].every(key=>{const d=Object.getOwnPropertyDescriptor(row,key);return d?.enumerable&&Object.hasOwn(d,'value');}))throw invalid('维护组合仅接受明确舰队ID及原状态摘要，不接受访问器或混合动作');parametersOf(row);return {buildingId:row.buildingId,expectedRepairHash:row.expectedRepairHash};});
   if(new Set(repairs.map(row=>row.buildingId)).size!==repairs.length)throw invalid('维护组合不得重复舰队');
   return {...(hasAction?{action:value.action}:{}),repairs,maxDurationMs:value.maxDurationMs};
 }

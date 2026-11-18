@@ -1,4 +1,4 @@
-import { fleetCacheOverview } from '../src/fleet.mjs';
+import { prepareFleetFieldWorkflow, prepareFleetRepairWorkflow, prepareFleetMoveWorkflow, validateFleetRepairPreparation, validateFleetMovePreparation, validateFleetFieldPreparation, fleetCacheOverview } from '../src/fleet.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
@@ -94,16 +94,17 @@ test('daily cargo selection only picks the exact original fill among other ships
 });
 
 
-async function fieldFixture(t,{apply=true,file=null,connectionId='field-connection'}={}){
+async function fieldFixture(t,{apply=true,file=null,connectionId='field-connection',fields=null,stop=null}={}){
  const [{loadProtocol},{createCodec},{GameClient},{createOperationService},{GAMEPLAY_MODULES},{createExecutionHistory},{createWorkflowRunner},fs,os,path]=await Promise.all([import('../src/proto.mjs'),import('../src/codec.mjs'),import('../src/client.mjs'),import('../src/operation-service.mjs'),import('../src/function-registry.mjs'),import('../src/execution-history.mjs'),import('../src/workflow.mjs'),import('node:fs'),import('node:os'),import('node:path')]);
  const protocol=loadProtocol(),codec=createCodec(protocol),wire=(n,b)=>protocol[n].decode(protocol[n].encode(b).finish()),state={seq:1,fields:{info:{fields:[{gridIdx:0,cityId:1,type:0},{gridIdx:9,cityId:2,type:1}],maxNum:3}},items:[{itemId:'木材',num:9}],resources:[{res:3,amount:100}],reads:[],writes:[],onRead:null,onWrite:null,overrides:{}};
+ if(fields)state.fields={info:{fields:structuredClone(fields),maxNum:fields.length+1}};
  let socket;class Socket{constructor(){this.readyState=0;socket=this;}send(bytes){const f=codec.decode(bytes);if(f.name==='PingRequest')queueMicrotask(()=>this.receive('PingResponse',{clientTimestamp:f.body.clientTimestamp,serverTimestamp:Date.now()}));}close(){this.readyState=3;}receive(n,b,seq=0){this.onmessage?.({data:codec.encode(n,seq,b)});}}
  const client=new GameClient({protocol,accountId:'field-A',generation:1,WebSocketImpl:Socket});client.factContext={accountId:'field-A',generation:1,connectionId};client.on('error',()=>{});const player={playerId:'9007199254740993',worldId:'1000001',level:30};const pending=client.connect({});socket.readyState=1;socket.onopen();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:player});await pending;
  const push=()=>socket.receive('SCResFieldInfo',{info:state.fields.info},state.seq++);
  client.request=async(n,b,r,_timeout,options={})=>{assert.equal(options.mutate,undefined);wire(n,b);state.reads.push(n);await state.onRead?.(n);let body=n==='MyResFieldsRequest'?state.fields:n==='AllItemRequest'?{items:state.items}:n==='AllResourceRequest'?{list:state.resources}:n==='MyFleetsRequest'?{fleets:[]}:n==='CargoShipsRequest'?{ship:[]}:n==='WorldInfoRequest'?{cities:[]}:n==='GuildInfoRequest'?{}:null;if(Object.hasOwn(state.overrides,n))body=state.overrides[n];if(body instanceof Error)throw body;assert.ok(body,n);return wire(r,body);};
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-field-')):null;file??=path.join(dir,'history.json');const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}},moduleConfig={enabled:true,giveUpResourceField:true};
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:moduleConfig})},getConfig:()=>({tables:{}}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})}),session={id:'field-A',client,player,generation:1,connectionId,state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
- client.sendWatch=async(n,b,options)=>{wire(n,b);options.beforeDispatch();assert.equal(n,'GiveUpResFieldRequest');state.writes.push({name:n,body:structuredClone(b),durable:structuredClone(journal.at(-1))});if(apply){state.fields.info.fields=state.fields.info.fields.filter(row=>row.gridIdx!==b.resFieldGridIdx);push();}await state.onWrite?.();return {status:'UNKNOWN'};};
+ client.sendWatch=async(n,b,options)=>{wire(n,b);options.beforeDispatch();assert.equal(n,'GiveUpResFieldRequest');state.writes.push({name:n,body:structuredClone(b),durable:structuredClone(journal.at(-1))});if(stop&&state.writes.length===2){if(stop==='refusal')throw Object.assign(Error('synthetic field refusal'),{code:'REJECTED'});return {status:'UNKNOWN'};}if(apply){state.fields.info.fields=state.fields.info.fields.filter(row=>row.gridIdx!==b.resFieldGridIdx);push();}await state.onWrite?.();return {status:'UNKNOWN'};};
  const parameters={resourceFieldGridIdx:0},options={config:{tables:{}},player,moduleConfig,parameters},survey=()=>surveyFleet(client,protocol,options),plan=async()=>{const read=await service.surveyModule(session,'fleet',parameters),row=read.view.candidates[0];assert.equal(row.decision,'READY',JSON.stringify(row));return service.plan(session,{module:'fleet',mode:'Manual',parameters,selections:[row.actionId]});},authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(row=>row.actionId),resourceBudget:p.resourceBudget,confirm:true}),run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
  const runner=createWorkflowRunner({operations:service,getSession:()=>session,modules:GAMEPLAY_MODULES,claim:(id,runId,opts)=>service.claimWorkflow(session,runId,opts),isCurrent:(s,g,c)=>s===session&&s.generation===g&&s.client===c});
  t.after(async()=>{runner.stop();await runner.settle();session.abort.abort();await service.settle(session.id);client.stop();if(dir)fs.rmSync(dir,{recursive:true,force:true});});return {state,client,player,protocol,options,moduleConfig,parameters,push,survey,plan,authorize,run,service,session,durable,history,journal,file,runner};
@@ -210,24 +211,28 @@ for(const kind of ['repair','free-move'])test('fleet original inventory parser b
  assert.equal(op(legacy,kind==='repair'?'fleetRepair':'fleetMove',parameters).decision,'READY');
 });
 
-async function petrolServiceFixture(t,{kind='repair',outcome='SUCCESS',file=null,onWrite=null}={}) {
+async function petrolServiceFixture(t,{kind='repair',outcome='SUCCESS',file=null,onWrite=null,batch=null}={}) {
  const [{loadProtocol},{createOperationService},{createExecutionHistory},{GAMEPLAY_MODULES},fs,os,path]=await Promise.all([import('../src/proto.mjs'),import('../src/operation-service.mjs'),import('../src/execution-history.mjs'),import('../src/function-registry.mjs'),import('node:fs'),import('node:os'),import('node:path')]);
  const protocol=loadProtocol(),wire=(name,body)=>protocol[name].decode(protocol[name].encode(body).finish()),dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-fleet-petrol-')):null;file??=path.join(dir,'history.json');
  const durable=createExecutionHistory({file}),journal=[],history={...durable,put(row){journal.push(structuredClone(row));return durable.put(row);}},base=petrolCase(kind),state={fuel:2000,items:[{itemId:'木材',num:10}],fleets:structuredClone(base.before.fleets),writes:[],onRead:null};
+ const moduleConfig={...enabled,...(batch?{stopRepair:true,autoFight:true}:{})};
+ if(batch){state.fuel=batch.action==='repair'?batch.count*1100:2000;state.fleets=Array.from({length:batch.count},(_,i)=>({...structuredClone(base.before.fleets[0]),buildingId:'batch-'+i,...(batch.action==='stop-repair'?{state:4,repairing:{startTs:100,endTs:200,endDura:2000}}:{}),...(batch.action==='stop-auto-fight'?{autoFight:{isOn:true,todayTimes:1}}:{})}));}
  const client={connected:true,pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),factContext:{accountId:'fleet-petrol-A',generation:1,connectionId:'fleet-petrol-offline'},
   markUnverifiedWrite(n,b){this.uncertainWrites.set(JSON.stringify([n,b]),true);},confirmWatchedWrite(n,b){this.uncertainWrites.delete(JSON.stringify([n,b]));},
   async request(name,body,response,_timeout,options){assert.equal(options?.mutate,undefined);wire(name,body);await state.onRead?.(name);const answers={MyFleetsRequest:{fleets:state.fleets},AllItemRequest:{items:[{itemId:'汽油',num:state.fuel},...state.items]},AllResourceRequest:{list:[]},CargoShipsRequest:{ship:[]},WorldInfoRequest:{cities:[{id:2,state:1,guildIdx:3}]},GuildInfoRequest:{guild:{guildId:'3003'}},FleetRepairParamRequest:{unitRepairCost:2.2,unitRepairTime:0.15}};assert.ok(Object.hasOwn(answers,name),name);return wire(response,answers[name]);},
-  async sendWatch(name,body,options){wire(name,body);options.beforeDispatch?.();assert.equal(name,kind==='repair'?'RepairFleetRequest':'MoveFleetsToCityRequest');state.writes.push({name,body:structuredClone(body)});
+  async sendWatch(name,body,options){wire(name,body);options.beforeDispatch?.();assert.equal(name,batch?({'repair':'RepairFleetRequest','stop-repair':'StopRepairingRequest','stop-auto-fight':'SetFleetAutoFightRequest',move:'MoveFleetsToCityRequest'})[batch.action]:kind==='repair'?'RepairFleetRequest':'MoveFleetsToCityRequest');state.writes.push({name,body:structuredClone(body),durable:structuredClone(journal.at(-1))});
+    if(batch){if(batch.stop&&state.writes.length===2)return {status:batch.stop==='refusal'?'REJECTED':'UNKNOWN'};const id=Array.isArray(body.buildingId)?body.buildingId[0]:body.buildingIds?.[0]??body.buildingId,fleet=state.fleets.find(f=>f.buildingId===id);assert.ok(fleet,id);if(batch.action==='repair'){fleet.state=4;fleet.repairing={startTs:100,endTs:200,endDura:2000};state.fuel-=1100;}else if(batch.action==='stop-repair'){fleet.state=1;fleet.repairing=null;}else if(batch.action==='stop-auto-fight')fleet.autoFight.isOn=false;else Object.assign(fleet,{state:2,targetCityId:2,moveStartTs:100,moveEndTs:200});await onWrite?.({state,session,client});return {status:'UNKNOWN'};}
+
    if(outcome!=='REJECTED'){state.fleets=structuredClone(base.after.fleets);if(outcome==='SUCCESS')state.fuel=base.after.stock.get('汽油');else if(kind==='free-move')state.fuel--;}
    await onWrite?.({state,session,client});return {status:outcome==='REJECTED'?'REJECTED':'UNKNOWN'};
   }};
  const session={id:'fleet-petrol-A',client,player:{playerId:'9007199254740993',worldId:'1000001'},state:'READY',generation:1,connectionId:'fleet-petrol-offline',abort:new AbortController(),loop:{running:false},busy:null};
- const service=createOperationService({protocol,history,modules:GAMEPLAY_MODULES,getConfig:()=>({tables:{}}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:enabled})}}),parameters=kind==='repair'?{buildingId:'f1'}:{buildingId:'f1',cityId:2};
+ const service=createOperationService({protocol,history,modules:GAMEPLAY_MODULES,getConfig:()=>({tables:{}}),loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:moduleConfig})}}),parameters=kind==='repair'?{buildingId:'f1'}:{buildingId:'f1',cityId:2};
  const plan=async()=>{const survey=await service.surveyModule(session,'fleet',parameters),row=survey.view.candidates.find(r=>r.actionType===base.operation.actionType);assert.equal(row.decision,'READY',JSON.stringify(row));return service.plan(session,{module:'fleet',mode:'Manual',parameters,selections:[row.actionId]});};
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true});
  const run=async()=>{const p=await plan(),permit=authorize(p);service.execute(session,permit);await service.settle('fleet-petrol-A');return durable.originalRecords('fleet-petrol-A')[0];};
  t.after(async()=>{session.abort.abort();await service.settle('fleet-petrol-A');if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
- return {service,session,state,durable,journal,client,plan,authorize,run,file};
+ return {service,session,state,durable,journal,client,plan,authorize,run,file,moduleConfig};
 }
 for(const kind of ['repair','free-move'])for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('original Fleet Service preserves petrol budget history and no replay '+kind+' '+outcome,async t=>{
  const f=await petrolServiceFixture(t,{kind,outcome}),row=await f.run();assert.equal(row.finalStatus,outcome,JSON.stringify(row));assert.equal(f.state.writes.length,1);
@@ -241,4 +246,67 @@ for(const field of ['generation','connectionId','playerId','worldId','client'])t
 test('Fleet petrol Service rejects changed fuel before dispatch and keeps unrelated income UNKNOWN',async t=>{
  const f=await petrolServiceFixture(t),p=await f.plan(),permit=f.authorize(p);f.state.fuel=1000;f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id)[0].finalStatus,'NOT_EXECUTED');
  const extra=await petrolServiceFixture(t,{onWrite:({state})=>state.items.push({itemId:'loot',num:1})}),row=await extra.run();assert.equal(row.finalStatus,'UNKNOWN');assert.equal(extra.state.writes.length,1);await assert.rejects(extra.plan());
+});
+
+// Prepared batches use the original Service, per-item permits and runner.
+async function fleetBatchRunner(t,f){
+ const {createWorkflowRunner}=await import('../src/workflow.mjs'),{GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const runner=createWorkflowRunner({operations:f.service,getSession:()=>f.session,modules:GAMEPLAY_MODULES,claim:(_id,runId,opts)=>f.service.claimWorkflow(f.session,runId,opts),isCurrent:(s,g,c)=>s===f.session&&s.generation===g&&s.client===c});
+ t.after(async()=>{runner.stop();await runner.settle();});return runner;
+}
+async function preparedMaintenance(f,action){
+ if(action==='move')return f.service.prepareFleetMoveSource(f.session,{buildingIds:f.state.fleets.map(f=>f.buildingId),cityId:2,maxDurationMs:60000});
+ const view=(await f.service.surveyModule(f.session,'fleet',{})).view,rows=action==='repair'?view.repairPreparation:view.maintenancePreparation.filter(r=>r.actionType===(action==='stop-repair'?'fleetStopRepair':'fleetStopAutoFight'));
+ return f.service.prepareFleetRepairSource(f.session,{action,repairs:rows.map(({buildingId,expectedRepairHash})=>({buildingId,expectedRepairHash})),maxDurationMs:60000});
+}
+for(const action of ['repair','stop-repair','stop-auto-fight','move'])for(const count of [1,24])test('prepared Fleet Service independently executes '+action+' '+count+' targets',async t=>{
+ const f=await petrolServiceFixture(t,{kind:action==='move'?'free-move':'repair',batch:{action,count}}),p=await preparedMaintenance(f,action),runner=await fleetBatchRunner(t,f);
+ assert.equal(p.steps.length,count);assert.deepEqual(p.budget,{resources:action==='repair'?[{id:'汽油',num:1100*count}]:[],quotas:[],uids:[]});assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id).length,0);
+ let run=await runner.start(f.session.id,p.graph);const batches=new Set();
+ for(let i=0;i<count;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION',JSON.stringify(run));assert.equal(f.state.writes.length,i);assert.equal(run.plan.actions.length,1);batches.add(run.plan.batchId);const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);const record=f.durable.list(f.session.id)[0];assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(record.actions[0].verification.status,'CONFIRMED');assert.equal(f.state.writes[i].durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.throws(()=>f.service.execute(f.session,permit));run=await runner.resume();}
+ assert.equal(run.status,'COMPLETED');assert.equal(batches.size,count);assert.equal(f.durable.list(f.session.id).length,count);assert.equal(f.state.fuel,action==='repair'?0:2000);assert.equal(run.runBudget.state,'CLOSED');
+});
+for(const action of ['repair','stop-repair','stop-auto-fight','move'])for(const stop of ['unknown','refusal'])test('prepared Fleet '+action+' stops third target after second '+stop,async t=>{
+ const f=await petrolServiceFixture(t,{kind:action==='move'?'free-move':'repair',batch:{action,count:3,stop}}),p=await preparedMaintenance(f,action),runner=await fleetBatchRunner(t,f);let run=await runner.start(f.session.id,p.graph);
+ for(let i=0;i<2;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION');const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);run=await runner.resume();}
+ assert.equal(run.status,stop==='unknown'?'UNKNOWN':'FAILED',JSON.stringify(run));assert.equal(f.state.writes.length,2);assert.equal(f.durable.list(f.session.id).length,2);assert.equal(f.durable.unresolved(f.session.id),stop==='unknown');const reads=f.journal.length;await assert.rejects(runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(f.journal.length,reads);assert.equal(f.state.writes.length,2);
+});
+const fieldBatchRows=n=>Array.from({length:n},(_,gridIdx)=>({gridIdx,cityId:gridIdx+1,type:0}));
+for(const count of [1,24])test('prepared resource fields preserve original private source and per-grid UID '+count,async t=>{
+ const f=await fieldFixture(t,{fields:fieldBatchRows(count)}),gridIndices=f.state.fields.info.fields.map(f=>f.gridIdx),p=await f.service.prepareFleetFieldSource(f.session,{gridIndices,maxDurationMs:60000});assert.deepEqual(p.budget,{resources:[],quotas:[],uids:gridIndices.map(i=>({type:'resource-field',id:'1000001:'+i}))});assert.equal(f.state.writes.length,0);let run=await f.runner.start(f.session.id,p.graph);
+ for(let i=0;i<count;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION',JSON.stringify(run));assert.deepEqual(run.plan.actions[0].parameters,{resourceFieldGridIdx:i});const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);const record=f.durable.list(f.session.id)[0];assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(f.state.writes[i].durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');run=await f.runner.resume();}
+ assert.equal(run.status,'COMPLETED');assert.deepEqual(f.state.fields.info.fields,[]);assert.equal(f.state.fields.info.maxNum,count+1);assert.equal(f.state.items[0].num,9);assert.deepEqual(f.state.writes.map(w=>w.body.resFieldGridIdx),gridIndices);assert.equal(f.durable.list(f.session.id).length,count);
+});
+for(const stop of ['unknown','refusal'])test('prepared resource fields stop before third after second '+stop,async t=>{
+ const f=await fieldFixture(t,{fields:fieldBatchRows(3),stop}),p=await f.service.prepareFleetFieldSource(f.session,{gridIndices:[0,1,2],maxDurationMs:60000});let run=await f.runner.start(f.session.id,p.graph);
+ for(let i=0;i<2;i++){const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);run=await f.runner.resume();}assert.equal(run.status,stop==='unknown'?'UNKNOWN':'FAILED',JSON.stringify(run));assert.deepEqual(f.state.fields.info.fields.map(f=>f.gridIdx),[1,2]);assert.equal(f.state.writes.length,2);assert.equal(f.durable.unresolved(f.session.id),stop==='unknown');const reads=f.state.reads.length;await assert.rejects(f.runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(f.state.reads.length,reads);assert.equal(f.state.writes.length,2);
+});
+test('resource field batch refuses malformed selection before reads and unowned targets without writes',async t=>{
+ const f=await fieldFixture(t,{fields:fieldBatchRows(24)});let gets=0;const getter=[];Object.defineProperty(getter,0,{enumerable:true,get(){gets++;return 0;}});
+ for(const gridIndices of [[],Array(1),getter,[0,0],[-1],['0'],[2147483648],Array.from({length:25},(_,i)=>i)])await assert.rejects(f.service.prepareFleetFieldSource(f.session,{gridIndices,maxDurationMs:60000}),{code:'INVALID_INPUT'});
+ assert.equal(gets,0);assert.equal(f.state.reads.length,0);await assert.rejects(f.service.prepareFleetFieldSource(f.session,{gridIndices:[0,99],maxDurationMs:60000}),{code:'INVALID_INPUT'});assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id).length,0);
+ const facts=await f.survey();assert.throws(()=>prepareFleetFieldWorkflow(structuredClone(facts),{moduleConfig:f.moduleConfig,gridIndices:[0],maxDurationMs:60000}),{code:'INVALID_INPUT'});
+});
+
+function maintenanceBatchFacts(action,count=2){
+ const f=facts();f.fleets=Array.from({length:count},(_,i)=>({...structuredClone(f.fleets[0]),buildingId:'f'+String(i).padStart(2,'0'),...(action==='stop-repair'?{state:4,repairing:{startTs:100,endTs:200,endDura:2000}}:{}),...(action==='stop-auto-fight'?{autoFight:{isOn:true,todayTimes:1}}:{})}));f.repairParams=new Map(f.fleets.map(row=>[row.buildingId,{unitRepairCost:2.2,unitRepairTime:0.15}]));f.stock.set('汽油',1100*count);f.protocolReady.StopRepairingRequest=true;f.protocolReady.SetFleetAutoFightRequest=true;return f;
+}
+function maintenancePayload(f,action,moduleConfig){const v=fleetView(f,{moduleConfig}),rows=action==='repair'?v.repairPreparation:v.maintenancePreparation.filter(r=>r.actionType===(action==='stop-repair'?'fleetStopRepair':'fleetStopAutoFight'));return {action,repairs:rows.map(({buildingId,expectedRepairHash})=>({buildingId,expectedRepairHash})),maxDurationMs:60000};}
+for(const action of ['repair','stop-repair','stop-auto-fight'])test('maintenance batch keeps original priority, exact state hash and legacy repair '+action,()=>{
+ const f=maintenanceBatchFacts(action),moduleConfig={...enabled,stopRepair:true,autoFight:true,repairPriorityBuildingIds:['f01','f00']},p=maintenancePayload(f,action,moduleConfig),prepared=prepareFleetRepairWorkflow(f,{moduleConfig,...p});assert.equal(prepared.steps.length,2);
+ if(action==='repair'){assert.deepEqual(prepared.steps.map(s=>s.parameters.buildingId),['f01','f00']);const {action:ignored,...legacy}=p;const old=prepareFleetRepairWorkflow(f,{moduleConfig,...legacy});assert.deepEqual(old.steps,prepared.steps);assert.deepEqual(old.budget,prepared.budget);assert.deepEqual(old.graph.nodes,prepared.graph.nodes);for(const limits of [{maximumRepairPetrolPerPlan:2199},{petrolReserve:1}]){const opts={...moduleConfig,...limits};assert.throws(()=>prepareFleetRepairWorkflow(f,{moduleConfig:opts,...maintenancePayload(f,action,opts)}),{code:'INVALID_INPUT'});}f.stock.set('汽油',2199);assert.throws(()=>prepareFleetRepairWorkflow(f,{moduleConfig,...p}),{code:'INVALID_INPUT'});}
+ else assert.deepEqual(prepared.budget.resources,[]);
+ f.fleets[0].durability--;assert.throws(()=>prepareFleetRepairWorkflow(f,{moduleConfig,...p}),{code:'INVALID_INPUT'});
+});
+for(const paid of [false,true])for(const count of [1,24])test('move batch keeps viewport and cumulative original petrol '+paid+' '+count,()=>{
+ const f=petrolCase(paid?'paid-move':'free-move').before;f.fleets=Array.from({length:count},(_,i)=>({...structuredClone(f.fleets[0]),buildingId:'m'+i}));const screenCenter={x:-10,y:0};f.worldQuery={screenCenter};f.stock.set('汽油',paid?count*40:0);const input={buildingIds:f.fleets.map(r=>r.buildingId),cityId:2,screenCenter,maxDurationMs:60000},p=prepareFleetMoveWorkflow(f,{moduleConfig:enabled,...input});assert.equal(p.steps.length,count);assert.deepEqual(p.worldQuery,{screenCenter});assert.deepEqual(p.budget.resources,paid?[{id:'汽油',num:40*count}]:[]);assert.ok(p.steps.every(s=>s.parameters.screenCenter.x===-10&&s.parameters.screenCenter.y===0));
+ assert.throws(()=>prepareFleetMoveWorkflow(f,{moduleConfig:enabled,...input,screenCenter:{x:0,y:0}}),{code:'INVALID_INPUT'});
+ if(paid){assert.throws(()=>prepareFleetMoveWorkflow(f,{moduleConfig:{...enabled,petrolReserve:1},...input}),{code:'INVALID_INPUT'});f.stock.set('汽油',count*40-1);assert.throws(()=>prepareFleetMoveWorkflow(f,{moduleConfig:enabled,...input}),{code:'INVALID_INPUT'});delete f.map.tileWidth;assert.throws(()=>prepareFleetMoveWorkflow(f,{moduleConfig:enabled,...input}),{code:'INVALID_INPUT'});}
+});
+test('Fleet preparation schemas reject getters, duplicates, mixed actions and invalid limits without reading accessors',()=>{
+ let reads=0;const getter={};Object.defineProperty(getter,'buildingId',{enumerable:true,get(){reads++;return 'f1';}});const row={buildingId:'f1',expectedRepairHash:'a'.repeat(64)};
+ for(const repairs of [[],Array(1),[undefined],[null],[getter],[row,row],Array.from({length:25},(_,i)=>({...row,buildingId:'f'+i})),[{...row,cityId:2}]])assert.throws(()=>validateFleetRepairPreparation({repairs,maxDurationMs:60000}),{code:'INVALID_INPUT'});
+ for(const action of ['start-auto-fight','speed-up',null])assert.throws(()=>validateFleetRepairPreparation({action,repairs:[row],maxDurationMs:60000}),{code:'INVALID_INPUT'});
+ for(const buildingIds of [[],Array(1),['f1','f1'],[' f1'],[1],Array.from({length:25},(_,i)=>'f'+i)])assert.throws(()=>validateFleetMovePreparation({buildingIds,cityId:2,maxDurationMs:60000}),{code:'INVALID_INPUT'});
+ for(const maxDurationMs of [0,-1,86400001,'1']){assert.throws(()=>validateFleetFieldPreparation({gridIndices:[0],maxDurationMs}),{code:'INVALID_INPUT'});assert.throws(()=>validateFleetMovePreparation({buildingIds:['f1'],cityId:2,maxDurationMs}),{code:'INVALID_INPUT'});assert.throws(()=>validateFleetRepairPreparation({repairs:[row],maxDurationMs}),{code:'INVALID_INPUT'});}assert.equal(reads,0);
 });
