@@ -249,3 +249,26 @@ for(const mode of ['no-sequence','no-samples','zero','fraction','too-large','unk
 for(const mode of ['samples-edit','rule-edit','wrong-minimum','wrong-candidates','wrong-rank','missing-evidence','duplicate-report','extra-authority','account'])test('empirical page rejects stale or unmatched statistical response '+mode,async()=>{
  const f=await readyRecommendationPage(),{h}=f;chooseEmpiricalPage(h);const response=empiricalPageRecommendation(f),before=h.node('wf-json').value,work=h.node('stages-recommendation-prepare').onclick(),source=response.graph.preparation.source;if(mode==='samples-edit')h.node('stages-recommendation-samples').value='3';if(mode==='rule-edit')h.node('stages-recommendation-rule').value='ORDERED';if(mode==='wrong-minimum')source.statistics.minSamples=1;if(mode==='wrong-candidates')source.statistics.candidatePresetIds=[2,4];if(mode==='wrong-rank')source.presetIds=[2,3];if(mode==='missing-evidence')delete source.statistics;if(mode==='duplicate-report')source.statistics.entries[1].reportIds[0]='a';if(mode==='extra-authority')source.statistics.authorized=true;if(mode==='account')h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");const expected=mode==='account'?h.node('wf-json').value:before;h.respond('/api/formations/recommendation/prepare','A',response);await work;assert.equal(h.node('wf-json').value,expected);assert.equal(h.pending('/api/workflows/start','A'),undefined);assert.equal(h.confirmations.length,0);if(mode==='account'){assert.equal(h.node('stages-recommendation-rule').value,'ORDERED');assert.equal(h.node('stages-recommendation-samples').value,'');}
 });
+
+
+test('bounded mainline professional page adds exact Tasks draft without authorization or dispatch',async()=>{
+ const h=await boot();await load(h);enable(h);h.node('stages-max-attempts').value='2';h.node('stages-stop-on-defeat').checked=true;const count=h.requests.length;
+ h.node('stages-add-task').onclick();const draft=JSON.parse(h.node('wf-unified-intent').value);
+ assert.equal(draft.entry,'tasks');assert.equal(draft.tasks.length,1);assert.deepEqual(draft.tasks[0],{kind:'stage',parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true},expectedStage:41}});
+ assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});assert.equal(h.requests.length,count);assert.equal(h.confirmations.length,0);
+});
+
+test('bounded mainline professional page preserves existing Loop steps and cumulative budget',async()=>{
+ const h=await boot();await load(h,fixture('A',{nextStage:42}));enable(h);h.node('stages-max-attempts').value='3';
+ const original={entry:'loop',tasks:[{kind:'free-gold',parameters:{}}],dailies:[],world:[],rounds:2,everyMs:1000,budget:{resources:[{id:'金币',num:5}],quotas:[],uids:[]}};
+ h.node('wf-unified-intent').value=JSON.stringify(original);h.node('stages-add-task').onclick();const draft=JSON.parse(h.node('wf-unified-intent').value);
+ assert.equal(draft.tasks.length,2);assert.deepEqual(draft.tasks[0],original.tasks[0]);assert.equal(draft.tasks[1].parameters.expectedStage,42);assert.deepEqual(draft.budget,original.budget);assert.equal(draft.rounds,2);assert.equal(draft.everyMs,1000);
+});
+
+for(const mode of ['unbounded','too-many','unknown-stage','busy','disconnected','uncertain','wrong-entry','full'])test('bounded mainline Tasks draft refuses unavailable or incomplete source '+mode,async()=>{
+ const h=await boot();await load(h,fixture('A',mode==='unknown-stage'?{currentStage:null}:mode==='uncertain'?{uncertain:true}:{}));enable(h);h.node('stages-max-attempts').value=mode==='unbounded'?'':mode==='too-many'?'201':'2';
+ if(mode==='busy')h.run("snapshot.busy='other'");if(mode==='disconnected')h.run("snapshot={connected:false,state:'CLOSED'}");
+ if(mode==='wrong-entry')h.node('wf-unified-intent').value=JSON.stringify({entry:'dailies',tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ if(mode==='full')h.node('wf-unified-intent').value=JSON.stringify({entry:'tasks',tasks:Array.from({length:48},()=>({kind:'free-gold',parameters:{}})),dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});
+ const before=h.node('wf-unified-intent').value,count=h.requests.length;h.node('stages-add-task').onclick();assert.equal(h.node('wf-unified-intent').value,before);assert.equal(h.requests.length,count);assert.equal(h.confirmations.length,0);
+});

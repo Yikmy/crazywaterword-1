@@ -644,13 +644,16 @@ test('original dailies HTTP exposes only cached seasonal observations per accoun
   assert.equal(app.requests.length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal((await app.call('/api/dailies/run',{body:{confirm:true}})).data.code,'READ_ONLY_ROUTE');
  }finally{await app.close();}
 });
-for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline reuses original Runner authorization history and account isolation',async()=>{
+function mainlineBusinessIntent(entry,rows){
+ const tasks=entry==='tasks'||entry==='loop-tasks';return {entry:entry==='loop-tasks'?'loop':entry,[tasks?'tasks':'dailies']:rows.map(row=>tasks?{kind:'stage',parameters:row.parameters}:{taskId:1003,action:'perform',parameters:row.parameters}),budget:{resources:[],quotas:[],uids:[]}};
+}
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test('unified '+entry+' daily mainline reuses original Runner authorization history and account isolation',async()=>{
  const app=await harness({includeStage:true});try{
   const session=app.ready('A');app.ready('B');
   await app.call('/api/gameplay?module=stage');
   await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
   const config={enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true};
-  const intent={entry,dailies:[{taskId:1003,action:'perform',parameters:{config}}],budget:{resources:[],quotas:[],uids:[]}};
+  const intent=mainlineBusinessIntent(entry,[{parameters:{config}}]);
   const prepared=await app.call('/api/workflows/prepare',{body:intent});
   assert.equal(prepared.status,200);assert.deepEqual(prepared.data.blocked,[]);
   const g=prepared.data.graph;assert.equal(g.nodes.find(n=>n.type==='ACTION').module,'stage');
@@ -669,7 +672,7 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline reu
   assert.deepEqual(app.requests.filter(r=>r.name==='ChallengeStageRequest').map(r=>r.body.stage),[41]);
   assert.ok(session.stageRunner);assert.equal(session.stageClient,session.client);
   const detail=await app.call('/api/workflows/history?workflowRunId='+encodeURIComponent(completed.runId));
-  assert.equal(detail.status,200);assert.equal(detail.data.preparation.entry,entry);
+  assert.equal(detail.status,200);assert.equal(detail.data.preparation.entry,entry==='loop-tasks'?'loop':entry);
   const runs=(await app.call('/api/operations/history')).data.runs;
   assert.equal(runs.length,1);assert.equal(runs[0].module,'stage');assert.equal(runs[0].workflowId,completed.runId);
   assert.equal(runs[0].actions[0].verification.status,'CONFIRMED');assert.equal(runs[0].finalStatus,'SUCCESS');
@@ -678,14 +681,14 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline reu
   assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
-for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline UNKNOWN stops siblings and survives a new shared Service without replay',async()=>{
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test('unified '+entry+' daily mainline UNKNOWN stops siblings and survives a new shared Service without replay',async()=>{
  const app=await harness({includeStage:true});try{
   const session=app.ready('A'),original=session.client.request;
   session.client.request=async function(name,...args){const response=await original.call(this,name,...args);return name==='ChallengeStageRequest'?{...response,initialData:{...response.initialData,battleType:2}}:response;};
   await app.call('/api/gameplay?module=stage');
   await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
   const row={taskId:1003,action:'perform',parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:2,maxStage:null,stopOnDefeat:true}}};
-  const prepared=await app.call('/api/workflows/prepare',{body:{entry,dailies:[row,row],budget:{resources:[],quotas:[],uids:[]}}});
+  const prepared=await app.call('/api/workflows/prepare',{body:mainlineBusinessIntent(entry,[row,row])});
   await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
   const paused=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,permit=await app.approve(paused.plan);
   await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');
@@ -707,11 +710,11 @@ for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline UNK
  }finally{await app.close();}
 });
 
-for(const entry of ['dailies','loop'])test('unified '+entry+' daily mainline cancellation before authorization cannot dispatch through an old plan',async()=>{
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test('unified '+entry+' daily mainline cancellation before authorization cannot dispatch through an old plan',async()=>{
  const app=await harness({includeStage:true});try{
   const session=app.ready('A');await app.call('/api/gameplay?module=stage');
   await app.call('/api/gameplay/config',{body:{module:'stage',config:{enabled:true}}});
-  const intent={entry,dailies:[{taskId:1003,parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true}}}],budget:{resources:[],quotas:[],uids:[]}};
+  const intent=mainlineBusinessIntent(entry,[{parameters:{config:{enabled:true,retryDelaySeconds:10,maxAttempts:1,maxStage:null,stopOnDefeat:true}}}]);
   const prepared=await app.call('/api/workflows/prepare',{body:intent});await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
   const p=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status.plan,permit=await app.approve(p);
   assert.equal((await app.call('/api/workflows/stop',{body:{}})).data.status.status,'CANCELLED');
@@ -2030,5 +2033,27 @@ for(const entry of ['tasks','loop'])test('Tasks business batch HTTP prepares six
  for(const row of tasks)for(const bad of [{kind:row.kind},{...row,parameters:{...row.parameters,request:'InjectedRequest'}},{...row,parameters:{...row.parameters,allowPaid:true}}])assert.equal((await app.call('/api/workflows/prepare',{body:{entry:'tasks',tasks:[bad],budget}})).status,400);
  assert.equal((await app.call('/api/workflows/prepare',{body:payload,authorized:false})).status,403);assert.equal((await app.call('/api/workflows/prepare',{body:payload,headers:{'x-cw-csrf':'invalid'}})).status,403);assert.equal((await app.call('/api/workflows/prepare',{body:payload,id:'missing'})).status,404);
  assert.equal(app.sessions.size,0);assert.deepEqual(app.counts(),{clients:0,collections:0});assert.equal(app.requests.length,0);assert.deepEqual((await app.call('/api/operations/history')).data.runs,[]);
+ }finally{await app.close();}
+});
+
+for(const outcome of ['success','unknown','refused'])test('prepared production collections HTTP '+outcome+' uses original per-factory authorization and history',async()=>{
+ const {app,session,client,state}=await materialProductionHttp();try{
+  state.water.building[0].factory.finishedProducts=[{id:'布匹',num:2}];state.water.building.push({...structuredClone(state.water.building[0]),buildingId:'2材料厂'});
+  const originalRequest=client.request.bind(client),collect=async(n,b,o)=>{heroWire(n,b);o?.beforeDispatch?.();assert.equal(n,'GainFactoryProduceRequest');assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');state.writes.push({n,b:structuredClone(b)});
+   if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+   if(outcome==='success'){const factory=state.water.building.find(row=>row.buildingId===b.buildingId).factory;for(const row of factory.finishedProducts)state.stock.set(row.id,(state.stock.get(row.id)??0)+row.num);factory.finishedProducts=[];}return {status:'UNKNOWN',sent:true};
+  };
+  client.request=async(n,b,r,...rest)=>n==='GainFactoryProduceRequest'?(await collect(n,b),heroWire(r,{})):originalRequest(n,b,r,...rest);
+  const read=await app.call('/api/gameplay/survey',{body:{module:'production',parameters:{}}});assert.equal(read.status,200,JSON.stringify(read.data));const targets=read.data.view.collectionPreparation.map(row=>row.parameters);assert.equal(targets.length,2);
+  const body={action:'collect',targets,maxDurationMs:60000},route='/api/gameplay/production/start/prepare';
+  for(const [options,status]of [[{body,authorized:false},403],[{body,headers:{'x-cw-csrf':'bad'}},403],[{body,id:null},400],[{body:{...body,request:'AnyRequest'}},400],[{body:{...body,targets:[targets[0],targets[0]]}},400]])assert.equal((await app.call(route,options)).status,status);
+  const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.equal(state.writes.length,0);assert.deepEqual(prepared.data.graph.budget,{resources:[],quotas:[],uids:[]});
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+  for(let i=0;i<(outcome==='success'?2:1);i++){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,plan=waiting.plan;assert.equal(plan.module,'production');assert.equal(plan.actions[0].actionType,'gainFactory');assert.equal(state.writes.length,i);
+   const permit=await app.approve(plan);assert.equal(permit.status,200);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');const record=app.history.list('A')[0];assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED',JSON.stringify({reason:record.stopReason,actions:record.actions}));assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.call('/api/workflows/resume',{body:{}});
+  }
+  const done=(await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED')).status,rows=app.history.list('A');assert.equal(rows.length,outcome==='success'?2:1);assert.ok(rows.every(row=>row.workflowId===done.runId));assert.equal(rows[0].finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED');
+  assert.equal(state.writes.length,rows.length);assert.ok(state.writes.every(row=>row.n==='GainFactoryProduceRequest'));assert.equal(state.stock.get('布匹'),outcome==='success'?4:undefined);assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });

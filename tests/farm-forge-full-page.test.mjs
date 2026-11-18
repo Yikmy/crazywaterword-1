@@ -44,7 +44,7 @@ function harness() {
     fetch: (url, options = {}) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject, settled: false })),
     setInterval: () => 1, clearInterval() {}, window: { confirm(text) { confirmations.push(text); return confirm; } }, prompt: () => null,
   });
-  new vm.Script(inline.replace('Object.assign(globalThis,{captureStageRecommendationEditor,', 'Object.assign(globalThis,{gpGet,gpControls,gpRenderDomain,gpRenderPlan,gpAuthorize,captureStageRecommendationEditor,'), { filename: 'assembled-page-inline.js' }).runInContext(context);
+  new vm.Script(inline.replace('Object.assign(globalThis,{addStageTaskDeclaration,', 'Object.assign(globalThis,{gpGet,gpControls,gpRenderDomain,gpRenderPlan,gpAuthorize,addStageTaskDeclaration,'), { filename: 'assembled-page-inline.js' }).runInContext(context);
   const matches = (entry, path, module) => {
     const url = new URL(entry.url, 'http://localhost');
     return url.pathname === path && (module === undefined || url.searchParams.get('module') === module);
@@ -3321,4 +3321,29 @@ for(const spec of tasksBusinessPageSpecs.slice(0,4))test('Tasks business batch p
  unifiedLoad(h,{entry:'dailies',dailies:[],budget:{resources:[],quotas:[],uids:[]}});source=h.node('wf-unified-intent').value;button.click();assert.equal(h.node('wf-unified-intent').value,source);
  h.node('gp-'+spec.module+'-parameters').oninput();source=h.node('wf-unified-intent').value;button.click();assert.equal(h.node('wf-unified-intent').value,source);
  h.run("selectAccount('B')");button.click();assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);assert.equal(h.confirmations.length,0);
+});
+
+
+async function explicitCollectionPage(){
+ const rows=['factory-1','factory-2'].map((buildingId,i)=>({parameters:{buildingId,action:'collect',expectedCollectionHash:String(i+1).repeat(64)},products:[{id:'cloth',num:2}],costs:[],executable:true}));
+ const spec={module:'production',actionId:'collection-synthetic',actionType:'gainFactory',parameters:{},costs:[],facts:{factories:[],collectionPreparation:rows}};
+ const h=await loaded(spec),controls=descendants(h.node('gp-production-facts'));
+ return {h,rows,picks:controls.filter(n=>n.dataset.productionCollectionBuilding),duration:controls.find(n=>n.dataset.productionCollectionDuration),prepare:controls.find(n=>n.dataset.productionCollectionPrepare)};
+}
+function explicitCollectionReply(u){
+ const targets=u.picks.filter(n=>n.checked).map(n=>u.rows.find(r=>r.parameters.buildingId===n.dataset.productionCollectionBuilding).parameters),maxDurationMs=Number(u.duration.value)*1000,budget={resources:[],quotas:[],uids:[]},nodes=[{id:'start',type:'START'}];
+ targets.forEach((parameters,i)=>nodes.push({id:'collect-'+i,type:'ACTION',module:'production',parameters,selection:{unique:true}},{id:'verify-'+i,type:'VERIFY',module:'production'}));nodes.push({id:'stop',type:'STOP'});
+ return {accountId:'A',action:'collect',targets,maxDurationMs,budget,steps:targets.map(parameters=>({parameters,selection:{unique:true},costs:[],products:u.rows.find(r=>r.parameters.buildingId===parameters.buildingId).products})),resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'synthetic collection',graph:{version:1,id:'collection-synthetic',name:'collections',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs,maxActions:targets.length,modules:['production']}}};
+}
+test('explicit collection PAGE requires choice and loads exact original Workflow without execution',async()=>{
+ const u=await explicitCollectionPage(),{h}=u;assert.equal(u.picks.length,2);assert.ok(u.picks.every(n=>!n.checked&&!n.disabled));await u.prepare.click();assert.equal(writes(h).length,0);
+ u.picks.forEach(n=>{n.checked=true;n.onchange();});u.duration.value='60';const reply=explicitCollectionReply(u),work=u.prepare.click();await tick();
+ assert.ok(h.pending('/api/gameplay/production/start/prepare'),h.node('gp-production-hint').textContent);assertMutation(h.pending('/api/gameplay/production/start/prepare'),'/api/gameplay/production/start/prepare',{action:'collect',targets:reply.targets,maxDurationMs:60000});h.respond('/api/gameplay/production/start/prepare',reply);await work;
+ assert.deepEqual(JSON.parse(h.node('wf-json').value),reply.graph);assert.equal(writes(h).length,1);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+for(const mode of ['choice','duration','editor','account','products','budget','nodes','targets'])test('explicit collection PAGE rejects stale or tampered preparation '+mode,async()=>{
+ const u=await explicitCollectionPage(),{h}=u;u.picks.forEach(n=>{n.checked=true;n.onchange();});const reply=explicitCollectionReply(u),work=u.prepare.click();await tick();
+ if(mode==='choice')u.picks[1].checked=false;if(mode==='duration')u.duration.value='61';if(mode==='editor')h.node('wf-json').value='edited';if(mode==='account')h.run("selectAccount('B');snapshot={connected:true,state:'READY'}");
+ if(mode==='products')reply.steps[0].products=[{id:'cloth',num:200}];if(mode==='budget')reply.graph.budget={resources:[{id:'gold',num:1}],quotas:[],uids:[]};if(mode==='nodes')reply.graph.nodes.splice(2,1);if(mode==='targets')reply.targets=reply.targets.slice().reverse();
+ const before=h.node('wf-json').value;h.respond('/api/gameplay/production/start/prepare',reply);await work;assert.equal(h.node('wf-json').value,before);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
