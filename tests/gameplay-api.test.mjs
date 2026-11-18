@@ -2421,7 +2421,7 @@ for(const unconfirmed of [false,true])test('browser offline compass Tasks '+(unc
  const {app,client,activityId,ticket,stock}=await compassHttpFixture(unconfirmed);
  const writes=()=>app.requests.filter(request=>request.mutate);
  try{await withOfflineBrowser(app,async({evaluate,waitFor})=>{
-  const graph=await evaluate('('+(async(activityId,ticket)=>{
+  const {graph,simulation}=await evaluate('('+(async(activityId,ticket)=>{
    const find=selector=>document.querySelector(selector);
    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
     for(let attempt=0;attempt<100;attempt++){
@@ -2455,12 +2455,20 @@ for(const unconfirmed of [false,true])test('browser offline compass Tasks '+(unc
    (await wait('#tabs button[data-tab="workflow"]')).click();
    (await wait('#wf-unified-prepare')).click();
    const workflow=await wait('#wf-json',element=>element?.value.includes(intent.tasks[0].actionId));
-   return JSON.parse(workflow.value);
+   const graph=JSON.parse(workflow.value);
+   (await wait('#wf-simulate')).click();
+   const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+   return {graph,simulation:JSON.parse(output.textContent)};
   }).toString()+')('+JSON.stringify(activityId)+','+JSON.stringify(ticket)+')');
   const action=graph.nodes.find(node=>node.type==='ACTION');
   assert.equal(action.module,'compass-wheel');
   assert.deepEqual(action.parameters,{activityId,count:1});
-  assert.deepEqual(graph.budget.resources,[{id:ticket,num:2}]);
+  assert.deepEqual(graph.budget,{
+   resources:[{id:ticket,num:2}],quotas:[{id:'compass-wheel:'+activityId,num:1}],
+   uids:[{type:'compass-wheel',id:activityId+':10'}]
+  });
+  assert.equal(simulation.requestsSent,0);
+  assert.equal(simulation.runtimeCreated,false);
   assert.deepEqual(writes(),[]);
   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'Tasks start control');
   await evaluate("document.getElementById('wf-start').click()");
