@@ -266,3 +266,87 @@ for(const scenario of ['complete','unknown'])test('cross-ship preparation at the
   assert.equal(budget.batches.length,steps);
  }finally{runner.stop();await runner.settle();await f.cleanup();}
 });
+
+
+for(const scenario of ['single','two','maximum','unknown-first','unknown-second','unknown-last'])test('explicit arrived Cargo preparation and Workflow '+scenario+' preserves per-ship settlement',async()=>{
+ const count=scenario==='single'?1:['maximum','unknown-last'].includes(scenario)?24:2;
+ const f=fixture({ships:Array.from({length:count},(_,i)=>arrived(i+1))});
+ let runner;
+ try {
+  const observed=await f.service.surveyModule(f.target,'fleet');
+  const ships=observed.view.cargo.ships;
+  const targets=ships.map(row=>({shipIndex:row.shipIndex,expectedCargoHash:row.preparationHash}));
+  assert.equal(targets.length,count);
+  const prepared=await f.service.prepareCargoFillSource(f.target,{action:'claim',claims:targets,maxDurationMs:60000});
+  assert.equal(prepared.accountId,'A');
+  assert.deepEqual(prepared.budget,{resources:[],quotas:[],uids:[]});
+  assert.deepEqual(prepared.steps.map(row=>row.selection.actionId),targets.map(row=>claimId(row.shipIndex)));
+  assert.equal(prepared.resumable,false);
+  assert.equal(f.writes.length,0);
+  runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id==='A'?f.target:null,
+   isCurrent:(account,generation,client)=>account===f.target&&account.generation===generation&&account.client===client,
+   claim:(id,runId,options)=>f.service.claimWorkflow(f.target,runId,options)});
+  let status=await runner.start('A',prepared.graph);
+  const runId=status.runId,expected=scenario==='unknown-first'?1:count;
+  for(let i=0;i<expected;i++){
+   assert.equal(status.status,'AWAITING_AUTHORIZATION');
+   assert.equal(status.runId,runId);
+   assert.equal(status.plan.actions.length,1);
+   assert.equal(status.plan.actions[0].actionId,claimId(i+1));
+   assert.deepEqual(status.plan.resourceBudget,[]);
+   assert.equal(f.writes.length,i);
+   const unconfirmed=scenario==='unknown-first'&&i===0||scenario==='unknown-second'&&i===1||scenario==='unknown-last'&&i===count-1;
+   f.target.synthetic.apply=!unconfirmed;
+   const permit=f.authorize(status.plan),result=await f.execute(status.plan,f.target,permit);
+   assert.equal(result.status.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS');
+   assert.equal(result.record.actions[0].verification.status,unconfirmed?'UNCONFIRMED':'CONFIRMED');
+   assert.throws(()=>f.service.execute(f.target,permit));
+   status=await runner.resume();
+  }
+  assert.equal(status.status,scenario.startsWith('unknown')?'UNKNOWN':'COMPLETED');
+  assert.equal(f.writes.length,expected);
+  assert.deepEqual(f.writes.map(row=>row.body.index),Array.from({length:expected},(_,i)=>i+1));
+  assert.equal(f.target.synthetic.stock.get('藏品大师徽章')??0,scenario==='unknown-first'?0:scenario==='unknown-second'?3:scenario==='unknown-last'?(count-1)*3:count*3);
+  assert.equal(f.history.unresolved('A'),scenario.startsWith('unknown'));
+  assert.equal(f.service.workflowBudget('A').state,'CLOSED');
+  assert.deepEqual(f.service.workflowBudget('A').limits,prepared.budget);
+  assert.equal(f.service.workflowBudget('A').resumable,false);
+  for(const write of f.writes){
+   assert.equal(write.name,'DrawShipRewardRequest');
+   assert.equal(write.durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+   assert.equal(write.durableBeforeWrite.workflowId,runId);
+  }
+  assert.equal(createExecutionHistory({file:f.file}).unresolved('A'),scenario.startsWith('unknown'));
+ } finally {runner?.stop();await runner?.settle();await f.cleanup();}
+});
+
+
+test('arrived Cargo preparation validates finite targets and current voyage without dispatch',async()=>{
+ const f=fixture({ships:[arrived(1),arrived(2)]});
+ try {
+  const view=await f.service.surveyModule(f.target,'fleet');
+  const claims=view.view.cargo.ships.map(row=>({shipIndex:row.shipIndex,expectedCargoHash:row.preparationHash}));
+  const input={action:'claim',claims,maxDurationMs:60000};
+  for(const bad of [
+   {...input,claims:[]},{...input,claims:[claims[0],claims[0]]},
+   {...input,claims:Array(1)},{...input,claims:Array(25).fill(claims[0])},
+   {...input,maxDurationMs:0},{...input,maxDurationMs:86400001},
+   {...input,claims:[{...claims[0],extra:true}]},{...input,action:'fill'},
+  ])await assert.rejects(f.service.prepareCargoFillSource(f.target,bad));
+  let reads=0;const malicious={shipIndex:1,get expectedCargoHash(){reads++;throw Error('accessor executed');}};
+  await assert.rejects(f.service.prepareCargoFillSource(f.target,{...input,claims:[malicious]}));
+  assert.equal(reads,0);
+  for(const change of [
+   state=>state.ships[1].arriveTime++,
+   state=>state.ships[1].reward[0].num++,
+   state=>state.ships[1].status=1,
+  ]) {
+   const original=structuredClone(f.target.synthetic.ships);
+   change(f.target.synthetic);
+   await assert.rejects(f.service.prepareCargoFillSource(f.target,input));
+   f.target.synthetic.ships=original;
+  }
+  assert.equal(f.writes.length,0);
+  assert.equal(f.history.list('A').length,0);
+ } finally {await f.cleanup();}
+});

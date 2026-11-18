@@ -3068,3 +3068,68 @@ test('cross-domain UNKNOWN remains blocked after actual HTTP server restart',asy
   assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);
  } finally {if(restarted)await restarted.close();await app.close();}
 });
+
+
+for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP preparation composes two exact voyages '+outcome,async()=>{
+ const testProtocol={...protocol};
+ for(const kind of ['MyFleets','AllItem','AllResource','CargoShips','WorldInfo','GuildInfo','DrawShipReward'])
+  for(const suffix of ['Request','Response'])testProtocol[kind+suffix]??={};
+ const app=await harness({includeCargo:true,testProtocol});
+ try {
+  const session=app.ready('A');
+  const makeShip=(index,status)=>({index,status,arriveTime:status===2?100:0,
+   orderItem:[{asset:{type:0,id:'wood',num:2},filled:status===2,reward:{asset:[{type:1,id:'EXP',num:1}]}}],
+   reward:[{type:0,id:'badge',num:1}]});
+  const ships=[makeShip(1,2),makeShip(2,2)],writes=[];let badges=0;
+  session.client.request=async(name,body,_response,_timeout,options)=>{
+   if(name==='DrawShipRewardRequest'){
+    assert.equal(options.mutate,true);options.beforeDispatch?.();
+    assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+    writes.push(structuredClone(body));
+    if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    const index=ships.findIndex(row=>row.index===body.index),next=makeShip(body.index,0);
+    const result={ship:structuredClone(next),reward:{asset:[{type:0,id:'badge',num:1}]}};
+    if(outcome==='success'){ships[index]=next;badges++;}
+    return result;
+   }
+   assert.notEqual(options?.mutate,true);
+   const facts={MyFleetsRequest:{fleets:[]},AllItemRequest:{items:badges?[{itemId:'badge',num:badges}]:[]},
+    AllResourceRequest:{list:[]},CargoShipsRequest:{ship:ships},WorldInfoRequest:{cities:[]},GuildInfoRequest:{}};
+   assert.ok(Object.hasOwn(facts,name),name);return structuredClone(facts[name]);
+  };
+  await app.call('/api/gameplay?module=fleet');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'fleet',config:{enabled:true,cargoClaim:true}}})).status,200);
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'fleet',parameters:{}}});
+  assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const claims=surveyed.data.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
+  const route='/api/gameplay/fleet/cargo/prepare',body={action:'claim',claims,maxDurationMs:60000};
+  assert.equal((await app.call(route,{body,authorized:false})).status,403);
+  const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  assert.deepEqual(prepared.data.budget,{resources:[],quotas:[],uids:[]});
+  const actions=prepared.data.graph.nodes.filter(row=>row.type==='ACTION');
+  assert.deepEqual(actions.map(row=>row.parameters.shipIndex),[1,2]);
+  assert.equal((await app.call('/api/workflows/simulate',{body:{graph:prepared.data.graph}})).data.requestsSent,0);
+  assert.equal(writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+  const expected=outcome==='success'?2:1;let runId;
+  for(let i=0;i<expected;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId??=pending.runId;
+   assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);
+   assert.equal(pending.plan.actions[0].actionId,'fleet:cargoClaim:'+(i+1));
+   assert.equal(writes.length,i);
+   const permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.operations.settle('A');
+   assert.equal(app.history.list('A')[0].finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
+  assert.deepEqual(writes,Array.from({length:expected},(_,i)=>({index:i+1})));
+  assert.equal(badges,outcome==='success'?2:0);
+  assert.equal(app.history.list('A').length,expected);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ } finally {await app.close();}
+});

@@ -3529,3 +3529,38 @@ test('cross-ship cargo page loads the selected slots with one checked budget',as
  assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);
  assert.equal(writes(h).length,2);assert.equal(h.confirmations.length,0);
 });
+
+
+for(const mode of ['success','reward-tamper','budget-tamper','late-selection'])test('arrived Cargo page preserves selected voyages and rejects '+mode,async()=>{
+ const ships=[1,2].map(shipIndex=>({shipIndex,reliable:true,status:2,arriveTime:100,preparationHash:String(shipIndex).repeat(64),
+  claimActionId:'fleet:cargoClaim:'+shipIndex,reward:[{type:0,id:'badge',num:1}],slots:[]}));
+ const spec={module:'fleet',actionId:ships[0].claimActionId,actionType:'cargoClaim',parameters:{shipIndex:1},costs:[],facts:{cargo:{inventoryReliable:true,ships}}};
+ const h=await boot(),read=h.node('gp-fleet-load').click(),response=data(spec);response.config={enabled:true,cargoClaim:true};
+ response.view.candidates=ships.map(ship=>({...candidate({...spec,actionId:ship.claimActionId,parameters:{shipIndex:ship.shipIndex}}),decision:'READY'}));
+ h.respond('/api/gameplay',response,{module:'fleet'});await read;
+ const controls=descendants(h.node('gp-fleet-cargo')),checks=controls.filter(node=>node.dataset.cargoClaimTarget),
+  duration=controls.find(node=>node.dataset.cargoClaimDuration),prepare=controls.find(node=>node.dataset.cargoClaimPrepare);
+ assert.equal(checks.length,2);assert.ok(checks.every(node=>!node.checked&&!node.disabled));
+ await prepare.click();assert.equal(writes(h).length,0);
+ checks.forEach(node=>{node.checked=true;node.onchange();});duration.value='60';duration.oninput();
+ const claims=ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
+ const payload={action:'claim',claims,maxDurationMs:60000},route='/api/gameplay/fleet/cargo/prepare';
+ const budget={resources:[],quotas:[],uids:[]},nodes=[{id:'start',type:'START'}];
+ const steps=claims.map((parameters,i)=>{const selection={actionId:ships[i].claimActionId};
+  nodes.push({id:'claim-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});
+  return {parameters,selection,costs:[],rewards:ships[i].reward};
+ });nodes.push({id:'stop',type:'STOP'});
+ const graph={version:1,id:'cargo-claims',name:'Cargo claims',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),
+  budget,runPolicy:{maxDurationMs:60000,maxActions:2,modules:['fleet']}};
+ const reply={...payload,accountId:'A',steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true};
+ const original=h.node('wf-json').value,pending=prepare.click();assertMutation(h.pending(route),route,payload);
+ if(mode==='reward-tamper')reply.steps[1].rewards=[{type:0,id:'badge',num:2}];
+ if(mode==='budget-tamper')reply.graph.budget={resources:[{id:'badge',num:1}],quotas:[],uids:[]};
+ if(mode==='late-selection'){checks[1].checked=false;checks[1].onchange();}
+ h.respond(route,reply);await pending;
+ if(mode==='success')assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);
+ else assert.equal(h.node('wf-json').value,original);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
+ assert.equal(h.confirmations.length,0);
+});
