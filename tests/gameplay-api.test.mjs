@@ -3070,18 +3070,16 @@ test('cross-domain UNKNOWN remains blocked after actual HTTP server restart',asy
 });
 
 
-for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP preparation composes two exact voyages '+outcome,async()=>{
- const testProtocol={...protocol};
- for(const kind of ['MyFleets','AllItem','AllResource','CargoShips','WorldInfo','GuildInfo','DrawShipReward'])
-  for(const suffix of ['Request','Response'])testProtocol[kind+suffix]??={};
- const app=await harness({includeCargo:true,testProtocol});
+async function arrivedCargoHttpFixture(outcome='success'){
+ const app=await harness({includeCargo:true,testProtocol:heroWireProtocol});
  try {
   const session=app.ready('A');
   const makeShip=(index,status)=>({index,status,arriveTime:status===2?100:0,
    orderItem:[{asset:{type:0,id:'wood',num:2},filled:status===2,reward:{asset:[{type:1,id:'EXP',num:1}]}}],
    reward:[{type:0,id:'badge',num:1}]});
   const ships=[makeShip(1,2),makeShip(2,2)],writes=[];let badges=0;
-  session.client.request=async(name,body,_response,_timeout,options)=>{
+  session.client.request=async(name,body,response,_timeout,options)=>{
+   heroWire(name,body);
    if(name==='DrawShipRewardRequest'){
     assert.equal(options.mutate,true);options.beforeDispatch?.();
     assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
@@ -3090,15 +3088,22 @@ for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP pr
     const index=ships.findIndex(row=>row.index===body.index),next=makeShip(body.index,0);
     const result={ship:structuredClone(next),reward:{asset:[{type:0,id:'badge',num:1}]}};
     if(outcome==='success'){ships[index]=next;badges++;}
-    return result;
+    return heroWire(response,result);
    }
    assert.notEqual(options?.mutate,true);
    const facts={MyFleetsRequest:{fleets:[]},AllItemRequest:{items:badges?[{itemId:'badge',num:badges}]:[]},
     AllResourceRequest:{list:[]},CargoShipsRequest:{ship:ships},WorldInfoRequest:{cities:[]},GuildInfoRequest:{}};
-   assert.ok(Object.hasOwn(facts,name),name);return structuredClone(facts[name]);
+   assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
   };
   await app.call('/api/gameplay?module=fleet');
   assert.equal((await app.call('/api/gameplay/config',{body:{module:'fleet',config:{enabled:true,cargoClaim:true}}})).status,200);
+  return {app,ships,writes,get badges(){return badges;}};
+ } catch(error){await app.close();throw error;}
+}
+
+for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP preparation composes two exact voyages '+outcome,async()=>{
+ const fixture=await arrivedCargoHttpFixture(outcome),{app,writes}=fixture;
+ try {
   const surveyed=await app.call('/api/gameplay/survey',{body:{module:'fleet',parameters:{}}});
   assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
   const claims=surveyed.data.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
@@ -3126,10 +3131,80 @@ for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP pr
   }
   await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
   assert.deepEqual(writes,Array.from({length:expected},(_,i)=>({index:i+1})));
-  assert.equal(badges,outcome==='success'?2:0);
+  assert.equal(fixture.badges,outcome==='success'?2:0);
   assert.equal(app.history.list('A').length,expected);
   assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
   assert.deepEqual(app.counts(),{clients:0,collections:0});
+ } finally {await app.close();}
+});
+
+
+for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '+(outcome==='success'?'settles two selected voyages':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:55000
+},async()=>{
+ const fixture=await arrivedCargoHttpFixture(outcome),{app,writes}=fixture;
+ try {
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   const {graph,simulation}=await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let attempt=0;attempt<100;attempt++){
+      const element=find(selector);if(accept(element))return element;
+      await new Promise(resolve=>setTimeout(resolve,75));
+     }
+     throw Error(selector+' '+find('#gp-fleet-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    if(globalThis.pageErrors.length)throw Error(globalThis.pageErrors.join(', '));
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="fleet"]')).click();
+    (await wait('#gp-fleet-load')).click();
+    (await wait('#gp-fleet-survey')).click();
+    await wait('[data-cargo-claim-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-cargo-claim-target]'));
+    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected arrived ships');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-cargo-claim-duration]');
+    duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-cargo-claim-prepare]')).click();
+    const editor=await wait('#wf-json',element=>element?.value.includes('cargoClaim'));
+    const graph=JSON.parse(editor.value);
+    (await wait('#tabs button[data-tab="workflow"]')).click();
+    (await wait('#wf-simulate')).click();
+    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+    return {graph,simulation:JSON.parse(output.textContent)};
+   }).toString()+')()');
+   const actions=graph.nodes.filter(row=>row.type==='ACTION');
+   assert.deepEqual(actions.map(row=>row.parameters.shipIndex),[1,2]);
+   assert.deepEqual(graph.nodes.map(row=>row.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+   assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
+   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');
+   await evaluate("document.getElementById('wf-start').click()");
+   const count=outcome==='success'?2:1;
+   for(let i=0;i<count;i++){
+    await waitFor(()=>evaluate(`(() => {
+     const text=document.getElementById('wf-status').textContent;
+     const status=text?JSON.parse(text):{};
+     return status.currentNode===${JSON.stringify(actions[i].id)} && status.status==='AWAITING_AUTHORIZATION' &&
+      !document.getElementById('wf-authorize').disabled;
+    })()`),'authorization '+i);
+    assert.equal(writes.length,i);
+    await evaluate("document.getElementById('wf-authorize').click()");
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&
+     record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);
+    await evaluate("document.getElementById('wf-resume').click()");
+   }
+   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;
+    return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+   assert.equal(await evaluate('globalThis.confirmations'),count);
+   assert.deepEqual(writes,Array.from({length:count},(_,i)=>({index:i+1})));
+   assert.equal(fixture.badges,outcome==='success'?2:0);
+   assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+   assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
  } finally {await app.close();}
 });
