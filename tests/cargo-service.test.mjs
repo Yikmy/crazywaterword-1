@@ -213,3 +213,46 @@ test('prepared cross-ship cargo uses one initial budget and independently confir
   assert.equal(f.service.workflowBudget('A').state,'CLOSED');
  }finally{runner.stop();await runner.settle();await f.cleanup();}
 });
+
+
+test('cross-ship preparation bounds the entire batch to 24 slots and stops on UNKNOWN',async()=>{
+ const fleet=[1,2,3].map(index=>{
+  const value=ship(index);
+  value.orderItem=Array.from({length:12},()=>({
+   asset:{type:0,id:'木材',num:1},filled:false,reward:{asset:[{type:1,id:'EXP',num:1}]}
+  }));
+  return value;
+ });
+ const f=fixture({ships:fleet});
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id==='A'?f.target:null,
+  isCurrent:(account,generation,client)=>account===f.target&&account.generation===generation&&account.client===client,
+  claim:(_id,runId,options)=>f.service.claimWorkflow(f.target,runId,options)});
+ try {
+  f.target.synthetic.stock.set('木材',24);
+  const observed=await f.service.surveyModule(f.target,'fleet');
+  const loads=observed.view.cargo.ships.map(({shipIndex,preparationHash})=>({
+   shipIndex,cargoIndices:Array.from({length:shipIndex===3?1:12},(_,i)=>i+1),expectedCargoHash:preparationHash}));
+  const input={action:'fill',loads,maxDurationMs:60000};
+  const before=f.reads.length;
+  await assert.rejects(f.service.prepareCargoFillSource(f.target,input),{code:'INVALID_INPUT'});
+  assert.equal(f.reads.length,before);
+  const prepared=await f.service.prepareCargoFillSource(f.target,{...input,loads:loads.slice(0,2)});
+  assert.equal(prepared.graph.nodes.length,50);
+  assert.deepEqual(prepared.graph.budget,claims(24));
+  let pending=await runner.start('A',prepared.graph);
+  for(let i=0;i<13;i++){
+   const shipIndex=i<12?1:2,cargoIndex=i<12?i+1:1;
+   assert.equal(pending.status,'AWAITING_AUTHORIZATION');
+   assert.equal(pending.plan.actions[0].actionId,'fleet:cargoFill:'+shipIndex+':'+cargoIndex);
+   if(i===12)f.target.synthetic.apply=false;
+   assert.equal((await f.execute(pending.plan)).status.finalStatus,i<12?'SUCCESS':'UNKNOWN');
+   pending=await runner.resume();
+  }
+  assert.equal(pending.status,'UNKNOWN');
+  assert.equal(f.writes.length,13);
+  assert.ok(f.target.synthetic.ships[1].orderItem.every(row=>!row.filled));
+  const reopened=createExecutionHistory({file:f.file});
+  assert.equal(reopened.unresolved('A'),true);
+  assert.equal(f.service.workflowBudget('A').state,'CLOSED');
+ }finally{runner.stop();await runner.settle();await f.cleanup();}
+});
