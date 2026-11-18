@@ -2680,3 +2680,54 @@ for (const unconfirmed of [false, true]) {
   } finally { await app.close(); }
  });
 }
+
+test('browser offline daily task reward link opens the visible task panel', {
+ skip: !process.env.CW_TEST_BROWSER, timeout: 30000
+}, async () => {
+ const body=heroWire('DailyTaskInfoResponse',{
+  dailyTask:[{id:1002,progress:1,targetProgress:1,rewardClaimed:false}],
+  dailyActivity:40,dailyRewardClaimed:[]
+ });
+ const app=await harness({
+  includeDailyActivity:true,
+  collectSnapshot:async()=>({
+   ok:{DailyTaskInfoRequest:body},raw:{DailyTaskInfoRequest:body},
+   outcomes:{DailyTaskInfoRequest:{status:'SUCCESS'}},failed:{}
+  })
+ });
+ try {
+  app.ready('A');
+  await app.call();
+  assert.equal((await app.call('/api/refresh',{body:{}})).status,200);
+  const daily=await app.call('/api/dailies');
+  assert.equal(daily.data.checklist.tasks.rows.length,1);
+  await withOfflineBrowser(app, async ({evaluate}) => {
+   const visited=await evaluate('('+(async()=>{
+    const tab=id=>document.querySelector('#tabs button[data-tab="'+id+'"]');
+    const panel=document.getElementById('gp-task-rewards-section');
+    const daily=document.getElementById('dailies-table');
+    const wait=async read=>{
+     for(let attempt=0;attempt<80;attempt++){
+      const result=read();
+      if(result)return result;
+      await new Promise(resolve=>setTimeout(resolve,75));
+     }
+     throw Error('Daily checklist did not become available');
+    };
+    await wait(()=>document.getElementById('account').value==='A');
+    tab('dailies').click();
+    const plan=document.getElementById('dailies-plan');
+    await wait(()=>!plan.disabled);
+    plan.click();
+    const label='打开日常任务奖励';
+    const link=await wait(()=>Array.from(daily.querySelectorAll('button')).find(button=>button.textContent===label));
+    link.click();
+    return panel.getClientRects().length>0;
+   }).toString()+')()');
+   assert.equal(visited,true);
+  });
+  assert.equal(app.requests.length,0);
+  assert.deepEqual(app.history.list('A'),[]);
+  assert.deepEqual(app.counts(),{clients:0,collections:1});
+ } finally {await app.close();}
+});
