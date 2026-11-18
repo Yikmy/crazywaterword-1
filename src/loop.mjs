@@ -5,6 +5,7 @@ import { validateTrialChallengeParameters } from './trial-challenge.mjs';
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateFreeGoldParameters } from './free-gold.mjs';
 import { residentOrderSelection } from './order-execution.mjs';
+import { validateCompassWheelParameters } from './compass-wheel.mjs';
 import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
@@ -175,6 +176,19 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         exact(row,['kind','actionId']);
         try{selection=residentOrderSelection(row.actionId);}catch{invalid('Tasks居民订单须明确原SUBMIT候选actionId，不接受刷新或替换目标');}
         steps.push({phase,index,module:'orders',parameters:{},selection});continue;
+      }
+      if (phase === 'tasks' && row?.kind === 'compass-wheel') {
+        exact(row, ['kind', 'parameters', 'actionId']);
+        try {
+          parameters = validateCompassWheelParameters(row.parameters);
+          if (!parameters.activityId || typeof row.actionId !== 'string' || !/^compass-wheel:[a-f0-9]{64}$/.test(row.actionId)) {
+            throw Error('缺少明确抽取目标');
+          }
+        } catch {
+          invalid('Tasks罗盘须明确原活动、1/5/10/50次数和当前抽取候选actionId');
+        }
+        steps.push({phase, index, module:'compass-wheel', parameters, selection:{actionId:row.actionId}});
+        continue;
       }
       if(phase==='tasks'&&row?.kind==='free-recruit'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks招募须明确原Function业务参数，免费单次使用空对象');

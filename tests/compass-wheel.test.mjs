@@ -85,4 +85,27 @@ test('compass existing Loop generic world entry remains finite and stops UNKNOWN
  const {compileUnifiedExecution}=await import('../src/loop.mjs');const f=serviceFixture(t,{apply:false}),read=await f.service.surveyModule(f.session,'compass-wheel',f.options.parameters),row=read.view.candidates[0],compiled=compileUnifiedExecution({entry:'loop',rounds:2,budget:row.budgetClaims,world:[{module:'compass-wheel',parameters:f.options.parameters,selection:row.actionId}]},{modules:GAMEPLAY_MODULES});
  const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,id,o)=>f.service.claimWorkflow(f.session,id,o),getSession:()=>f.session});t.after(()=>runner.stop());let r=await runner.start(f.session.id,compiled.graph);assert.equal(r.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.equal((await f.run(r.plan)).record.finalStatus,'UNKNOWN');r=await runner.resume();assert.equal(r.status,'UNKNOWN');assert.equal(f.state.writes.length,1);
 });
+for (const outcome of ['success','unknown','stale']) test('compass Tasks Workflow binds the original candidate '+outcome,async t=>{
+ const {compileUnifiedExecution}=await import('../src/loop.mjs');
+ const f=serviceFixture(t,{apply:outcome==='success'});
+ const p=await f.plan();
+ const intent={entry:'tasks',tasks:[{kind:'compass-wheel',parameters:f.options.parameters,actionId:p.actions[0].actionId}],budget:p.budgetClaims};
+ const {graph}=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,id,o)=>f.service.claimWorkflow(f.session,id,o),getSession:()=>f.session});
+ t.after(()=>runner.stop());
+ if(outcome==='stale')f.state.info.times++;
+ const started=await runner.start(f.session.id,graph);
+ assert.equal(f.state.writes.length,0);
+ if(outcome==='stale'){
+  assert.ok(['FAILED','UNKNOWN'].includes(started.status),JSON.stringify(started));
+  assert.equal(started.plan,null);
+  return;
+ }
+ assert.equal(started.status,'AWAITING_AUTHORIZATION');
+ assert.equal(started.plan.actions[0].actionId,p.actions[0].actionId);
+ assert.equal((await f.run(started.plan)).record.finalStatus,outcome==='success'?'SUCCESS':'UNKNOWN');
+ assert.equal((await runner.resume()).status,outcome==='success'?'COMPLETED':'UNKNOWN');
+ assert.equal(f.state.writes.length,1);
+});
+
 test('compass empty parameters are read-only and disabled selection cannot create a plan',async t=>{const f=fixture();t.after(()=>f.client.stop());const options={...f.options,parameters:{}},facts=await surveyCompassWheel(f.client,protocol,options);assert.equal(viewCompassWheel(facts,options).candidates[0].executable,false);assert.equal(f.state.reads.includes('CompassWheelInfoRequest'),false);assert.equal(f.state.writes.length,0);const x=await ready(t);assert.equal(planCompassWheel(x.facts,{...x.options,moduleConfig:{enabled:false},selections:[x.operation.actionId]}).actions.length,0);});

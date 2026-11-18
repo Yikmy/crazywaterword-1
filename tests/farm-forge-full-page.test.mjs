@@ -3409,6 +3409,35 @@ test('resident-order Tasks declaration uses the exact professional candidate and
 });
 
 
+test('compass Tasks draft sends the exact surveyed spin and unchanged budget to Workflow preparation',async()=>{
+ const spec={...cases.find(row=>row.module==='compass-wheel'),actionId:'compass-wheel:'+'a'.repeat(64)};
+ const h=await loaded(spec);
+ h.node('gp-compass-wheel-parameters').value=JSON.stringify(spec.parameters);
+ const survey=h.node('gp-compass-wheel-survey').click();
+ h.respond('/api/gameplay/survey',{...data(spec),view:{...spec.facts,candidates:[candidate(spec)]}});
+ await survey;
+ const fields=descendants(h.node('gp-compass-wheel-facts'));
+ const button=fields.find(row=>row.dataset.compassTaskPrepare),count=fields.find(row=>row.dataset.compassCount);
+ assert.equal(button.disabled,false);
+ const draft={entry:'tasks',tasks:[],dailies:[],world:[],budget:{resources:spec.costs,quotas:[{id:'compass-wheel:'+spec.parameters.activityId,num:5}],uids:[{type:'compass-wheel',id:spec.parameters.activityId+':10'}]}};
+ unifiedLoad(h,draft);
+ const existingWrites=writes(h).length;
+ count.value='10';await button.click();assert.deepEqual(unifiedDraft(h).tasks,[]);
+ count.value='5';await button.click();await button.click();
+ const intent={...draft,tasks:[{kind:'compass-wheel',parameters:spec.parameters,actionId:spec.actionId}]};
+ assert.deepEqual(unifiedDraft(h),intent);
+ assert.equal(writes(h).length,existingWrites);
+ const pending=h.node('wf-unified-prepare').click();await tick();
+ assertMutation(h.pending('/api/workflows/prepare'),'/api/workflows/prepare',intent);
+ const result=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES});
+ h.respond('/api/workflows/prepare',{accountId:'A',...result});await pending;
+ const action=conditionGraph(h).nodes.find(row=>row.type==='ACTION');
+ assert.deepEqual(action.selection,{actionId:spec.actionId});assert.deepEqual(action.parameters,spec.parameters);
+ assert.deepEqual(conditionGraph(h).budget,draft.budget);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);
+ h.run("selectAccount('B')");await button.click();assert.equal(h.node('wf-unified-intent').value,'');
+});
+
 test('cross-ship cargo page loads the selected slots with one checked budget',async()=>{
  const spec={module:'fleet',actionId:'fleet:cargoFill:1:1',actionType:'cargoFill',parameters:{shipIndex:1,cargoIndex:1},costs:[{id:'wood',num:2}],facts:{cargo:{inventoryReliable:true,ships:[1,2].map(shipIndex=>({
   shipIndex,reliable:true,status:0,preparationHash:String(shipIndex).repeat(64),
