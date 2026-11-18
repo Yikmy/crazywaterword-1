@@ -2,6 +2,7 @@
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
 import { validateTrialChallengeParameters } from './trial-challenge.mjs';
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
+import { validateFreeGoldParameters } from './free-gold.mjs';
 import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
@@ -172,6 +173,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks招募须明确原Function业务参数，免费单次使用空对象');
         try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募仅支持明确英雄或古董、免费单次及自有1/10/50券的原参数');}
         steps.push({phase,index,module:'free-recruit',parameters,selection});continue;
+      }
+      if(phase==='tasks'&&row?.kind==='free-gold'){
+        exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks点金须明确原Function参数；普通免费单次使用空对象');
+        try{parameters=validateFreeGoldParameters(row.parameters);}catch{invalid('Tasks点金仅接受原免费单次及完整expectedGold状态，禁止付费或自定义次数');}
+        steps.push({phase,index,module:'free-gold',parameters,selection});continue;
       }
       if(phase==='tasks'&&row?.kind==='afk-income'){
         exact(row,['kind','level','afkStartTime','afkFinishTime']);
