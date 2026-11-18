@@ -325,6 +325,7 @@ export const PAGE = `<!doctype html>
       <button id="stages-load">读取运行状态</button>
       <button id="stages-start" class="primary" disabled>开始自动闯关</button>
       <button id="stages-stop" class="danger" disabled>停止</button>
+      <button id="stages-add-task" disabled>将当前有限主线配置加入Tasks声明</button>
     </div>
     <div id="stages-hint" class="warn" role="status"></div>
     <div id="stages-status" class="kv">选择账号后读取已有运行状态。</div>
@@ -1717,7 +1718,7 @@ function resetStages() {
   $('stages-formation-enabled').checked=false; $('stages-formation-preset').value='';
   $('stages-retry-delay').value = '10';
   $('stages-max-attempts').value = ''; $('stages-max-stage').value = '';
-  $('stages-start').disabled = true; $('stages-stop').disabled = true;
+  $('stages-start').disabled = true; $('stages-stop').disabled = true; $('stages-add-task').disabled=true;
   for (const id of ['stages-enabled', 'stages-stop-on-defeat', 'stages-retry-delay', 'stages-max-attempts', 'stages-max-stage', 'stages-formation-enabled', 'stages-formation-preset']) $(id).disabled = false;
   $('stages-availability').textContent = '尚未读取运行条件。';
   $('stages-hint').textContent = '';
@@ -1746,6 +1747,7 @@ function stageControls() {
   const busy = stagesActionPending || runner.running === true || runner.inFlight === true || operationsLocked();
   $('stages-start').disabled = !current || !stagesData?.available || !snapshot.connected || !snapshot.state || snapshot.state !== 'READY' || busy || runner.uncertain === true || $('stages-enabled').checked !== true;
   $('stages-stop').disabled = !current || stagesActionPending || runner.running !== true;
+  $('stages-add-task').disabled=$('stages-start').disabled||Boolean(snapshot.busy)||stagesData?.accountId!==current||!stageTaskDeclarationEditable();
   const recommendationBlocked=!current||Boolean(snapshot.busy)||!stagesData?.available||!snapshot.connected||snapshot.state!=='READY'||busy||runner.uncertain===true||!stageRecommendationEditable();
   for(const id of ['stages-recommendation-report','stages-recommendation-preset','stages-recommendation-attempts','stages-recommendation-presets','stages-recommendation-duration','stages-recommendation-rule','stages-recommendation-samples'])$(id).disabled=recommendationBlocked;
   $('stages-recommendation-prepare').disabled=recommendationBlocked||!$('stages-recommendation-report').value;
@@ -1881,6 +1883,16 @@ async function stageMutation(path, payload, scope) {
 $('stages-load').onclick = refreshStages;
 $('stages-enabled').onchange = stageControls;
 $('stages-stop-on-defeat').onchange = stageControls;
+$('stages-add-task').onclick=()=>{
+ stageControls();if($('stages-add-task').disabled)return;
+ try{
+  const config=stageConfig(),runner=stagesData.runner,expectedStage=runner.nextStage??runner.currentStage;
+  if(!Number.isSafeInteger(config.maxAttempts)||config.maxAttempts<1||config.maxAttempts>200)throw Error('加入Tasks须明确1至200次总尝试上限');
+  if(!Number.isSafeInteger(expectedStage)||expectedStage<1||expectedStage>2147483647)throw Error('当前首关未知，请重新读取运行状态');
+  addStageTaskDeclaration({config,expectedStage});
+  $('stages-hint').textContent='已将本次有限主线配置和当前首关加入Tasks草稿；核对工作流后重新调查并授权。战斗不证明日常完成或领奖。';
+ }catch(error){$('stages-hint').textContent='加入Tasks失败：'+error.message;}
+};
 $('stages-start').onclick = async () => {
   if ($('stages-start').disabled || stagesActionPending) return;
   let config;

@@ -1,5 +1,6 @@
 // Existing fixed loop: task rewards -> daily actions -> world actions.
 // Every await and phase boundary observes cancellation. UNKNOWN ends the run.
+import { validateStageFunctionParameters } from './stage-function.mjs';
 import { validateTrialChallengeParameters } from './trial-challenge.mjs';
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateFreeGoldParameters } from './free-gold.mjs';
@@ -184,6 +185,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           else {module='pirate-sweep';parameters=validatePirateSweepParameters(parameters);if(!Object.hasOwn(parameters,'uid')||!Object.hasOwn(parameters,'cityId'))invalid('需要明确海盗UID和城市');}
         }catch{invalid('Tasks仅支持明确单格装货、单城市联盟订单、固定队伍倍率探险出发或单目标普通扫荡的原参数');}
         steps.push({phase,index,module,parameters,selection});continue;
+      }
+      if(phase==='tasks'&&row?.kind==='stage'){
+        exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks主线须明确原Stage Function有限config参数');
+        try{parameters=validateStageFunctionParameters(row.parameters);if(!parameters)invalid('需要明确有限config');}catch{invalid('Tasks主线仅接受原有限config及可选expectedStage，不接受协议、付费或无限重试');}
+        steps.push({phase,index,module:'stage',parameters,selection});continue;
       }
       if(phase==='tasks'&&row?.kind==='trial-challenge'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks试炼须明确原Function参数和raidId=1/2/3');

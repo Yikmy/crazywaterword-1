@@ -727,7 +727,7 @@ test('unified form refuses invalid targets and unsupported entry combinations wi
   const source=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','main',target);
   assert.equal(h.node('wf-unified-intent').value,source,target);assert.match(h.node('wf-unified-form-hint').textContent,/明确整数/);
  }
- for(const [phase,kind] of [['dailies','free-gold'],['tasks','stage']]){
+ for(const [phase,kind] of [['dailies','free-gold'],['tasks','arena']]){
   const source=h.node('wf-unified-intent').value;unifiedAdd(h,phase,kind);assert.equal(h.node('wf-unified-intent').value,source);
  }
  h.node('wf-unified-entry').value='loop';h.node('wf-unified-rounds').value='2';h.node('wf-unified-every').value='500';h.node('wf-unified-limits').click();
