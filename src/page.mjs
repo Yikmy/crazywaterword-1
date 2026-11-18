@@ -2371,7 +2371,7 @@ function renderDailyChecklist(data) {
   })));
   if(view.tasks.rows.length){
     const scope=viewGuard.capture(),link=el('button','','打开日常任务奖励');link.type='button';
-    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
+    link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);
   }
   if(view.tasks.rows.some(row=>Object.hasOwn(unifiedDrivers,row.functionId))){
     const scope=viewGuard.capture(),link=el('button','','打开日常统一执行声明');link.type='button';
@@ -2394,7 +2394,7 @@ function renderDailyChecklist(data) {
       row.id,known(row.requiredActivity),labels[row.status]||'未知',
       row.configuredRewards?row.configuredRewards.map(r=>r.id+' × '+r.num).join('；'):row.rewardReason==='SEASON_REWARD_AMBIGUOUS'?'季节奖励未确定':'奖励配置未知'
     ])));
-    if(kind==='daily'&&activity.tiers.length){const scope=viewGuard.capture(),link=el('button','','打开日活跃宝箱领奖');link.type='button';link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="tasks"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);}
+    if(kind==='daily'&&activity.tiers.length){const scope=viewGuard.capture(),link=el('button','','打开日活跃宝箱领奖');link.type='button';link.onclick=()=>{if(!viewGuard.current(scope))return;document.querySelector?.('#tabs button[data-tab="idle"]')?.click();$('gp-task-rewards-section').scrollIntoView?.({block:'start'});};box.appendChild(link);}
     if(!activity.tiers.length)box.appendChild(el('div','dim','档位配置未知'));
   }
   box.appendChild(table(['免费赠礼','状态','说明'],[['每日精选赠礼',labels[view.gift.status]||'未知','缓存仅供查看；选择固定赠礼，重新探测、预览与授权，不推断日界']]));

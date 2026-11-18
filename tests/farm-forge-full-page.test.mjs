@@ -501,6 +501,30 @@ test('AFK reward page shows exact sparse target and requires a fresh explicit su
  const before=h.requests.length,task=h.node('gp-afk-level-rewards-survey').onclick();assertMutation(h.pending('/api/gameplay/survey'),'/api/gameplay/survey',{module:'afk-level-rewards',parameters:{level:5}});h.run("selectAccount('B');");h.respond('/api/gameplay/survey',data({...spec,facts:{afk:{level:999,rewardedLevel:0}}}));await task;assert.doesNotMatch(h.node('gp-afk-level-rewards-facts').textContent,/999/);assert.equal(h.requests.length,before+1);assert.equal(writes(h,'/api/operations/execute').length,0);
 });
 
+test('daily task and activity rewards navigate to the existing task rewards panel',async()=>{
+ const h=await boot(),before=h.requests.length;
+ const checklist=dailyChecklist({ok:{DailyTaskInfoRequest:{
+  dailyTask:[{id:1002,progress:1,targetProgress:1,rewardClaimed:false}]
+ }},failed:{}},{config:{tables:{}}});
+ checklist.activity.daily.tiers=[{id:1,requiredActivity:10,status:'ELIGIBLE'}];
+ h.run('renderDailies('+JSON.stringify({checklist,tasks:[]})+')');
+ h.run('globalThis.rewardNavigation=[];document.querySelector=selector=>({click:()=>globalThis.rewardNavigation.push(selector)})');
+ let scrolls=0;
+ h.node('gp-task-rewards-section').scrollIntoView=()=>scrolls++;
+ const links=['打开日常任务奖励','打开日活跃宝箱领奖'].map(title=>
+  descendants(h.node('dailies-table')).find(node=>node.textContent===title)
+ );
+ for(const link of links){assert.ok(link);link.click();}
+ assert.equal(h.run('JSON.stringify(globalThis.rewardNavigation)'),JSON.stringify(Array(2).fill('#tabs button[data-tab="idle"]')));
+ assert.equal(scrolls,2);
+ assert.equal(h.requests.length,before);
+ h.run("selectAccount('B')");
+ for(const link of links)link.click();
+ assert.equal(h.run('globalThis.rewardNavigation.length'),2);
+ assert.equal(scrolls,2);
+ assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
 test('cached daily recruit/trial navigation reuses controlled sections without reads or writes and rejects stale account callbacks',async()=>{
  const h=await boot(),before=h.requests.length;
  const checklist=dailyChecklist({ok:{DailyTaskInfoRequest:{dailyTask:[{id:1002,progress:0,targetProgress:1,rewardClaimed:false},{id:1009,progress:0,targetProgress:1,rewardClaimed:false}]}},failed:{}},{config:{tables:{}}});
