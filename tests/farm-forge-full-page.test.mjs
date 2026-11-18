@@ -3564,3 +3564,31 @@ for(const mode of ['success','reward-tamper','budget-tamper','late-selection'])t
  assert.equal(writes(h,'/api/operations/execute').length,0);
  assert.equal(h.confirmations.length,0);
 });
+
+
+test('arrived Cargo page accepts the full 24 selected voyages without granting permission',async()=>{
+ const ships=Array.from({length:24},(_,i)=>({shipIndex:i+1,reliable:true,status:2,arriveTime:100,
+  preparationHash:(i+1).toString(16).padStart(64,'0'),claimActionId:'fleet:cargoClaim:'+(i+1),
+  reward:[{type:0,id:'badge',num:1}],slots:[]}));
+ const spec={module:'fleet',actionId:ships[0].claimActionId,actionType:'cargoClaim',parameters:{shipIndex:1},costs:[],facts:{cargo:{inventoryReliable:true,ships}}};
+ const h=await boot(),read=h.node('gp-fleet-load').click(),response=data(spec);response.config={enabled:true,cargoClaim:true};
+ response.view.candidates=ships.map(ship=>({...candidate({...spec,actionId:ship.claimActionId,parameters:{shipIndex:ship.shipIndex}}),decision:'READY'}));
+ h.respond('/api/gameplay',response,{module:'fleet'});await read;
+ const controls=descendants(h.node('gp-fleet-cargo')),checks=controls.filter(node=>node.dataset.cargoClaimTarget),
+  duration=controls.find(node=>node.dataset.cargoClaimDuration),prepare=controls.find(node=>node.dataset.cargoClaimPrepare);
+ assert.equal(checks.length,24);assert.ok(checks.every(node=>!node.checked&&!node.disabled));
+ checks.forEach(node=>{node.checked=true;node.onchange();});duration.value='60';duration.oninput();
+ const claims=ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
+ const payload={action:'claim',claims,maxDurationMs:60000},route='/api/gameplay/fleet/cargo/prepare',nodes=[{id:'start',type:'START'}];
+ const steps=claims.map((parameters,i)=>{const selection={actionId:ships[i].claimActionId};
+  nodes.push({id:'claim-'+i,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'fleet'});
+  return {parameters,selection,costs:[],rewards:ships[i].reward};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:[]};
+ const graph={version:1,id:'cargo-24',name:'24 Cargo claims',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),
+  budget,runPolicy:{maxDurationMs:60000,maxActions:24,modules:['fleet']}};
+ const pending=prepare.click();assertMutation(h.pending(route),route,payload);
+ h.respond(route,{...payload,accountId:'A',steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true});await pending;
+ assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ assert.equal(h.confirmations.length,0);
+});

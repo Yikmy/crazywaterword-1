@@ -3070,34 +3070,37 @@ test('cross-domain UNKNOWN remains blocked after actual HTTP server restart',asy
 });
 
 
-async function arrivedCargoHttpFixture(outcome='success'){
+async function arrivedCargoHttpFixture(outcome='success',{count=2,failAt=1}={}){
  const app=await harness({includeCargo:true,testProtocol:heroWireProtocol});
  try {
   const session=app.ready('A');
+  session.player={playerId:'1',worldId:1000001,level:20};session.connectionId='cargo-http-A';
+  session.client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};
   const makeShip=(index,status)=>({index,status,arriveTime:status===2?100:0,
    orderItem:[{asset:{type:0,id:'wood',num:2},filled:status===2,reward:{asset:[{type:1,id:'EXP',num:1}]}}],
    reward:[{type:0,id:'badge',num:1}]});
-  const ships=[makeShip(1,2),makeShip(2,2)],writes=[];let badges=0;
+  const ships=Array.from({length:count},(_,i)=>makeShip(i+1,2)),writes=[],state={onRead:null};let badges=0;
   session.client.request=async(name,body,response,_timeout,options)=>{
    heroWire(name,body);
    if(name==='DrawShipRewardRequest'){
     assert.equal(options.mutate,true);options.beforeDispatch?.();
     assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
     writes.push(structuredClone(body));
-    if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    if(outcome==='refused'&&writes.length===failAt)throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
     const index=ships.findIndex(row=>row.index===body.index),next=makeShip(body.index,0);
     const result={ship:structuredClone(next),reward:{asset:[{type:0,id:'badge',num:1}]}};
-    if(outcome==='success'){ships[index]=next;badges++;}
+    if(outcome==='success'||writes.length!==failAt){ships[index]=next;badges++;}
     return heroWire(response,result);
    }
    assert.notEqual(options?.mutate,true);
+   await state.onRead?.(name);
    const facts={MyFleetsRequest:{fleets:[]},AllItemRequest:{items:badges?[{itemId:'badge',num:badges}]:[]},
     AllResourceRequest:{list:[]},CargoShipsRequest:{ship:ships},WorldInfoRequest:{cities:[]},GuildInfoRequest:{}};
    assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
   };
   await app.call('/api/gameplay?module=fleet');
   assert.equal((await app.call('/api/gameplay/config',{body:{module:'fleet',config:{enabled:true,cargoClaim:true}}})).status,200);
-  return {app,ships,writes,get badges(){return badges;}};
+  return {app,session,ships,writes,state,get badges(){return badges;}};
  } catch(error){await app.close();throw error;}
 }
 
@@ -3207,4 +3210,127 @@ for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '
    assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
  } finally {await app.close();}
+});
+
+
+for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP 24-ship workflow '+outcome+' at final voyage',{timeout:240000},async()=>{
+ const fixture=await arrivedCargoHttpFixture(outcome,{count:24,failAt:24}),{app,writes}=fixture;
+ try {
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'fleet',parameters:{}}});
+  assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const claims=surveyed.data.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
+  assert.equal(claims.length,24);
+  const prepared=await app.call('/api/gameplay/fleet/cargo/prepare',{body:{action:'claim',claims,maxDurationMs:180000}});
+  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');
+  assert.equal(actions.length,24);assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);
+  assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});
+  const simulation=await app.call('/api/workflows/simulate',{body:{graph}});
+  assert.equal(simulation.data.requestsSent,0);assert.equal(simulation.data.runtimeCreated,false);assert.equal(writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  let runId;
+  for(let i=0;i<24;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId??=pending.runId;
+   assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);
+   assert.equal(pending.plan.actions.length,1);assert.equal(pending.plan.actions[0].actionId,'fleet:cargoClaim:'+(i+1));
+   assert.deepEqual(pending.plan.resourceBudget,[]);assert.equal(writes.length,i);
+   const permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const result=i===23?(outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED'):'SUCCESS';
+   const record=app.history.list('A')[0];assert.equal(record.finalStatus,result,record.stopReason);
+   assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,actions[i].id);
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
+  assert.deepEqual(writes,Array.from({length:24},(_,i)=>({index:i+1})));
+  assert.equal(fixture.badges,outcome==='success'?24:23);
+  assert.equal(app.history.list('A').length,24);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  const budget=app.operations.workflowBudget('A');assert.equal(budget.state,'CLOSED');
+  assert.deepEqual(budget.limits,graph.budget);assert.equal(budget.batches.length,24);assert.equal(budget.resumable,false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ } finally {await app.close();}
+});
+
+
+for(const phase of ['prepare','execute'])for(const change of ['account','player','world','generation','connection','client','disconnect','abort'])
+ test('arrived Cargo HTTP '+phase+' rejects changed '+change+' before dispatch',async()=>{
+ const {app,session,state,writes}=await arrivedCargoHttpFixture();
+ try {
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'fleet',parameters:{}}});
+  assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const claims=surveyed.data.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,expectedCargoHash:preparationHash}));
+  const route='/api/gameplay/fleet/cargo/prepare',body={action:'claim',claims,maxDurationMs:60000};
+  let permit;
+  if(phase==='execute'){
+   const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+   assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+  }
+  const client=session.client;let hit=false;
+  state.onRead=name=>{
+   if(hit||name!=='CargoShipsRequest')return;hit=true;
+   if(change==='account')client.factContext.accountId='B';
+   if(change==='player')session.player.playerId='2';
+   if(change==='world')session.player.worldId=2000001;
+   if(change==='generation')client.factContext.generation=++session.generation;
+   if(change==='connection')client.factContext.connectionId=session.connectionId='replaced';
+   if(change==='client')session.client={...client};
+   if(change==='disconnect')client.connected=false;
+   if(change==='abort')session.abort.abort();
+  };
+  if(phase==='prepare'){
+   const reply=await app.call(route,{body});assert.notEqual(reply.status,200,JSON.stringify(reply.data));
+   assert.equal(app.history.list('A').length,0);
+  }else{
+   const reply=await app.call('/api/operations/execute',{body:permit.data});
+   if(reply.status===200)await app.operations.settle('A');
+   assert.notEqual(app.operations.status('A').finalStatus,'SUCCESS');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  }
+  assert.equal(hit,true);assert.equal(writes.length,0);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ } finally {await app.close();}
+});
+
+
+test('browser offline arrived Cargo prepares and simulates the 24-ship limit without authorization',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:60000
+},async()=>{
+ const {app,writes}=await arrivedCargoHttpFixture('success',{count:24});
+ try{
+  await withOfflineBrowser(app,async({evaluate})=>{
+   const {graph,simulation,confirmations}=await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-fleet-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="fleet"]')).click();
+    (await wait('#gp-fleet-load')).click();(await wait('#gp-fleet-survey')).click();
+    await wait('[data-cargo-claim-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-cargo-claim-target]'));
+    if(choices.length!==24||choices.some(element=>element.checked||element.disabled))throw Error('Expected 24 unselected arrived ships');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-cargo-claim-duration]');duration.value='180';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-cargo-claim-prepare]')).click();
+    const editor=await wait('#wf-json',element=>element?.value.includes('cargoClaim'));
+    const graph=JSON.parse(editor.value);
+    (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+    return {graph,simulation:JSON.parse(output.textContent),confirmations:globalThis.confirmations||0};
+   }).toString()+')()');
+   assert.deepEqual(graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.shipIndex),Array.from({length:24},(_,i)=>i+1));
+   assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);
+   assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});
+   assert.equal(graph.runPolicy.maxActions,24);assert.equal(graph.runPolicy.maxDurationMs,180000);
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);
+   assert.equal(confirmations,0);assert.equal(writes.length,0);assert.equal(app.history.list('A').length,0);
+   assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ } finally{await app.close();}
 });
