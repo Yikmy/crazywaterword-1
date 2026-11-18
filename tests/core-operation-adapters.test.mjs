@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CORE_OPERATION_MODULES, ordersModule, cityModule, productionModule, validateCoreOperationParameters, prepareProductionStartWorkflow, validateProductionStartPreparation } from '../src/core-operation-adapters.mjs';
+import { CORE_OPERATION_MODULES, ordersModule, cityModule, productionModule, validateCoreOperationParameters, prepareProductionStartWorkflow, validateProductionStartPreparation, prepareCityWorkflow, validateCityPreparation } from '../src/core-operation-adapters.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { createModuleSettings } from '../src/gameplay-settings.mjs';
 
@@ -456,4 +456,27 @@ test('prepared production collections bind selected factory queue and reject sta
  f.raw.building[1].factory.factoryQ.push({idx:0,productId:'cloth',finishTime:Math.floor(Date.now()/1000)+600});
  const current=await read(productionModule,f,{player:f.player});assert.throws(()=>prepareProductionStartWorkflow(current,{config,moduleConfig:args.moduleConfig,...payload}));
  assert.deepEqual(productionModule.view(current,{...args,parameters:targets[0]}).candidates,[]);assert.equal(f.writes.length,0);
+});
+
+
+function cityPreparationFixture(extra={}){const f=fixture(extra);f.player={playerId:'17',worldId:9,level:5};f.client.factContext={accountId:'A',generation:1,connectionId:'connection-A'};return f;}
+for(const apply of [true,false])test('explicit city preparation reuses original sequential build upgrade and verification '+apply,async()=>{
+ const f=cityPreparationFixture({apply}),args=options({player:f.player}),facts=await read(cityModule,f,{player:f.player}),view=cityModule.view(facts,args),targets=view.preparation.filter(row=>['build','upgrade'].includes(row.parameters.action)).map(row=>row.parameters);
+ assert.equal(targets.length,2);const prepared=prepareCityWorkflow(facts,{config,moduleConfig:args.moduleConfig,targets,maxDurationMs:60000});assert.deepEqual(prepared.budget,{resources:[{id:'wood',num:3}],quotas:[],uids:[]});assert.equal(f.writes.length,0);
+ for(const parameters of targets){const fresh=await read(cityModule,f,{player:f.player}),selected=cityModule.view(fresh,{...args,parameters}).candidates;assert.equal(selected.length,1);const op=cityModule.plan(fresh,{...args,parameters,selections:[selected[0].actionId]}).actions[0];const result=await execute(cityModule,f,op,{player:f.player,parameters});assert.equal(result.status,apply?'SUCCESS':'UNKNOWN');assert.equal(cityModule.verify(op,result).confirmed,apply);if(!apply)break;}
+ assert.equal(f.writes.length,apply?2:1);if(apply){assert.equal(f.inventory.get('wood'),1);assert.deepEqual(f.raw.building.map(b=>b.level),[1,2]);}
+});
+test('explicit city preparation rejects duplicate stale and cumulatively unaffordable targets',async()=>{
+ const f=cityPreparationFixture({stock:2}),args=options({player:f.player}),facts=await read(cityModule,f,{player:f.player}),targets=cityModule.view(facts,args).preparation.filter(row=>['build','upgrade'].includes(row.parameters.action)).map(row=>row.parameters),payload={targets,maxDurationMs:60000};assert.equal(targets.length,2);
+ assert.throws(()=>prepareCityWorkflow(facts,{config,moduleConfig:args.moduleConfig,...payload}),/累计/);assert.throws(()=>validateCityPreparation({...payload,targets:[targets[0],targets[0]]}));assert.throws(()=>validateCityPreparation({...payload,targets:[{...targets[0],request:'AnyRequest'}]}));
+ f.raw.building[0].level=1;const fresh=await read(cityModule,f,{player:f.player});assert.deepEqual(cityModule.view(fresh,{...args,parameters:targets[0]}).candidates,[]);assert.throws(()=>prepareCityWorkflow(fresh,{config,moduleConfig:args.moduleConfig,...payload}));assert.equal(f.writes.length,0);
+});
+
+
+test('explicit city preparation retains zero-cost finish and ordinary product settlement',async()=>{
+ const f=cityPreparationFixture(),args=options({player:f.player});Object.assign(f.raw.building[0],{level:1,buildStartTime:1,buildFinishTime:2});f.raw.building.push(rawBuilding('2民居',1,{product:{asset:[{id:'cloth',num:2}]}}));
+ const request=f.client.request.bind(f.client),send=f.client.sendWatch.bind(f.client);f.client.sendWatch=async(n,b,o)=>{if(n!=='FinishUpgradeBuildingRequest')return send(n,b,o);o?.beforeDispatch?.();f.writes.push({name:n,body:b});const row=f.raw.building.find(row=>row.buildingId===b.buildingId);row.level++;row.buildFinishTime=0;return {status:'UNKNOWN',sent:true};};
+ f.client.request=async(n,b,r,t,o)=>{if(n!=='CollectBuildingProductRequest')return request(n,b,r,t,o);o?.beforeDispatch?.();f.writes.push({name:n,body:b});assert.deepEqual(b.buildingId,['2民居']);f.raw.building[2].product.asset=[];f.inventory.set('cloth',2);return {};};
+ const facts=await read(cityModule,f,{player:f.player}),targets=cityModule.view(facts,args).preparation.filter(row=>['finishUpgrade','collectProduct'].includes(row.parameters.action)).map(row=>row.parameters);assert.equal(targets.length,2);const graph=prepareCityWorkflow(facts,{config,moduleConfig:args.moduleConfig,targets,maxDurationMs:60000});assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});
+ for(const parameters of targets){const fresh=await read(cityModule,f,{player:f.player}),row=cityModule.view(fresh,{...args,parameters}).candidates;assert.equal(row.length,1);const op=cityModule.plan(fresh,{...args,parameters,selections:[row[0].actionId]}).actions[0],result=await execute(cityModule,f,op,{player:f.player,parameters});assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(cityModule.verify(op,result).confirmed,true);}assert.equal(f.writes.length,2);assert.equal(f.inventory.get('cloth'),2);
 });

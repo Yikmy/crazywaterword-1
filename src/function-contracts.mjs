@@ -197,7 +197,7 @@ export const FUNCTION_CONTRACTS = freeze({
     verification: verification('verify', 'src/core-operation-adapters.mjs#verifyCoreOperation', 'Original executeOrderOperation authoritative checks; only original wrapper WeakMap receipt confirms', { executionMethod: 'execute', genericExecutorSubstitution: false }),
     dependencyVersions: dependencies(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg', 'config.BuildingCfg', 'config.BuildingProduceCfg']),
   }),
-  city: contract('city', ['C101', 'C102', 'C103', 'C104', 'C116'], ['P1-2', 'P2-1'], ['src/core-operation-adapters.mjs#cityModule', 'src/city-operations.mjs#surveyCityOperations', 'src/city-operations.mjs#executeCityAction'], {}, {
+  city: contract('city', ['C101', 'C102', 'C103', 'C104', 'C116'], ['P1-2', 'P2-1'], ['src/core-operation-adapters.mjs#cityModule', 'src/city-operations.mjs#surveyCityOperations', 'src/city-operations.mjs#executeCityAction'], {buildingId:string,action:{type:'string',enum:['build','upgrade','finishUpgrade','collectProduct']},expectedCityHash:string}, {
     implementation: { mode: 'EXISTING_EXECUTOR_ADAPTER', actions: ['build', 'upgrade', 'finishUpgrade', 'collectProduct', 'speedUpUpgrade'], blockedCapabilities: [blocked('PREMIUM_OR_AD_SPEED', 'Only existing proven item acceleration path is permitted')] },
     verification: verification('verify', 'src/core-operation-adapters.mjs#verifyCoreOperation', 'Original executeCityAction building, cost and result reread; original wrapper receipt required', { executionMethod: 'execute', genericExecutorSubstitution: false }),
     dependencyVersions: dependencies(['moduleConfig', 'config.BuildingCfg', 'config.BuildingUpgradeCfg']),

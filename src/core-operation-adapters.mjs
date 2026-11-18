@@ -37,7 +37,7 @@ function settings(value = defaultConfig) {
   return { enabled: value.enabled };
 }
 function context(options = {}, id = null) {
-  if(id==='production')validateProductionParameters(options.parameters);else validateCoreOperationParameters(options.parameters);
+  if(id==='production')validateProductionParameters(options.parameters);else if(id==='city')validateCityParameters(options.parameters);else validateCoreOperationParameters(options.parameters);
   const mode = options.mode ?? 'Manual';
   if (!modes.has(mode)) throw invalid('不支持的核心业务执行模式');
   return { ...options, mode, moduleConfig: settings(options.moduleConfig), rules: options.rules ?? defaultOrderRules(), productionPolicy: options.productionPolicy ?? defaultProductionPolicy() };
@@ -53,7 +53,7 @@ function gated(row, options) {
 function kinds(id) { return id === 'city' ? cityKinds : productionKinds; }
 function domainCandidates(id, facts, options) {
   const rows=cityView(facts, options).candidates.filter(row => kinds(id).has(row.actionType));
-  return id==='production'?boundProductionCandidates(facts,options,rows):rows;
+  return id==='production'?boundProductionCandidates(facts,options,rows):boundCityCandidates(facts,options,rows);
 }
 function blockNotes(id) { return { module: id, actions: [], notes: ['模块未启用；请使用账号 ModuleSettings 显式启用'] }; }
 
@@ -141,8 +141,8 @@ export function planCoreOrders(facts, options = {}) {
 }
 function viewCityDomain(id, facts, options = {}) {
   const args = context(options,id), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
-  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='production'?validateProductionParameters(row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
-  return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, notes: view.notes }
+  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='city'?validateCityParameters(args.parameters):id==='production'?validateProductionParameters(row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
+  return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, preparation:cityPreparationTargets(facts,args), notes: view.notes }
     : { module: id, ...planning, startPreparation:productionStartTargets(facts,args), collectionPreparation:productionCollectionTargets(facts,args), stock: view.stock, stockReliable: facts.stockReliable===true&&facts.productionInventoryReliable===true, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };
 }
@@ -158,7 +158,7 @@ function planCityDomain(id, facts, options = {}) {
     }
   }
   const result = planCityOperations(facts, { ...args, selections: ids });
-  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id, ...(id==='production'&&args.parameters?.buildingId?{parameters:validateProductionParameters(args.parameters)}:{}) })) };
+  return { ...result, module: id, actions: result.actions.map(row => ({ ...row, module: id, ...(args.parameters?.buildingId?{parameters:id==='city'?validateCityParameters(args.parameters):validateProductionParameters(args.parameters)}:{}) })) };
 }
 
 // Verify is a receipt projection, not a second state-verification algorithm.
@@ -182,6 +182,7 @@ async function executeCore(id, client, protocol, operation, options = {}) {
     if (operation?.module !== id || !(id === 'orders' ? ['SUBMIT', 'REFRESH'].includes(operation.actionType) : kinds(id).has(operation.actionType))) {
       throw invalid('操作不属于该核心业务');
     }
+    if(id==='city'&&(args.parameters?.buildingId||operation.parameters?.buildingId)&&(!productionSame(operation.parameters,args.parameters)||operation.target?.buildingId!==args.parameters?.buildingId||operation.actionType!==args.parameters?.action))throw invalid('城市操作与明确建筑及动作范围不一致');
     if(id==='production'&&(args.parameters?.buildingId||operation.parameters?.buildingId)){const collecting=args.parameters?.action==='collect';if(!productionSame(operation.parameters,args.parameters)||operation.actionType!==(collecting?'gainFactory':'startProduce')||operation.target?.buildingId!==args.parameters?.buildingId||!collecting&&operation.target?.productId!==args.parameters?.productId)throw invalid('生产操作参数、工厂或产品与授权范围不一致');}
   } catch (error) {
     return operationResult('NOT_EXECUTED', { dispatched: false, unresolvedWrite: false, error: error.message });
@@ -191,8 +192,13 @@ async function executeCore(id, client, protocol, operation, options = {}) {
   // OrderExecution owns rule/identity/quota verification; CityAction owns
   // Automatic policy rechecks and authoritative state verification.
   let sourceFacts=null;const guardedSource=id==='production'&&(args.parameters?.materialSource||args.parameters?.action==='collect');
-  const sourceSurvey=guardedSource?async(c,p,o)=>{if(sourceFacts)return surveyCoreOperations(c,p,o);const f=await surveyProductionOperations(c,p,{...args,...o,parameters:args.parameters});if(!boundProductionCandidates(f,args,cityView(f,args).candidates).some(row=>row.actionId===operation.actionId))throw invalid('材料包前置、目标工厂或配方来源已变化');sourceFacts=f;return f;}:surveyCoreOperations;
-  const sourceClient=guardedSource?new Proxy(client,{get(target,key){if(key!=='sendWatch'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return (...values)=>{if(!sourceFacts||!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('材料包已消费、历史变化或连接来源失效');const beforeDispatch=values[2]?.beforeDispatch;values[2]={...values[2],beforeDispatch(){beforeDispatch?.();if(!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('派发前材料包来源失效');}};return target.sendWatch(...values);};}}):client;
+  let sourceSurvey=guardedSource?async(c,p,o)=>{if(sourceFacts)return surveyCoreOperations(c,p,o);const f=await surveyProductionOperations(c,p,{...args,...o,parameters:args.parameters});if(!boundProductionCandidates(f,args,cityView(f,args).candidates).some(row=>row.actionId===operation.actionId))throw invalid('材料包前置、目标工厂或配方来源已变化');sourceFacts=f;return f;}:surveyCoreOperations;
+  let sourceClient=guardedSource?new Proxy(client,{get(target,key){if(key!=='sendWatch'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return (...values)=>{if(!sourceFacts||!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('材料包已消费、历史变化或连接来源失效');const beforeDispatch=values[2]?.beforeDispatch;values[2]={...values[2],beforeDispatch(){beforeDispatch?.();if(!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('派发前材料包来源失效');}};return target.sendWatch(...values);};}}):client;
+  if(id==='city'&&args.parameters?.buildingId){
+    const matches=()=>sourceFacts&&boundCityCandidates(sourceFacts,args,[operation]).length===1;
+    sourceSurvey=async(c,p,o)=>{if(sourceFacts)return surveyCoreOperations(c,p,o);const facts=await surveyCoreCityOperations(c,p,{...args,...o,parameters:args.parameters});if(!boundCityCandidates(facts,args,cityView(facts,args).candidates).some(row=>row.actionId===operation.actionId))throw invalid('明确城市建筑状态或配置已变化');sourceFacts=facts;return facts;};
+    sourceClient=new Proxy(client,{get(target,key){if(!['request','sendWatch'].includes(key)){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return (...values)=>{const writing=key==='sendWatch'||values[4]?.mutate;if(writing){if(!matches())throw invalid('城市派发来源已失效');const index=key==='sendWatch'?2:4,prior=values[index]?.beforeDispatch;values[index]={...values[index],beforeDispatch(){prior?.();if(!matches())throw invalid('派发前城市来源已失效');}};}return target[key](...values);};}});
+  }
   const result = id === 'orders'
     ? await executeOrderOperation(client, protocol, operation, { ...args, survey: args.rules.rules.some(rule => rule.enabled && rule.type === 'MAX_PRODUCTION_WAIT') ? surveyOrdersOperations : surveyCityOperations })
     : await executeCityAction(sourceClient, protocol, operation, { ...args, parameters:{}, survey: sourceSurvey });
@@ -243,7 +249,7 @@ export const ordersModule = Object.freeze({ ...shared, survey: surveyOrdersOpera
   dependencyVersions: options => dependencies('orders', options),
   dependencyKeys: Object.freeze(['moduleConfig', 'rules', 'config.WorkerOrderCfg', 'config.WorkerSpecOrderCfg', 'config.BuildingCfg', 'config.BuildingProduceCfg']),
   evidence: evidence(['src/order-execution.mjs:surveyOrderExecution', 'src/order-execution.mjs:planOrderExecution', 'src/order-execution.mjs:executeOrderOperation']) });
-export const cityModule = Object.freeze({ ...shared, id: 'city', label: '城市建设', capabilities: Object.freeze(['C101', 'C102', 'C103', 'C104', 'C116']),
+export const cityModule = Object.freeze({ ...shared, validateParameters:validateCityParameters, survey:surveyCoreCityOperations, id: 'city', label: '城市建设', capabilities: Object.freeze(['C101', 'C102', 'C103', 'C104', 'C116']),
   view: (facts, options) => viewCityDomain('city', facts, options), plan: (facts, options) => planCityDomain('city', facts, options),
   execute: (client, protocol, operation, options) => executeCore('city', client, protocol, operation, options),
   dependencyVersions: options => dependencies('city', options), dependencyKeys: Object.freeze(['moduleConfig', 'config.BuildingCfg', 'config.BuildingUpgradeCfg']),
@@ -416,4 +422,42 @@ export function materialProductionCoverage(f,packFacts,{config,moduleConfig,mate
  if(!productionSame(packFacts?.state,{context:live.context,inventory:stock}))throw invalid('生产与材料包必须为同五维完整实际库存');
  const coverage=qualifiedMaterialPackCoverage(packFacts,quote.costs,{config,moduleConfig:materialPackConfig});
  return {target,costs:structuredClone(quote.costs),productionIdentity:quote.identity,coverage,packs:material.packs,season:material.season,executable:false,projectionOnly:true,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'当前持有普通材料包覆盖建议，复用packCoverPlan及原材料包资格；只是缺口与合计包数投影。明确选择并填写期限后，原prepare重新调查完整实际来源并生成有限图；本读取不授权、不派发、不记收入或扩大预算，UNKNOWN不重放。'};
+}
+
+
+// Explicit city compositions retain the original per-building candidate and executor.
+const citySources=new WeakMap();
+const composedCityKinds=new Set(['build','upgrade','finishUpgrade','collectProduct']);
+export function validateCityParameters(value={}){
+ if(!productionFields(value,['buildingId','action','expectedCityHash']))throw invalid('城市参数仅允许空对象或明确建筑、原动作及状态摘要');
+ if(!Reflect.ownKeys(value).length)return {};
+ if(Reflect.ownKeys(value).length!==3||!productionText(value.buildingId)||!composedCityKinds.has(value.action)||typeof value.expectedCityHash!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedCityHash))throw invalid('明确城市操作须完整建筑、原动作及64位状态摘要');
+ return {buildingId:value.buildingId,action:value.action,expectedCityHash:value.expectedCityHash};
+}
+function cityDependencies(options){return productionHash({moduleConfig:settings(options.moduleConfig),config:tableVersions(options.config,['BuildingCfg','BuildingUpgradeCfg','BuildingProduceParamCfg','GameParamCfg'])});}
+export async function surveyCoreCityOperations(client,protocol,options={}){
+ validateCityParameters(options.parameters);const scope=productionScope(client,options.player);
+ const facts=await surveyCoreOperations(client,protocol,{...options,parameters:{}});assertExecutionActive(client,options);
+ if(!productionSame(scope,productionScope(client,options.player)))throw Object.assign(Error('城市调查期间身份变化'),{code:'CANCELLED'});
+ citySources.set(facts,{client,player:options.player,scope,at:Date.now(),digest:productionFactsDigest(facts),dependencies:cityDependencies(options)});return facts;
+}
+function cityAuthority(f,options){const source=citySources.get(f);return source&&source.client.connected===true&&Object.values(source.scope).every(value=>value!==null)&&productionSame(source.scope,productionScope(source.client,source.player))&&Date.now()>=source.at&&Date.now()-source.at<=30000&&source.digest===productionFactsDigest(f)&&source.dependencies===cityDependencies(options)?source:null;}
+function cityTargetHash(f,options,row){const source=cityAuthority(f,options);return source&&composedCityKinds.has(row.actionType)?productionHash({context:source.scope,beforeState:row.beforeState,action:row.action,dependencies:source.dependencies}):null;}
+function boundCityCandidates(f,options,rows){const p=validateCityParameters(options.parameters);return !p.buildingId?rows:rows.filter(row=>row.actionType===p.action&&row.target.buildingId===p.buildingId&&cityTargetHash(f,options,row)===p.expectedCityHash);}
+function cityPreparationTargets(f,options){
+ if(!settings(options.moduleConfig).enabled||!cityAuthority(f,options))return [];
+ return cityView(f,options).candidates.flatMap(row=>{const expectedCityHash=cityTargetHash(f,options,row);return expectedCityHash?[{parameters:{buildingId:row.target.buildingId,action:row.actionType,expectedCityHash},actionId:row.actionId,label:row.label,costs:structuredClone(row.costs),beforeState:structuredClone(row.beforeState),expectedState:structuredClone(row.expectedState),executable:true}]:[];});
+}
+export function validateCityPreparation(value){
+ if(!productionFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!productionArray(value.targets)||value.targets.length<1||value.targets.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('城市组合须明确1至24个不同建筑的当前动作及有限时长');
+ const targets=value.targets.map(row=>{const p=validateCityParameters(row);if(!p.buildingId)throw invalid('城市组合须明确完整建筑目标');return p;});
+ if(new Set(targets.map(p=>p.buildingId)).size!==targets.length)throw invalid('每个建筑只允许一个当前操作');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareCityWorkflow(f,{config,moduleConfig=defaultConfig,...input}={}){
+ const p=validateCityPreparation(input),options={config,moduleConfig},sources=cityPreparationTargets(f,options),ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),nodes=[{id:'start',type:'START'}];
+ if(!cityAuthority(f,options)||!settings(moduleConfig).enabled)throw invalid('城市组合须重新调查当前完整账号来源并启用原模块');
+ const steps=p.targets.map((parameters,i)=>{const source=sources.find(row=>productionSame(row.parameters,parameters));if(!source)throw invalid('城市目标、原状态或配置已变化');const plan=planCityDomain('city',f,{...options,parameters,mode:'Manual',selections:[source.actionId],ledger});if(plan.actions.length!==1||!productionSame(plan.actions[0].costs,source.costs))throw invalid('城市组合初始材料累计不足');
+  const selection={unique:true};nodes.push({id:'city-'+i,type:'ACTION',module:'city',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'city'});return {parameters,selection,costs:structuredClone(source.costs),beforeState:source.beforeState,expectedState:source.expectedState};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:[]};
+ return {...p,steps,budget,graph:{version:1,id:'city-actions-'+productionHash({p,steps,budget}).slice(0,20),name:'明确城市建筑逐项操作',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['city']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'只组合原计划器当前允许的建造、单级升级、完工或普通建筑产物收取；每建筑一项、绑定原状态和配置，每步重新调查及单次授权，由原执行器验证成本与结果。原人口、等级、建造位及库存上限仍需逐步满足；不预测解锁或未来产物，不自动加速、补购或再次领取，收入不扩固定父预算，拒绝或UNKNOWN停止，重启只读。'};
 }
