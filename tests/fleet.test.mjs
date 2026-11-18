@@ -155,7 +155,7 @@ test('resource field complete empty list stays observed and never supplies a rel
 });
 
 test('resource field ordinary Fleet observation preserves existing maintenance candidates without selecting a release',async t=>{
- const f=await fieldFixture(t);f.state.overrides.MyFleetsRequest={fleets:[{buildingId:'f1',state:4,autoFight:{isOn:false,todayTimes:0},repairing:{startTs:100,endTs:200,endDura:2000}}]};const options={...f.options,parameters:{},moduleConfig:{...f.moduleConfig,stopRepair:true}},facts=await surveyFleet(f.client,f.protocol,options),view=fleetView(facts,options);assert.deepEqual(view.resourceFields,{maxNum:3,fields:[{gridIdx:0,cityId:1,type:0},{gridIdx:9,cityId:2,type:1}]});assert.equal(view.candidates.some(r=>r.actionType==='giveUpField'),false);assert.equal(view.candidates.find(r=>r.actionType==='fleetStopRepair')?.decision,'READY');assert.equal(f.state.writes.length,0);
+ const f=await fieldFixture(t);f.state.overrides.MyFleetsRequest={fleets:[{buildingId:'f1',state:4,durability:1000,autoFight:{isOn:false,todayTimes:0},repairing:{startTs:100,endTs:200,endDura:2000}}]};const options={...f.options,parameters:{},moduleConfig:{...f.moduleConfig,stopRepair:true}},facts=await surveyFleet(f.client,f.protocol,options),view=fleetView(facts,options);assert.deepEqual(view.resourceFields,{maxNum:3,fields:[{gridIdx:0,cityId:1,type:0},{gridIdx:9,cityId:2,type:1}]});assert.equal(view.candidates.some(r=>r.actionType==='giveUpField'),false);assert.equal(view.candidates.find(r=>r.actionType==='fleetStopRepair')?.decision,'READY');assert.equal(f.state.writes.length,0);
 });
 
 const fleetOverviewContext={accountId:'synthetic-A',generation:3,connectionId:'offline-fleet',playerId:'9007199254740993',worldId:'1000001'};

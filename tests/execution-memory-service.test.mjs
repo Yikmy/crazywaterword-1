@@ -163,7 +163,7 @@ for(const entry of ['tasks','dailies','loop'])for(const outcome of ['SUCCESS','U
  const result=await f.execute(paused.plan);assert.equal(result.record.finalStatus,outcome);assert.equal(f.writes.length,1);
  const historyBytes=fs.readFileSync(f.historyFile,'utf8'),memoryBefore=f.store.list('A');
  if(changed==='connection')f.account.connectionId='replacement-connection';if(changed==='player')f.account.player.playerId='other-role';if(changed==='world')f.account.player.worldId=2;assert.equal(runner.getLiveRunId(),null);
- const stopped=await runner.resume();assert.equal(stopped.status,'CANCELLED');assert.equal(stopped.plan,null);assert.equal(f.writes.length,1);
+ const stopped=await runner.resume();assert.equal(stopped.status,outcome==='UNKNOWN'?'UNKNOWN':'CANCELLED');assert.equal(stopped.plan,null);assert.equal(f.writes.length,1);if(outcome==='UNKNOWN')assert.match(stopped.reason,/未决|UNKNOWN/);
  assert.equal(fs.readFileSync(f.historyFile,'utf8'),historyBytes);assert.deepEqual(f.store.list('A'),memoryBefore);
  assert.equal(f.history.unresolved('A'),outcome==='UNKNOWN');assert.deepEqual(f.service.executionMemory('B').events,[]);
  }finally{runner?.stop();await runner?.settle();await f.cleanup();}

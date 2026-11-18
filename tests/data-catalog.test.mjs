@@ -54,7 +54,8 @@ test('SUCCESS empty response, FAILED and NOT_EXECUTED keep different meanings wi
   assert.equal(byName.get('AllItemRequest').startedAt, 'start'); assert.equal(byName.get('AllItemRequest').updatedAt, 'end');
   for (const name of ['AllHeroRequest', 'BadgesRequest', 'AllPetRequest']) { assert.equal(byName.get(name).raw, null); assert.equal(byName.get(name).parsed, null); }
   assert.equal(byName.get('AllHeroRequest').status, 'FAILED'); assert.equal(byName.get('AllHeroRequest').error, 'denied');
-  assert.equal(byName.get('BadgesRequest').status, 'NOT_EXECUTED'); assert.equal(byName.get('AllPetRequest').status, 'NOT_EXECUTED');
+  assert.equal(byName.get('BadgesRequest').status, 'FAILED'); assert.equal(byName.get('BadgesRequest').error, 'protocol unavailable'); assert.equal(byName.get('AllPetRequest').status, 'NOT_EXECUTED');
+  const pending=exploreSnapshot({ok:{},failed:{},outcomes:{BadgesRequest:{status:'NOT_EXECUTED',error:'protocol unavailable'}}}).entries.find(row=>row.request==='BadgesRequest');assert.equal(pending.status,'NOT_EXECUTED');assert.equal(pending.raw,null);assert.equal(pending.parsed,null);
   assert.ok(exploreSnapshot(null).entries.every(({ status, parsed, raw }) => status === 'NOT_EXECUTED' && parsed === null && raw === null));
 });
 

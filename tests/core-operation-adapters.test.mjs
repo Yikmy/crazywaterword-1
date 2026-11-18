@@ -315,14 +315,14 @@ test('core survey retains original farm and equipment fields without another que
  assert.equal(f.writes.length,0);
 });
 
-test('core adapter candidates carry explicit empty parameters into the registered Loop contract without inferring a target',async()=>{
+test('core adapter candidates preserve their explicit parameters through the registered Loop contract without inferring a target',async()=>{
  const {compileUnifiedExecution}=await import('../src/loop.mjs'),{GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
  const f=fixture(),facts=await read(ordersModule,f);
  for(const [adapter,kind]of [[ordersModule,'SUBMIT'],[cityModule,'build'],[productionModule,'startProduce']]){
-  const row=pick(adapter,facts,kind),target=structuredClone(row.target);assert.deepEqual(row.parameters,{});
+  const row=pick(adapter,facts,kind),target=structuredClone(row.target),parameters=adapter.id==='production'?{buildingId:'1材料厂',productId:'cloth'}:{};assert.deepEqual(row.parameters,parameters);
   const graph=compileUnifiedExecution({entry:'loop',world:[{module:adapter.id,parameters:row.parameters,selection:{actionId:row.actionId}}],budget:{resources:[{id:'wood',num:4}],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}).graph;
-  const action=graph.nodes.find(node=>node.type==='ACTION');assert.deepEqual(action.parameters,{});assert.deepEqual(action.selection,{actionId:row.actionId});
-  row.parameters.injected='not-shared';assert.deepEqual(pick(adapter,facts,kind).parameters,{});
+  const action=graph.nodes.find(node=>node.type==='ACTION');assert.deepEqual(action.parameters,parameters);assert.deepEqual(action.selection,{actionId:row.actionId});
+  row.parameters.injected='not-shared';assert.deepEqual(pick(adapter,facts,kind).parameters,parameters);assert.deepEqual(action.parameters,parameters);
   assert.deepEqual(row.target,target);
   const disabled=adapter.view(facts,options({moduleConfig:{enabled:false}})).candidates;
   assert.ok(disabled.length);assert.ok(disabled.every(candidate=>candidate.executable===false));

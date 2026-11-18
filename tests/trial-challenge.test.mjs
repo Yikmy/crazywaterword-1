@@ -53,7 +53,8 @@ test('next first-clear trial uses exact configured target/rewards, never sweep c
 });
 test('parameters/default off and exact selection are mandatory',async()=>{
  assert.deepEqual(validateTrialChallengeParameters({}),{});assert.deepEqual(validateTrialChallengeConfig({}),{enabled:false});
- for(const p of[null,[],{raidId:1},{stageId:1001},{sweep:false},Object.create({})])assert.throws(()=>validateTrialChallengeParameters(p),{code:'INVALID_PARAMETERS'});
+ for(const raidId of [1,2,3]){assert.deepEqual(validateTrialChallengeParameters({raidId}),{raidId});assert.deepEqual(validateTrialChallengeParameters({raidId,stageId:1001}),{raidId,stageId:1001});}
+ for(const p of[null,[],{raidId:4},{stageId:1001},{sweep:false},Object.create({})])assert.throws(()=>validateTrialChallengeParameters(p),{code:'INVALID_PARAMETERS'});
  for(const c of[null,{enabled:1},{paid:false}])assert.throws(()=>validateTrialChallengeConfig(c),{code:'INVALID_PARAMETERS'});
  const f=await ready();for(const selections of[[],['forged']])assert.equal(planTrialChallenge(f.facts,{...f.options,selections}).actions.length,0);
  assert.equal(planTrialChallenge(f.facts,{...f.options,moduleConfig:{enabled:false},selections:[f.operation.actionId]}).actions.length,0);
@@ -152,8 +153,8 @@ test('dependencies bind exact trial and item configuration only',()=>{
 
 test('trial D6 exact free challenge forbids wrong raid, hidden fields or unknown debit metadata',()=>{
  const a={request:'TrialRaidChallengeRequest',body:{raidId:1,stageId:1001},costs:[]};
- assert.doesNotThrow(()=>assertPaymentAllowed(a));
- for(const body of[{raidId:2,stageId:1001},{raidId:1,stageId:0},{raidId:1,stageId:1001,sweep:true},{raidId:1},{stageId:1001}])assert.throws(()=>assertPaymentAllowed({...a,body}));
+ for(const raidId of [1,2,3])assert.doesNotThrow(()=>assertPaymentAllowed({...a,body:{raidId,stageId:1001}}));
+ for(const body of[{raidId:4,stageId:1001},{raidId:1,stageId:0},{raidId:1,stageId:1001,sweep:true},{raidId:1},{stageId:1001}])assert.throws(()=>assertPaymentAllowed({...a,body}));
  assert.throws(()=>assertPaymentAllowed({request:a.request,body:a.body}));
  for(const id of['GOLD','RUBY'])assert.throws(()=>assertPaymentAllowed({...a,costs:[{id,num:1}]}));
 });

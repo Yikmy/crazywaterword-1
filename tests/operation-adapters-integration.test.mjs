@@ -195,7 +195,7 @@ for(const key of ['accountId','playerId','worldId','generation','connectionId','
  }finally{f.cleanup();}
 });
 
-test('registered core Service projection preserves explicit empty parameters for the Loop UI without exposing transport actions',async()=>{
+test('registered core Service projection preserves original candidate parameters for the Loop UI without exposing transport actions',async()=>{
  const {compileUnifiedExecution}=await import('../src/loop.mjs'),f=fixture();
  try{
   for(const [module,kind]of [['orders','SUBMIT'],['city','build'],['production','startProduce']]){
@@ -203,9 +203,9 @@ test('registered core Service projection preserves explicit empty parameters for
    const response=JSON.parse(JSON.stringify(await f.service.surveyModule(f.session,module,{})));
    assert.equal(response.accountId,f.session.id);assert.equal(response.module,module);
    const candidate=response.view.candidates.find(row=>row.actionType===kind&&row.executable);assert.ok(candidate);
-   assert.deepEqual(candidate.parameters,{});assert.equal(Object.hasOwn(candidate,'action'),false);
+   const parameters=module==='production'?{buildingId:'1材料厂',productId:'bread'}:{};assert.deepEqual(candidate.parameters,parameters);assert.equal(Object.hasOwn(candidate,'action'),false);
    const compiled=compileUnifiedExecution({entry:'loop',world:[{module,parameters:candidate.parameters,selection:{actionId:candidate.actionId}}],budget:{resources:[{id:'wood',num:4}],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});
-   assert.deepEqual(compiled.blocked,[]);assert.deepEqual(compiled.graph.nodes.find(row=>row.type==='ACTION').selection,{actionId:candidate.actionId});
+   assert.deepEqual(compiled.blocked,[]);assert.deepEqual(compiled.graph.nodes.find(row=>row.type==='ACTION').selection,{actionId:candidate.actionId});assert.deepEqual(compiled.graph.nodes.find(row=>row.type==='ACTION').parameters,parameters);
   }
   assert.equal(f.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
  }finally{await f.cleanup();}

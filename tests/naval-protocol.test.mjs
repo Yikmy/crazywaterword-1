@@ -47,7 +47,9 @@ test('Loop naval surveys retain deduplicated bounded evidence through original W
  assert.deepEqual(rows.map(r=>r.navalObservation?.comparison),['BASELINE','UNCHANGED']);assert.equal(rows[1].navalObservation.targetCount,1);assert.equal(rows[1].navalObservation.matchedCount,1);
  const restart=f.createWorkflowStore({file:f.file,modules:f.GAMEPLAY_MODULES}),detail=f.projectWorkflowExecutionHistory(f.session.id,restart.history(f.session.id)[0],[]);
  assert.deepEqual(detail.surveys.map(r=>r.navalObservation),rows.map(r=>r.navalObservation));assert.equal(detail.resumable,false);assert.deepEqual(restart.history('other'),[]);assert.equal(f.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
- assert.doesNotMatch(f.fs.readFileSync(f.file,'utf8'),/local-label|9007199254740993|9007199254740995/);
+ assert.deepEqual(restart.history(f.session.id)[0].executionContext,{accountId:'offline-naval',playerId:'9007199254740993',worldId:'17',generation:1,connectionId:'offline-connection'});
+ assert.doesNotMatch(JSON.stringify(detail.surveys),/local-label|9007199254740993|9007199254740995/);
+ assert.doesNotMatch(f.fs.readFileSync(f.file,'utf8'),/local-label|9007199254740995/);
 });
 test('Loop naval response changes are bounded observations rather than global disappearance events',async t=>{
  const f=await navalWorkflowFixture(t);let reads=0;f.state.onRead=name=>{if(name==='WorldInfoRequest'&&++reads===2)f.answers.WorldInfoRequest={fleets:[]};};

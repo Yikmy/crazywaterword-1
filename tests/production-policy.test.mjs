@@ -297,7 +297,7 @@ test('Loop world action uses the registered production Function and shared workf
  const {compileUnifiedExecution}=await import('../src/loop.mjs');const {createWorkflowRunner}=await import('../src/workflow.mjs');
  const f=await integratedProduction({registered:true});let runner;try{
   const surveyed=await f.operations.surveyModule(f.account,'production'),actionId=surveyed.view.productionRecommendations[0];assert.ok(actionId);
-  const candidate=surveyed.view.candidates.find(row=>row.actionId===actionId);assert.deepEqual(candidate.parameters,{});
+  const candidate=surveyed.view.candidates.find(row=>row.actionId===actionId);assert.deepEqual(candidate.parameters,{buildingId:'1种子厂',productId:'小麦种子'});
   const graph=compileUnifiedExecution({entry:'loop',world:[{module:'production',parameters:candidate.parameters,selection:{actionId}}],budget:{resources:[{id:'木材',num:1}],quotas:[],uids:[]}}, {modules:f.operations.modules}).graph;
   runner=createWorkflowRunner({operations:f.operations,modules:f.operations.modules,getSession:()=>f.account,claim:(_id,runId,options)=>f.operations.claimWorkflow(f.account,runId,options)});
   const pending=await runner.start(f.account.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(pending.plan.module,'production');assert.equal(f.writes.length,0);

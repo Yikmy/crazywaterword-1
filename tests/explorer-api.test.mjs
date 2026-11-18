@@ -19,7 +19,7 @@ const account = (id) => ({ id, label: id === 'account-A' ? 'Alias A' : id, url: 
 async function harness() {
   saveStore({ version: 1, activeId: 'account-A', accounts: [account('account-A'), account('account-B')] });
   let creates = 0, collects = 0;
-  const app = createConsole({ port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { creates++; throw Error('Explorer must never create a client'); }, collect: () => { collects++; throw Error('Explorer must never collect'); } });
+  const app = createConsole({ port: 0, protocol: {}, tracePath: path.join(sandbox, 'trace.log'), clientFactory: () => { creates++; throw Error('Explorer must never create a client'); }, collect: (client) => { collects++; assert.ok(client.syntheticSnapshot, 'only explicitly staged synthetic collection is allowed'); return client.syntheticSnapshot; } });
   await app.listen();
   const call = (query = '', method = 'GET', endpoint = '/api/data-explorer') => new Promise((resolve, reject) => {
     const req = http.request('http://127.0.0.1:' + app.server.address().port + endpoint + query, { method, headers: { connection: 'close' } }, (res) => {
@@ -28,6 +28,13 @@ async function harness() {
     req.on('error', reject); req.end();
   });
   return { ...app, call, counts: () => ({ creates, collects }) };
+}
+async function bindCached(app, id, snapshot, at) {
+  const session = {...cached(snapshot, at), id, state:'READY', connectionId:'synthetic-'+id, player:{playerId:id==='account-A'?'1':'2',worldId:'17'}, client:{connected:true,syntheticSnapshot:snapshot,stop(){}}};
+  app.sessions.set(id, session);
+  const refreshed=await app.call('?account='+id,'POST','/api/refresh');
+  assert.equal(refreshed.status,200,JSON.stringify(refreshed.data));
+  session.snapshotAt=at;session.snapshotStale=true;
 }
 function cached(snapshot, at) {
   return { id: at, snapshot, snapshotAt: at, snapshotStale: true, generation: 0, abort: new AbortController(), loop: { stop: { aborted: false }, running: false }, client: null };
@@ -57,11 +64,12 @@ test('Explorer requires exact account IDs and never falls back to active account
 test('separate accounts return only their own snapshot and preserve concurrent reads', async () => {
   const app = await harness();
   try {
-    for (const id of ['account-A', 'account-B']) app.sessions.set(id, cached({ ok: { AllItemRequest: { items: [{ itemId: id, num: 3 }] } }, failed: {} }, id + '-time'));
+    for (const id of ['account-A', 'account-B']) await bindCached(app,id,{ ok: { AllItemRequest: { items: [{ itemId: id, num: 3 }] } }, failed: {} },id+'-time');
+    const before=app.counts();assert.deepEqual(before,{creates:0,collects:2});
     const [a, b] = await Promise.all([app.call('?account=account-A'), app.call('?account=account-B')]);
     assert.equal(a.data.updatedAt, 'account-A-time'); assert.equal(b.data.updatedAt, 'account-B-time'); assert.equal(a.data.stale, true);
     assert.equal(a.data.entries[0].raw.items[0].itemId, 'account-A'); assert.equal(b.data.entries[0].raw.items[0].itemId, 'account-B');
-    assert.equal(a.text.includes('account-B-time'), false); assert.equal(b.text.includes('account-A-time'), false); assert.deepEqual(app.counts(), { creates: 0, collects: 0 });
+    assert.equal(a.text.includes('account-B-time'), false); assert.equal(b.text.includes('account-A-time'), false); assert.deepEqual(app.counts(),before);
   } finally { await app.close(); }
 });
 
@@ -78,20 +86,21 @@ test('Explorer domain filtering uses the same catalog; invalid domains fail with
 test('raw and parsed data remain visible together, failures stay null, exports are safely redacted and lossless', async () => {
   const app = await harness();
   try {
-    app.sessions.set('account-A', cached({
+    await bindCached(app,'account-A',{
       ok: { AllItemRequest: { items: [{ itemId: 'wood', num: 8 }] }, BadgesRequest: { badges: [{ id: 5 }] } },
       raw: { AllItemRequest: { items: [{ itemId: 'wood', num: 8 }], serial: '18446744073709551615', nested: [{ Token: token, SIGN: sign }], message: token + '/' + sign }, BadgesRequest: { badges: [{ id: 5 }], huge: 9223372036854775807n } },
       failed: { AllHeroRequest: 'timeout ' + token, EquipsRequest: 'missing response' },
       outcomes: { AllHeroRequest: { status: 'FAILED', error: 'timeout ' + token, updatedAt: 'failed-time' }, EquipsRequest: { status: 'NOT_EXECUTED', error: 'missing response' } },
-    }, 'snapshot-time'));
+    }, 'snapshot-time');
+    const before=app.counts();assert.deepEqual(before,{creates:0,collects:1});
     const response = await app.call('?account=account-A'); assert.equal(response.status, 200);
     const byName = new Map(response.data.entries.map((entry) => [entry.request, entry]));
     assert.equal(byName.get('AllItemRequest').raw.serial, '18446744073709551615'); assert.equal(byName.get('AllItemRequest').parsed.items.total, 8);
     assert.equal(byName.get('BadgesRequest').raw.huge, '9223372036854775807'); assert.equal(byName.get('BadgesRequest').parsed, null);
     assert.equal(byName.get('AllHeroRequest').status, 'FAILED'); assert.equal(byName.get('AllHeroRequest').raw, null); assert.equal(byName.get('AllHeroRequest').parsed, null);
-    assert.equal(byName.get('EquipsRequest').status, 'NOT_EXECUTED'); assert.equal(byName.get('EquipsRequest').raw, null); assert.equal(byName.get('EquipsRequest').parsed, null);
+    assert.equal(byName.get('EquipsRequest').status, 'FAILED'); assert.equal(byName.get('EquipsRequest').raw, null); assert.equal(byName.get('EquipsRequest').parsed, null);
     for (const secret of [token, sign]) assert.equal(response.text.includes(secret), false); assert.ok(response.text.includes('[REDACTED]'));
-    assert.deepEqual(app.counts(), { creates: 0, collects: 0 });
+    assert.deepEqual(app.counts(),before);
   } finally { await app.close(); }
 });
 
@@ -111,8 +120,9 @@ test('overview and Explorer expose only the selected cached fishing sources with
         OnWaterRequest: { fishingLevel: { level: 2, enhance: 0, criticalRate: 0 } },
       };
       const outcomes = Object.fromEntries(Object.keys(ok).map(key => [key, { status: 'SUCCESS' }]));
-      app.sessions.set(id, cached({ ok, raw: structuredClone(ok), outcomes, failed: {} }, id + '-time'));
+      await bindCached(app,id,{ ok, raw: structuredClone(ok), outcomes, failed: {} },id+'-time');
     }
+    const before=app.counts();assert.deepEqual(before,{creates:0,collects:2});
     const [a, b] = await Promise.all(['account-A', 'account-B'].map(id => app.call('?account=' + id, 'GET', '/api/overview')));
     assert.equal(a.status, 200); assert.equal(b.status, 200);
     assert.equal(a.data.accountId, 'account-A'); assert.equal(b.data.accountId, 'account-B');
@@ -136,7 +146,7 @@ test('overview and Explorer expose only the selected cached fishing sources with
     assert.equal(entries.get('GameEffectRequest').parsed, null);
     assert.equal(entries.get('AllItemRequest').parsed['fishing.inventory.owned'], '9007199254740993');
     assert.equal(entries.get('FishEncyclopediaRequest').parsed['fishing.collection'].nextStage.eligible, true);
-    assert.deepEqual(app.counts(), { creates: 0, collects: 0 });
+    assert.deepEqual(app.counts(),before);
   } finally { await app.close(); }
 });
 
