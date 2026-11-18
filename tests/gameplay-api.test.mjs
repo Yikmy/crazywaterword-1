@@ -2807,3 +2807,40 @@ test('browser offline resource chain requires a fresh confirmation for every mod
   });
  } finally { await app.close(); }
 });
+
+test('cross-domain offline resource chain stops at the cumulative accelerator limit',async()=>{
+ const {app,state,graph}=await resourceCitySimulation();
+ try{
+  graph.budget.resources.find(resource=>resource.id==='加速器').num=19;
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  const actions=graph.nodes.filter(node=>node.type==='ACTION');
+  let runId;
+  for(const [index,action] of actions.entries()){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   runId??=waiting.runId;
+   assert.equal(waiting.runId,runId);
+   assert.equal(waiting.currentNode,action.id);
+   assert.equal(state.writes.length,index);
+   const permit=await app.approve(waiting.plan);
+   assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.operations.settle('A');
+   const record=app.history.list('A')[0];
+   assert.equal(record.workflowNodeId,action.id);
+   assert.equal(record.finalStatus,index===3?'NOT_EXECUTED':'SUCCESS',record.stopReason);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  const {data}=await app.call('/api/workflows');
+  assert.equal(data.status.running,false);
+  assert.deepEqual(state.writes.map(write=>write.n),[
+   'SelectPackRequest','StartFactoryProduceRequest','SpeedUpUpgradeBuildingRequest'
+  ]);
+  assert.equal(state.stock.get('加速器'),10);
+  const audit=app.operations.workflowBudget('A');
+  assert.equal(audit.state,'CLOSED');
+  assert.equal(audit.reserved.resources.find(resource=>resource.id==='加速器').num,10);
+  assert.deepEqual(audit.limits,graph.budget);
+  await app.call('/api/workflows/resume',{body:{}});
+  assert.equal(state.writes.length,3);
+ } finally {await app.close();}
+});
