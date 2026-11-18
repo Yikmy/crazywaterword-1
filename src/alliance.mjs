@@ -71,6 +71,7 @@ export function allianceHelpRules(f,{moduleConfig={},parameters=f.parameters??{}
 
 function parametersOf(p={}) {
   if(p&&Object.hasOwn(p,'expectedOrder'))return validateAllianceOrderParameters(p);
+  if(p&&Object.hasOwn(p,'expectedCancelHash'))return validateAllianceCancelParameters(p);
   if(p&&['action','shipId','crewId'].some(k=>Object.hasOwn(p,k)))return shipParameters(p);
   if(p&&Object.hasOwn(p,'expectedFortHash'))return validateAllianceFortParameters(p);
   if (!p || typeof p!=='object' || Array.isArray(p) || Object.keys(p).some(k=>!['memberIds','itemIds','reqIds','cityId','season','techId','targetLevel','itemId','num'].includes(k))) throw Error('联盟参数不在业务白名单');
@@ -141,6 +142,28 @@ export function allianceTechView(f,{config=null,parameters=f.parameters??{}}={})
 
 const techPreparationFields=(value,allowed)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value))&&Reflect.ownKeys(value).every(key=>typeof key==='string'&&allowed.includes(key)&&Object.getOwnPropertyDescriptor(value,key)?.enumerable&&Object.hasOwn(Object.getOwnPropertyDescriptor(value,key),'value'));
 const techPreparationError=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
+function validateAllianceCancelParameters(value){
+ if(!techPreparationFields(value,['reqIds','expectedCancelHash'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.reqIds)||Object.getPrototypeOf(value.reqIds)!==Array.prototype||value.reqIds.length!==1||Reflect.ownKeys(value.reqIds).length!==2||!Object.getOwnPropertyDescriptor(value.reqIds,0)?.enumerable||!Object.hasOwn(Object.getOwnPropertyDescriptor(value.reqIds,0)??{},'value')||typeof value.reqIds[0]!=='string'||allianceId(value.reqIds[0])!==value.reqIds[0]||typeof value.expectedCancelHash!=='string'||! /^[a-f0-9]{64}$/.test(value.expectedCancelHash))throw techPreparationError('取消准备须绑定唯一精确求助ID及原来源摘要');
+ return {reqIds:[value.reqIds[0]],expectedCancelHash:value.expectedCancelHash};
+}
+function allianceCancelHash(f,row,moduleConfig){
+ return createHash('sha256').update(stable({guildId:f.guildId,playerId:f.playerId,worldId:f.worldId,request:row,moduleConfig:validateAllianceConfig(moduleConfig)})).digest('hex');
+}
+export function validateAllianceCancelPreparation(value){
+ if(!techPreparationFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw techPreparationError('取消组合须明确1至24个本人未获帮助请求及有限总时长');
+ const targets=value.targets.map(validateAllianceCancelParameters);if(new Set(targets.map(row=>row.reqIds[0])).size!==targets.length)throw techPreparationError('同一求助每批仅取消一次');return {targets,maxDurationMs:value.maxDurationMs};
+}
+export function prepareAllianceCancelWorkflow(f,{config,moduleConfig,...input}={}){
+ const payload=validateAllianceCancelPreparation(input),nodes=[{id:'start',type:'START'}];
+ const steps=payload.targets.map((parameters,i)=>{
+  const source=allianceView(f,{config,moduleConfig,parameters}).cancelPreparation?.find(row=>stable(row.parameters)===stable(parameters));
+  if(!source)throw techPreparationError('本人求助来源、未帮助状态或期限已变化，请重新调查');
+  const plan=planAlliance(f,{config,moduleConfig,parameters,selections:[source.selection.actionId]});
+  if(plan.actions.length!==1||plan.actions[0].actionType!=='cancel')throw techPreparationError('本人求助来源、未帮助状态或期限已变化，请重新调查');
+  const row=plan.actions[0],selection={actionId:row.actionId};nodes.push({id:'cancel-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:operationBudgetClaims(row)};
+ });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
+ return {...payload,guildId:f.guildId,playerId:f.playerId,steps,budget,graph:{version:1,id:'alliance-cancel-'+createHash('sha256').update(stable({payload,steps})).digest('hex').slice(0,20),name:'明确本人未获帮助求助逐项取消',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:['alliance']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确本人仍未获帮助且未过期的不同求助，每项复用原CancelMyGuildAid请求、原Function重新调查、单次授权及本人列表移除验证。零资源成本、父求助UID固定，目标物品/帮助者/截止或身份配置变化、拒绝及UNKNOWN停止；不帮助他人、领取物资、重新求助或恢复执行。'};
+}
 export function validateAllianceTechPreparation(value){
  if(!techPreparationFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw techPreparationError('科技组合须明确1至24项不同科技的下一等级及有限总时长');
  const targets=value.targets.map(row=>{if(!techPreparationFields(row,['techId','targetLevel'])||Reflect.ownKeys(row).length!==2)throw techPreparationError('科技目标只允许原techId/targetLevel');return parametersOf(row);});if(new Set(targets.map(row=>row.techId)).size!==targets.length)throw techPreparationError('同一科技每批仅一次明确单级升级');return {targets,maxDurationMs:value.maxDurationMs};
@@ -260,11 +283,17 @@ export function allianceView(f,{config=null,parameters=f.parameters??{},moduleCo
     else {const t=tech.target;add('tech','upgradeTech',{techId:t.techId,targetLevel:parameters.targetLevel},{worldId:f.worldId,season:f.season,stage:f.seasonStage,techId:t.techId,level:t.level,preTech:t.preTech,prerequisiteLevel:t.prerequisiteLevel},t.costs,t.costSource,'UpgradeGuildTechRequest',{techId:t.techId},'UpgradeGuildTechResponse',{techId:t.techId,level:parameters.targetLevel});}
   }
   if(enabled('fort'))block('donateFort',fort?'FORT_EXPLICIT_SINGLE_DONATION_REQUIRED':'FORT_IS_INDEPENDENT_CONSTRUCTION_REQUIRES_CITY_FORT_SURVEY');
+  const cancelPreparation=candidates.filter(row=>row.actionType==='cancel').map(row=>({parameters:{reqIds:[row.target.reqId],expectedCancelHash:allianceCancelHash(f,row.beforeState,moduleConfig)},selection:{actionId:row.actionId},target:copy(row.target),costs:[],budgetClaims:{resources:[],quotas:[],uids:[{type:'alliance-aid',id:f.guildId+':'+row.target.reqId}]}}));
+  if(parameters.expectedCancelHash){
+    const selected=cancelPreparation.find(row=>row.parameters.reqIds[0]===parameters.reqIds[0]&&row.parameters.expectedCancelHash===parameters.expectedCancelHash);
+    const actions=selected?candidates.filter(row=>row.actionId===selected.selection.actionId):[];candidates.splice(0,candidates.length,...actions);for(const row of actions)row.budgetClaims=copy(selected.budgetClaims);
+    if(!selected)block('cancel','CANCEL_PREPARATION_SOURCE_CHANGED');
+  }
   if(parameters.expectedOrder){
     const orders=candidates.filter(row=>row.actionType==='finishOrder');candidates.splice(0,candidates.length,...orders);
     for(const row of orders)row.budgetClaims={resources:row.costs,quotas:[{id:'alliance-order:'+f.guildId+':'+parameters.expectedOrder.dayKey,num:1}],uids:[{type:'alliance-order',id:f.guildId+':'+parameters.expectedOrder.dayKey+':'+row.target.cityId}]};
   }
-  return {orderPreparation:allianceOrderPreparation(f,{config,moduleConfig}),candidates,blocked,notes,fort,cities:f.cities??[],guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
+  return {cancelPreparation,orderPreparation:allianceOrderPreparation(f,{config,moduleConfig}),candidates,blocked,notes,fort,cities:f.cities??[],guildId:f.guildId,playerId:f.playerId,technologies:tech.technologies,techState:tech.state,members:f.members??[],requests:f.asks??[],ownRequests:own,dailyLimits:{ask:maxAsk===null||usedAsk===null?null:Math.max(0,maxAsk-usedAsk),help:helpRules.remaining,order:cap===null||done===null?null:cap===-1?'UNLIMITED':Math.max(0,cap-done)}};
 }
 export function planAlliance(f,options={}){
   const {selections=[],ledger=new ResourceLedger(f.stockReliable?f.stock:null)}=options;
