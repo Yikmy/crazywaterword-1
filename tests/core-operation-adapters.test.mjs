@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CORE_OPERATION_MODULES, ordersModule, cityModule, productionModule, validateCoreOperationParameters } from '../src/core-operation-adapters.mjs';
+import { CORE_OPERATION_MODULES, ordersModule, cityModule, productionModule, validateCoreOperationParameters, prepareProductionStartWorkflow, validateProductionStartPreparation } from '../src/core-operation-adapters.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { createModuleSettings } from '../src/gameplay-settings.mjs';
 
@@ -431,4 +431,29 @@ test('production view exposes complete inventory reliability without promoting a
   const partial={...facts};change(partial);assert.equal(productionModule.view(partial,options()).stockReliable,false);
  }
  assert.equal(f.writes.length,0);
+});
+
+function productionCollectionFixture(extra={}){
+ const f=fixture(extra);f.player={playerId:'17',worldId:9,level:5};f.client.factContext={accountId:'A',generation:1,connectionId:'connection-A'};
+ f.raw.building[1].factory.finishedProducts=[{id:'cloth',num:2}];
+ f.raw.building.push(rawBuilding('2材料厂',1,{factory:{autoProductId:'',factoryQ:[],finishedProducts:[{id:'fuel',num:3}]}}));return f;
+}
+for(const apply of [true,false])test('prepared production collections reuse original independent inventory verification '+(apply?'success':'unknown'),async()=>{
+ const f=productionCollectionFixture({apply}),args=options({player:f.player}),facts=await read(productionModule,f,{player:f.player}),view=productionModule.view(facts,args),targets=view.collectionPreparation.map(row=>row.parameters);
+ assert.equal(targets.length,2);const prepared=prepareProductionStartWorkflow(facts,{config,moduleConfig:args.moduleConfig,action:'collect',targets,maxDurationMs:60000});assert.equal(f.writes.length,0);assert.deepEqual(prepared.budget,{resources:[],quotas:[],uids:[]});assert.equal(prepared.graph.nodes.filter(n=>n.type==='ACTION').length,2);
+ for(const [i,parameters] of targets.entries()){
+  const current=await read(productionModule,f,{player:f.player}),fresh=productionModule.view(current,{...args,parameters}),row=fresh.candidates[0];assert.equal(fresh.candidates.length,1);assert.equal(row.actionType,'gainFactory');
+  const operation=productionModule.plan(current,{...args,parameters,selections:[row.actionId]}).actions[0];assert.deepEqual(operation.parameters,parameters);
+  const result=await execute(productionModule,f,operation,{player:f.player,parameters});assert.equal(result.status,apply?'SUCCESS':'UNKNOWN');
+  assert.equal(productionModule.verify(operation,result).confirmed,apply);if(!apply)break;
+ }
+ assert.equal(f.writes.length,apply?2:1);assert.ok(f.writes.every(row=>row.name==='GainFactoryProduceRequest'));
+ if(apply){assert.equal(f.inventory.get('cloth'),2);assert.equal(f.inventory.get('fuel'),3);assert.equal(f.uncertain.size,0);}else assert.equal(f.uncertain.size,1);
+});
+test('prepared production collections bind selected factory queue and reject stale or mixed targets without writes',async()=>{
+ const f=productionCollectionFixture(),args=options({player:f.player}),facts=await read(productionModule,f,{player:f.player}),targets=productionModule.view(facts,args).collectionPreparation.map(row=>row.parameters),payload={action:'collect',targets,maxDurationMs:60000};
+ for(const bad of [{...payload,targets:[targets[0],targets[0]]},{...payload,action:'make'},{...payload,targets:[{...targets[0],productId:'cloth'}]},{...payload,targets:[{...targets[0],expectedCollectionHash:'unknown'}]},{targets,maxDurationMs:60000}])assert.throws(()=>validateProductionStartPreparation(bad));
+ f.raw.building[1].factory.factoryQ.push({idx:0,productId:'cloth',finishTime:Math.floor(Date.now()/1000)+600});
+ const current=await read(productionModule,f,{player:f.player});assert.throws(()=>prepareProductionStartWorkflow(current,{config,moduleConfig:args.moduleConfig,...payload}));
+ assert.deepEqual(productionModule.view(current,{...args,parameters:targets[0]}).candidates,[]);assert.equal(f.writes.length,0);
 });
