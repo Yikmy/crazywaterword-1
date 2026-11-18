@@ -51,11 +51,11 @@ for(const name of ['MuseumInfo','AllAntique','MuseumStartExplore','MuseumSpeedUp
 for(const name of ['FinishGuildOrder','GotGuildWelfarePack'])for(const suffix of ['Request','Response'])protocol[name+suffix]??={};
 const allianceDailyCfg={tables:{GuildOrderNumCfg:{data:[{season:1,playerLevel:1,maxNum:3}]}}};
 const museumDailyCfg={tables:{MuseumExpeditionTeamCfg:{data:[{teamCount:1,playerLevel:28}]},MuseumExpeditionStageCfg:{data:[{stageId:1,areaLevelReq:[]}]},MuseumExpeditionConditionCfg:{data:[{conditionId:100,heroCount:3}]},MuseumExploreTimeFactorCfg:{data:[{factor:1,playerLevel:1},{factor:2,playerLevel:30}]}}};
-async function harness({includeCity=false,includeTasksBusiness=false,includeTreasure=false,includeAllianceFort=false,includeFormationUnlock=false,includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
+async function harness({includeCity=false,includeTasksBusiness=false,includeTreasure=false,includeAllianceFort=false,includeFormationUnlock=false,includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null,preserveWorkflow=false,historyFile=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
  // Each harness has its own module registry. Keep same-test restart evidence,
  // but do not load another test's Workflow contracts or authorization history.
- for(const name of ['workflows.json','workflows.json.anchor'])fs.rmSync(path.join(root,name),{force:true});
- saveStore({version:1,activeId:'A',accounts:[account('A'),account('B')]});let clients=0,collections=0;const requests=[];const modules={formation:formationModule,...(includeCity?{city:GAMEPLAY_MODULES.city}:{}),...(includeTasksBusiness?{'free-gold':GAMEPLAY_MODULES['free-gold'],'trial-challenge':GAMEPLAY_MODULES['trial-challenge']}:{}),...(includeTreasure?{treasure:GAMEPLAY_MODULES.treasure}:{}),...(includeFormationUnlock?{'formation-unlock':GAMEPLAY_MODULES['formation-unlock']}:{}),...(includeCompass?{'compass-wheel':GAMEPLAY_MODULES['compass-wheel']}:{}),...(includeForge?{'equipment-forge':GAMEPLAY_MODULES['equipment-forge']}:{}),...(includeProduction?{production:GAMEPLAY_MODULES.production}:{}),...(includeOrders?{orders:GAMEPLAY_MODULES.orders}:{}),...(includeCargo?{fleet:GAMEPLAY_MODULES.fleet}:{}),...(includeTrade?{trade:GAMEPLAY_MODULES.trade}:{}),...(includePirate?{'pirate-sweep':GAMEPLAY_MODULES['pirate-sweep']}:{}),...(includeFreeRecruit?{'free-recruit':GAMEPLAY_MODULES['free-recruit']}:{}),...(includeAfk?{'afk-level-rewards':GAMEPLAY_MODULES['afk-level-rewards']}:{}),...(includeWeeklyGift||includeDailyGift||includeDailyReward||includeDailyActivity||includeWorkflowTasks?{'task-rewards':GAMEPLAY_MODULES['task-rewards']}:{}),...(includeMaterialPacks?{'material-packs':GAMEPLAY_MODULES['material-packs']}:{}),...(includeFarm?{farm:GAMEPLAY_MODULES.farm}:{}),...(includeMuseum?{museum:GAMEPLAY_MODULES.museum}:{}),...(includeHeroes?{heroes:heroModule}:{}),...(includeAlliance||includeAllianceOrders||includeAllianceFort?{alliance:includeAllianceFort?GAMEPLAY_MODULES.alliance:allianceModule}:{}),...(includeStage?{stage:{id:'stage',defaultConfig:{enabled:false}}}:{})};const hc=structuredClone(heroCfg);if(includeFragments){hc.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});hc.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['tank','ranger'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};}const history=createExecutionHistory({file:path.join(root,'execution-'+Math.random()+'.json')});const moduleSettings=createModuleSettings({file:path.join(root,'settings-'+Math.random()+'.json'),modules});
+ if(!preserveWorkflow)for(const name of ['workflows.json','workflows.json.anchor'])fs.rmSync(path.join(root,name),{force:true});
+ saveStore({version:1,activeId:'A',accounts:[account('A'),account('B')]});let clients=0,collections=0;const requests=[];const modules={formation:formationModule,...(includeCity?{city:GAMEPLAY_MODULES.city}:{}),...(includeTasksBusiness?{'free-gold':GAMEPLAY_MODULES['free-gold'],'trial-challenge':GAMEPLAY_MODULES['trial-challenge']}:{}),...(includeTreasure?{treasure:GAMEPLAY_MODULES.treasure}:{}),...(includeFormationUnlock?{'formation-unlock':GAMEPLAY_MODULES['formation-unlock']}:{}),...(includeCompass?{'compass-wheel':GAMEPLAY_MODULES['compass-wheel']}:{}),...(includeForge?{'equipment-forge':GAMEPLAY_MODULES['equipment-forge']}:{}),...(includeProduction?{production:GAMEPLAY_MODULES.production}:{}),...(includeOrders?{orders:GAMEPLAY_MODULES.orders}:{}),...(includeCargo?{fleet:GAMEPLAY_MODULES.fleet}:{}),...(includeTrade?{trade:GAMEPLAY_MODULES.trade}:{}),...(includePirate?{'pirate-sweep':GAMEPLAY_MODULES['pirate-sweep']}:{}),...(includeFreeRecruit?{'free-recruit':GAMEPLAY_MODULES['free-recruit']}:{}),...(includeAfk?{'afk-level-rewards':GAMEPLAY_MODULES['afk-level-rewards']}:{}),...(includeWeeklyGift||includeDailyGift||includeDailyReward||includeDailyActivity||includeWorkflowTasks?{'task-rewards':GAMEPLAY_MODULES['task-rewards']}:{}),...(includeMaterialPacks?{'material-packs':GAMEPLAY_MODULES['material-packs']}:{}),...(includeFarm?{farm:GAMEPLAY_MODULES.farm}:{}),...(includeMuseum?{museum:GAMEPLAY_MODULES.museum}:{}),...(includeHeroes?{heroes:heroModule}:{}),...(includeAlliance||includeAllianceOrders||includeAllianceFort?{alliance:includeAllianceFort?GAMEPLAY_MODULES.alliance:allianceModule}:{}),...(includeStage?{stage:{id:'stage',defaultConfig:{enabled:false}}}:{})};const hc=structuredClone(heroCfg);if(includeFragments){hc.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});hc.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['tank','ranger'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};}const history=createExecutionHistory({file:historyFile??path.join(root,'execution-'+Math.random()+'.json')});const moduleSettings=createModuleSettings({file:path.join(root,'settings-'+Math.random()+'.json'),modules});
  const memory=includeAllianceOrders?createExecutionMemory({file:history.storagePath+'.memory.json'}):null;
  const app=createConsole({port:0,protocol:testProtocol,tracePath:path.join(root,'trace-'+Math.random()+'.log'),clientFactory(){clients++;throw Error('Real client forbidden');},collect(...args){collections++;if(collectSnapshot)return collectSnapshot(...args);throw Error('Full collector forbidden');},operationOptions:{history,...(memory?{memory}:{}),...(includeStage||includeMuseum||includeAllianceOrders||includeCargo||includeTrade?{}:{modules}),moduleSettings,getConfig:()=>configOverride??(includeAllianceOrders?allianceDailyCfg:includeMuseum?museumDailyCfg:includeChipTask?chipTaskCfg:includeChipGift?chipGiftCfg:includeUniqueGift?uniqueGiftCfg:includeWeeklyGift?weeklyGiftCfg:includeDailyGift?dailyGiftCfg:includeDailyActivity?dailyActivityCfg:includeDailyReward?dailyRewardCfg:includeMaterialPacks?materialPackCfg:includeExpedition?{tables:{...cfg.tables,ExpeditionRaidCfg:{data:[{raidId:1001,unlockLv:30,heroCount:10}]}}}:includeFarm?farmCfg:includeHeroes?hc:includeAlliance?allianceCfg:cfg),loadRules:()=>({config:{version:1,enabled:true,rules:[]}})}});await app.listen();const origin='http://127.0.0.1:'+app.server.address().port;let csrf;
  const call=(route='/api/gameplay?module=formation',{id='A',body,method=body===undefined?'GET':'POST',headers={},authorized=true}={})=>new Promise((resolve,reject)=>{const url=new URL(route,origin);if(id!==null)url.searchParams.set('account',id);const req=http.request(url,{method,headers:{connection:'close','content-type':'application/json',...(authorized?{origin,...(csrf?{'x-cw-csrf':csrf}:{})}:{}),...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',chunk=>text+=chunk);res.on('end',()=>{const data=JSON.parse(text);if(data.csrfToken)csrf=data.csrfToken;resolve({status:res.statusCode,data,text});});});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));});
@@ -2919,4 +2919,152 @@ test('browser offline resource chain stops when cumulative accelerator budget is
    assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
  } finally {await app.close();}
+});
+
+
+for(const completed of [1,2,3])test('cross-domain offline resource chain stops before authorization after '+completed+' settled actions',async()=>{
+ const {app,state,graph}=await resourceCitySimulation();
+ try {
+  const actions=graph.nodes.filter(node=>node.type==='ACTION'),permits=[];
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  let runId;
+  for(let i=0;i<completed;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   runId??=pending.runId;
+   assert.equal(pending.runId,runId);
+   assert.equal(pending.currentNode,actions[i].id);
+   assert.equal(state.writes.length,i);
+   const approval=await app.approve(pending.plan);
+   assert.equal(approval.status,200,JSON.stringify(approval.data));
+   permits.push(approval.data);
+   assert.equal((await app.call('/api/operations/execute',{body:approval.data})).status,200);
+   await app.operations.settle('A');
+   assert.equal(app.history.list('A')[0].finalStatus,'SUCCESS');
+   assert.equal((await app.call('/api/workflows/resume',{body:{}})).status,200);
+  }
+  const next=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  assert.equal(next.runId,runId);
+  assert.equal(next.currentNode,actions[completed].id);
+  assert.equal(state.writes.length,completed);
+  const stopped=await app.call('/api/workflows/stop',{body:{}});
+  assert.equal(stopped.status,200,JSON.stringify(stopped.data));
+  const final=(await waitForWorkflow(app,'CANCELLED')).status;
+  assert.equal(final.runId,runId);
+  assert.equal(final.running,false);
+  assert.equal(state.writes.length,completed);
+  assert.deepEqual(app.history.list('A').map(row=>row.finalStatus),Array(completed).fill('SUCCESS'));
+  assert.deepEqual(app.history.list('A').map(row=>row.workflowNodeId),actions.slice(0,completed).map(row=>row.id).reverse());
+  const budget=app.operations.workflowBudget('A');
+  assert.equal(budget.state,'CLOSED');
+  assert.equal(budget.resumable,false);
+  assert.deepEqual(budget.limits,graph.budget);
+  assert.equal(budget.batches.length,completed);
+  const wfFile=path.join(root,'workflows.json'),wfBytes=fs.readFileSync(wfFile,'utf8');
+  const historyFile=app.history.storagePath,historyBytes=fs.readFileSync(historyFile,'utf8');
+  const {createWorkflowStore}=await import('../src/workflow.mjs');
+  const reopened=createWorkflowStore({file:wfFile,modules:app.operations.modules});
+  const saved=reopened.history('A').find(row=>row.runId===runId);
+  assert.ok(saved);
+  assert.equal(saved.resumable,false);
+  assert.equal(saved.runAuthorization,undefined);
+  assert.equal(createExecutionHistory({file:historyFile}).unresolved('A'),false);
+  assert.notEqual((await app.approve(next.plan)).status,200);
+  for(const permit of permits)assert.notEqual((await app.call('/api/operations/execute',{body:permit})).status,200);
+  await app.call('/api/workflows/resume',{body:{}});
+  assert.equal(state.writes.length,completed);
+  assert.equal(fs.readFileSync(wfFile,'utf8'),wfBytes);
+  assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ } finally {await app.close();}
+});
+
+
+test('cross-domain stopped run is read-only after actual HTTP server restart',async()=>{
+ const {app,state,graph}=await resourceCitySimulation();
+ let restarted;
+ try {
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  const first=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  const permit=await app.approve(first.plan);
+  assert.equal(permit.status,200);
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  await app.operations.settle('A');
+  assert.equal(app.history.list('A')[0].finalStatus,'SUCCESS');
+  await app.call('/api/workflows/resume',{body:{}});
+  const next=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  assert.equal(next.runId,first.runId);
+  assert.equal(state.writes.length,1);
+  assert.equal((await app.call('/api/workflows/stop',{body:{}})).status,200);
+  await waitForWorkflow(app,'CANCELLED');
+  const historyFile=app.history.storagePath,wfFile=path.join(root,'workflows.json');
+  await app.close();
+  const wfBytes=fs.readFileSync(wfFile,'utf8'),historyBytes=fs.readFileSync(historyFile,'utf8');
+  restarted=await harness({includeCity:true,includeProduction:true,includeMaterialPacks:true,
+   testProtocol:heroWireProtocol,preserveWorkflow:true,historyFile});
+  const view=await restarted.call('/api/workflows');
+  assert.equal(view.status,200);
+  assert.equal(view.data.status.running,false);
+  const detail=await restarted.call('/api/workflows/history?workflowRunId='+first.runId);
+  assert.equal(detail.status,200,JSON.stringify(detail.data));
+  assert.equal(detail.data.readOnly,true);
+  assert.equal(detail.data.resumable,false);
+  assert.equal((await restarted.call('/api/workflows/history?workflowRunId='+first.runId,{id:'B'})).status,404);
+  assert.equal(restarted.history.list('A').length,1);
+  assert.equal(restarted.history.list('A')[0].finalStatus,'SUCCESS');
+  restarted.ready('A');
+  assert.notEqual((await restarted.approve(next.plan)).status,200);
+  assert.notEqual((await restarted.call('/api/operations/execute',{body:permit.data})).status,200);
+  await restarted.call('/api/workflows/resume',{body:{}});
+  assert.equal(state.writes.length,1);
+  assert.deepEqual(restarted.counts(),{clients:0,collections:0});
+  assert.equal(fs.readFileSync(wfFile,'utf8'),wfBytes);
+  assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);
+ } finally {if(restarted)await restarted.close();await app.close();}
+});
+
+
+test('cross-domain UNKNOWN remains blocked after actual HTTP server restart',async()=>{
+ const {app,state,client,graph}=await resourceCitySimulation();
+ let restarted;
+ try {
+  const send=client.sendWatch.bind(client);
+  client.sendWatch=async(...args)=>{const reply=await send(...args);state.stock.set('unrelated',999);return reply;};
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  const permit=await app.approve(pending.plan);
+  assert.equal(permit.status,200);
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  await app.operations.settle('A');
+  assert.equal(app.history.list('A')[0].finalStatus,'UNKNOWN');
+  assert.equal(state.writes.length,1);
+  await app.call('/api/workflows/resume',{body:{}});
+  await waitForWorkflow(app,'UNKNOWN');
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+  const historyFile=app.history.storagePath,wfFile=path.join(root,'workflows.json');
+  await app.close();
+  const wfBytes=fs.readFileSync(wfFile,'utf8'),historyBytes=fs.readFileSync(historyFile,'utf8');
+  restarted=await harness({includeCity:true,includeProduction:true,includeMaterialPacks:true,
+   testProtocol:heroWireProtocol,preserveWorkflow:true,historyFile});
+  await restarted.call('/api/workflows');
+  const detail=await restarted.call('/api/workflows/history?workflowRunId='+pending.runId);
+  assert.equal(detail.status,200,JSON.stringify(detail.data));
+  assert.equal(detail.data.readOnly,true);
+  assert.equal(detail.data.resumable,false);
+  assert.equal(restarted.history.unresolved('A'),true);
+  assert.equal(restarted.history.unresolved('B'),false);
+  assert.equal(restarted.history.list('A')[0].finalStatus,'UNKNOWN');
+  restarted.ready('A');
+  assert.notEqual((await restarted.call('/api/operations/execute',{body:permit.data})).status,200);
+  assert.equal(fs.readFileSync(wfFile,'utf8'),wfBytes);
+  assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);
+  const blocked=await restarted.call('/api/workflows/start',{body:{graph}});
+  assert.equal(blocked.status,200);
+  assert.equal(blocked.data.status.status,'FAILED');
+  assert.equal(blocked.data.status.steps,0);
+  assert.match(blocked.data.status.reason,/UNKNOWN|未决/);
+  await restarted.call('/api/workflows/resume',{body:{}});
+  assert.equal(state.writes.length,1);
+  assert.deepEqual(restarted.counts(),{clients:0,collections:0});
+  assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);
+ } finally {if(restarted)await restarted.close();await app.close();}
 });
