@@ -215,7 +215,7 @@ test('prepared cross-ship cargo uses one initial budget and independently confir
 });
 
 
-test('cross-ship preparation bounds the entire batch to 24 slots and stops on UNKNOWN',async()=>{
+for(const scenario of ['complete','unknown'])test('cross-ship preparation at the 24-slot limit '+scenario,async()=>{
  const fleet=[1,2,3].map(index=>{
   const value=ship(index);
   value.orderItem=Array.from({length:12},()=>({
@@ -232,7 +232,7 @@ test('cross-ship preparation bounds the entire batch to 24 slots and stops on UN
   const observed=await f.service.surveyModule(f.target,'fleet');
   const loads=observed.view.cargo.ships.map(({shipIndex,preparationHash})=>({
    shipIndex,cargoIndices:Array.from({length:shipIndex===3?1:12},(_,i)=>i+1),expectedCargoHash:preparationHash}));
-  const input={action:'fill',loads,maxDurationMs:60000};
+  const input={action:'fill',loads,maxDurationMs:120000};
   const before=f.reads.length;
   await assert.rejects(f.service.prepareCargoFillSource(f.target,input),{code:'INVALID_INPUT'});
   assert.equal(f.reads.length,before);
@@ -240,19 +240,29 @@ test('cross-ship preparation bounds the entire batch to 24 slots and stops on UN
   assert.equal(prepared.graph.nodes.length,50);
   assert.deepEqual(prepared.graph.budget,claims(24));
   let pending=await runner.start('A',prepared.graph);
-  for(let i=0;i<13;i++){
-   const shipIndex=i<12?1:2,cargoIndex=i<12?i+1:1;
+  const unknown=scenario==='unknown';
+  const steps=unknown?13:24;
+  for(let i=0;i<steps;i++){
+   const shipIndex=Math.floor(i/12)+1,cargoIndex=i%12+1;
    assert.equal(pending.status,'AWAITING_AUTHORIZATION');
    assert.equal(pending.plan.actions[0].actionId,'fleet:cargoFill:'+shipIndex+':'+cargoIndex);
-   if(i===12)f.target.synthetic.apply=false;
-   assert.equal((await f.execute(pending.plan)).status.finalStatus,i<12?'SUCCESS':'UNKNOWN');
+   if(unknown&&i===12)f.target.synthetic.apply=false;
+   assert.equal((await f.execute(pending.plan)).status.finalStatus,unknown&&i===12?'UNKNOWN':'SUCCESS');
    pending=await runner.resume();
   }
-  assert.equal(pending.status,'UNKNOWN');
-  assert.equal(f.writes.length,13);
-  assert.ok(f.target.synthetic.ships[1].orderItem.every(row=>!row.filled));
+  assert.equal(pending.status,unknown?'UNKNOWN':'COMPLETED');
+  assert.equal(f.writes.length,steps);
+  const state=f.target.synthetic;
+  assert.equal(state.stock.get('木材'),unknown?12:0);
+  assert.equal(state.stock.get('EXP'),unknown?22:34);
+  assert.deepEqual(state.ships.map(ship=>ship.status),unknown?[1,0,0]:[1,1,0]);
+  assert.ok(state.ships[1].orderItem.every(row=>row.filled===!unknown));
+  assert.ok(state.ships[2].orderItem.every(row=>!row.filled));
   const reopened=createExecutionHistory({file:f.file});
-  assert.equal(reopened.unresolved('A'),true);
-  assert.equal(f.service.workflowBudget('A').state,'CLOSED');
+  assert.equal(reopened.unresolved('A'),unknown);
+  assert.equal(reopened.list('A').length,steps);
+  const budget=f.service.workflowBudget('A');
+  assert.equal(budget.state,'CLOSED');
+  assert.equal(budget.batches.length,steps);
  }finally{runner.stop();await runner.settle();await f.cleanup();}
 });
