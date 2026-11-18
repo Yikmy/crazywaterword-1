@@ -174,6 +174,17 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募仅支持明确英雄或古董、免费单次及自有1/10/50券的原参数');}
         steps.push({phase,index,module:'free-recruit',parameters,selection});continue;
       }
+      if(phase==='tasks'&&['cargo-fill','alliance-order','museum','pirate-sweep'].includes(row?.kind)){
+        exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks业务须明确原Function parameters，不推断目标');
+        parameters=row.parameters;
+        try{
+          if(row.kind==='cargo-fill'){module='fleet';selection=fleetCargoFillSelection(parameters);}
+          else if(row.kind==='alliance-order'){exact(parameters,['cityId']);module='alliance';selection=allianceOrderSelection(parameters);}
+          else if(row.kind==='museum'){exact(parameters,['stageId','heroIds','factor']);module='museum';selection=museumStartExploreSelection(parameters);}
+          else {module='pirate-sweep';parameters=validatePirateSweepParameters(parameters);if(!Object.hasOwn(parameters,'uid')||!Object.hasOwn(parameters,'cityId'))invalid('需要明确海盗UID和城市');}
+        }catch{invalid('Tasks仅支持明确单格装货、单城市联盟订单、固定队伍倍率探险出发或单目标普通扫荡的原参数');}
+        steps.push({phase,index,module,parameters,selection});continue;
+      }
       if(phase==='tasks'&&row?.kind==='trial-challenge'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks试炼须明确原Function参数和raidId=1/2/3');
         try{parameters=validateTrialChallengeParameters(row.parameters);if(!Object.hasOwn(parameters,'raidId'))invalid('需要明确副本');}catch{invalid('Tasks试炼仅接受明确raidId=1/2/3及可选下一关stageId，禁止扫荡、购买和广告');}
