@@ -35,7 +35,7 @@ const casesValid=e=>Array.isArray(e?.cases)&&e.cases.every(c=>quantity(c?.caseIn
 const keywordsValid=e=>Array.isArray(e?.keywordLevels)&&e.keywordLevels.length===3&&e.keywordLevels.every(n=>quantity(n)!==null);
 
 function parametersOf(p={}){
-  if(p&&Object.hasOwn(p,'expectedSpeedHash'))return validateMuseumSpeedParameters(p);
+  if(p&&Object.hasOwn(p,'expectedSpeedHash'))return validateMuseumSpeedParameters(p,Object.hasOwn(p,'exhibitionId')?'speedCase':'speedExplore');
   if(p&&Object.hasOwn(p,'expectedExploreHash'))return validateMuseumExploreParameters(p);
   if(p&&Object.hasOwn(p,'expectedExhibitHash'))return validateMuseumExhibitParameters(p);
   if(p&&Object.hasOwn(p,'popularityThreshold')){if(!growthFields(p,['popularityThreshold'])||Reflect.ownKeys(p).length!==1||!Number.isSafeInteger(p.popularityThreshold)||p.popularityThreshold<0)throw growthInputError('人气成就仅接受明确非负安全整数popularityThreshold');return {popularityThreshold:p.popularityThreshold};}
@@ -148,18 +148,26 @@ function exhibitPreparations(f,{config,moduleConfig,parameters,candidates}){
  const rows=parameters.antiqueId===undefined?['',...f.antiques].flatMap(antiqueId=>museumView(f,{config,moduleConfig,parameters:{...(parameters.exhibitionId===undefined?{}:{exhibitionId:parameters.exhibitionId}),...(parameters.caseIndex===undefined?{}:{caseIndex:parameters.caseIndex}),antiqueId}}).candidates.filter(row=>row.actionType==='exhibit')):candidates.filter(row=>row.actionType==='exhibit');
  return rows.flatMap(row=>{const expectedExhibitHash=exhibitHash(f,row.target,{config,moduleConfig});return expectedExhibitHash?[{parameters:{...row.target,expectedExhibitHash},selection:{actionId:row.actionId},target:copy(row.target),costs:copy(row.costs)}]:[];});
 }
-function validateMuseumSpeedParameters(p) {
-  if(!growthFields(p,['stageId','useNum','payment','expectedSpeedHash'])||Reflect.ownKeys(p).length!==4||
-    !Number.isSafeInteger(p.stageId)||p.stageId<1||p.stageId>2147483647||
+const speedTargetKeys={speedExplore:['stageId'],speedCase:['exhibitionId','caseIndex']};
+const speedSeconds={speedExplore:1800,speedCase:60};
+const speedTarget=(parameters,type)=>Object.fromEntries(speedTargetKeys[type].map(key=>[key,parameters[key]]));
+function validateMuseumSpeedParameters(p,type) {
+  const keys=speedTargetKeys[type];
+  if(!growthFields(p,[...keys,'useNum','payment','expectedSpeedHash'])||Reflect.ownKeys(p).length!==keys.length+3||
+    keys.some(key=>!Number.isSafeInteger(p[key])||p[key]<1||p[key]>2147483647)||
     !Number.isSafeInteger(p.useNum)||p.useNum<1||p.useNum>10000||p.payment!=='ITEM'||
-    typeof p.expectedSpeedHash!=='string'||!/^[a-f0-9]{64}$/.test(p.expectedSpeedHash))throw growthInputError('探险加速须明确原关卡、自有道具数量和原计时摘要');
-  return {stageId:p.stageId,useNum:p.useNum,payment:p.payment,expectedSpeedHash:p.expectedSpeedHash};
+    typeof p.expectedSpeedHash!=='string'||!/^[a-f0-9]{64}$/.test(p.expectedSpeedHash))throw growthInputError('博物馆加速须明确原目标、自有道具数量和原计时摘要');
+  return {...speedTarget(p,type),useNum:p.useNum,payment:'ITEM',expectedSpeedHash:p.expectedSpeedHash};
+}
+function museumCaseSpeedHash(f,area,slot,moduleConfig,useNum) {
+  const {exhibitionId,level,keywordLevels}=area;
+  return createHash('sha256').update(stable({playerId:f.playerId,exhibitionId,level,keywordLevels,slot,moduleConfig,useNum})).digest('hex');
 }
 function museumSpeedHash(f,stage,moduleConfig,useNum) {
   return createHash('sha256').update(stable({playerId:f.playerId,stage,moduleConfig,useNum})).digest('hex');
 }
 function museumSpeedClaims(target,costs) {
-  return {resources:copy(costs),quotas:[],uids:[{type:'museum-explore-stage',id:String(target.stageId)}]};
+  return {resources:copy(costs),quotas:[],uids:[target.stageId===undefined?{type:'museum-case',id:target.exhibitionId+':'+target.caseIndex}:{type:'museum-explore-stage',id:String(target.stageId)}]};
 }
 function exhibitionSelection(f){
   return {exhibitions:f.exhibitionsReliable===true?f.exhibitions.map(e=>({exhibitionId:e.exhibitionId,level:e.level,keywordLevels:keywordsValid(e)?[...e.keywordLevels]:null,cases:casesValid(e)?copy(e.cases):null})):null,antiques:f.antiquesReliable===true?[...f.antiques]:null};
@@ -167,7 +175,7 @@ function exhibitionSelection(f){
 export function museumView(f,{config=null,parameters=f.parameters??{},moduleConfig={}}={}){
   parameters=parametersOf(parameters);moduleConfig=validateMuseumConfig(moduleConfig);const time=gameTimeBounds(f),candidates=[],blocked=[],notes=[...(f.notes??[])];
   const block=(actionType,blockedReason,target={})=>blocked.push({actionType,target,blockedReason}),enabled=d=>moduleConfig.enabled===true&&(moduleConfig[d]===true||moduleConfig[d]?.enabled===true),has=n=>f.available?.includes(n),ledger=new ResourceLedger(f.stockReliable?f.stock:null);
-  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(parameters.expectedSpeedHash&&type!=='speedExplore'||parameters.expectedExploreHash&&type!=='startExplore'||parameters.expectedExhibitHash&&type!=='exhibit'||parameters.popularityThreshold!==undefined&&type!=='claimAchievement')return;if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:actionIdOf(type,target),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,...(type==='speedExplore'&&parameters.expectedSpeedHash?{budgetClaims:museumSpeedClaims(target,costs)}:{}),...(type==='startExplore'&&parameters.expectedExploreHash?{budgetClaims:{...exploreClaims(target),resources:copy(costs)}}:{}),...(type==='claimAchievement'&&parameters.popularityThreshold!==undefined?{budgetClaims:achievementClaims(f,target)}:{}),parameters:parametersOf({...parameters,...Object.fromEntries(Object.entries(target).filter(([key])=>['stageId','heroIds','factor','exhibitionId','caseIndex','keywordType','antiqueId'].includes(key)))}),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
+  const add=(domain,type,target,beforeState,costs,costSource,request,body,response,expectedState)=>{if(parameters.expectedSpeedHash&&type!==(parameters.stageId===undefined?'speedCase':'speedExplore')||parameters.expectedExploreHash&&type!=='startExplore'||parameters.expectedExhibitHash&&type!=='exhibit'||parameters.popularityThreshold!==undefined&&type!=='claimAchievement')return;if(!enabled(domain))return;if(!has(request))return block(type,'PROTOCOL_UNAVAILABLE',target);if(costs===null)return block(type,'COST_UNKNOWN',target);if(costs.length&&(!f.stockReliable||!ledger.canReserve(costs)||costs.some(({id,num})=>{const i=moduleConfig.stockItemIds.indexOf(id);return i>=0&&ledger.available(id)-num<moduleConfig.stockReserveQuantities[i];})))return block(type,'RESOURCE_UNKNOWN_OR_INSUFFICIENT',target);candidates.push({actionId:actionIdOf(type,target),actionType:type,target,beforeState:copy(beforeState),identity:stable({playerId:f.playerId,beforeState}),costs,costSource,expectedState,...(Object.hasOwn(speedTargetKeys,type)&&parameters.expectedSpeedHash?{budgetClaims:museumSpeedClaims(target,costs)}:{}),...(type==='startExplore'&&parameters.expectedExploreHash?{budgetClaims:{...exploreClaims(target),resources:copy(costs)}}:{}),...(type==='claimAchievement'&&parameters.popularityThreshold!==undefined?{budgetClaims:achievementClaims(f,target)}:{}),parameters:parametersOf({...parameters,...Object.fromEntries(Object.entries(target).filter(([key])=>['stageId','heroIds','factor','exhibitionId','caseIndex','keywordType','antiqueId'].includes(key)))}),action:{request,response:has(response)?response:null,body},label:'博物馆 '+type});};
   if(!f.playerId)return {candidates,blocked:[{blockedReason:'PLAYER_IDENTITY_UNKNOWN'}],notes,stages:[],explorationMaterials:projectExplorationMaterials(f,config,parameters,[],moduleConfig)};
   if(parameters.payment==='PREMIUM')block('speedExplore','PREMIUM_BLOCKED');
   const busy=f.stagesReliable?f.stages.filter(s=>s.expedition?.endTime>0):null,busyHeroes=new Set(busy?.flatMap(s=>s.expedition.heroIds)??[]);
@@ -257,6 +265,11 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
         else if(time.now===null)block('speedCase','SERVER_TIME_UNKNOWN',target);
         else if(c.upgradeFinishTime>time.latest&&parameters.useNum!==undefined){
           if(parameters.useNum>moduleConfig.maximumSpeedItems||parameters.useNum>Math.ceil((c.upgradeFinishTime-time.latest)/60))block('speedCase','SPEED_QUANTITY_EXCEEDS_REMAINING_TIME_OR_CONFIG',target);
+          else if(parameters.expectedSpeedHash&&(!f.exhibitions.every(area=>keywordsValid(area)&&casesValid(area))||
+            parameters.expectedSpeedHash!==museumCaseSpeedHash(f,e,c,moduleConfig,parameters.useNum)||
+            c.upgradeFinishTime-parameters.useNum*speedSeconds.speedCase<=time.latest)){
+            block('speedCase','CASE_SPEED_SOURCE_CHANGED_OR_FINISH_BOUNDARY',target);
+          }
           else add('exhibition','speedCase',target,c,[{id:'加速器',num:parameters.useNum}],'MuseumModel.ts:2207 / MuseumBoothView.ts:2187; SpeedUpPop.ts:2953 ITEM=2, each item 60 seconds','MuseumSpeedUpCaseRequest',{...target,speedUp:{type:2,useNum:parameters.useNum}},null,{upgradeFinishTimeReduced:true});
         }
       }
@@ -286,9 +299,18 @@ export function museumView(f,{config=null,parameters=f.parameters??{},moduleConf
 
   if(parameters.expectedExhibitHash){const placements=candidates.filter(row=>row.actionType==='exhibit');candidates.splice(0,candidates.length,...placements);for(const row of placements)row.budgetClaims={resources:row.costs,quotas:[],uids:[{type:'museum-case',id:row.target.exhibitionId+':'+row.target.caseIndex},...(row.target.antiqueId?[{type:'antique',id:row.target.antiqueId}]:[])]};}
   const speedPreparation=parameters.payment==='ITEM'&&!parameters.expectedSpeedHash?candidates.flatMap(row=>{
-    if(row.actionType!=='speedExplore'||row.beforeState.expedition.endTime-row.parameters.useNum*1800<=time.latest)return [];
-    const parameters={stageId:row.target.stageId,useNum:row.parameters.useNum,payment:'ITEM',expectedSpeedHash:museumSpeedHash(f,row.beforeState,moduleConfig,row.parameters.useNum)};
-    return [{actionType:row.actionType,actionId:row.actionId,target:copy(row.target),parameters,costs:copy(row.costs),budgetClaims:museumSpeedClaims(row.target,row.costs),endTime:row.beforeState.expedition.endTime}];
+    const {actionType,target,beforeState}=row;
+    if(!Object.hasOwn(speedTargetKeys,actionType))return [];
+    const {useNum}=row.parameters;
+    const isCase=actionType==='speedCase';
+    const endTime=isCase?beforeState.upgradeFinishTime:beforeState.expedition.endTime;
+    if(endTime-useNum*speedSeconds[actionType]<=time.latest||
+       isCase&&!f.exhibitions.every(area=>keywordsValid(area)&&casesValid(area)))return [];
+    const expectedSpeedHash=isCase?
+      museumCaseSpeedHash(f,f.exhibitions.find(area=>area.exhibitionId===target.exhibitionId),beforeState,moduleConfig,useNum):
+      museumSpeedHash(f,beforeState,moduleConfig,useNum);
+    const parameters={...target,useNum,payment:'ITEM',expectedSpeedHash};
+    return [{actionType,actionId:row.actionId,target:copy(target),parameters,costs:copy(row.costs),budgetClaims:museumSpeedClaims(target,row.costs),endTime}];
   }):[];
   return {speedPreparation,achievementPreparation:candidates.filter(row=>row.actionType==='claimAchievement').map(({action,...row})=>({...row,executable:true,parameters:copy(row.target),budgetClaims:achievementClaims(f,row.target)})),exhibitPreparation:exhibitPreparations(f,{config,moduleConfig,parameters,candidates}),candidates,blocked,notes,stages:display,explorationSelection:exploreSelection(f,config,display,busyHeroes,moduleConfig),exhibitionSelection:exhibitionSelection(f),explorationMaterials:projectExplorationMaterials(f,config,parameters,display,moduleConfig),teamCount,occupiedTeams:busy?.length??null,exhibitions:f.exhibitions??[],revenue:f.uncollectedRevenue,topPopularity:f.topPopularity};
 }
@@ -302,7 +324,7 @@ export function planMuseum(f,options={}){
   const cfg=validateMuseumConfig(options.moduleConfig),actions=[],notes=[...view.notes];for(const op of picked){if(actions.length>=cfg.maxActionsPerPlan){notes.push(op.actionId+': 每批上限');continue;}if(op.costs.some(({id,num})=>{const i=cfg.stockItemIds.indexOf(id);return i>=0&&(quantity(ledger.available(id))===null||ledger.available(id)-num<cfg.stockReserveQuantities[i]);})||!ledger.reserve(op.costs))notes.push(op.actionId+': 共享预算或库存线不足');else actions.push(op);}return {module:'museum',actions,notes,view};
 }
 // Read-only preparation reuses current candidates and the original planner.
-const museumGrowthActions=['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase','exhibit','claimAchievement','startExplore','speedExplore'];
+const museumGrowthActions=['upgradeExhibition','upgradeKeyword','upgradeCase','finishCase','exhibit','claimAchievement','startExplore','speedExplore','speedCase'];
 const growthInputError=message=>Object.assign(Error(message),{code:'INVALID_INPUT',statusCode:400});
 function growthFields(value,keys){
  if(!value||Object.getPrototypeOf(value)!==Object.prototype)return false;
@@ -311,9 +333,9 @@ function growthFields(value,keys){
 export function validateMuseumGrowthPreparation(value){
  if(!growthFields(value,['actionType','targets','maxDurationMs'])||Reflect.ownKeys(value).length!==3||!museumGrowthActions.includes(value.actionType)||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw growthInputError('博物馆成长须明确一种原动作、1至24个不同目标及有限总时长');
  if(value.actionType==='startExplore'){const targets=value.targets.map(validateMuseumExploreParameters),heroes=targets.flatMap(row=>row.heroIds);if(!unique(targets,row=>row.stageId)||new Set(heroes).size!==heroes.length)throw growthInputError('探险组合每关卡及每英雄仅一次，不可复用前队占用');return {actionType:value.actionType,targets,maxDurationMs:value.maxDurationMs};}
- if(value.actionType==='speedExplore'){
-  const targets=value.targets.map(validateMuseumSpeedParameters);
-  if(!unique(targets,row=>row.stageId))throw growthInputError('每队当前探险只能加速一次');
+ if(Object.hasOwn(speedTargetKeys,value.actionType)){
+  const targets=value.targets.map(row=>validateMuseumSpeedParameters(row,value.actionType));
+  if(!unique(targets,row=>stable(speedTarget(row,value.actionType))))throw growthInputError('每个目标在同一批次只能加速一次');
   return {actionType:value.actionType,targets,maxDurationMs:value.maxDurationMs};
  }
  if(value.actionType==='claimAchievement'){const targets=value.targets.map(row=>{if(!growthFields(row,['popularityThreshold'])||Reflect.ownKeys(row).length!==1)throw growthInputError('人气成就组合只接受原明确档位');return parametersOf(row);});if(!unique(targets,row=>row.popularityThreshold))throw growthInputError('同一人气成就档位在本批只允许领取一次');return {actionType:value.actionType,targets,maxDurationMs:value.maxDurationMs};}
@@ -327,9 +349,9 @@ export function prepareMuseumGrowthWorkflow(facts,{config,moduleConfig=MUSEUM_DE
  const p=validateMuseumGrowthPreparation(input);if(facts?.stockReliable!==true)throw growthInputError('完整库存未知，不能准备博物馆成长');
  if(p.actionType==='startExplore'){const view=museumView(facts,{config,moduleConfig,parameters:{}});if(!Number.isSafeInteger(view.teamCount)||!Number.isSafeInteger(view.occupiedTeams)||view.occupiedTeams+p.targets.length>view.teamCount)throw growthInputError('当前原队伍空位不足，不能借未来完成或结算释放容量');}
  const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}],balances=new Map(facts.stock);
- const steps=p.targets.map((parameters,i)=>{const selection=p.actionType==='startExplore'?museumStartExploreSelection({stageId:parameters.stageId,heroIds:parameters.heroIds,factor:parameters.factor}):{actionId:actionIdOf(p.actionType,p.actionType==='speedExplore'?{stageId:parameters.stageId}:p.actionType==='exhibit'?{exhibitionId:parameters.exhibitionId,caseIndex:parameters.caseIndex,antiqueId:parameters.antiqueId}:parameters)},plan=planMuseum(facts,{config,moduleConfig,parameters,selections:[selection.actionId],ledger});if(plan.actions.length!==1)throw growthInputError('所选博物馆目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0];if(p.actionType==='claimAchievement'){for(const reward of row.expectedState.rewards){const total=(balances.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(total))throw growthInputError('人气成就累计奖励超过安全余额范围');balances.set(reward.id,total);}}const budgetClaims=row.budgetClaims?copy(row.budgetClaims):{resources:copy(row.costs),quotas:[],uids:[]};nodes.push({id:'grow-'+i,type:'ACTION',module:'museum',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'museum'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims,...(p.actionType==='claimAchievement'?{rewards:copy(row.expectedState.rewards)}:{})};});
+ const steps=p.targets.map((parameters,i)=>{const selection=p.actionType==='startExplore'?museumStartExploreSelection({stageId:parameters.stageId,heroIds:parameters.heroIds,factor:parameters.factor}):{actionId:actionIdOf(p.actionType,Object.hasOwn(speedTargetKeys,p.actionType)?speedTarget(parameters,p.actionType):p.actionType==='exhibit'?{exhibitionId:parameters.exhibitionId,caseIndex:parameters.caseIndex,antiqueId:parameters.antiqueId}:parameters)},plan=planMuseum(facts,{config,moduleConfig,parameters,selections:[selection.actionId],ledger});if(plan.actions.length!==1)throw growthInputError('所选博物馆目标当前无原合同资格或累计自有材料不足');const row=plan.actions[0];if(p.actionType==='claimAchievement'){for(const reward of row.expectedState.rewards){const total=(balances.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(total))throw growthInputError('人气成就累计奖励超过安全余额范围');balances.set(reward.id,total);}}const budgetClaims=row.budgetClaims?copy(row.budgetClaims):{resources:copy(row.costs),quotas:[],uids:[]};nodes.push({id:'grow-'+i,type:'ACTION',module:'museum',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'museum'});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims,...(p.actionType==='claimAchievement'?{rewards:copy(row.expectedState.rewards)}:{})};});
  nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
- return {...p,steps,budget,graph:{version:1,id:'museum-growths-'+createHash('sha256').update(stable({p,steps,budget})).digest('hex').slice(0,20),name:p.actionType==='speedExplore'?'明确博物馆逐队道具加速':p.actionType==='startExplore'?'明确博物馆逐队探险出发':p.actionType==='claimAchievement'?'明确博物馆逐人气档位领奖':p.actionType==='exhibit'?'明确博物馆逐展柜陈列':'明确博物馆逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['museum']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:p.actionType==='speedExplore'?'最多24支当前探险队，各队指定自有加速道具数量。每步重新核对原探险计时，独立授权，精确核对时长和道具净扣。触及完成边界、拒绝或UNKNOWN时停止。':p.actionType==='startExplore'?'仅明确1至24个当前空闲且已解锁关卡，每队完整指定当前未占用英雄及原已解锁倍率，关卡/英雄不重复。原队伍容量须容纳全部初始选择，原planMuseum与共享Ledger核全部自有材料及保留线，父关卡/英雄UID固定；各队仍重新调查、单次授权和原出发/库存验证。来源摘要仅绑定原关卡/英雄归属/等级解锁配置，不含其他队的本批已确认出发或库存；不构造未来开始/完成时间，不借未来队伍释放或奖励。资格变化、拒绝或UNKNOWN停止，不结算、领奖、加速、自动换人或补购，不重放或续权。':p.actionType==='claimAchievement'?'仅明确当前最高人气已达标且未领的1至24个人气成就档位。沿用原MuseumAchievementCfg奖励、零成本请求和原完整已领档位唯一新增及库存精确净入验证；父UID固定为角色及档位，每步重新调查、单次授权及验证后继续。累计奖励核安全余额，但不扩父预算；资格变化、拒绝或UNKNOWN停止，不领取探险结算、收入或未来档位，不重放或续权。':'同批只做一种原展区、关键词、展柜升级/完工或明确陈列，每目标一次。陈列支持当前已具原资格的放入、替换及空ID撤下，展柜与非空藏品ID不得重复；原展柜/归属/配置摘要逐项守卫，父UID固定，不借前项撤下来模拟后项未来资格。原planMuseum及共享Ledger累计核初始自有材料和保留线；每步重新调查、单次授权，并按原完整目标/非目标状态及库存精确差额验证。展柜开始计时不代表完工；资格失效、预算不足、拒绝或UNKNOWN停止，不自动重放，不连带其他动作、加速、探险或结算领取。'};
+ return {...p,steps,budget,graph:{version:1,id:'museum-growths-'+createHash('sha256').update(stable({p,steps,budget})).digest('hex').slice(0,20),name:p.actionType==='speedCase'?'明确博物馆逐柜道具加速':p.actionType==='speedExplore'?'明确博物馆逐队道具加速':p.actionType==='startExplore'?'明确博物馆逐队探险出发':p.actionType==='claimAchievement'?'明确博物馆逐人气档位领奖':p.actionType==='exhibit'?'明确博物馆逐展柜陈列':'明确博物馆逐目标单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['museum']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:p.actionType==='speedCase'?'最多24个当前升级中的展柜。逐柜核对原计时并独立授权，每件加速器缩短60秒，验证完整库存净扣和其他展柜不变。触及完工边界、拒绝或UNKNOWN时停止。':p.actionType==='speedExplore'?'最多24支当前探险队，各队指定自有加速道具数量。每步重新核对原探险计时，独立授权，精确核对时长和道具净扣。触及完成边界、拒绝或UNKNOWN时停止。':p.actionType==='startExplore'?'仅明确1至24个当前空闲且已解锁关卡，每队完整指定当前未占用英雄及原已解锁倍率，关卡/英雄不重复。原队伍容量须容纳全部初始选择，原planMuseum与共享Ledger核全部自有材料及保留线，父关卡/英雄UID固定；各队仍重新调查、单次授权和原出发/库存验证。来源摘要仅绑定原关卡/英雄归属/等级解锁配置，不含其他队的本批已确认出发或库存；不构造未来开始/完成时间，不借未来队伍释放或奖励。资格变化、拒绝或UNKNOWN停止，不结算、领奖、加速、自动换人或补购，不重放或续权。':p.actionType==='claimAchievement'?'仅明确当前最高人气已达标且未领的1至24个人气成就档位。沿用原MuseumAchievementCfg奖励、零成本请求和原完整已领档位唯一新增及库存精确净入验证；父UID固定为角色及档位，每步重新调查、单次授权及验证后继续。累计奖励核安全余额，但不扩父预算；资格变化、拒绝或UNKNOWN停止，不领取探险结算、收入或未来档位，不重放或续权。':'同批只做一种原展区、关键词、展柜升级/完工或明确陈列，每目标一次。陈列支持当前已具原资格的放入、替换及空ID撤下，展柜与非空藏品ID不得重复；原展柜/归属/配置摘要逐项守卫，父UID固定，不借前项撤下来模拟后项未来资格。原planMuseum及共享Ledger累计核初始自有材料和保留线；每步重新调查、单次授权，并按原完整目标/非目标状态及库存精确差额验证。展柜开始计时不代表完工；资格失效、预算不足、拒绝或UNKNOWN停止，不自动重放，不连带其他动作、加速、探险或结算领取。'};
 }
 const inventoryMatches=(b,a,costs,rewards=[])=>b.stockReliable===true&&a.stockReliable===true&&stockMatchesDelta(b.stock,a.stock,costs,rewards);
 const consume=(b,a,costs)=>inventoryMatches(b,a,costs);
@@ -368,7 +390,13 @@ export function verifyMuseum(op,b,a,response){
     const before=b.exhibitions.find(e=>e.exhibitionId===op.target.exhibitionId),after=a.exhibitions.find(e=>e.exhibitionId===op.target.exhibitionId);if(!before||!after)return false;
     if(op.actionType==='upgradeKeyword'){const i=op.target.keywordType-1;return keywordsValid(before)&&keywordsValid(after)&&after.keywordLevels[i]===before.keywordLevels[i]+1&&after.keywordLevels.every((n,j)=>j===i||n===before.keywordLevels[j])&&consume(b,a,op.costs);}
     if(!casesValid(before)||!casesValid(after))return false;const old=before.cases.find(c=>c.caseIndex===op.target.caseIndex),current=after.cases.find(c=>c.caseIndex===op.target.caseIndex);if(!old||!current)return false;
-    if(op.actionType==='speedCase')return old.upgradeFinishTime>beforeTime.latest&&current.level===old.level&&current.upgradeFinishTime>0&&current.upgradeFinishTime<old.upgradeFinishTime&&consume(b,a,op.costs);
+    if(op.actionType==='speedCase'){
+      if(op.parameters?.expectedSpeedHash){
+        const expectedEnd=old.upgradeFinishTime-op.parameters.useNum*speedSeconds.speedCase;
+        if(expectedEnd<=afterTime.latest||current.upgradeFinishTime!==expectedEnd)return false;
+      }
+      return old.upgradeFinishTime>beforeTime.latest&&current.level===old.level&&current.upgradeFinishTime>0&&current.upgradeFinishTime<old.upgradeFinishTime&&consume(b,a,op.costs);
+    }
     if(op.actionType==='finishCase')return old.upgradeFinishTime>0&&beforeTime.earliest!==null&&old.upgradeFinishTime<=beforeTime.earliest&&current.level===old.level+1&&current.upgradeFinishTime===0;
     if(op.actionType==='upgradeCase')return consume(b,a,op.costs)&&old.upgradeFinishTime===0&&(current.level===old.level+1&&current.upgradeFinishTime===0||current.level===old.level&&op.expectedState.upgradeSeconds>0&&current.upgradeFinishTime>beforeTime.latest&&current.upgradeFinishTime>0);
     if(op.actionType==='exhibit')return current.antiqueId===op.target.antiqueId&&old.antiqueId!==current.antiqueId&&a.exhibitions.every(casesValid)&&(op.target.antiqueId===''||a.exhibitions.flatMap(e=>e.cases).filter(c=>c.antiqueId===op.target.antiqueId).length===1);

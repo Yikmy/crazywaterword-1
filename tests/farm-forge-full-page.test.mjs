@@ -3438,31 +3438,32 @@ test('compass Tasks draft sends the exact surveyed spin and unchanged budget to 
  h.run("selectAccount('B')");await button.click();assert.equal(h.node('wf-unified-intent').value,'');
 });
 
-test('museum page submits only the selected current expeditions for item acceleration',async()=>{
+for(const actionType of ['speedExplore','speedCase'])test('museum page submits only the selected current targets for '+actionType,async()=>{
  const h=await boot(),duration=300000;
- const rows=[1,2].map(stageId=>{
-  const costs=[{id:'博物馆加速',num:1}],target={stageId};
-  return {actionType:'speedExplore',actionId:'museum:speedExplore:'+stageId,target,costs,endTime:1800005400,
-   parameters:{stageId,useNum:1,payment:'ITEM',expectedSpeedHash:String(stageId).repeat(64)},
-   budgetClaims:{resources:costs,quotas:[],uids:[{type:'museum-explore-stage',id:String(stageId)}]}};
+ const isCase=actionType==='speedCase';
+ const rows=[1,2].map(id=>{
+  const costs=[{id:isCase?'加速器':'博物馆加速',num:1}],target=isCase?{exhibitionId:1,caseIndex:id}:{stageId:id};
+  return {actionType,actionId:'museum:'+actionType+':'+id,target,costs,endTime:1800005400,
+   parameters:{...target,useNum:1,payment:'ITEM',expectedSpeedHash:String(id).repeat(64)},
+   budgetClaims:{resources:costs,quotas:[],uids:[isCase?{type:'museum-case',id:'1:'+id}:{type:'museum-explore-stage',id:String(id)}]}};
  });
- const snapshot={accountId:'A',module:'museum',csrfToken:'synthetic-csrf-A',config:{enabled:true,exploration:true},status:{running:false,blocked:false},view:{candidates:[],explorationSelection:{stages:rows.map(row=>({...row.target,status:'EXPLORING'}))},speedPreparation:rows}};
+ const snapshot={accountId:'A',module:'museum',csrfToken:'synthetic-csrf-A',config:{enabled:true,exploration:true},status:{running:false,blocked:false},view:{candidates:rows.map(row=>({...row,parameters:{...row.target,payment:'ITEM',useNum:1}})),explorationSelection:{stages:isCase?[]:rows.map(row=>({...row.target,status:'EXPLORING'}))},exhibitionSelection:{exhibitions:isCase?[{exhibitionId:1,level:1,cases:rows.map(row=>({caseIndex:row.target.caseIndex,upgradeFinishTime:row.endTime,level:1}))}]:[],antiques:[]},speedPreparation:rows}};
  const loading=h.node('gp-museum-load').click();
  h.respond('/api/gameplay',snapshot,{module:'museum'});await loading;
  const fields=()=>descendants(h.node('gp-museum-facts'));
  const control=key=>fields().find(row=>row.dataset[key]);
- const mode=control('museumBusinessMode');mode.value='explore-speed-batch';mode.onchange();
+ const mode=control('museumBusinessMode');mode.value=isCase?'case-speed-batch':'explore-speed-batch';mode.onchange();
  control('museumBusinessQuantity').value='1';await control('museumBusinessPrepare').click();
  assert.deepEqual(JSON.parse(h.node('gp-museum-parameters').value),{payment:'ITEM',useNum:1});
  const survey=h.node('gp-museum-survey').click();
  h.respond('/api/gameplay/survey',structuredClone(snapshot));await survey;
- const batchMode=control('museumGrowthBatchMode');batchMode.value='speedExplore';batchMode.onchange();
+ const batchMode=control('museumGrowthBatchMode');batchMode.value=actionType;batchMode.onchange();
  const picks=fields().filter(row=>row.dataset.growthBatchTarget);
  assert.equal(picks.length,2);assert.ok(picks.every(row=>!row.disabled));assert.ok(picks.every(row=>!row.checked));
  picks[1].checked=true;picks[1].onchange();
  const pending=control('growthBatchPrepare').click();
  const route='/api/gameplay/museum/growth/prepare';
- const payload={actionType:'speedExplore',targets:[rows[1].parameters],maxDurationMs:duration};
+ const payload={actionType,targets:[rows[1].parameters],maxDurationMs:duration};
  assertMutation(h.pending(route),route,payload);
  const {target,costs,budgetClaims,parameters,actionId}=rows[1],selection={actionId};
  const nodes=[{id:'start',type:'START'},{id:'grow-0',type:'ACTION',module:'museum',parameters,selection},{id:'verify-0',type:'VERIFY',module:'museum'},{id:'stop',type:'STOP'}];
