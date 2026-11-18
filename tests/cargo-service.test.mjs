@@ -155,12 +155,12 @@ for(const limit of [6,8])test('Cargo Workflow ACTION reuses registered Fleet and
 });
 
 function unifiedCargoRunner(f,entry,limit=8) {
- const intent={entry,dailies:[1,2].map(shipIndex=>({taskId:1008,action:'perform',parameters:{shipIndex,cargoIndex:1}})),budget:claims(limit)};
+ const tasksEntry=entry==='tasks'||entry==='loop-tasks',intent={entry:entry==='loop-tasks'?'loop':entry,[tasksEntry?'tasks':'dailies']:[1,2].map(shipIndex=>tasksEntry?{kind:'cargo-fill',parameters:{shipIndex,cargoIndex:1}}:{taskId:1008,action:'perform',parameters:{shipIndex,cargoIndex:1}}),budget:claims(limit)};
  const {graph,blocked}=compileUnifiedExecution(intent,{modules:GAMEPLAY_MODULES});assert.deepEqual(blocked,[]);
  const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id==='A'?f.target:null,isCurrent:(account,generation,client)=>account===f.target&&account.generation===generation&&account.client===client,claim:(id,runId,options)=>f.service.claimWorkflow(f.target,runId,options)});
  return {runner,graph};
 }
-for(const entry of ['dailies','loop'])for(const apply of [true,false])test('unified '+entry+' Cargo shares original material authorization durable history and '+(apply?'exact settlement':'persistent UNKNOWN zero replay'),async()=>{
+for(const entry of ['dailies','loop','tasks','loop-tasks'])for(const apply of [true,false])test('unified '+entry+' Cargo shares original material authorization durable history and '+(apply?'exact settlement':'persistent UNKNOWN zero replay'),async()=>{
  const f=fixture({ships:[ship(1),ship(2)],apply}),{runner,graph}=unifiedCargoRunner(f,entry);let restarted;try{
   const first=await runner.start('A',graph),p=first.plan;assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(p.module,'fleet');assert.equal(p.actions.length,1);assert.equal(p.actions[0].actionId,fillId(1));assert.deepEqual(p.resourceBudget,[{id:'木材',num:4}]);assert.equal(f.writes.length,0);
   const b=f.session('B');assert.throws(()=>f.authorize(p,b));assert.equal(f.history.list('B').length,0);
@@ -168,11 +168,11 @@ for(const entry of ['dailies','loop'])for(const apply of [true,false])test('unif
   if(apply){assert.equal(done.status,'AWAITING_AUTHORIZATION');assert.equal(done.plan.actions[0].actionId,fillId(2));assert.notEqual(done.plan.batchId,p.batchId);assert.equal((await f.execute(done.plan)).status.finalStatus,'SUCCESS');done=await runner.resume();assert.equal(done.status,'COMPLETED');assert.equal(f.target.synthetic.stock.get('木材'),2);}
   else {assert.equal(done.status,'UNKNOWN');const bytes=fs.readFileSync(f.file,'utf8');restarted=fixture({historyFile:f.file});await assert.rejects(restarted.plan(),{code:'RECOVERY_UNCERTAIN'});assert.equal(restarted.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.target.synthetic.stock.get('木材'),10);}
   assert.equal(f.writes.length,apply?2:1);for(const write of f.writes){assert.equal(write.name,'FillCargoShipRequest');assert.deepEqual(write.body.cargoIndex,[1]);assert.equal(write.durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.equal(write.durableBeforeWrite.workflowId,first.runId);}
-  for(const record of f.history.list('A')){assert.equal(record.workflowId,first.runId);assert.match(record.workflowNodeId,/^dailies-/);assert.equal(record.actions[0].result,apply?'SUCCESS':'UNKNOWN');assert.equal(record.runBudget.resumable,false);}
+  for(const record of f.history.list('A')){assert.equal(record.workflowId,first.runId);assert.match(record.workflowNodeId,entry==='tasks'||entry==='loop-tasks'?/^tasks-/:/^dailies-/);assert.equal(record.actions[0].result,apply?'SUCCESS':'UNKNOWN');assert.equal(record.runBudget.resumable,false);}
   assert.deepEqual(f.history.list('B'),[]);assert.equal(f.service.workflowBudget('A').reserved.resources[0].num,apply?8:4);
  }finally{runner.stop();await runner.settle();await restarted?.cleanup();await f.cleanup();}
 });
-for(const entry of ['dailies','loop'])test('unified '+entry+' Cargo keeps exact refusal across entry reconnect and persistent restart',async()=>{
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test('unified '+entry+' Cargo keeps exact refusal across entry reconnect and persistent restart',async()=>{
  const f=fixture({ships:[ship(1),ship(2)]}),{runner,graph}=unifiedCargoRunner(f,entry);let restarted,attempts=0;try{
   const original=f.target.client.request.bind(f.target.client);f.target.client.request=async(...args)=>{if(args[0]==='FillCargoShipRequest'){args[4]?.beforeDispatch?.();attempts++;throw Object.assign(Error('definite synthetic cargo refusal'),{code:'REJECTED'});}return original(...args);};
   const pending=await runner.start('A',graph),result=await f.execute(pending.plan);assert.equal(result.status.finalStatus,'REJECTED');await runner.resume();assert.equal(attempts,1);assert.equal(f.service.executionMemory('A').events[0].status,'REJECTED');

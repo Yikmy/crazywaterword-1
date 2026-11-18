@@ -1133,3 +1133,37 @@ for(const fault of ['missing-account','foreign-account','missing-module','foreig
  const f=fixture({surveyModule:async(session,module)=>{const source={accountId:session.id,module,view:{}};if(fault==='missing-account')delete source.accountId;if(fault==='foreign-account')source.accountId='foreign-account';if(fault==='missing-module')delete source.module;if(fault==='foreign-module')source.module='formation';return source;}});
  const result=await f.runner.start(f.session.id,graph());assert.equal(result.status,'UNKNOWN');assert.match(result.reason,/调查账号或原Function不一致/);assert.equal(f.calls.some(row=>row[0]==='plan'),false);assert.equal(result.trace.some(row=>row.result==='SURVEYED'),false);assert.equal(f.released(),1);
 });
+
+// This batch covers declaration compilation, not game settlement.
+const tasksBusinessRows=[
+ {kind:'free-gold',parameters:{},module:'free-gold',selection:{unique:true}},
+ {kind:'trial-challenge',parameters:{raidId:2,stageId:2001},module:'trial-challenge',selection:{unique:true}},
+ {kind:'cargo-fill',parameters:{shipIndex:2,cargoIndex:3},module:'fleet',selection:{actionId:'fleet:cargoFill:2:3'}},
+ {kind:'alliance-order',parameters:{cityId:7},module:'alliance'},
+ {kind:'museum',parameters:{stageId:1,heroIds:['A','B'],factor:2},module:'museum'},
+ {kind:'pirate-sweep',parameters:{uid:17,cityId:9,allowLowerLevel:true},module:'pirate-sweep',selection:{unique:true}}
+];
+for(const entry of ['tasks','loop'])test('Tasks business batch compiles six original Functions with fixed budget '+entry,async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),{allianceOrderSelection}=await import('../src/alliance.mjs'),{museumStartExploreSelection}=await import('../src/museum.mjs');
+ const budget={resources:[{id:'小麦',num:5}],quotas:[{id:'synthetic-explicit-limit',num:2}],uids:[{type:'synthetic',id:'fixed'}]},tasks=tasksBusinessRows.map(({kind,parameters})=>({kind,parameters}));
+ const input={entry,tasks,budget,...(entry==='loop'?{rounds:2,everyMs:100}:{})},before=structuredClone(input),result=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(input,before);assert.deepEqual(result.blocked,[]);assert.deepEqual(result.graph.budget,budget);
+ const actions=result.graph.nodes.filter(n=>n.type==='ACTION');assert.equal(actions.length,entry==='loop'?12:6);
+ for(let i=0;i<actions.length;i++){const spec=tasksBusinessRows[i%6],action=actions[i];assert.equal(action.module,spec.module);assert.deepEqual(action.parameters,spec.parameters);assert.deepEqual(action.selection,spec.selection??(spec.kind==='museum'?museumStartExploreSelection(spec.parameters):allianceOrderSelection(spec.parameters)));}
+ assert.equal(simulateWorkflow(result.graph,{modules:GAMEPLAY_MODULES}).requestsSent,0);
+});
+for(const spec of tasksBusinessRows)test('Tasks business batch rejects missing target and foreign action '+spec.kind,async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');const compile=row=>compileUnifiedExecution({entry:'tasks',tasks:[row],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});
+ for(const row of [{kind:spec.kind},{kind:spec.kind,parameters:null},{kind:spec.kind,parameters:[]},{kind:spec.kind,parameters:{...spec.parameters,request:'InjectedRequest'}},{kind:spec.kind,parameters:{...spec.parameters,allowPaid:true}},{kind:spec.kind,parameters:spec.parameters,action:'claim'},{kind:spec.kind,parameters:spec.parameters,selection:{unique:true}}])assert.throws(()=>compile(row),{code:'WORKFLOW_INVALID'});
+ if(spec.kind!=='free-gold')assert.throws(()=>compile({kind:spec.kind,parameters:{}}),{code:'WORKFLOW_INVALID'});
+ const missing={...GAMEPLAY_MODULES};delete missing[spec.module];assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{kind:spec.kind,parameters:spec.parameters}],budget:{resources:[],quotas:[],uids:[]}},{modules:missing}),{code:'WORKFLOW_INVALID'});
+});
+test('Tasks business batch retains original Dailies targets and explicit Tasks raid',async()=>{
+ const {GAMEPLAY_MODULES}=await import('../src/function-registry.mjs'),budget={resources:[],quotas:[],uids:[]},ids=[1006,1009,1008,1012,1016,1010];
+ const compile=dailies=>compileUnifiedExecution({entry:'dailies',dailies,budget},{modules:GAMEPLAY_MODULES});
+ const daily=compile(tasksBusinessRows.map((spec,i)=>({taskId:ids[i],action:'perform',parameters:spec.parameters}))).graph.nodes.filter(n=>n.type==='ACTION');
+ assert.deepEqual(daily.map(n=>[n.module,n.parameters]),tasksBusinessRows.map(s=>[s.module,s.parameters]));
+ assert.deepEqual(compile([{taskId:1009,action:'perform'}]).graph.nodes.find(n=>n.type==='ACTION').parameters,{});
+ for(const parameters of [{raidId:4},{raidId:0},{raidId:'1'},{stageId:1001},{raidId:1,stageId:0}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{kind:'trial-challenge',parameters}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+ for(const parameters of [{uid:17},{cityId:9},{uid:17,cityId:9,allowLowerLevel:'true'}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{kind:'pirate-sweep',parameters}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});

@@ -123,10 +123,12 @@ async function integratedPirate(t) {
  return {...f,dir,historyFile,history,service,session,store,runner,execute,makeService};
 }
 
-for(const entry of ['dailies','loop'])test(entry+' pirate Function uses shared authorization, exact parent budget and durable operation/workflow history',async t=>{
+function pirateUnifiedIntent(entry,dailies,budget){const tasksEntry=entry==='tasks'||entry==='loop-tasks';return {entry:entry==='loop-tasks'?'loop':entry,[tasksEntry?'tasks':'dailies']:tasksEntry?dailies.map(row=>({kind:'pirate-sweep',parameters:row.parameters})):dailies,budget};}
+
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test(entry+' pirate Function uses shared authorization, exact parent budget and durable operation/workflow history',async t=>{
  const f=await integratedPirate(t);
  f.data.effect=()=>{f.data.used++;f.socket.receive('SCPirateSweepTimes',{sweepTimes:f.data.used});};
- const graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,action:'perform',parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+ const graph=compileUnifiedExecution(pirateUnifiedIntent(entry,[{taskId:1010,action:'perform',parameters}],testClaims),{modules:GAMEPLAY_MODULES}).graph;
  const pending=await f.runner.start(f.session.id,graph);
  assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.equal(pending.plan.module,'pirate-sweep');assert.equal(pending.plan.actions.length,1);
  assert.equal(f.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);
@@ -141,8 +143,8 @@ for(const entry of ['dailies','loop'])test(entry+' pirate Function uses shared a
  assert.equal(f.store.history(f.session.id)[0].status,'COMPLETED');
 });
 
-for(const entry of ['dailies','loop'])test(entry+' pirate UNKNOWN stops later work and survives Service/client restart without replay',async t=>{
- const f=await integratedPirate(t),graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters},{taskId:1010,parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test(entry+' pirate UNKNOWN stops later work and survives Service/client restart without replay',async t=>{
+ const f=await integratedPirate(t),graph=compileUnifiedExecution(pirateUnifiedIntent(entry,[{taskId:1010,parameters},{taskId:1010,parameters}],testClaims),{modules:GAMEPLAY_MODULES}).graph;
  const pending=await f.runner.start(f.session.id,graph);assert.equal(pending.status,'AWAITING_AUTHORIZATION');
  const record=await f.execute(pending.plan);assert.equal(record.finalStatus,'UNKNOWN');assert.equal(f.writes.length,1);
  assert.equal((await f.runner.resume()).status,'UNKNOWN');assert.equal(f.writes.length,1);
@@ -346,8 +348,8 @@ test('a real dispatch stays UNKNOWN without exact isolated same-day readback', a
   }
 });
 
-for(const entry of ['dailies','loop'])test(entry+' registered pirate refusal remains target scoped across restart and independent targets require new authorization',async t=>{
- const f=await integratedPirate(t),firstGraph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters}],budget:testClaims},{modules:GAMEPLAY_MODULES}).graph;
+for(const entry of ['dailies','loop','tasks','loop-tasks'])test(entry+' registered pirate refusal remains target scoped across restart and independent targets require new authorization',async t=>{
+ const f=await integratedPirate(t),firstGraph=compileUnifiedExecution(pirateUnifiedIntent(entry,[{taskId:1010,parameters}],testClaims),{modules:GAMEPLAY_MODULES}).graph;
  const initial=await f.runner.start(f.session.id,firstGraph);assert.equal(initial.status,'AWAITING_AUTHORIZATION');
  // A definite transport refusal is injected at the same seam as the original
  // Service refusal tests. No server success, reward or eligibility is invented.
@@ -358,7 +360,7 @@ for(const entry of ['dailies','loop'])test(entry+' registered pirate refusal rem
  const next=await fixture(t,{...context,generation:4,connectionId:'refusal-reopened'}),session={...f.session,generation:4,connectionId:'refusal-reopened',client:next.client,workflowOwner:null,busy:null,abort:new AbortController()};
  const service=f.makeService(createExecutionHistory({file:f.historyFile})),independent={uid:8,cityId:10,allowLowerLevel:true};
  const budget={resources:[],quotas:testClaims.quotas,uids:[{type:'pirate',id:'8'}]};
- const graph=compileUnifiedExecution({entry,dailies:[{taskId:1010,parameters},{taskId:1010,parameters:independent}],budget},{modules:GAMEPLAY_MODULES}).graph;
+ const graph=compileUnifiedExecution(pirateUnifiedIntent(entry,[{taskId:1010,parameters},{taskId:1010,parameters:independent}],budget),{modules:GAMEPLAY_MODULES}).graph;
  const runner=createWorkflowRunner({operations:service,modules:GAMEPLAY_MODULES,getSession:()=>session,
   claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),onUpdate:state=>f.store.record(session.id,state)});
  t.after(async()=>{runner.stop();await runner.settle();await service.settle(session.id);});

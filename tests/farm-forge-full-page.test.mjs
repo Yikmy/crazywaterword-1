@@ -727,7 +727,7 @@ test('unified form refuses invalid targets and unsupported entry combinations wi
   const source=h.node('wf-unified-intent').value;unifiedAdd(h,'tasks','main',target);
   assert.equal(h.node('wf-unified-intent').value,source,target);assert.match(h.node('wf-unified-form-hint').textContent,/明确整数/);
  }
- for(const [phase,kind] of [['dailies','free-gold'],['tasks','free-gold']]){
+ for(const [phase,kind] of [['dailies','free-gold'],['tasks','stage']]){
   const source=h.node('wf-unified-intent').value;unifiedAdd(h,phase,kind);assert.equal(h.node('wf-unified-intent').value,source);
  }
  h.node('wf-unified-entry').value='loop';h.node('wf-unified-rounds').value='2';h.node('wf-unified-every').value='500';h.node('wf-unified-limits').click();
@@ -3285,4 +3285,40 @@ for(const entry of ['tasks','loop'])for(const recruit of ['hero','antique'])test
 });
 for(const fault of ['dailies','limit','dirty','scope','busy'])test('Tasks recruit PAGE professional candidate rejects '+fault+' without copying permission',async()=>{
  const spec=cases.find(s=>s.module==='free-recruit'),h=await recruitTaskPage(spec);unifiedLoad(h,{entry:fault==='dailies'?'dailies':'tasks',tasks:fault==='limit'?Array.from({length:48},()=>({kind:'main',taskId:1})):[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}});const control=descendants(h.node('gp-free-recruit-facts')).find(n=>n.dataset?.recruitTaskPrepare);assert.ok(control);if(fault==='dirty'){h.node('gp-free-recruit-parameters').value='{"payment":"ticket"}';h.node('gp-free-recruit-parameters').oninput();}if(fault==='scope')h.run("selectAccount('B');selectAccount('A')");if(fault==='busy')h.run("snapshot.busy='synthetic'");const before=h.node('wf-unified-intent').value,requests=h.requests.length;control.click();assert.equal(h.node('wf-unified-intent').value,before);assert.equal(h.requests.length,requests);assert.equal(h.confirmations.length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+});
+
+const tasksBusinessPageSpecs=[
+ {kind:'cargo-fill',module:'fleet',actionType:'cargoFill',actionId:'fleet:cargoFill:2:3',parameters:{shipIndex:2,cargoIndex:3},target:{shipIndex:2,cargoIndex:3},costs:[{id:'小麦',num:5}],facts:{}},
+ {kind:'alliance-order',module:'alliance',actionType:'finishOrder',actionId:'alliance:finishOrder:synthetic-city',parameters:{cityId:7},target:{cityId:7},costs:[{id:'小麦',num:5}],facts:{cities:[{cityId:7}]}},
+ {kind:'museum',module:'museum',actionType:'startExplore',actionId:'museum:startExplore:synthetic-stage',parameters:{stageId:1,heroIds:['A','B'],factor:2},target:{stageId:1,heroIds:['A','B'],factor:2},costs:[{id:'小麦',num:5}],facts:{}},
+ {kind:'pirate-sweep',...pirateCase},
+ {kind:'trial-challenge',...cases.find(s=>s.module==='trial-challenge'),parameters:{raidId:2,stageId:2001},target:{raidId:2,stageId:2001,passedStage:0}},
+ {kind:'free-gold',...cases.find(s=>s.module==='free-gold')}
+];
+for(const spec of tasksBusinessPageSpecs)test('Tasks business batch native form preserves original parameters and Dailies '+spec.kind,async()=>{
+ for(const phase of ['tasks','dailies']){
+  const h=await unifiedForm(phase);h.node('wf-unified-cargo-index').value='3';h.node('wf-unified-museum-heroes').value='A\nB';h.node('wf-unified-museum-factor').value='2';h.node('wf-unified-pirate-city').value='9';h.node('wf-unified-pirate-lower').checked=true;
+  const targets={'cargo-fill':'2','alliance-order':'7',museum:'1','pirate-sweep':'17','trial-challenge':'2','free-gold':''};
+  if(spec.kind==='pirate-sweep'){h.node('wf-unified-phase').value=phase;h.node('wf-unified-phase').onchange();h.node('wf-unified-kind').value=spec.kind;h.node('wf-unified-kind').onchange();h.node('wf-unified-target').value='17';h.node('wf-unified-pirate-city').value='9';h.node('wf-unified-pirate-lower').checked=true;h.node('wf-unified-add').click();}
+  else unifiedAdd(h,phase,spec.kind,targets[spec.kind]);const draft=unifiedDraft(h),row=draft[phase].at(-1);assert.ok(row,h.node('wf-unified-form-hint').textContent);
+  const parameters=spec.kind==='trial-challenge'?{raidId:2}:spec.parameters;
+  assert.deepEqual(row,phase==='tasks'?{kind:spec.kind,parameters}:{taskId:({'cargo-fill':1008,'alliance-order':1012,museum:1016,'pirate-sweep':1010,'trial-challenge':1009,'free-gold':1006})[spec.kind],action:'perform',...(spec.kind==='free-gold'?{}:{parameters})});
+  const compiled=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES}),action=compiled.graph.nodes.filter(n=>n.type==='ACTION').at(-1);assert.equal(action.module,spec.module);assert.deepEqual(action.parameters,parameters);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
+ }
+});
+for(const spec of tasksBusinessPageSpecs)test('Tasks business batch professional candidate keeps target and fixed draft budget '+spec.kind,async()=>{
+ const h=await loaded(spec),read=h.node('gp-'+spec.module+'-survey').click(),reply=data(spec);reply.view.candidates=reply.view.candidates.filter(r=>r.executable===true);h.respond('/api/gameplay/survey',reply);await read;
+ const draft={entry:'loop',tasks:[{kind:'main',taskId:7}],dailies:[],world:[],rounds:2,everyMs:100,budget:{resources:[{id:'小麦',num:15}],quotas:[],uids:[]}};unifiedLoad(h,draft);
+ const button=descendants(h.node('gp-'+spec.module+'-candidates')).find(n=>n.dataset.unifiedTaskCandidate===spec.actionId)??descendants(h.node('gp-'+spec.module+'-facts')).find(n=>n.dataset.trialTaskPrepare||n.dataset.freeGoldTaskPrepare);
+ assert.ok(button,'original Tasks candidate button');assert.equal(button.disabled,false);const before=h.requests.length;button.click();
+ const next=unifiedDraft(h),parameters=spec.kind==='free-gold'?{expectedGold:spec.facts.gold}:spec.parameters;assert.deepEqual(next.tasks,[...draft.tasks,{kind:spec.kind,parameters}]);assert.deepEqual(next.budget,draft.budget);assert.deepEqual(next.world,[]);assert.deepEqual(next.dailies,[]);assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+ const compiled=compileUnifiedExecution(next,{modules:GAMEPLAY_MODULES});assert.deepEqual(compiled.graph.nodes.filter(n=>n.type==='ACTION')[1].parameters,parameters);
+});
+for(const spec of tasksBusinessPageSpecs.slice(0,4))test('Tasks business batch professional controls reject stale source foreign entry and overflow '+spec.kind,async()=>{
+ const h=await loaded(spec),button=descendants(h.node('gp-'+spec.module+'-candidates')).find(n=>n.dataset.unifiedTaskCandidate===spec.actionId);assert.ok(button);const before=h.requests.length;
+ const full={entry:'tasks',tasks:Array.from({length:48},()=>({kind:'main',taskId:7})),budget:{resources:[],quotas:[],uids:[]}};
+ unifiedLoad(h,full);let source=h.node('wf-unified-intent').value;button.click();assert.equal(h.node('wf-unified-intent').value,source);assert.match(h.node('gp-'+spec.module+'-hint').textContent,/48/);
+ unifiedLoad(h,{entry:'dailies',dailies:[],budget:{resources:[],quotas:[],uids:[]}});source=h.node('wf-unified-intent').value;button.click();assert.equal(h.node('wf-unified-intent').value,source);
+ h.node('gp-'+spec.module+'-parameters').oninput();source=h.node('wf-unified-intent').value;button.click();assert.equal(h.node('wf-unified-intent').value,source);
+ h.run("selectAccount('B')");button.click();assert.equal(h.node('wf-unified-intent').value,'');assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);assert.equal(h.confirmations.length,0);
 });
