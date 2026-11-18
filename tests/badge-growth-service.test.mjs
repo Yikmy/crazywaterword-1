@@ -430,3 +430,54 @@ for(const enough of [true,false])test('partial XP Workflow uses original parent 
  fresh.player.worldId='9';await assert.rejects(f.displayed(restarted,fresh),{code:'REJECTION_MEMORY_ACTIVE'});
  assert.equal(fresh.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
 });
+
+function badgeBatchFixture(t,{action='level',count=2,initialExp=0,stop=null}={}){
+ const f=fixture(t,{star:action==='star',initialExp}),service=f.newService(f.history),session=f.newSession();
+ const targets=Array.from({length:count},(_,i)=>({heroId:'batch-'+i,uid:(9007199254760000n+BigInt(i)).toString(),...(action==='star'?{action}:{})}));
+ f.config.tables.HeroCfg.data=targets.map(p=>({id:p.heroId,type:'英雄',career:'法师'}));
+ const badges=targets.map(p=>({...structuredClone(session.badge),uid:p.uid})),heroes=targets.map((p,i)=>({...structuredClone(session.hero),heroId:p.heroId,badges:[{...structuredClone(session.worn),uid:badges[i].uid}]}));
+ const per=action==='star'?[{id:'徽章升星石',num:1},{id:'GOLD',num:500000}]:[{id:xp,num:5-initialExp},{id:'GOLD',num:(5-initialExp)*20}];
+ for(const r of per)session.stock.set(r.id,r.num*count);
+ session.client.request=async(name,body,reply,_timeout,options={})=>{
+  const decoded=toSnapshotJson(wire(name,body));
+  if(options.mutate){
+   options.beforeDispatch?.();const i=badges.findIndex(row=>row.uid===decoded.uid);assert.ok(i>=0);assert.equal(name,action==='star'?'BadgeStarRequest':'EnhanceBadgeRequest');
+   assert.deepEqual(decoded,action==='star'?{uid:targets[i].uid,decomposeUid:[],starItemNum:1}:{uid:targets[i].uid,decomposeUid:[],expItemNum:5-initialExp});
+   session.writes.push({body:decoded,durable:structuredClone(f.history.list(session.id)[0])});
+   if(stop?.index===session.writes.length&&stop.kind==='refused')throw Object.assign(Error('synthetic badge batch refusal'),{code:'REJECTED'});
+   if(!(stop?.index===session.writes.length&&stop.kind==='unknown')){
+    if(action==='star'){badges[i].star++;heroes[i].badges[0].star++;badges[i].attr.value++;heroes[i].badges[0].attr.value++;}
+    else{badges[i].level++;badges[i].exp=0;heroes[i].badges[0].level++;}
+    for(const r of per)session.stock.set(r.id,session.stock.get(r.id)-r.num);
+   }
+   return wire(reply,{material:{asset:[]}});
+  }
+  session.reads.push({name,afterDispatch:session.writes.length>0});
+  const value={BadgesRequest:()=>({badge:badges}),AllHeroRequest:()=>({heroes}),AllItemRequest:()=>({items:[...session.stock].filter(([id])=>id!=='GOLD').map(([itemId,num])=>({itemId,num}))}),AllResourceRequest:()=>({list:[{res:3,amount:session.stock.get('GOLD')}]})}[name]?.();assert.ok(value,name);return wire(reply,value);
+ };
+ const runner=createWorkflowRunner({operations:service,modules:GAMEPLAY_MODULES,getSession:id=>id===session.id?session:null,claim:(id,runId,opts)=>service.claimWorkflow(session,runId,opts),isCurrent:(s,g,c)=>s===session&&s.generation===g&&s.client===c});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ const execute=async plan=>{const permit=service.authorize(session,f.permitPayload(plan));service.execute(session,permit);await service.settle(session.id);return {permit,record:f.history.list(session.id).find(row=>row.planSummary.batchId===plan.batchId)};};
+ return {...f,service,session,targets,badges,heroes,per,runner,execute,input:{targets,maxDurationMs:60000}};
+}
+for(const action of ['level','star'])for(const count of [1,24])for(const initialExp of action==='level'?[0,2]:[0])test('badge prepared batch '+action+' '+count+' residual '+initialExp+' runs original independent UID approvals to exact material exhaustion',async t=>{
+ const f=badgeBatchFixture(t,{action,count,initialExp}),p=await f.service.prepareBadgeGrowthSource(f.session,f.input);assert.deepEqual(costMap(p.budget.resources),costMap(f.per.map(r=>({...r,num:r.num*count}))));assert.deepEqual(p.budget.uids,f.targets.map(p=>({type:'badge',id:p.uid})));
+ let run=await f.runner.start(f.session.id,p.graph);for(let i=0;i<count;i++){
+  assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.deepEqual(run.plan.actions[0].target,p.steps[i].target);assert.equal(f.session.writes.length,i);
+  const result=await f.execute(run.plan);assert.equal(result.record.finalStatus,'SUCCESS');assert.equal(result.record.workflowNodeId,'grow-'+i);assert.equal(result.record.runBudget.reserved.uids.length,i+1);assert.throws(()=>f.service.execute(f.session,result.permit));run=await f.runner.resume();
+ }
+ assert.equal(run.status,'COMPLETED');assert.equal(f.session.writes.length,count);for(const r of f.per)assert.equal(f.session.stock.get(r.id),0);assert.equal(f.session.stock.get('其他'),1);for(let i=0;i<count;i++){assert.equal(f.badges[i][action==='star'?'star':'level'],action==='star'?1:2);assert.equal(f.heroes[i].badges[0][action==='star'?'star':'level'],action==='star'?1:2);if(action==='level')assert.equal(f.badges[i].exp,0);}assert.equal(f.newHistory().unresolved(f.session.id),false);
+});
+for(const action of ['level','star'])for(const kind of ['unknown','refused'])test('badge prepared batch '+action+' second '+kind+' stops third target and keeps fixed original UID reservation',async t=>{
+ const f=badgeBatchFixture(t,{action,count:3,initialExp:action==='level'?2:0,stop:{index:2,kind}}),p=await f.service.prepareBadgeGrowthSource(f.session,f.input);let run=await f.runner.start(f.session.id,p.graph);assert.equal((await f.execute(run.plan)).record.finalStatus,'SUCCESS');run=await f.runner.resume();const result=await f.execute(run.plan);assert.equal(result.record.finalStatus,kind==='unknown'?'UNKNOWN':'REJECTED');run=await f.runner.resume();assert.equal(run.status,kind==='unknown'?'UNKNOWN':'FAILED');
+ const bytes=fs.readFileSync(f.file,'utf8'),reads=f.session.reads.length;await assert.rejects(f.runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.session.reads.length,reads);assert.equal(f.session.writes.length,2);assert.equal(f.badges[2][action==='star'?'star':'level'],action==='star'?0:1);assert.deepEqual(result.record.runBudget.reserved.uids,f.targets.slice(0,2).map(p=>({type:'badge',id:p.uid})));assert.equal(f.newHistory().unresolved(f.session.id),kind==='unknown');
+});
+for(const action of ['level','star'])for(const missing of [0,1])test('badge prepared batch '+action+' cumulative shortage material '+missing+' rejects before history or write',async t=>{
+ const f=badgeBatchFixture(t,{action,count:24,initialExp:action==='level'?2:0}),r=f.per[missing];f.session.stock.set(r.id,r.num*24-1);await assert.rejects(f.service.prepareBadgeGrowthSource(f.session,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.session.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
+});
+
+test('badge prepared batch rejects sparse accessor duplicate mixed modes overlimit and missing last ownership',async t=>{
+ const f=badgeBatchFixture(t,{count:24});let getters=0;const accessor={};Object.defineProperty(accessor,'heroId',{enumerable:true,get(){getters++;return 'A';}});
+ for(const targets of [[],Array(1),[accessor],[f.targets[0],f.targets[0]],[f.targets[0],{...f.targets[1],action:'star'}],[...f.targets,{heroId:'extra',uid:'8'}]])await assert.rejects(f.service.prepareBadgeGrowthSource(f.session,{targets,maxDurationMs:60000}),{code:'INVALID_PARAMETERS'});
+ assert.equal(getters,0);assert.equal(f.session.reads.length,0);f.heroes.at(-1).badges=[];await assert.rejects(f.service.prepareBadgeGrowthSource(f.session,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.session.writes.length,0);assert.deepEqual(f.history.list(f.session.id),[]);
+});

@@ -469,3 +469,54 @@ test('ordinary Pet observed conditions do not change original Service UNKNOWN re
  const p=await f.displayed(),{record}=await f.execute(p);assert.equal(record.finalStatus,'UNKNOWN');assert.deepEqual(record.runBudget.reserved,claims);
  const next=f.newService();await assert.rejects(next.surveyModule({...f.session,client:{...f.client,uncertainWrites:new Map()}},'pet',parameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].name,'PetFeedRequest');
 });
+
+async function petBatchFixture(t,{action='feed',count=2,stop=null}={}){
+ const f=fixture(t,{shared:true,level:action==='level'});await f.ready;const {state}=f,originalPet=structuredClone(state.pets[0]);let targets;
+ if(action==='level'){
+  targets=Array.from({length:count},(_,i)=>({action,buildingId:(i+2)+'宠物',uid:(9007199254770000n+BigInt(i)).toString()}));
+  state.pets=[originalPet,...targets.map(p=>({...structuredClone(originalPet),uid:p.uid}))];
+  state.buildings=state.buildings.filter(row=>!row.petServe);state.buildings.push(...targets.map(p=>({buildingId:p.buildingId,level:1,buildStartTime:0,buildFinishTime:0,petServe:{petUid:p.uid,upgradeRequirements:[]}})));
+  state.stock.set('宠物经验',count*1300);f.push();
+ }else{
+  targets=Array.from({length:count},(_,jobIdx)=>({action,buildingId:f.room.buildingId,jobIdx}));
+  f.room.petBreed.maxQLength=count;f.room.petBreed.breedQ=targets.map((p,i)=>({...structuredClone(f.job),idx:p.jobIdx,startTime:900+i,finishTime:2000+i*200}));
+  state.stock.set('鱼肠线',count*12);state.stock.set('粗铁',count*4);
+ }
+ const per=action==='level'?[{id:'宠物经验',num:1300}]:[{id:'粗铁',num:4},{id:'鱼肠线',num:12}].sort((a,b)=>a.id.localeCompare(b.id));
+ f.client.sendWatch=async(name,body,{beforeDispatch}={})=>{
+  beforeDispatch?.();assert.equal(name,action==='level'?'PetLevelUpRequest':'PetFeedRequest');const decoded=toSnapshotJson(wire(name,body)),i=targets.findIndex(p=>action==='level'?p.buildingId===decoded.buildingId:p.jobIdx===decoded.jobIdx);assert.ok(i>=0);assert.deepEqual(decoded,action==='level'?{buildingId:targets[i].buildingId}:{jobIdx:targets[i].jobIdx});
+  state.writes.push({name,body:decoded,durable:structuredClone(f.durable.list(account)[0])});
+  if(stop?.index===state.writes.length&&stop.kind==='refused')throw Object.assign(Error('synthetic pet batch refusal'),{code:'REJECTED'});
+  if(!(stop?.index===state.writes.length&&stop.kind==='unknown')){
+   if(action==='level'){const row=state.pets.find(row=>row.uid===targets[i].uid);row.level++;for(const a of row.baseAttrs)a.value+=a.attr===1?10:2;f.push();}
+   else f.room.petBreed.breedQ.find(row=>row.idx===targets[i].jobIdx).finishTime-=100;
+   for(const r of per)state.stock.set(r.id,state.stock.get(r.id)-r.num);
+  }
+  return {status:'UNKNOWN'};
+ };
+ return {...f,targets,per,originalPet,input:{targets,maxDurationMs:60000}};
+}
+for(const action of ['feed','level'])for(const count of [1,24])test('Pet prepared batch '+action+' '+count+' executes exact original target IDs and exhausts only initial materials',async t=>{
+ const f=await petBatchFixture(t,{action,count}),p=await f.service.preparePetGrowthSource(f.session,f.input);assert.deepEqual(p.budget.resources,f.per.map(r=>({...r,num:r.num*count})));assert.equal(p.budget.uids.length,count*(action==='level'?2:1));const runner=f.runner();let run=await runner.start(account,p.graph);
+ for(let i=0;i<count;i++){
+  assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.deepEqual(run.plan.actions[0].target,p.steps[i].target);assert.equal(f.state.writes.length,i);const result=await f.execute(run.plan);assert.equal(result.record.finalStatus,'SUCCESS');assert.equal(result.record.workflowNodeId,'grow-'+i);assert.equal(result.record.runBudget.reserved.uids.length,(i+1)*(action==='level'?2:1));assert.throws(()=>f.service.execute(f.session,result.permit));run=await runner.resume();
+ }
+ assert.equal(run.status,'COMPLETED');assert.equal(f.state.writes.length,count);for(const r of f.per)assert.equal(f.state.stock.get(r.id),0);assert.equal(f.state.stock.get('GOLD'),500);assert.equal(f.state.stock.get('其他'),1);assert.deepEqual(f.state.pets.find(row=>row.uid===f.originalPet.uid),f.originalPet);
+ for(let i=0;i<count;i++)if(action==='level'){const row=f.state.pets.find(row=>row.uid===f.targets[i].uid);assert.equal(row.level,2);assert.deepEqual(row.baseAttrs,[{attr:1,value:120},{attr:2,value:24},{attr:3,value:34}]);}else assert.equal(f.room.petBreed.breedQ.find(row=>row.idx===i).finishTime,1900+i*200);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(account),false);
+});
+for(const action of ['feed','level'])for(const kind of ['unknown','refused'])test('Pet prepared batch '+action+' second '+kind+' stops third and preserves original budget across restart',async t=>{
+ const f=await petBatchFixture(t,{action,count:3,stop:{index:2,kind}}),p=await f.service.preparePetGrowthSource(f.session,f.input),runner=f.runner();let run=await runner.start(account,p.graph);assert.equal((await f.execute(run.plan)).record.finalStatus,'SUCCESS');run=await runner.resume();const result=await f.execute(run.plan);assert.equal(result.record.finalStatus,kind==='unknown'?'UNKNOWN':'REJECTED');run=await runner.resume();assert.equal(run.status,kind==='unknown'?'UNKNOWN':'FAILED');
+ const bytes=fs.readFileSync(f.file,'utf8'),reads=f.state.reads.length;await assert.rejects(runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(f.state.reads.length,reads);assert.equal(f.state.writes.length,2);assert.deepEqual(result.record.runBudget.reserved.uids,p.budget.uids.slice(0,action==='level'?4:2));if(action==='level')assert.equal(f.state.pets.find(row=>row.uid===f.targets[2].uid).level,1);else assert.equal(f.room.petBreed.breedQ[2].finishTime,2400);assert.equal(createExecutionHistory({file:f.file}).unresolved(account),kind==='unknown');
+});
+for(const action of ['feed','level'])test('Pet prepared batch '+action+' rejects cumulative shortage without history or transport',async t=>{
+ const f=await petBatchFixture(t,{action,count:24}),r=f.per[0];f.state.stock.set(r.id,r.num*24-1);await assert.rejects(f.service.preparePetGrowthSource(f.session,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(account),[]);
+});
+
+for(const action of ['feed','level'])test('Pet prepared batch '+action+' rejects malformed targets and missing last exact authority without dispatch',async t=>{
+ const f=await petBatchFixture(t,{action,count:24});let getters=0;const accessor={};Object.defineProperty(accessor,'action',{enumerable:true,get(){getters++;return action;}});
+ const collision=action==='level'?{...f.targets[1],buildingId:f.targets[0].buildingId}:{...f.targets[1],buildingId:'2宠物培育室',jobIdx:0};
+ for(const targets of [[],Array(1),[accessor],[f.targets[0],f.targets[0]],[f.targets[0],collision],[...f.targets,{...f.targets[0]}]])await assert.rejects(f.service.preparePetGrowthSource(f.session,{targets,maxDurationMs:60000}),{code:'INVALID_PARAMETERS'});
+ assert.equal(getters,0);assert.equal(f.state.reads.length,0);if(action==='level'){f.state.buildings.find(row=>row.buildingId===f.targets.at(-1).buildingId).petServe.petUid='0';f.push();}else f.room.petBreed.breedQ.pop();
+ await assert.rejects(f.service.preparePetGrowthSource(f.session,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(account),[]);
+});
