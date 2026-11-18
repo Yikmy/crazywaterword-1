@@ -2276,13 +2276,24 @@ test('cargo preparation HTTP accepts explicit cross-ship loads and preserves leg
  }finally{await app.close();}
 });
 
-test('browser offline city preparation opens the original Workflow and simulates zero writes', {
+test('browser offline city preparation simulates zero writes and settles after explicit authorization', {
  skip: !process.env.CW_TEST_BROWSER,
  timeout: 40000
 }, async () => {
  const {spawn}=await import('node:child_process');
  const {setTimeout:delay}=await import('node:timers/promises');
- const {app,state}=await accelerationCancellationHttp('city');
+ const {app,client,state}=await accelerationCancellationHttp('city');
+ const building=state.water.building[0], originalFinish=building.buildFinishTime;
+ client.sendWatch=async(name,body,options)=>{
+  assert.equal(name,'SpeedUpUpgradeBuildingRequest');
+  assert.deepEqual(body.speedUp,{type:2,useNum:10});
+  options.beforeDispatch?.();
+  assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+  state.writes.push({name,body:structuredClone(body)});
+  state.stock.set('加速器',0);
+  building.buildFinishTime-=60;
+  return {status:'UNKNOWN',sent:true};
+ };
  const profile=fs.mkdtempSync(path.join(root,'browser-'));
  const origin='http://127.0.0.1:'+app.server.address().port;
  const browser=spawn(process.env.CW_TEST_BROWSER, [
@@ -2329,7 +2340,7 @@ test('browser offline city preparation opens the original Workflow and simulates
   });
   const evaluate=async expression=>(await command('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression})).result.value;
   await command('Page.enable');
-  await command('Page.addScriptToEvaluateOnNewDocument',{source:"globalThis.pageErrors=[]; addEventListener('error',e=>pageErrors.push(e.message+' '+e.lineno));"});
+  await command('Page.addScriptToEvaluateOnNewDocument',{source:"globalThis.pageErrors=[]; addEventListener('error',e=>pageErrors.push(e.message+' '+e.lineno)); window.confirm=()=>{globalThis.confirmations=(globalThis.confirmations||0)+1;return true;};"});
   await command('Page.reload');
   await waitFor(async()=>{
    try{return await evaluate("document.readyState === 'complete' && !!globalThis.pageErrors && !!document.querySelector('#gp-city-survey')");}
@@ -2370,6 +2381,21 @@ test('browser offline city preparation opens the original Workflow and simulates
   assert.equal(result.simulation.requestsSent,0);
   assert.equal(result.simulation.runtimeCreated,false);
   assert.deepEqual(state.writes,[]);
+  await evaluate("document.getElementById('wf-start').click()");
+  await waitFor(async()=>evaluate("!document.getElementById('wf-authorize').disabled"),'workflow authorization');
+  assert.deepEqual(state.writes,[]);
+  await evaluate("document.getElementById('wf-authorize').click()");
+  await waitFor(()=>app.history.list('A')[0]?.finalStatus==='SUCCESS','verified synthetic settlement');
+  await waitFor(async()=>{
+   const status=await app.call('/api/workflows');
+   if(status.data.status.status==='COMPLETED')return true;
+   await evaluate("document.getElementById('wf-resume').click()");
+   return false;
+  },'workflow completion');
+  assert.equal(await evaluate('globalThis.confirmations'),1);
+  assert.equal(state.writes.length,1);
+  assert.equal(building.buildFinishTime,originalFinish-60);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
  }finally{
   socket?.close();
   browser.kill();
