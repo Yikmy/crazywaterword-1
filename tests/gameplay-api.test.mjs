@@ -3556,3 +3556,51 @@ test('browser offline alliance tech prepares and simulates 24 selected technolog
   });
  }finally{await app.close();}
 });
+
+
+for(const mode of ['budget-tamper','late-editor'])test('browser offline alliance tech rejects '+mode+' preparation',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:45000
+},async()=>{
+ const {app,writes}=await allianceTechBatchHttpFixture();
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-alliance-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="alliance"]')).click();
+    (await wait('#gp-alliance-load')).click();(await wait('#gp-alliance-survey')).click();
+    await wait('[data-alliance-tech-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-alliance-tech-target]'));
+    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected technologies');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-alliance-tech-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=async(...args)=>{
+     const response=await originalFetch(...args);
+     if(String(args[0]).includes('/api/gameplay/alliance/tech/prepare')){
+      const json=await response.json();globalThis.capturedTechResponse=json;
+      await new Promise(resolve=>{globalThis.releaseTechResponse=resolve;});
+      return new Response(JSON.stringify(globalThis.capturedTechResponse),{status:response.status,headers:{'content-type':'application/json'}});
+     }
+     return response;
+    };
+    globalThis.originalTechEditor=find('#wf-json').value;
+    (await wait('[data-alliance-tech-prepare]')).click();
+   }).toString()+')()');
+   await waitFor(()=>evaluate('!!globalThis.releaseTechResponse'),'intercepted prepare response');
+   if(mode==='budget-tamper')await evaluate("globalThis.capturedTechResponse.graph.budget.resources[0].num--");
+   else await evaluate("document.getElementById('wf-json').value='edited by user'");
+   const before=await evaluate("document.getElementById('wf-json').value");
+   await evaluate('globalThis.releaseTechResponse()');
+   await waitFor(()=>evaluate("!document.querySelector('[data-alliance-tech-prepare]').disabled"),'preparation settled');
+   assert.equal(await evaluate("document.getElementById('wf-json').value"),before);
+   if(mode==='budget-tamper')assert.match(await evaluate("document.getElementById('gp-alliance-hint').textContent"),/逐项验证图|父预算/);
+   assert.deepEqual(writes,[]);assert.equal(app.history.list('A').length,0);
+   assert.equal(await evaluate('globalThis.confirmations||0'),0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ }finally{await app.close();}
+});

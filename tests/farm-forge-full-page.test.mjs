@@ -3592,3 +3592,45 @@ test('arrived Cargo page accepts the full 24 selected voyages without granting p
  assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  assert.equal(h.confirmations.length,0);
 });
+
+
+for(const mode of ['success','account-tamper','guild-tamper','state-tamper','cost-tamper','budget-tamper','graph-tamper','late-selection','late-duration','late-editor','late-account'])
+ test('alliance tech page preserves original selection and rejects '+mode,async()=>{
+ const techState={season:1,stage:1},technologies=[10101,10102].map((techId,i)=>({techId,name:'科技'+techId,level:0,targetLevel:1,
+  parameters:{techId,targetLevel:1},selection:{actionId:'alliance:upgradeTech:'+techId},
+  costs:[{id:i?'联盟职级科技点':'公会科技点',num:i?10:20}],blockedReason:null}));
+ const spec={module:'alliance',actionId:'alliance-tech-synthetic',actionType:'upgradeTech',parameters:{},costs:[],
+  facts:{guildId:'10',playerId:'1',techState,technologies}};
+ const h=await boot(),read=h.node('gp-alliance-load').click(),response=data(spec);response.config={enabled:true,tech:true};
+ h.respond('/api/gameplay',response,{module:'alliance'});await read;
+ const controls=descendants(h.node('gp-alliance-facts')),checks=controls.filter(node=>node.dataset.allianceTechTarget),
+  duration=controls.find(node=>node.dataset.allianceTechDuration),prepare=controls.find(node=>node.dataset.allianceTechPrepare);
+ assert.equal(checks.length,2);assert.ok(checks.every(node=>!node.checked&&!node.disabled));
+ await prepare.click();assert.equal(writes(h).length,0);
+ checks.forEach(node=>{node.checked=true;node.onchange();});duration.value='60';duration.oninput();
+ const targets=technologies.map(row=>row.parameters),payload={targets,maxDurationMs:60000},nodes=[{id:'start',type:'START'}];
+ const steps=technologies.map((row,i)=>{const {parameters,selection,costs}=row;
+  nodes.push({id:'tech-'+i,type:'ACTION',module:'alliance',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'alliance'});
+  return {parameters,selection,target:parameters,costs,budgetClaims:{resources:costs,quotas:[],uids:[]}};
+ });nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:[{id:'公会科技点',num:20},{id:'联盟职级科技点',num:10}],quotas:[],uids:[]};
+ const graph={version:1,id:'alliance-tech-test',name:'Alliance tech',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),
+  budget,runPolicy:{maxDurationMs:60000,maxActions:2,modules:['alliance']}};
+ const reply=structuredClone({...payload,accountId:'A',guildId:'10',playerId:'1',techState,steps,budget,graph,
+  resumable:false,requiresFreshPlan:true,requiresAuthorization:true});
+ const pending=prepare.click(),route='/api/gameplay/alliance/tech/prepare';assertMutation(h.pending(route),route,payload);
+ if(mode==='account-tamper')reply.accountId='B';
+ if(mode==='guild-tamper')reply.guildId='11';
+ if(mode==='state-tamper')reply.techState.stage=2;
+ if(mode==='cost-tamper')reply.steps[0].costs[0].num=19;
+ if(mode==='budget-tamper')reply.graph.budget.resources[0].num=19;
+ if(mode==='graph-tamper')reply.graph.nodes[1].parameters.techId=999;
+ if(mode==='late-selection')checks[1].checked=false;
+ if(mode==='late-duration')duration.value='61';
+ if(mode==='late-editor')h.node('wf-json').value='edited';
+ if(mode==='late-account')h.run("selectAccount('B');selectAccount('A');");
+ const before=h.node('wf-json').value;h.respond(route,reply);await pending;
+ if(mode==='success')assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);else assert.equal(h.node('wf-json').value,before);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
+ assert.equal(h.confirmations.length,0);
+});
