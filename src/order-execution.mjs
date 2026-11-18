@@ -15,6 +15,12 @@ import { orderProductionWait } from './production-planning.mjs';
 import { stockMatchesDelta } from './naval-facts.mjs';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+// Tasks binds the existing SUBMIT candidate, including its order identity and rule policy.
+// A replacement order or changed policy must never be selected as a substitute.
+export function residentOrderSelection(actionId) {
+  if (typeof actionId !== 'string' || !/^orders:SUBMIT:[a-f0-9]{64}$/.test(actionId)) throw notExecuted('居民订单须明确原SUBMIT候选actionId');
+  return { actionId };
+}
 const own = (value, key) => value != null && Object.hasOwn(value, key);
 const modes = new Set(['Manual', 'Hybrid', 'Automatic']);
 const notExecuted = (message) => Object.assign(new Error(message), { code: 'NOT_EXECUTED' });

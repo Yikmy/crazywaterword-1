@@ -2151,3 +2151,47 @@ for(const module of ['city','production'])for(const change of ['account','player
   const reply=await app.call(route,{body});assert.notEqual(reply.status,200);assert.equal(hit,true);assert.equal(state.writes.length,0);assert.equal(state.stock.get('加速器'),10);assert.equal(app.history.list('A').length,0);assert.equal(session.busy,['generation','client'].includes(change)?'successor':null);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+
+test('resident-order Tasks HTTP requires individual approval for two original submissions',async()=>{
+ const order=(index,revision=0)=>({index,workerId:'worker-'+index+'-'+revision,textId:revision+1,isSpecial:false,refreshTime:0,requirements:[{id:'wood',num:2}]});
+ const orders=[order(0),order(1)],dispatched=[];
+ let completed=0,stock=4;
+ const app=await harness({includeOrders:true,testProtocol:{...protocol,FinishWorkerOrderRequest:{},FinishWorkerOrderResponse:{}}});
+ try {
+  const session=app.ready('A');
+  session.client.request=async(name,body,response,_timeout,options)=>{
+   if(name==='FinishWorkerOrderRequest'){
+    assert.equal(options.mutate,true);options.beforeDispatch?.();
+    dispatched.push(body.index);orders[body.index]=order(body.index,1);completed++;stock-=2;
+    return {reward:{asset:[]}};
+   }
+   assert.notEqual(options?.mutate,true);
+   const replies={OnWaterRequest:{building:[],workerOrder:orders,orderOfTheDay:{orderNum:completed,rewardedNum:0}},AllItemRequest:{items:stock?[{itemId:'wood',num:stock}]:[]},AllResourceRequest:{list:[]},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]}};
+   assert.ok(Object.hasOwn(replies,name),name);return heroWire(response,replies[name]);
+  };
+  await app.call('/api/gameplay?module=orders');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'orders',config:{enabled:true}}})).status,200);
+  const observed=await app.call('/api/gameplay/survey',{body:{module:'orders',parameters:{}}});
+  assert.equal(observed.status,200,JSON.stringify(observed.data));
+  const tasks=observed.data.view.candidates.filter(row=>row.executable===true).map(({actionId})=>({kind:'resident-order',actionId}));
+  assert.equal(tasks.length,2,JSON.stringify(observed.data.view.candidates));
+  const budget={resources:[{id:'wood',num:4}],quotas:[],uids:[]};
+  const prepared=await app.call('/api/workflows/prepare',{body:{entry:'tasks',tasks,budget,runPolicy:{maxActions:2,maxDurationMs:60000,modules:['orders']}}});
+  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const started=await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
+  assert.equal(started.status,200,JSON.stringify(started.data));
+  for (const [index,{actionId}] of tasks.entries()){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   assert.equal(waiting.authorizationOffer,undefined);assert.equal(waiting.plan.actions[0].actionId,actionId);
+   assert.equal(waiting.plan.actions.length,1);assert.equal(dispatched.length,index);
+   const permit=await app.approve(waiting.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.operations.settle('A');
+   const resumed=await app.call('/api/workflows/resume',{body:{}});assert.equal(resumed.status,200,JSON.stringify(resumed.data));
+  }
+  await waitForWorkflow(app,'COMPLETED');assert.deepEqual(dispatched,[0,1]);assert.equal(stock,0);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.operations.workflowBudget('A').reserved.resources,budget.resources);
+  assert.equal(app.history.list('A').length,2);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

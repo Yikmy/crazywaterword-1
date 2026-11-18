@@ -1221,6 +1221,24 @@ function renderOperationCandidates() {
     card.appendChild(el('div', 'dim', '探测库存：' + operationCosts(row.resourceBefore)));
     if (row.actionType === 'KEEP' || row.actionType === 'REVIEW' || !row.actionId) card.appendChild(el('div', 'warn', row.blockedReason || '保留或等待人工检查，不产生游戏写操作。'));
     else operationChoice(row, card);
+    if (row.executable === true && row.actionType === 'SUBMIT' && /^orders:SUBMIT:[a-f0-9]{64}$/.test(row.actionId)) {
+      const button = el('button', null, '加入 Tasks 声明');
+      const scope = viewGuard.capture(), revision = operationsRevision;
+      button.type = 'button';
+      button.dataset.orderTaskActionId = row.actionId;
+      button.onclick = () => {
+        if (!viewGuard.current(scope) || operationsRevision !== revision || operationsData?.view !== view
+          || !Array.from(orders.children).includes(card) || !snapshot.connected || snapshot.state !== 'READY' || snapshot.busy
+          || operationsPending || productionPolicyPending || operationsLocked()) return;
+        try {
+          addResidentOrderTaskDeclaration(row.actionId);
+          $('ops-hint').textContent = '已将此订单加入 Tasks 草稿。请在工作流页核对累计预算。';
+        } catch (error) {
+          $('ops-hint').textContent = error.message;
+        }
+      };
+      card.appendChild(button);
+    }
     orders.appendChild(card);
   }
   if (!rows.length) orders.textContent = '当前没有可解析的居民订单。';

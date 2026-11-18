@@ -3388,3 +3388,22 @@ for(const module of ['city','production'])for(const mode of ['before-state','exp
  if(mode==='before-state')reply.steps[0].beforeState={};if(mode==='expected-state')reply.steps[0].expectedState={};if(mode==='budget')reply.graph.budget.resources[0].num++;if(mode==='verify')reply.graph.nodes.splice(2,1);if(mode==='edge')reply.graph.edges[0].to='stop';if(mode==='selection')reply.graph.nodes[1].selection={unique:false};if(mode==='limit')reply.graph.runPolicy.maxActions++;if(mode==='order')reply.targets.reverse();if(mode==='account')reply.accountId='B';
  const before=h.node('wf-json').value;h.respond(route,reply);await work;assert.equal(h.node('wf-json').value,before);assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.ok(u.picks.every(n=>!n.disabled));
 });
+
+
+test('resident-order Tasks declaration uses the exact professional candidate and unchanged parent budget',async()=>{
+ const actionId='orders:SUBMIT:'+'a'.repeat(64),row={actionId,actionType:'SUBMIT',executable:true,target:{index:0},costs:[{id:'wood',num:2}]};
+ const h=await boot(),load=h.node('ops-load').click();
+ h.respond('/api/operations',{accountId:'A',csrfToken:'synthetic-csrf-A',status:{running:false},view:{orders:[row,{...row,actionType:'REFRESH',actionId:actionId.replace('SUBMIT','REFRESH')}]}});await load;
+ const budget={resources:[{id:'wood',num:4}],quotas:[],uids:[]};
+ const draft={entry:'loop',tasks:[{kind:'orderDaily',action:'observe'}],dailies:[],world:[],budget};unifiedLoad(h,draft);
+ const buttons=descendants(h.node('ops-orders')).filter(n=>n.dataset.orderTaskActionId);
+ assert.equal(buttons.length,1);const [button]=buttons;assert.equal(button.dataset.orderTaskActionId,actionId);
+ await button.click();
+ unifiedAdd(h,'tasks','resident-order','orders:REFRESH:'+'a'.repeat(64));
+ assert.deepEqual(unifiedDraft(h).tasks,[...draft.tasks,{kind:'resident-order',actionId}]);
+ unifiedAdd(h,'tasks','resident-order',actionId.replace(/a$/,'b'));
+ const next=unifiedDraft(h),{graph}=compileUnifiedExecution(next,{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(graph.nodes.filter(n=>n.type==='ACTION').map(n=>[n.module,n.parameters,n.selection]),[['orders',{},{actionId}],['orders',{},{actionId:actionId.replace(/a$/,'b')}]]);
+ assert.deepEqual(graph.budget,budget);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
+ h.run("selectAccount('B')");await button.click();assert.equal(h.node('wf-unified-intent').value,'');
+});

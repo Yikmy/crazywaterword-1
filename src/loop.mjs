@@ -4,6 +4,7 @@ import { validateStageFunctionParameters } from './stage-function.mjs';
 import { validateTrialChallengeParameters } from './trial-challenge.mjs';
 import { validateFreeRecruitParameters } from './free-recruit.mjs';
 import { validateFreeGoldParameters } from './free-gold.mjs';
+import { residentOrderSelection } from './order-execution.mjs';
 import { validateWorkflow } from './workflow.mjs';
 import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
@@ -169,6 +170,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(!Object.hasOwn(parameters,'kind')||phase==='dailies'&&['main','branch','achievement'].includes(parameters.kind))invalid('该分组不支持此任务观察');
         }catch{invalid('只读观察须使用原任务Function的明确完整目标');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
+      }
+      if(phase==='tasks'&&row?.kind==='resident-order'){
+        exact(row,['kind','actionId']);
+        try{selection=residentOrderSelection(row.actionId);}catch{invalid('Tasks居民订单须明确原SUBMIT候选actionId，不接受刷新或替换目标');}
+        steps.push({phase,index,module:'orders',parameters:{},selection});continue;
       }
       if(phase==='tasks'&&row?.kind==='free-recruit'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks招募须明确原Function业务参数，免费单次使用空对象');
