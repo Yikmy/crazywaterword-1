@@ -1761,7 +1761,7 @@ for(const [kind,type,table,tierId]of [['open-rank-order',1,'OpenRankOrderTaskCfg
  const f=await openRankWarHttpReady(app,{kind,unconfirmed});client=f.client;const cached=await app.call('/api/gameplay?module=task-rewards');assert.equal(cached.data.config.enabled,false);assert.equal(app.requests.length,0);await app.enable();const args={module:'task-rewards',parameters};assert.equal((await app.call('/api/gameplay/survey',{body:args,authorized:false})).status,403);const surveyed=await app.survey(parameters);assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));const candidate=surveyed.data.view.candidates[0];assert.equal(candidate.executable,true,JSON.stringify(candidate));assert.equal(candidate.target.type,type);assert.equal(candidate.action,undefined);const planned=await app.call('/api/operations/plan',{body:{...args,mode:'Manual',selections:[candidate.actionId]}});assert.equal(planned.status,200,JSON.stringify(planned.data));assert.deepEqual(planned.data.resourceBudget,[]);assert.equal(app.requests.some(r=>r.name==='GotOpenRankRewardRequest'),false);const permit=await app.approve(planned.data);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');const records=(await app.call('/api/operations/history')).data.runs;assert.equal(records[0].finalStatus,unconfirmed?'UNKNOWN':'SUCCESS',JSON.stringify(records[0]));assert.deepEqual(app.requests.filter(r=>r.name==='GotOpenRankRewardRequest').map(r=>r.body),[{type,id:tierId}]);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,403);assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);if(unconfirmed){const count=app.requests.length;assert.equal((await app.survey(parameters)).data.code,'RESPONSE_UNCERTAIN');assert.equal(app.requests.length,count);}assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{client?.stop();await app.close();}
 });
-for(const unconfirmed of [false,true])test('compass original HTTP exact permit, budget, history and UNKNOWN '+unconfirmed,async()=>{
+async function compassHttpFixture(unconfirmed){
  const {loadConfig}=await import('../src/config.mjs'),{trustedGameClock}=await import('../src/state-facts.mjs'),config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')}),app=await harness({includeCompass:true,testProtocol:heroWireProtocol,configOverride:config});let client;
  try{
   const cached=await app.call('/api/gameplay?module=compass-wheel');assert.equal(cached.status,200);assert.equal(cached.data.config.enabled,false);assert.equal(app.sessions.size,0);
@@ -1771,7 +1771,14 @@ for(const unconfirmed of [false,true])test('compass original HTTP exact permit, 
   const activityId='9007199254740995',ticket='活动26捞尸人_抽奖券',currency='活动26捞尸人_货币',info={score:100,claimedId:0,times:10,cost:{type:0,id:ticket,num:2},minScore:5,maxScore:20,outerGot:[],pity:10},stock=[{itemId:ticket,num:10},{itemId:currency,num:0}];
   socket.receive('SCAllActivity',{festivalActivities:[{activityId,festival:1,type:'捞尸人联动活动',season:1,startTime:800,openTime:900,closeTime:1900,endTime:2000,subActivity:[{subActivityType:28,openTime:900,closeTime:1900,compassWheel:{score:100,claimedId:0}}]}]},1);
   client.request=async(n,b,r,_timeout,opts)=>{heroWire(n,b);app.requests.push({id:'A',name:n,body:structuredClone(b),mutate:opts?.mutate===true});if(opts?.mutate){opts.beforeDispatch?.();assert.deepEqual(b,{activityId,num:1});if(!unconfirmed){info.score+=10;info.times++;info.pity++;stock[0].num-=2;stock[1].num+=10;}return heroWire(r,{spin:[{innerId:2,outerId:0,score:10}],score:110,reward:{asset:[{type:0,id:currency,num:10}]}});}return heroWire(r,n==='CompassWheelInfoRequest'?info:n==='AllItemRequest'?{items:stock}:{list:[{res:3,amount:100},{res:4,amount:50}]});};
-  Object.assign(session,{client,player,connectionId:'compass-http-A'});await app.call('/api/gameplay/config',{body:{module:'compass-wheel',config:{enabled:true}}});
+  Object.assign(session,{client,player,connectionId:'compass-http-A'});
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'compass-wheel',config:{enabled:true}}})).status,200);
+  return {app,client,activityId,ticket,currency,stock};
+ }catch(error){client?.stop();await app.close();throw error;}
+}
+for(const unconfirmed of [false,true])test('compass original HTTP exact permit, budget, history and UNKNOWN '+unconfirmed,async()=>{
+ const {app,client,activityId,ticket}=await compassHttpFixture(unconfirmed);
+ try{
   const parameters={activityId,count:1},read=await app.call('/api/gameplay/survey',{body:{module:'compass-wheel',parameters}});assert.equal(read.status,200);const row=read.data.view.candidates[0];assert.equal(row.executable,true,JSON.stringify(row));assert.equal(app.requests.filter(r=>r.mutate).length,0);
   assert.equal((await app.call('/api/gameplay/survey',{body:{module:'compass-wheel',parameters:{...parameters,buy:true}}})).status,400);
   const planned=await app.call('/api/operations/plan',{body:{module:'compass-wheel',mode:'Manual',parameters,selections:[row.actionId]}});assert.equal(planned.status,200,JSON.stringify(planned.data));const p=planned.data;assert.deepEqual(p.resourceBudget,[{id:ticket,num:2}]);assert.equal(app.requests.filter(r=>r.mutate).length,0);
@@ -2276,24 +2283,9 @@ test('cargo preparation HTTP accepts explicit cross-ship loads and preserves leg
  }finally{await app.close();}
 });
 
-test('browser offline city preparation simulates zero writes and settles after explicit authorization', {
- skip: !process.env.CW_TEST_BROWSER,
- timeout: 40000
-}, async () => {
+async function withOfflineBrowser(app,exercise){
  const {spawn}=await import('node:child_process');
  const {setTimeout:delay}=await import('node:timers/promises');
- const {app,client,state}=await accelerationCancellationHttp('city');
- const building=state.water.building[0], originalFinish=building.buildFinishTime;
- client.sendWatch=async(name,body,options)=>{
-  assert.equal(name,'SpeedUpUpgradeBuildingRequest');
-  assert.deepEqual(body.speedUp,{type:2,useNum:10});
-  options.beforeDispatch?.();
-  assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
-  state.writes.push({name,body:structuredClone(body)});
-  state.stock.set('加速器',0);
-  building.buildFinishTime-=60;
-  return {status:'UNKNOWN',sent:true};
- };
  const profile=fs.mkdtempSync(path.join(root,'browser-'));
  const origin='http://127.0.0.1:'+app.server.address().port;
  const browser=spawn(process.env.CW_TEST_BROWSER, [
@@ -2343,9 +2335,33 @@ test('browser offline city preparation simulates zero writes and settles after e
   await command('Page.addScriptToEvaluateOnNewDocument',{source:"globalThis.pageErrors=[]; addEventListener('error',e=>pageErrors.push(e.message+' '+e.lineno)); window.confirm=()=>{globalThis.confirmations=(globalThis.confirmations||0)+1;return true;};"});
   await command('Page.reload');
   await waitFor(async()=>{
-   try{return await evaluate("document.readyState === 'complete' && !!globalThis.pageErrors && !!document.querySelector('#gp-city-survey')");}
+   try{return await evaluate("document.readyState === 'complete' && !!globalThis.pageErrors && !!document.querySelector('#wf-json')");}
    catch(error){if(!/Execution context was destroyed|Cannot find context/.test(error.message))throw error;return false;}
   },'console initialization');
+  await exercise({evaluate,waitFor});
+ }finally{
+  socket?.close();
+  browser.kill();
+ }
+}
+
+test('browser offline city preparation simulates zero writes and settles after explicit authorization', {
+ skip: !process.env.CW_TEST_BROWSER,
+ timeout: 40000
+}, async () => {
+ const {app,client,state}=await accelerationCancellationHttp('city');
+ const building=state.water.building[0], originalFinish=building.buildFinishTime;
+ client.sendWatch=async(name,body,options)=>{
+  assert.equal(name,'SpeedUpUpgradeBuildingRequest');
+  assert.deepEqual(body.speedUp,{type:2,useNum:10});
+  options.beforeDispatch?.();
+  assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+  state.writes.push({name,body:structuredClone(body)});
+  state.stock.set('加速器',0);
+  building.buildFinishTime-=60;
+  return {status:'UNKNOWN',sent:true};
+ };
+ try{await withOfflineBrowser(app,async({evaluate,waitFor})=>{
   const result=await evaluate('('+(async()=>{
 
      const find=selector=>document.querySelector(selector);
@@ -2396,9 +2412,79 @@ test('browser offline city preparation simulates zero writes and settles after e
   assert.equal(state.writes.length,1);
   assert.equal(building.buildFinishTime,originalFinish-60);
   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
- }finally{
-  socket?.close();
-  browser.kill();
-  await app.close();
- }
+ });}finally{await app.close();}
+});
+
+for(const unconfirmed of [false,true])test('browser offline compass Tasks '+(unconfirmed?'stops on UNKNOWN':'settles precisely'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:40000
+},async()=>{
+ const {app,client,activityId,ticket,stock}=await compassHttpFixture(unconfirmed);
+ const writes=()=>app.requests.filter(request=>request.mutate);
+ try{await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+  const graph=await evaluate('('+(async(activityId,ticket)=>{
+   const find=selector=>document.querySelector(selector);
+   const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+    for(let attempt=0;attempt<100;attempt++){
+     const element=find(selector);
+     if(accept(element))return element;
+     await new Promise(resolve=>setTimeout(resolve,75));
+    }
+    throw Error(selector+' '+find('#gp-compass-wheel-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+   };
+   if(globalThis.pageErrors.length)throw Error(globalThis.pageErrors.join(', '));
+   await wait('#account',element=>element?.value==='A');
+   (await wait('#tabs button[data-tab="idle"]')).click();
+   (await wait('#gp-compass-wheel-load')).click();
+   const activity=await wait('[data-compass-activity]');
+   activity.value=activityId;
+   (await wait('[data-compass-prepare]')).click();
+   (await wait('#gp-compass-wheel-survey')).click();
+   (await wait('[data-compass-task-prepare]')).click();
+   const editor=await wait('#wf-unified-intent',element=>element?.value.includes('compass-wheel'));
+   const intent=JSON.parse(editor.value);
+   if(intent.tasks.length!==1||intent.tasks[0].parameters.activityId!==activityId||intent.tasks[0].parameters.count!==1){
+    throw Error('Tasks declaration did not preserve the exact target');
+   }
+   intent.budget={
+    resources:[{id:ticket,num:2}],
+    quotas:[{id:'compass-wheel:'+activityId,num:1}],
+    uids:[{type:'compass-wheel',id:activityId+':10'}]
+   };
+   editor.value=JSON.stringify(intent);
+   editor.dispatchEvent(new Event('input',{bubbles:true}));
+   (await wait('#tabs button[data-tab="workflow"]')).click();
+   (await wait('#wf-unified-prepare')).click();
+   const workflow=await wait('#wf-json',element=>element?.value.includes(intent.tasks[0].actionId));
+   return JSON.parse(workflow.value);
+  }).toString()+')('+JSON.stringify(activityId)+','+JSON.stringify(ticket)+')');
+  const action=graph.nodes.find(node=>node.type==='ACTION');
+  assert.equal(action.module,'compass-wheel');
+  assert.deepEqual(action.parameters,{activityId,count:1});
+  assert.deepEqual(graph.budget.resources,[{id:ticket,num:2}]);
+  assert.deepEqual(writes(),[]);
+  await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'Tasks start control');
+  await evaluate("document.getElementById('wf-start').click()");
+  await waitFor(()=>evaluate("!document.getElementById('wf-authorize').disabled"),'Tasks authorization');
+  assert.deepEqual(writes(),[]);
+  await evaluate("document.getElementById('wf-authorize').click()");
+  await waitFor(()=>app.history.list('A')[0]?.finalStatus===(unconfirmed?'UNKNOWN':'SUCCESS'),'settlement');
+  const terminal=unconfirmed?'UNKNOWN':'COMPLETED';
+  await waitFor(async()=>{
+   const {data}=await app.call('/api/workflows');
+   if(data.status.status===terminal)return true;
+   if(['FAILED','UNKNOWN','CANCELLED'].includes(data.status.status))assert.fail(JSON.stringify(data.status));
+   await evaluate("document.getElementById('wf-resume').click()");
+   return false;
+  },'Tasks '+terminal);
+  const record=app.history.list('A')[0];
+  assert.equal(record.finalStatus,unconfirmed?'UNKNOWN':'SUCCESS');
+  assert.equal(record.workflowNodeId,action.id);
+  assert.deepEqual(writes().map(({body})=>body),[{activityId,num:1}]);
+  assert.deepEqual(stock.map(item=>item.num),unconfirmed?[10,0]:[8,10]);
+  await app.call('/api/workflows/resume',{body:{}});
+  assert.equal(writes().length,1);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+  assert.equal(await evaluate('globalThis.confirmations'),1);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ });}finally{client.stop();await app.close();}
 });
