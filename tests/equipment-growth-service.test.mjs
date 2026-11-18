@@ -104,7 +104,7 @@ function fixture({ enabled = true, apply = true, historyFile, watchStatus = 'UNK
   }
   const authorize = (target, planned) => service.authorize(target, { batchId: planned.batchId, planHash: planned.planHash, approvedActionIds: planned.actions.map(row => row.actionId), resourceBudget: planned.resourceBudget, confirm: true });
   async function execute(target, planned) { const permit = authorize(target, planned), started = service.execute(target, permit); await service.settle(target.id); return { permit, started, record: durable.list(target.id).find(row => row.planSummary.batchId === planned.batchId), status: service.status(target.id) }; }
-  function runner(target) { const result = createWorkflowRunner({ operations: service, modules: GAMEPLAY_MODULES, getSession: id => sessions.get(id), claim: (id, runId, opts) => service.claimWorkflow(sessions.get(id), runId, opts), isCurrent: (s, generation, client) => s === target && s.generation === generation && s.client === client }); runners.push(result); return result; }
+  function runner(target) { const result = createWorkflowRunner({ clock:()=>serviceTime, operations: service, modules: GAMEPLAY_MODULES, getSession: id => sessions.get(id), claim: (id, runId, opts) => service.claimWorkflow(sessions.get(id), runId, opts), isCurrent: (s, generation, client) => s === target && s.generation === generation && s.client === client }); runners.push(result); return result; }
   async function cleanup() { for (const r of runners) r.stop(); await Promise.all(runners.map(r => r.settle())); for (const target of sessions.values()) target.abort.abort(); await Promise.all([...sessions.keys()].map(id => service.settle(id)));if(app)await app.close(); assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir())); fs.rmSync(dir, { recursive: true, force: true }); }
   const call=(route,{id='account-A',body,method=body===undefined?'GET':'POST',headers={},authorized=true}={})=>new Promise(resolve=>{assert.ok(app);const url=new URL(route,'http://127.0.0.1:17321');if(id!==null)url.searchParams.set('account',id);const req=new EventEmitter();Object.assign(req,{url:url.pathname+url.search,method,headers:{host:'127.0.0.1:17321','content-type':'application/json',...(authorized?{origin:'http://127.0.0.1:17321',...(csrf?{'x-cw-csrf':csrf}:{})}:{}),...headers}});const res={writeHead(status,headers){this.status=status;this.headers=headers;},end(text){const data=JSON.parse(text);if(data.csrfToken)csrf=data.csrfToken;resolve({status:this.status,data,text});}};app.server.emit('request',req,res);if(body!==undefined)req.emit('data',Buffer.from(JSON.stringify(body)));req.emit('end');});return {app,call,counts:()=>({clients,collections}),file, service, durable, journal, moduleSettings, session, displayed, authorize, execute, runner, cleanup, advance: ms => { serviceTime += ms; }, config: mutate => mutate(gameConfig), failPersist: predicate => { failPersist = predicate; } };
 }
@@ -453,5 +453,57 @@ test('INITIAL_LEVEL original HTTP survey plan explicit authorize execute and his
   const plan=await f.call('/api/operations/plan',{body:{module:moduleId,mode:'Manual',parameters:p,selections:[candidate.actionId]}});assert.equal(plan.status,200);assert.equal(t.synthetic.writes.length,0);assert.deepEqual(plan.data.actions[0].costs,[]);
   const auth=await f.call('/api/operations/authorize',{body:{batchId:plan.data.batchId,planHash:plan.data.planHash,approvedActionIds:plan.data.actions.map(r=>r.actionId),resourceBudget:plan.data.resourceBudget,confirm:true}});assert.equal(auth.status,200);
   f.session('account-B');assert.equal((await f.call('/api/operations/execute',{id:'account-B',body:auth.data})).status,409);assert.equal((await f.call('/api/operations/execute',{body:auth.data})).status,200);await f.service.settle(t.id);const h=await f.call('/api/operations/history');assert.equal(h.data.runs[0].finalStatus,'SUCCESS');assert.equal(h.data.runs[0].actions[0].actionType,'INITIAL_LEVEL');assert.deepEqual(h.data.runs[0].runBudget.reserved,initialClaims());assert.equal(t.synthetic.writes.length,1);assert.deepEqual(t.synthetic.writes[0].body,{uid:ids.A});assert.deepEqual(f.counts(),{clients:0,collections:0});assert.equal(f.app.server.listening,false);
+ }finally{await f.cleanup();}
+});
+
+
+function equipmentBatchFixture({action='level',count=2,stop=null}={}){
+ const f=fixture({refine:action==='refine',star:action==='star',initial:action==='initial-level'}),session=f.session(),state=session.synthetic;
+ const template=structuredClone(state.pool[0]),owner=structuredClone(state.heroes[0]);
+ const targets=Array.from({length:count},(_,i)=>({heroId:'batch-'+i,uid:(9007199254750000n+BigInt(i)).toString(),...(action==='level'?{}:{action})}));
+ state.pool=targets.map(p=>({...structuredClone(template),uid:p.uid}));
+ state.heroes=targets.map((p,i)=>({...structuredClone(owner),heroId:p.heroId,equips:[structuredClone(state.pool[i])]}));
+ const idle=structuredClone(equip(ids.idle));state.pool.push(idle);
+ const per=action==='initial-level'?[]:action==='refine'?[['精铁',4],['精炼石',2]]:action==='star'?[['装备升星石',1],['精铁',4]]:[['精铁',4]];
+ for(const [id,num]of per)state.stock.set(id,num*count);
+ const original=session.client.sendWatch.bind(session.client);
+ session.client.sendWatch=async(name,body,options)=>{
+  const next=state.writes.length+1;
+  if(stop?.index===next&&stop.kind==='refused'){options?.beforeDispatch?.();state.writes.push({name,body:structuredClone(body),durableBeforeWrite:structuredClone(f.journal.at(-1))});throw Object.assign(Error('synthetic batch equipment refusal'),{code:'REJECTED'});}
+  if(stop?.index===next&&stop.kind==='unknown')state.apply=false;
+  return original(name,body,options);
+ };
+ return {...f,target:session,state,targets,per,input:{targets,maxDurationMs:60000},idle};
+}
+for(const action of ['level','initial-level','refine','star'])for(const count of [1,24])test('equipment prepared batch '+action+' '+count+' runs original per-UID plans with exact initial materials',async()=>{
+ const f=equipmentBatchFixture({action,count});try{
+  const prepared=await f.service.prepareEquipmentGrowthSource(f.target,f.input);assert.equal(prepared.graph.runPolicy.maxActions,count);assert.deepEqual(prepared.budget.resources,f.per.map(([id,num])=>({id,num:num*count})));assert.deepEqual(prepared.budget.uids,f.targets.map(p=>({type:'equipment',id:p.uid})));
+  const runner=f.runner(f.target);let run=await runner.start(f.target.id,prepared.graph);const runId=run.runId;
+  for(let i=0;i<count;i++){
+   assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.deepEqual(run.plan.actions[0].target,prepared.steps[i].target);assert.deepEqual(run.plan.resourceBudget,prepared.steps[i].costs);assert.equal(f.state.writes.length,i);
+   const done=await f.execute(f.target,run.plan);assert.equal(done.record.finalStatus,'SUCCESS');assert.equal(done.record.workflowId,runId);assert.equal(done.record.workflowNodeId,'grow-'+i);assert.equal(done.record.runBudget.reserved.uids.length,i+1);assert.throws(()=>f.service.execute(f.target,done.permit));
+   run=await runner.resume();
+  }
+  assert.equal(run.status,'COMPLETED');assert.equal(f.state.writes.length,count);assert.equal(f.durable.list(f.target.id).length,count);for(const [id]of f.per)assert.equal(f.state.stock.get(id),0);assert.equal(f.state.stock.get('其他材料'),7);assert.equal(f.state.stock.get('GOLD'),100);
+  for(let i=0;i<count;i++){const row=f.state.pool[i];assert.equal(row[action==='refine'?'refineLv':action==='star'?'star':'level'],action==='level'?2:1);assert.deepEqual(f.state.heroes[i].equips[0],row);}
+  assert.deepEqual(f.state.pool.at(-1),f.idle);assert.equal(createExecutionHistory({file:f.file}).unresolved(f.target.id),false);
+ }finally{await f.cleanup();}
+});
+for(const action of ['level','initial-level','refine','star'])for(const kind of ['unknown','refused'])test('equipment prepared batch '+action+' second '+kind+' stops without releasing original UID or replay',async()=>{
+ const f=equipmentBatchFixture({action,count:3,stop:{kind,index:2}});try{
+  const prepared=await f.service.prepareEquipmentGrowthSource(f.target,f.input),runner=f.runner(f.target);let run=await runner.start(f.target.id,prepared.graph);assert.equal((await f.execute(f.target,run.plan)).record.finalStatus,'SUCCESS');run=await runner.resume();
+  const done=await f.execute(f.target,run.plan);assert.equal(done.record.finalStatus,kind==='unknown'?'UNKNOWN':'REJECTED');assert.equal(done.record.runBudget.reserved.uids.length,2);run=await runner.resume();assert.equal(run.status,kind==='unknown'?'UNKNOWN':'FAILED');
+  const before=fs.readFileSync(f.file,'utf8'),reads=f.state.reads.length;await assert.rejects(runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(f.state.reads.length,reads);assert.equal(fs.readFileSync(f.file,'utf8'),before);assert.equal(f.state.writes.length,2);assert.equal(f.state.pool[2][action==='refine'?'refineLv':action==='star'?'star':'level'],action==='initial-level'?0:action==='level'?1:0);assert.equal(f.durable.unresolved(f.target.id),kind==='unknown');
+  assert.deepEqual(done.record.runBudget.reserved.uids,f.targets.slice(0,2).map(p=>({type:'equipment',id:p.uid})));
+ }finally{await f.cleanup();}
+});
+for(const action of ['level','refine','star'])test('equipment prepared batch '+action+' rejects cumulative shortage although each target alone is affordable',async()=>{
+ const f=equipmentBatchFixture({action,count:24});try{f.state.stock.set(f.per[0][0],f.per[0][1]*24-1);await assert.rejects(f.service.prepareEquipmentGrowthSource(f.target,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(f.target.id),[]);}finally{await f.cleanup();}
+});
+test('equipment prepared batch rejects duplicate sparse accessor mixed modes and missing last ownership without writes',async()=>{
+ const f=equipmentBatchFixture({count:24});try{
+  let reads=0;const accessor={};Object.defineProperty(accessor,'heroId',{enumerable:true,get(){reads++;return 'A';}});
+  for(const targets of [[],Array(1),[accessor],[f.targets[0],f.targets[0]],[f.targets[0],{...f.targets[1],action:'refine'}],[...f.targets,{heroId:'extra',uid:'8'}]])await assert.rejects(f.service.prepareEquipmentGrowthSource(f.target,{targets,maxDurationMs:60000}),{code:'INVALID_PARAMETERS'});
+  assert.equal(reads,0);f.state.heroes.at(-1).equips=[];await assert.rejects(f.service.prepareEquipmentGrowthSource(f.target,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(f.target.id),[]);
  }finally{await f.cleanup();}
 });
