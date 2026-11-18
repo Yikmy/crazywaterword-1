@@ -51,11 +51,11 @@ for(const name of ['MuseumInfo','AllAntique','MuseumStartExplore','MuseumSpeedUp
 for(const name of ['FinishGuildOrder','GotGuildWelfarePack'])for(const suffix of ['Request','Response'])protocol[name+suffix]??={};
 const allianceDailyCfg={tables:{GuildOrderNumCfg:{data:[{season:1,playerLevel:1,maxNum:3}]}}};
 const museumDailyCfg={tables:{MuseumExpeditionTeamCfg:{data:[{teamCount:1,playerLevel:28}]},MuseumExpeditionStageCfg:{data:[{stageId:1,areaLevelReq:[]}]},MuseumExpeditionConditionCfg:{data:[{conditionId:100,heroCount:3}]},MuseumExploreTimeFactorCfg:{data:[{factor:1,playerLevel:1},{factor:2,playerLevel:30}]}}};
-async function harness({includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
+async function harness({includeAllianceFort=false,includeFormationUnlock=false,includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
  // Each harness has its own module registry. Keep same-test restart evidence,
  // but do not load another test's Workflow contracts or authorization history.
  for(const name of ['workflows.json','workflows.json.anchor'])fs.rmSync(path.join(root,name),{force:true});
- saveStore({version:1,activeId:'A',accounts:[account('A'),account('B')]});let clients=0,collections=0;const requests=[];const modules={formation:formationModule,...(includeCompass?{'compass-wheel':GAMEPLAY_MODULES['compass-wheel']}:{}),...(includeForge?{'equipment-forge':GAMEPLAY_MODULES['equipment-forge']}:{}),...(includeProduction?{production:GAMEPLAY_MODULES.production}:{}),...(includeOrders?{orders:GAMEPLAY_MODULES.orders}:{}),...(includeCargo?{fleet:GAMEPLAY_MODULES.fleet}:{}),...(includeTrade?{trade:GAMEPLAY_MODULES.trade}:{}),...(includePirate?{'pirate-sweep':GAMEPLAY_MODULES['pirate-sweep']}:{}),...(includeFreeRecruit?{'free-recruit':GAMEPLAY_MODULES['free-recruit']}:{}),...(includeAfk?{'afk-level-rewards':GAMEPLAY_MODULES['afk-level-rewards']}:{}),...(includeWeeklyGift||includeDailyGift||includeDailyReward||includeDailyActivity||includeWorkflowTasks?{'task-rewards':GAMEPLAY_MODULES['task-rewards']}:{}),...(includeMaterialPacks?{'material-packs':GAMEPLAY_MODULES['material-packs']}:{}),...(includeFarm?{farm:GAMEPLAY_MODULES.farm}:{}),...(includeMuseum?{museum:GAMEPLAY_MODULES.museum}:{}),...(includeHeroes?{heroes:heroModule}:{}),...(includeAlliance||includeAllianceOrders?{alliance:allianceModule}:{}),...(includeStage?{stage:{id:'stage',defaultConfig:{enabled:false}}}:{})};const hc=structuredClone(heroCfg);if(includeFragments){hc.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});hc.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['tank','ranger'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};}const history=createExecutionHistory({file:path.join(root,'execution-'+Math.random()+'.json')});const moduleSettings=createModuleSettings({file:path.join(root,'settings-'+Math.random()+'.json'),modules});
+ saveStore({version:1,activeId:'A',accounts:[account('A'),account('B')]});let clients=0,collections=0;const requests=[];const modules={formation:formationModule,...(includeFormationUnlock?{'formation-unlock':GAMEPLAY_MODULES['formation-unlock']}:{}),...(includeCompass?{'compass-wheel':GAMEPLAY_MODULES['compass-wheel']}:{}),...(includeForge?{'equipment-forge':GAMEPLAY_MODULES['equipment-forge']}:{}),...(includeProduction?{production:GAMEPLAY_MODULES.production}:{}),...(includeOrders?{orders:GAMEPLAY_MODULES.orders}:{}),...(includeCargo?{fleet:GAMEPLAY_MODULES.fleet}:{}),...(includeTrade?{trade:GAMEPLAY_MODULES.trade}:{}),...(includePirate?{'pirate-sweep':GAMEPLAY_MODULES['pirate-sweep']}:{}),...(includeFreeRecruit?{'free-recruit':GAMEPLAY_MODULES['free-recruit']}:{}),...(includeAfk?{'afk-level-rewards':GAMEPLAY_MODULES['afk-level-rewards']}:{}),...(includeWeeklyGift||includeDailyGift||includeDailyReward||includeDailyActivity||includeWorkflowTasks?{'task-rewards':GAMEPLAY_MODULES['task-rewards']}:{}),...(includeMaterialPacks?{'material-packs':GAMEPLAY_MODULES['material-packs']}:{}),...(includeFarm?{farm:GAMEPLAY_MODULES.farm}:{}),...(includeMuseum?{museum:GAMEPLAY_MODULES.museum}:{}),...(includeHeroes?{heroes:heroModule}:{}),...(includeAlliance||includeAllianceOrders||includeAllianceFort?{alliance:includeAllianceFort?GAMEPLAY_MODULES.alliance:allianceModule}:{}),...(includeStage?{stage:{id:'stage',defaultConfig:{enabled:false}}}:{})};const hc=structuredClone(heroCfg);if(includeFragments){hc.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});hc.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['tank','ranger'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};}const history=createExecutionHistory({file:path.join(root,'execution-'+Math.random()+'.json')});const moduleSettings=createModuleSettings({file:path.join(root,'settings-'+Math.random()+'.json'),modules});
  const memory=includeAllianceOrders?createExecutionMemory({file:history.storagePath+'.memory.json'}):null;
  const app=createConsole({port:0,protocol:testProtocol,tracePath:path.join(root,'trace-'+Math.random()+'.log'),clientFactory(){clients++;throw Error('Real client forbidden');},collect(...args){collections++;if(collectSnapshot)return collectSnapshot(...args);throw Error('Full collector forbidden');},operationOptions:{history,...(memory?{memory}:{}),...(includeStage||includeMuseum||includeAllianceOrders||includeCargo||includeTrade?{}:{modules}),moduleSettings,getConfig:()=>configOverride??(includeAllianceOrders?allianceDailyCfg:includeMuseum?museumDailyCfg:includeChipTask?chipTaskCfg:includeChipGift?chipGiftCfg:includeUniqueGift?uniqueGiftCfg:includeWeeklyGift?weeklyGiftCfg:includeDailyGift?dailyGiftCfg:includeDailyActivity?dailyActivityCfg:includeDailyReward?dailyRewardCfg:includeMaterialPacks?materialPackCfg:includeExpedition?{tables:{...cfg.tables,ExpeditionRaidCfg:{data:[{raidId:1001,unlockLv:30,heroCount:10}]}}}:includeFarm?farmCfg:includeHeroes?hc:includeAlliance?allianceCfg:cfg),loadRules:()=>({config:{version:1,enabled:true,rules:[]}})}});await app.listen();const origin='http://127.0.0.1:'+app.server.address().port;let csrf;
  const call=(route='/api/gameplay?module=formation',{id='A',body,method=body===undefined?'GET':'POST',headers={},authorized=true}={})=>new Promise((resolve,reject)=>{const url=new URL(route,origin);if(id!==null)url.searchParams.set('account',id);const req=http.request(url,{method,headers:{connection:'close','content-type':'application/json',...(authorized?{origin,...(csrf?{'x-cw-csrf':csrf}:{})}:{}),...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',chunk=>text+=chunk);res.on('end',()=>{const data=JSON.parse(text);if(data.csrfToken)csrf=data.csrfToken;resolve({status:res.statusCode,data,text});});});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));});
@@ -1846,5 +1846,127 @@ for(const actionType of ['claimAchievement','startExplore'])for(const unconfirme
   assert.equal(session.museumState.info.uncollectedRevenue,10);
   assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
   assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+
+// Actual local configuration/codecs, synthetic transport; use the existing HTTP,
+// Service and Workflow implementation for every permit, debit and verification.
+async function ownedBatchHttpFixture(kind,{count=2,outcome='success'}={}) {
+ const {loadConfig}=await import('../src/config.mjs');
+ const config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')});
+ const module=kind==='blueprint'?'formation-unlock':'alliance';
+ const app=await harness({includeFormationUnlock:kind==='blueprint',includeAllianceFort:kind==='fort',testProtocol:heroWireProtocol,configOverride:config});
+ try {
+  const session=app.ready('A');
+  session.player={playerId:'9007199254740993',worldId:'3000017',guildId:'9007199254740995',mainlineStage:101};
+  session.connectionId='owned-http-A';session.client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};
+  const formation={presetId:1,petUid:'9007199254740995',heroPositions:[{heroId:'A',pos:{x:1,y:3}},{heroId:'B',pos:{x:4,y:4}}]};
+  const state={ids:[],formation,used:499,fort:{cityId:7,type:'挖沙船',state:0,process:[],durability:0,effectTime:0},stock:new Map(kind==='blueprint'?[...Array.from({length:count},(_,i)=>['阵型'+(i+2)+'图纸',1]),['技能书',9]]:[['耐火砖',20],['高温合金',20],['功勋',10],['技能书',9]]),onRead:null,writes:[]};
+  const stock=()=>({items:[...state.stock].filter(([,num])=>num>0).map(([itemId,num])=>({itemId,num}))});
+  const write=(name,body,options)=>{
+   heroWire(name,body);options.beforeDispatch?.();
+   assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+   state.writes.push({name,body:structuredClone(body)});
+   app.requests.push({id:'A',name,body:structuredClone(body),options});
+   const index=state.writes.length;
+   if(outcome==='refused-'+index)throw Object.assign(Error('synthetic owned-material refusal'),{code:'REJECTED'});
+   if(outcome==='unknown-'+index){
+    if(kind==='blueprint')return null;
+    const base=config.tables.FortDonateMaterialCfg.data.find(row=>row.id===body.item.itemId).res[1];
+    return {process:state.fort.process,reward:{asset:[{type:0,id:'功勋',num:state.allianceFortReward(base,body.item.num,state.used,500,2500)}]}};
+   }
+   if(kind==='blueprint'){
+    assert.equal(name,'UnlockFormationPresetRequest');assert.equal(state.ids.includes(body.id),false);
+    state.ids.push(body.id);const item='阵型'+body.id+'图纸';state.stock.set(item,state.stock.get(item)-1);return null;
+   }
+   assert.equal(name,'DonateFortRequest');assert.equal(body.selectPackNum,0);
+   const {allianceFortReward}=state,base=config.tables.FortDonateMaterialCfg.data.find(row=>row.id===body.item.itemId).res[1],reward=allianceFortReward(base,body.item.num,state.used,500,2500);
+   let progress=state.fort.process.find(row=>row.itemId===body.item.itemId);
+   if(!progress){progress={itemId:body.item.itemId,num:0};state.fort.process.push(progress);}
+   progress.num+=body.item.num;state.used+=body.item.num;
+   state.stock.set(body.item.itemId,state.stock.get(body.item.itemId)-body.item.num);state.stock.set('功勋',state.stock.get('功勋')+reward);
+   return {process:state.fort.process,reward:{asset:[{type:0,id:'功勋',num:reward}]}};
+  };
+  state.allianceFortReward=(await import('../src/alliance-fort.mjs')).allianceFortReward;
+  session.client.gameClock={read(){const now=Date.now();return {status:'TRUSTED',reliable:true,accountId:'A',generation:session.generation,nowMs:now,earliestMs:now-1,latestMs:now+1,source:'PingResponse.serverTimestamp'};}};
+  session.client.request=async(name,body,response,_timeout,options)=>{
+   if(name==='DonateFortRequest'){assert.equal(options.mutate,true);const value=write(name,body,options);return heroWire(response,value??{process:state.fort.process,reward:{asset:[]}});}
+   assert.equal(options?.mutate,undefined);heroWire(name,body);app.requests.push({id:'A',name,body:structuredClone(body)});await state.onRead?.(name);
+   const answers={GetFormationRequest:{formation:state.formation},MyFormationPresetRequest:{ids:state.ids},AllHeroRequest:{heroes:[{heroId:'A'},{heroId:'B'}]},AllItemRequest:stock(),AllResourceRequest:{list:[{res:3,amount:700},{res:6,amount:12}]},GuildInfoRequest:{guild:{guildId:session.player.guildId,level:1},myTitle:4},GuildCityInfoRequest:{cities:[{cityId:7,recommended:false,defenceNum:1,fort:state.fort}]},CityFortInfoRequest:{fort:state.fort,fortStats:[],fortFund:123,fundSpeed:2,dailyDonateNum:state.used},GuildMemberRequest:{titleList:[]},GuildAidListRequest:{askItems:[]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{order:{requirements:[],nextRefreshTime:1800003600}},CounterInfoRequest:{counters:[]},GuildTechInfoRequest:{tech:[]},SeasonTaskStageRequest:{stage:1}};
+   assert.ok(Object.hasOwn(answers,name),'unexpected owned batch read '+name);return heroWire(response,answers[name]);
+  };
+  session.client.sendWatch=async(name,body,options)=>{assert.equal(kind,'blueprint');write(name,body,options);return {status:'UNKNOWN'};};
+  await app.call('/api/gameplay?module='+module);
+  assert.equal((await app.call('/api/gameplay/config',{body:{module,config:kind==='blueprint'?{enabled:true}:{enabled:true,fort:true}}})).status,200);
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module,parameters:kind==='blueprint'?{}:{cityId:7}}});assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const input=kind==='blueprint'?{targets:Array.from({length:count},(_,i)=>({presetId:i+2})),maxDurationMs:60000}:{cityId:7,donations:surveyed.data.view.fort.donationSources.slice(0,count).map(row=>({...row,num:2})),maxDurationMs:60000};
+  return {app,session,state,module,input,route:'/api/gameplay/'+(kind==='blueprint'?'formation-unlock':'alliance/fort')+'/prepare'};
+ }catch(error){await app.close();throw error;}
+}
+for(const kind of ['blueprint','fort'])for(const outcome of ['success','unknown-1','unknown-2','refused-1','refused-2'])test('owned material batch HTTP '+kind+' '+outcome+' preserves per-item authority and fixed parent debit',async()=>{
+ const {app,state,module,input,route}=await ownedBatchHttpFixture(kind,{outcome});
+ try {
+  const before=app.requests.length;assert.equal((await app.call(route,{body:input,authorized:false})).status,403);assert.equal(app.requests.length,before);
+  const prepared=await app.call(route,{body:input});assert.equal(prepared.status,200,JSON.stringify(prepared.data));const p=prepared.data;
+  assert.equal(p.accountId,'A');assert.equal(p.resumable,false);assert.equal(p.requiresFreshPlan,true);assert.equal(p.requiresAuthorization,true);
+  assert.deepEqual(p.graph.nodes.map(n=>n.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+  assert.deepEqual(p.budget.resources,kind==='blueprint'?[{id:'阵型2图纸',num:1},{id:'阵型3图纸',num:1}]:input.donations.map(row=>({id:row.itemId,num:2})));
+  assert.equal(state.writes.length,0);assert.equal((await app.call('/api/workflows/simulate',{body:{graph:p.graph}})).data.requestsSent,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:p.graph}})).status,200);
+  const stopIndex=outcome==='success'?2:Number(outcome.at(-1));let runId;
+  for(let i=0;i<stopIndex;i++){
+   const paused=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status,plan=paused.plan;runId=paused.runId;
+   assert.equal(plan.module,module);assert.equal(plan.actions.length,1);assert.deepEqual(plan.actions[0].target,p.steps[i].target);assert.deepEqual(plan.resourceBudget,p.steps[i].costs);assert.equal(state.writes.length,i);
+   assert.notEqual((await app.call('/api/operations/authorize',{id:'B',body:{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true}})).status,200);
+   const permit=await app.approve(plan);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const stopped=outcome!=='success'&&i===stopIndex-1,expected=stopped?outcome.startsWith('unknown')?'UNKNOWN':'REJECTED':'SUCCESS';
+   const record=app.history.list('A')[0];assert.equal(record.finalStatus,expected);assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,(kind==='blueprint'?'grow-':'fort-')+i);
+   assert.equal(record.actions[0].verification.status,expected==='SUCCESS'?'CONFIRMED':'UNCONFIRMED');
+   assert.equal(state.writes.length,i+1);assert.equal(record.runBudget.reserved.resources.length,i+1);
+   if(expected!=='REJECTED'){const lastWrite=app.requests.findLastIndex(row=>row.name===(kind==='blueprint'?'UnlockFormationPresetRequest':'DonateFortRequest'));const after=app.requests.slice(lastWrite+1);assert.ok(after.some(row=>row.name==='AllItemRequest'));assert.ok(after.some(row=>row.name===(kind==='blueprint'?'MyFormationPresetRequest':'CityFortInfoRequest')));}
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  const terminal=(await app.call('/api/workflows')).data.status;assert.equal(terminal.status,outcome==='success'?'COMPLETED':outcome.startsWith('unknown')?'UNKNOWN':'FAILED');
+  const reads=app.requests.length,bytes=fs.readFileSync(app.history.storagePath,'utf8');await app.call('/api/workflows/resume',{body:{}});assert.equal(app.requests.length,reads);assert.equal(fs.readFileSync(app.history.storagePath,'utf8'),bytes);
+  const confirmed=outcome==='success'?2:stopIndex-1;
+  if(kind==='blueprint'){assert.deepEqual(state.ids,Array.from({length:confirmed},(_,i)=>i+2));assert.equal(state.stock.get('阵型2图纸'),confirmed?0:1);assert.equal(state.stock.get('阵型3图纸'),confirmed===2?0:1);assert.equal(state.formation.petUid,'9007199254740995');}
+  else {assert.equal(state.used,499+2*confirmed);assert.equal(state.stock.get('功勋'),confirmed===0?10:confirmed===1?5010:7010);for(const [i,donation]of input.donations.entries())assert.equal(state.stock.get(donation.itemId),i<confirmed?18:20);}
+  assert.equal(state.stock.get('技能书'),9);assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome.startsWith('unknown'));
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+for(const count of [1,23])test('owned material batch HTTP blueprint '+count+' targets exhausts exactly the initial corresponding blueprints',async()=>{
+ const {app,state,input,route}=await ownedBatchHttpFixture('blueprint',{count});
+ try {
+  const prepared=await app.call(route,{body:input});assert.equal(prepared.status,200,JSON.stringify(prepared.data));const p=prepared.data;
+  assert.equal(p.graph.runPolicy.maxActions,count);assert.equal(p.budget.resources.length,count);assert.deepEqual(p.budget.uids,[]);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:p.graph}})).status,200);
+  let runId;
+  for(let i=0;i<count;i++){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId=waiting.runId;assert.equal(state.writes.length,i);
+   assert.deepEqual(waiting.plan.actions[0].target,{presetId:i+2});assert.deepEqual(waiting.plan.resourceBudget,[{id:'阵型'+(i+2)+'图纸',num:1}]);
+   const permit=await app.approve(waiting.plan);assert.equal(permit.status,200);
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const row=app.history.list('A')[0];assert.equal(row.finalStatus,'SUCCESS');assert.equal(row.workflowId,runId);assert.equal(row.runBudget.reserved.resources.length,i+1);
+   assert.equal(state.stock.get('阵型'+(i+2)+'图纸'),0);await app.call('/api/workflows/resume',{body:{}});
+  }
+  assert.equal((await waitForWorkflow(app,'COMPLETED')).status.runId,runId);assert.deepEqual(state.ids,Array.from({length:count},(_,i)=>i+2));assert.equal(app.history.list('A').length,count);assert.equal(state.stock.get('技能书'),9);assert.equal(state.formation.petUid,'9007199254740995');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+for(const kind of ['blueprint','fort'])for(const dimension of ['account','player','world','connection','generation'])test('owned material batch HTTP '+kind+' prepare rejects '+dimension+' drift before returning an executable graph',async()=>{
+ const {app,session,state,input,route}=await ownedBatchHttpFixture(kind);
+ try {
+  let changed=false;state.onRead=()=>{
+   if(changed)return;changed=true;
+   if(dimension==='account')session.client.factContext.accountId='B';
+   if(dimension==='player')session.player.playerId='3';
+   if(dimension==='world')session.player.worldId='3000018';
+   if(dimension==='connection')session.connectionId='replacement';
+   if(dimension==='generation')session.generation++;
+  };
+  const result=await app.call(route,{body:input});assert.equal(result.status,['connection','generation'].includes(dimension)?409:400,JSON.stringify(result.data));assert.equal(result.data.code,'CANCELLED');assert.equal(result.data.graph,undefined);assert.equal(state.writes.length,0);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });

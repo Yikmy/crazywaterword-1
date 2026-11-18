@@ -529,3 +529,41 @@ test('Museum multi-team preparation discards late account, duration and workflow
   h.respond('/api/gameplay/museum/growth/prepare',prepared);await pending;assert.notEqual(JSON.parse(h.node('wf-json').value).id,prepared.graph.id);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
  }
 });
+
+
+async function ownedBatchUiFixture(kind){
+ const {loadConfig}=await import('../src/config.mjs'),{loadProtocol}=await import('../src/proto.mjs');
+ const {fileURLToPath}=await import('node:url');
+ const config=loadConfig({file:fileURLToPath(new URL('../work/cdn/config_cn_pack.json',import.meta.url))}),protocol=loadProtocol();
+ const blueprint=kind==='blueprint',id=blueprint?'formation-unlock':'alliance',moduleConfig=blueprint?{enabled:true}:{enabled:true,fort:true};
+ const player={playerId:'9007199254740993',worldId:'3000017',guildId:'9007199254740995',mainlineStage:101};
+ const fort={cityId:7,type:'挖沙船',state:0,process:[],durability:0,effectTime:0};
+ const client={connected:true,factContext:{accountId:'A',generation:1,connectionId:'offline-ui'},gameClock:{read(){const now=Date.now();return {status:'TRUSTED',reliable:true,accountId:'A',generation:1,nowMs:now,earliestMs:now-1,latestMs:now+1,source:'PingResponse.serverTimestamp'};}},async request(name,body,response,_timeout,options){assert.equal(options?.mutate,undefined);const answers={GetFormationRequest:{formation:{presetId:1,petUid:'9007199254740995',heroPositions:[{heroId:'A',pos:{x:1,y:3}}]}},MyFormationPresetRequest:{ids:[]},AllHeroRequest:{heroes:[{heroId:'A'}]},AllItemRequest:{items:(blueprint?[['阵型2图纸',1],['阵型3图纸',1]]:[['耐火砖',20],['高温合金',20],['功勋',10]]).map(([itemId,num])=>({itemId,num}))},AllResourceRequest:{list:[{res:3,amount:700}]},GuildInfoRequest:{guild:{guildId:player.guildId,level:1},myTitle:4},GuildCityInfoRequest:{cities:[{cityId:7,recommended:false,defenceNum:1,fort}]},CityFortInfoRequest:{fort,fortStats:[],fortFund:123,fundSpeed:2,dailyDonateNum:499}};assert.ok(Object.hasOwn(answers,name),name);protocol[name].decode(protocol[name].encode(body).finish());return protocol[response].decode(protocol[response].encode(answers[name]).finish());}};
+ const domain=blueprint?await import('../src/formation-unlock.mjs'):await import('../src/alliance-fort.mjs');
+ const options={config,player,moduleConfig,parameters:blueprint?{}:{cityId:7}},facts=await (blueprint?domain.surveyFormationUnlock:domain.surveyAllianceFort)(client,protocol,options);
+ const view=blueprint?domain.viewFormationUnlock(facts,options):{guildId:player.guildId,candidates:[],blocked:[],fort:domain.viewAllianceFort(facts,options)};
+ if(blueprint)view.candidates=view.candidates.map(({action,...row})=>row);
+ const h=harness(),pending=h.run('refreshGameplay('+JSON.stringify(id)+')');h.respond('/api/gameplay?module='+id,{...data(id),config:moduleConfig,view});await pending;
+ const result=payload=>({accountId:'A',...(blueprint?domain.prepareFormationUnlockWorkflow:domain.prepareAllianceFortWorkflow)(facts,{config,...(blueprint?{player}:{}),moduleConfig,...payload})});
+ const control=(key,value='true')=>{const found=[],visit=node=>{if(node.dataset[key]===value)found.push(node);node.children.forEach(visit);};visit(h.node('gp-'+id+'-facts'));assert.equal(found.length,1,key+':'+value);return found[0];};
+ const select=()=>{
+  if(blueprint)for(const target of ['2','3']){const c=control('growthBatchTarget',target);assert.equal(c.disabled,false);c.checked=true;c.onchange();}
+  else for(const row of view.fort.materials){const check=control('allianceFortTarget',row.itemId),num=control('allianceFortQuantity',row.itemId);assert.equal(check.disabled,false);check.checked=true;check.onchange();num.value='2';num.oninput();}
+  const duration=control(blueprint?'growthBatchDuration':'allianceFortDuration');duration.value='60';duration.oninput();return {duration,prepare:control(blueprint?'growthBatchPrepare':'allianceFortPrepare')};
+ };
+ return {h,id,result,select,route:'/api/gameplay/'+(blueprint?'formation-unlock':'alliance/fort')+'/prepare'};
+}
+for(const kind of ['blueprint','fort'])test('owned material professional page '+kind+' prepares the actual shared Workflow graph from explicit controls',async()=>{
+ const {h,result,select,route}=await ownedBatchUiFixture(kind);assert.equal(h.requests.length,1);const {prepare}=select(),pending=prepare.onclick(),request=h.pending(route);assert.ok(request);const payload=JSON.parse(JSON.stringify(request.body));assert.equal(payload.maxDurationMs,60000);assert.equal((payload.targets??payload.donations).length,2);
+ const prepared=result(payload);h.respond(route,prepared);await pending;assert.deepEqual(JSON.parse(h.node('wf-json').value),prepared.graph);assert.equal(h.pending('/api/operations/plan'),undefined);assert.equal(h.pending('/api/operations/authorize'),undefined);assert.equal(h.pending('/api/operations/execute'),undefined);
+});
+for(const kind of ['blueprint','fort'])for(const change of ['account','duration','editor','parameters'])test('owned material professional page '+kind+' discards late '+change+' preparation',async()=>{
+ const {h,id,result,select,route}=await ownedBatchUiFixture(kind),{prepare,duration}=select(),pending=prepare.onclick(),payload=JSON.parse(JSON.stringify(h.pending(route).body)),prepared=result(payload);
+ if(change==='account'){h.select('B');h.select('A');}else if(change==='duration'){duration.value='61';duration.oninput();}else if(change==='parameters'){h.node('gp-'+id+'-parameters').value='{}';h.node('gp-'+id+'-parameters').oninput();}else{h.node('wf-json').value='{"user":"draft"}';}
+ const before=h.node('wf-json').value;h.respond(route,prepared);await pending;assert.equal(h.node('wf-json').value,before);assert.equal(h.pending('/api/operations/authorize'),undefined);
+});
+for(const kind of ['blueprint','fort'])test('owned material professional page '+kind+' rejects changed account cost target and verification graph',async()=>{
+ for(const mutate of [r=>r.accountId='B',r=>r.steps[0].costs[0].num++,r=>r.graph.budget.resources[0].num++,r=>r.graph.nodes.splice(2,1),r=>r.graph.runPolicy.maxActions++,r=>r.steps[0].parameters[kind==='blueprint'?'presetId':'cityId']=99]){
+  const {h,id,result,select,route}=await ownedBatchUiFixture(kind),{prepare}=select(),pending=prepare.onclick(),payload=JSON.parse(JSON.stringify(h.pending(route).body)),prepared=result(payload);mutate(prepared);const before=h.node('wf-json').value;h.respond(route,prepared);await pending;assert.equal(h.node('wf-json').value,before);assert.ok(h.node('gp-'+id+'-hint').textContent);assert.equal(h.pending('/api/operations/authorize'),undefined);
+ }
+});
