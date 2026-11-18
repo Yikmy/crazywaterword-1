@@ -1,3 +1,4 @@
+import { compileUnifiedExecution } from '../src/loop.mjs';
 import { runDailies } from '../src/dailies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -110,7 +111,7 @@ function serviceFixture(t,{apply=true,file=null}={}) {
  const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:{enabled:true}})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
  const send=f.client.request.bind(f.client);f.client.request=async(...args)=>{if(args[4]?.mutate)f.state.saved=clone(journal.at(-1));return send(...args);};
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir)fs.rmSync(dir,{recursive:true,force:true});});
- const plan=async()=>{const read=await service.surveyModule(session,'trial-challenge',{}),row=read.view.candidates[0];assert.ok(row.executable,JSON.stringify(row));return service.plan(session,{module:'trial-challenge',mode:'Manual',parameters:{},selections:[row.actionId]});};
+ const plan=async(parameters={})=>{const read=await service.surveyModule(session,'trial-challenge',parameters),row=read.view.candidates[0];assert.ok(row.executable,JSON.stringify(row));return service.plan(session,{module:'trial-challenge',mode:'Manual',parameters,selections:[row.actionId]});};
  const authorize=p=>service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:p.resourceBudget,confirm:true});
  const run=async p=>{const permit=authorize(p);service.execute(session,permit);await service.settle(session.id);return {permit,record:durable.list(session.id)[0]};};
  return {...f,session,service,history,durable,file,plan,authorize,run};
@@ -187,4 +188,26 @@ for(const code of ['TIMEOUT','REJECTED'])test('legacy Daily Driver uses native p
 test('legacy Daily Driver cannot dispatch after cancellation or identity change',async t=>{
  for(const cancel of [true,false]){const f=serviceFixture(t),permit=f.authorize(await f.plan());if(cancel)f.session.abort.abort();else f.session.player.worldId='18';
  const result=await runDailies(f.client,protocol,{tasks:[]},{allowMutate:true,operationService:f.service,session:f.session,authorization:permit});assert.notEqual(result[0].status,'SUCCESS');assert.equal(f.state.writes.length,0);}
+});
+
+for(const entry of ['tasks','loop'])for(const outcome of ['success','unknown','refusal'])test('Tasks business batch trial-challenge Service '+entry+' '+outcome,async t=>{
+ const f=serviceFixture(t,{apply:outcome==='success'}),read=await f.service.surveyModule(f.session,'trial-challenge',{}),candidate=read.view.candidates[0];assert.equal(candidate.executable,true);
+ const parameters={raidId:candidate.target.raidId,stageId:candidate.target.stageId},budget=candidate.budgetClaims,compiled=compileUnifiedExecution({entry,tasks:[{kind:'trial-challenge',parameters}],budget},{modules:GAMEPLAY_MODULES});
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(async()=>{runner.stop();await runner.settle();});
+ if(outcome==='refusal')f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};
+ const first=await runner.start(f.session.id,compiled.graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.deepEqual(first.plan.actions[0].parameters,parameters);
+ const {record,permit}=await f.run(first.plan);assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED');assert.equal(record.workflowId,first.runId);assert.equal(record.workflowNodeId,'tasks-0-1');assert.equal(f.state.writes.length,1);assert.equal(f.state.saved.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.throws(()=>f.service.execute(f.session,permit));
+ const finished=await runner.resume();if(outcome==='success')assert.equal(finished.status,'COMPLETED');else assert.notEqual(finished.status,'COMPLETED');assert.deepEqual(f.service.workflowBudget(f.session.id).limits,budget);assert.equal(f.service.workflowBudget(f.session.id).state,'CLOSED');
+ const bytes=fs.readFileSync(f.file,'utf8');await assert.rejects(runner.resume());assert.equal(f.state.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+ if(outcome!=='success'){const next=serviceFixture(t,{file:f.file});await assert.rejects(next.plan(),{code:outcome==='unknown'?'RECOVERY_UNCERTAIN':'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);}
+});
+
+for(const rejectedParameters of [{},{raidId:1},{raidId:1,stageId:1001}])test('Tasks business batch trial refusal aliases stay blocked from original history '+JSON.stringify(rejectedParameters),async t=>{
+ const f=serviceFixture(t,{apply:false});f.state.onWrite=()=>{throw Object.assign(Error('synthetic definite refusal'),{code:'REJECTED'});};
+ const first=await f.run(await f.plan(rejectedParameters));assert.equal(first.record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8'),memoryBytes=fs.readFileSync(f.file+'.memory.json','utf8');
+ for(const parameters of [{},{raidId:1},{raidId:1,stageId:1001}]){
+  const next=serviceFixture(t,{file:f.file});next.session.connectionId=next.client.factContext.connectionId='new-offline-connection';next.session.generation=next.client.factContext.generation=4;
+  await assert.rejects(next.plan(parameters),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(next.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(fs.readFileSync(f.file+'.memory.json','utf8'),memoryBytes);
+ }
+ assert.equal(f.state.writes.length,1);
 });

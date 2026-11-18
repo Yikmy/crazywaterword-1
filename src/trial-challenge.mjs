@@ -185,4 +185,15 @@ export function verifyTrialChallenge(operation,before,after,result) {
  return verifyTrialChallengeOutcome(operation,before.state,after.state,receipt);
 }
 export function trialChallengeDependencyVersions({config,moduleConfig=TRIAL_CHALLENGE_DEFAULT_CONFIG}={}) {return {moduleConfig:validateTrialChallengeConfig(moduleConfig),tables:Object.fromEntries(configNames.map(n=>[n,copy(config?.tables?.[n]??null)]))};}
-export const trialChallengeModule=Object.freeze({id:moduleId,label:'试炼副本首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:businessRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});
+// Optional target guards describe the same first-clear action. Recompute this
+// projection for both fresh and original History through the existing Service.
+function trialChallengeRejectionIdentity(operation){
+ try{
+  if(!own(operation,'parameters'))return null;
+  const parameters=validateTrialChallengeParameters(operation.parameters),target=operation.target;
+  trialChallengeAction(target);
+  if(raidIdOf(parameters)!==target.raidId||own(parameters,'stageId')&&parameters.stageId!==target.stageId)return null;
+  return businessRejectionIdentity({...operation,parameters:{raidId:target.raidId,stageId:target.stageId}});
+ }catch{return null;}
+}
+export const trialChallengeModule=Object.freeze({id:moduleId,label:'试炼副本首通',capabilities:Object.freeze(['BIZ-D09']),defaultConfig:TRIAL_CHALLENGE_DEFAULT_CONFIG,validateConfig:validateTrialChallengeConfig,validateParameters:validateTrialChallengeParameters,survey:surveyTrialChallenge,view:viewTrialChallenge,plan:planTrialChallenge,verify:verifyTrialChallenge,rejectionIdentity:trialChallengeRejectionIdentity,dependencyVersions:trialChallengeDependencyVersions});
