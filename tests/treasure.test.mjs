@@ -100,35 +100,39 @@ test('shared original fleet delta supports exact costs, rewards and zeros withou
  const shared={id:'汽油',num:500};assert.equal(stockMatchesDelta(before,before,[shared],[shared]),true);assert.equal(stockMatchesDelta(new Map(),new Map([['汽油',Number.MAX_SAFE_INTEGER]]),[],[{id:'汽油',num:Number.MAX_SAFE_INTEGER},{id:'汽油',num:1}]),false);
 });
 const offlineProtocol=loadProtocol(),copy=value=>structuredClone(value);
-function treasureServiceFixture(t,{outcome='SUCCESS',file=null,mutateWrite=null}={}) {
+function treasureServiceFixture(t,{outcome='SUCCESS',file=null,mutateWrite=null,batch=null}={}) {
  const dir=file===null?fs.mkdtempSync(path.join(os.tmpdir(),'cw-treasure-net-')):null;file??=path.join(dir,'history.json');
  const history=createExecutionHistory({file}),journal=[],durable={...history,put(record){journal.push(copy(record));return history.put(record);}},before=facts();
  const state={fuel:2000,items:[{itemId:'木材',num:9}],fleets:copy(before.fleets),writes:[],reads:[],afterWrite:false,onRead:null};
+ const moduleConfig={...enabled,...(batch?{maxFleets:batch.per??1}:{})},currentConfig=copy(config);state.defences=new Map();state.ranks=new Map();
+ if(batch){currentConfig.tables.WorldParamCfg.data[0].paramValue=batch.unit??500;state.fuel=batch.count*(batch.per??1)*(batch.unit??500);before.treasures=Array.from({length:batch.count},(_,i)=>({...copy(before.treasures[0]),uid:7+i,gridIdx:i+1}));state.fleets=Array.from({length:batch.count*(batch.per??1)},(_,i)=>({...copy(before.fleets[0]),buildingId:'batch-fleet-'+i}));}
  const client={connected:true,gameClock,pending:[],watchers:[],uncertainWrites:new Map(),lateResponses:new Map(),factContext:{accountId:'treasure-A',generation:3,connectionId:'treasure-offline'},
   markUnverifiedWrite(name,body){this.uncertainWrites.set(JSON.stringify([name,body]),true);},confirmWatchedWrite(name,body){this.uncertainWrites.delete(JSON.stringify([name,body]));},
-  async request(name,body,response,_timeout,options){assert.equal(options?.mutate,undefined);state.reads.push(name);await state.onRead?.(name);let value;
+  async request(name,body,response,_timeout,options){assert.equal(options?.mutate,undefined);state.reads.push(name);await state.onRead?.(name,body);let value;
    if(name==='TreasureLootStatsRequest')value={stats:[],nextRefreshTime:400000,todayRewardTimes:0,totalRewardTimes:3};
    else if(name==='TreasureLootListRequest')value={treasure:before.treasures.map(row=>({...row,reward:{asset:[]}}))};
    else if(name==='MyFleetsRequest')value={fleets:state.fleets};
    else if(name==='SeasonRankInfoRequest')value={startTime:100000,endTime:1000000};
    else if(name==='AllItemRequest')value={items:[{itemId:'汽油',num:state.fuel},...state.items]};
    else if(name==='AllResourceRequest')value={list:[]};
-   else if(name==='TreasureLootRankRequest')value={items:[]};else if(name==='TreasureLootDefenceRequest')value={fleets:[]};else throw Error('unexpected read '+name);
+   else if(name==='TreasureLootRankRequest')value={items:state.ranks.get(body.uid)??[]};else if(name==='TreasureLootDefenceRequest')value={fleets:state.defences.get(body.uid)??[]};else throw Error('unexpected read '+name);
    return offlineProtocol[response].decode(offlineProtocol[response].encode(value).finish());
   },
-  async sendWatch(name,body,options){options.beforeDispatch?.();offlineProtocol[name].decode(offlineProtocol[name].encode(body).finish());assert.equal(name,'TreasureLootSendFleetsRequest');state.writes.push({name,body:copy(body)});state.afterWrite=true;
+  async sendWatch(name,body,options){options.beforeDispatch?.();offlineProtocol[name].decode(offlineProtocol[name].encode(body).finish());assert.equal(name,'TreasureLootSendFleetsRequest');state.writes.push({name,body:copy(body),durable:copy(journal.at(-1))});state.afterWrite=true;
+    if(batch){if(batch.stop&&state.writes.length===2)return {status:batch.stop==='refusal'?'REJECTED':'UNKNOWN'};for(const id of body.fleetBuildingIds){const fleet=state.fleets.find(f=>f.buildingId===id);assert.ok(fleet,id);fleet.state=2;fleet.treasureLootUid=body.uid;}state.fuel-=body.fleetBuildingIds.length*(batch.unit??500);await mutateWrite?.({state,client,session});return {status:'UNKNOWN'};}
+
    if(outcome!=='REJECTED'){state.fleets[0].state=2;state.fleets[0].treasureLootUid=7;if(outcome==='SUCCESS')state.fuel-=500;}
    await mutateWrite?.({state,client,session});return {status:outcome==='REJECTED'?'REJECTED':'UNKNOWN'};
   }
  };
  const session={id:'treasure-A',client,player:{playerId:'9007199254740993',worldId:2001000000},generation:3,connectionId:'treasure-offline',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
- const service=createOperationService({protocol:offlineProtocol,history:durable,modules:GAMEPLAY_MODULES,getConfig:()=>config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:enabled})}});
- const parameters={uid:7,fleetBuildingIds:['fleet-a']};
+ const service=createOperationService({protocol:offlineProtocol,history:durable,modules:GAMEPLAY_MODULES,getConfig:()=>currentConfig,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}}),moduleSettings:{get:()=>({config:moduleConfig})}});
+ const parameters={uid:7,fleetBuildingIds:batch?state.fleets.slice(0,batch.per??1).map(f=>f.buildingId):['fleet-a']};
  async function plan(){const view=await service.surveyModule(session,'treasure',parameters),row=view.view.candidates.find(row=>row.executable);assert.ok(row,JSON.stringify(view.view));return service.plan(session,{module:'treasure',mode:'Manual',parameters,selections:[row.actionId]});}
  function authorize(plan){return service.authorize(session,{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});}
  async function run(){const permit=authorize(await plan());service.execute(session,permit);await service.settle(session.id);return history.originalRecords(session.id)[0];}
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
- return {session,service,history,client,state,journal,plan,authorize,run,file};
+ return {session,service,history,client,state,journal,plan,authorize,run,file,before,moduleConfig,currentConfig};
 }
 for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('original Service persists declared treasure debit and authoritative result '+outcome,async t=>{
  const f=treasureServiceFixture(t,{outcome}),record=await f.run();assert.equal(record.finalStatus,outcome);assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.writes[0].body,{uid:7,fleetBuildingIds:['fleet-a']});
@@ -163,4 +167,47 @@ test('treasure verification retains original zero-cost and multi-fleet cost sema
   const op=candidate(before,{moduleConfig:{...enabled,maxFleets:2}});assert.deepEqual(op.costs,[{id:'汽油',num:unit*2}]);const after=copy(before);after.stock.set('汽油',2000-unit*2);for(const fleet of after.fleets){fleet.state=2;fleet.treasureLootUid=7;}
   assert.equal(verifyTreasure(op,before,after).confirmed,true);after.stock.set('汽油',1999-unit*2);assert.equal(verifyTreasure(op,before,after).confirmed,false);
  }
+});
+
+async function treasureBatchInput(f,count,per=1){
+ const read=await f.service.surveyModule(f.session,'treasure',{}),p=read.view.preparation;
+ return {targets:Array.from({length:count},(_,i)=>{const uid=7+i,ids=f.state.fleets.slice(i*per,(i+1)*per).map(f=>f.buildingId);return {uid,fleetBuildingIds:ids,expectedDispatch:{targetHash:p.targets.find(t=>t.uid===uid).targetHash,fleetHashes:ids.map(id=>p.fleets.find(f=>f.buildingId===id).fleetHash)}};}),maxDurationMs:60000};
+}
+async function treasureBatchRunner(t,f){const {createWorkflowRunner}=await import('../src/workflow.mjs'),runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:()=>f.session,isCurrent:(s,g,c)=>s===f.session&&s.generation===g&&s.client===c,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});t.after(async()=>{runner.stop();await runner.settle();});return runner;}
+for(const count of [1,10])for(const per of [1,2,10])test('prepared treasure Service dispatches '+count+' targets with '+per+' distinct fleets each',async t=>{
+ const f=treasureServiceFixture(t,{batch:{count,per}}),input=await treasureBatchInput(f,count,per),p=await f.service.prepareTreasureSource(f.session,input),runner=await treasureBatchRunner(t,f);
+ assert.deepEqual(p.budget,{resources:[{id:'汽油',num:count*per*500}],quotas:[],uids:input.targets.flatMap(t=>[{type:'treasure',id:String(t.uid)},...t.fleetBuildingIds.map(id=>({type:'fleet',id}))])});assert.equal(f.state.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);let run=await runner.start(f.session.id,p.graph);const batchIds=new Set();
+ for(let i=0;i<count;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION',JSON.stringify(run));assert.equal(f.state.writes.length,i);assert.deepEqual(run.plan.actions[0].parameters,input.targets[i]);batchIds.add(run.plan.batchId);const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);const record=f.history.list(f.session.id)[0];assert.equal(record.finalStatus,'SUCCESS',JSON.stringify(record));assert.equal(record.actions[0].verification.status,'CONFIRMED');assert.equal(f.state.writes[i].durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.throws(()=>f.service.execute(f.session,permit));run=await runner.resume();}
+ assert.equal(run.status,'COMPLETED');assert.equal(run.runBudget.state,'CLOSED');assert.equal(batchIds.size,count);assert.equal(f.state.fuel,0);assert.equal(f.history.list(f.session.id).length,count);assert.deepEqual(f.state.items,[{itemId:'木材',num:9}]);assert.deepEqual(f.state.writes.map(w=>w.body),input.targets.map(({uid,fleetBuildingIds})=>({uid,fleetBuildingIds})));assert.equal(f.before.treasures.every(t=>t.ownerGuildIdx===0&&t.ownerFleetNum===0),true);
+ const reads=f.state.reads.length,bytes=fs.readFileSync(f.file,'utf8');await assert.rejects(runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(f.state.reads.length,reads);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+for(const count of [1,10])test('prepared treasure zero-cost contract keeps fixed target and fleet UID '+count,async t=>{
+ const f=treasureServiceFixture(t,{batch:{count,per:2,unit:0}}),input=await treasureBatchInput(f,count,2),p=await f.service.prepareTreasureSource(f.session,input),runner=await treasureBatchRunner(t,f);assert.deepEqual(p.budget.resources,[]);assert.equal(p.budget.uids.length,count*3);let run=await runner.start(f.session.id,p.graph);
+ for(let i=0;i<count;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION',JSON.stringify(run));const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.history.list(f.session.id)[0].finalStatus,'SUCCESS');run=await runner.resume();}assert.equal(run.status,'COMPLETED');assert.equal(f.state.fuel,0);assert.equal(f.state.writes.length,count);
+});
+for(const stop of ['unknown','refusal'])test('prepared treasure second '+stop+' stops third and restart cannot replay',async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:3,per:2,stop}}),input=await treasureBatchInput(f,3,2),p=await f.service.prepareTreasureSource(f.session,input),runner=await treasureBatchRunner(t,f);let run=await runner.start(f.session.id,p.graph);
+ for(let i=0;i<2;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION');const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);run=await runner.resume();}assert.equal(run.status,stop==='unknown'?'UNKNOWN':'FAILED',JSON.stringify(run));assert.equal(f.state.writes.length,2);assert.equal(f.history.unresolved(f.session.id),stop==='unknown');assert.ok(f.state.fleets.slice(4).every(f=>f.state===1&&f.treasureLootUid===0));const bytes=fs.readFileSync(f.file,'utf8'),reads=f.state.reads.length;await assert.rejects(runner.resume(),{code:'WORKFLOW_INVALID'});assert.equal(f.state.reads.length,reads);
+ const restarted=treasureServiceFixture(t,{file:f.file,batch:{count:3,per:2}}),target=input.targets[1];await assert.rejects(restarted.service.plan(restarted.session,{module:'treasure',mode:'Manual',parameters:target,selections:['treasure:dispatch:'+target.uid+':'+target.fleetBuildingIds.map(encodeURIComponent).join(',')]}),e=>['RECOVERY_UNCERTAIN','REJECTION_MEMORY_ACTIVE'].includes(e.code));assert.equal(restarted.state.writes.length,0);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
+});
+for(const fault of ['fuel','reserve','target-hash','fleet-hash','occupied','defence','rank','season','target-finished','cost'])test('prepared treasure rejects incomplete batch before dispatch '+fault,async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:3,per:2}});if(fault==='reserve')f.moduleConfig.petrolReserve=1;const input=await treasureBatchInput(f,3,2);
+ if(fault==='fuel')f.state.fuel--;if(fault==='target-hash')input.targets[1].expectedDispatch.targetHash='0'.repeat(64);if(fault==='fleet-hash')input.targets[1].expectedDispatch.fleetHashes[0]='0'.repeat(64);if(fault==='occupied')f.before.treasures[1].ownerGuildIdx=9;if(fault==='defence')f.state.defences.set(8,[{name:'synthetic defender',guildIdx:9,power:'1',multiple:1,isNpc:true}]);if(fault==='rank')f.client.request=new Proxy(f.client.request,{apply(fn,self,args){if(args[0]==='TreasureLootRankRequest')throw Error('synthetic unavailable rank');return Reflect.apply(fn,self,args);}});if(fault==='season')f.client.gameClock={read:()=>({status:'UNKNOWN',reliable:false})};if(fault==='target-finished')f.before.treasures[1].progress=100;if(fault==='cost')f.currentConfig.tables.WorldParamCfg.data=[];
+ if(fault==='defence'){const read=await f.service.surveyModule(f.session,'treasure',input.targets[1]);assert.equal(read.view.targetDetails.defence[0].name,'synthetic defender');assert.equal(read.view.candidates[0].reason,'DEFENCE_PRESENT');}
+ await assert.rejects(f.service.prepareTreasureSource(f.session,input),{code:'INVALID_INPUT'});assert.equal(f.state.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);
+});
+test('prepared treasure schemas reject sparse accessors duplicated targets and shared fleets before reads',async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:2}}),input=await treasureBatchInput(f,2),readCount=f.state.reads.length;let called=0;const getter={};Object.defineProperty(getter,'uid',{enumerable:true,get(){called++;return 7;}});const shared={...input.targets[1],fleetBuildingIds:input.targets[0].fleetBuildingIds};
+ for(const targets of [[],Array(1),[getter],[null],[undefined],[input.targets[0],input.targets[0]],[input.targets[0],shared],[{...input.targets[0],request:'TreasureLootSendFleetsRequest'}],Array(11).fill(input.targets[0])])await assert.rejects(f.service.prepareTreasureSource(f.session,{targets,maxDurationMs:60000}),{code:'INVALID_INPUT'});assert.equal(called,0);assert.equal(f.state.reads.length,readCount);assert.equal(f.state.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);
+});
+
+for(const fault of ['partial-group','wrong-target','extra-income','wrong-fuel'])test('prepared treasure group stays UNKNOWN and stops later targets after '+fault,async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:3,per:2},mutateWrite:({state})=>{if(fault==='partial-group'){state.fleets[1].state=1;state.fleets[1].treasureLootUid=0;}if(fault==='wrong-target')state.fleets[1].treasureLootUid=8;if(fault==='extra-income')state.items.push({itemId:'synthetic-loot',num:1});if(fault==='wrong-fuel')state.fuel++;}}),input=await treasureBatchInput(f,3,2),p=await f.service.prepareTreasureSource(f.session,input),runner=await treasureBatchRunner(t,f);let run=await runner.start(f.session.id,p.graph);const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);run=await runner.resume();assert.equal(run.status,'UNKNOWN',JSON.stringify(run));const record=f.history.list(f.session.id)[0];assert.equal(record.finalStatus,'UNKNOWN');assert.equal(record.actions[0].verification.status,'UNCONFIRMED');assert.equal(record.actions[0].unresolvedWrite,true);assert.equal(f.state.writes.length,1);assert.ok(f.state.fleets.slice(2).every(f=>f.state===1&&f.treasureLootUid===0));assert.deepEqual(record.runBudget.reserved.uids,p.steps[0].budgetClaims.uids);assert.throws(()=>f.service.execute(f.session,permit));
+});
+for(const fault of ['generation','world','configuration','abort'])test('prepared treasure shared read source rejects '+fault+' change before preparation can publish',async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:2}}),input=await treasureBatchInput(f,2);let changed=false;f.state.onRead=n=>{if(n==='TreasureLootDefenceRequest'&&!changed){changed=true;if(fault==='generation')f.session.generation++;if(fault==='world')f.session.player.worldId++;if(fault==='configuration')f.currentConfig.tables.WorldParamCfg.data[0].paramValue++;if(fault==='abort')f.session.abort.abort();}};await assert.rejects(f.service.prepareTreasureSource(f.session,input),e=>['CANCELLED','ABORT_ERR','STOPPED'].includes(e.code));assert.equal(f.state.writes.length,0);assert.equal(f.history.list(f.session.id).length,0);
+});
+for(const fault of ['target','fleet','config','fuel','defence'])test('prepared treasure fresh second plan blocks changed '+fault+' without dispatch',async t=>{
+ const f=treasureServiceFixture(t,{batch:{count:3,per:2}}),input=await treasureBatchInput(f,3,2),p=await f.service.prepareTreasureSource(f.session,input),runner=await treasureBatchRunner(t,f);let run=await runner.start(f.session.id,p.graph);const permit=f.authorize(run.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);assert.equal(f.history.list(f.session.id)[0].finalStatus,'SUCCESS');
+ if(fault==='target')f.before.treasures[1].progress=1;if(fault==='fleet')f.state.fleets[2].durability--;if(fault==='config')f.currentConfig.tables.WorldParamCfg.data[0].paramValue++;if(fault==='fuel')f.state.fuel=0;if(fault==='defence')f.state.defences.set(8,[{name:'synthetic defender',guildIdx:9,power:'1',multiple:1,isNpc:true}]);run=await runner.resume();assert.equal(run.status,'FAILED',JSON.stringify(run));assert.equal(run.currentNode,'dispatch-1');assert.equal(run.plan,null);assert.equal(run.runBudget.state,'CLOSED');assert.deepEqual(run.runBudget.reserved.uids,p.steps[0].budgetClaims.uids);assert.equal(f.state.writes.length,1);assert.equal(f.history.list(f.session.id).length,1);assert.ok(f.state.fleets.slice(2).every(f=>f.state===1&&f.treasureLootUid===0));
 });
