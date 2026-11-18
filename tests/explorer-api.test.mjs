@@ -191,3 +191,87 @@ test('daily checklist preserves independent parsing but unbound restored HTTP sn
     assert.deepEqual(app.counts(),{creates:0,collects:0});
   } finally {await app.close();}
 });
+
+
+for (const change of ['account','player','world','generation','connection','client','disconnected','not-ready','snapshot']) {
+  test('fishing cached HTTP projections invalidate permanently after '+change+' changes', async () => {
+    const app=await harness();
+    try {
+      const raw={
+        AllItemRequest:{items:[{itemId:'鱼',num:88}]},
+        GameEffectRequest:{effects:[{id:16,value:100}]},
+        FishEncyclopediaRequest:{fishList:[14,7,2,1],rewardId:1},
+        OnWaterRequest:{fishingLevel:{level:2,enhance:0,criticalRate:0}},
+      };
+      const snapshot={raw,ok:structuredClone(raw),outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS'}])),failed:{}};
+      await bindCached(app,'account-A',snapshot,'fishing-context-time');
+      const session=app.sessions.get('account-A');
+      const initial=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+      assert.equal(initial.collection.nextStage.eligible,true);
+      assert.equal(initial.inventory.owned,88);
+      const original={id:session.id,player:{...session.player},generation:session.generation,connectionId:session.connectionId,client:session.client,state:session.state,snapshot:session.snapshot};
+      if(change==='account')session.id='account-B';
+      if(change==='player')session.player.playerId='9';
+      if(change==='world')session.player.worldId='99';
+      if(change==='generation')session.generation++;
+      if(change==='connection')session.connectionId='other-connection';
+      if(change==='client')session.client={...session.client};
+      if(change==='disconnected')session.client.connected=false;
+      if(change==='not-ready')session.state='DISCONNECTED';
+      if(change==='snapshot')session.snapshot=structuredClone(snapshot);
+      const before=app.counts();
+      const invalid=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+      assert.equal(invalid.collection.rewardId,null);
+      assert.equal(invalid.collection.nextStage,null);
+      assert.equal(invalid.inventory.owned,null);
+      assert.equal(invalid.inventory.capacity,null);
+      assert.equal(invalid.level.level,null);
+      const explorer=await app.call('?account=account-A&domain=collections');
+      const fish=explorer.data.entries.find(row=>row.request==='FishEncyclopediaRequest');
+      assert.equal(fish.parsed,null);
+      assert.notEqual(fish.status,'SUCCESS');
+      Object.assign(session,original);session.client.connected=true;
+      const reverted=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+      assert.equal(reverted.collection.rewardId,null,'reverting identity cannot revive invalidated cache');
+      assert.equal(reverted.collection.nextStage,null);
+      assert.equal(reverted.inventory.owned,null);
+      assert.deepEqual(app.counts(),before);
+      const refreshed=await app.call('?account=account-A','POST','/api/refresh');
+      assert.equal(refreshed.status,200);
+      const rebound=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+      assert.equal(rebound.collection.nextStage.eligible,true);
+      assert.equal(rebound.inventory.owned,88);
+      assert.deepEqual(app.counts(),{creates:0,collects:before.collects+1});
+    } finally {await app.close();}
+  });
+}
+
+
+test('fishing restored snapshots and explicit source failures cannot surface prior qualifications',async()=>{
+  const app=await harness();
+  try {
+    const raw={AllItemRequest:{items:[{itemId:'鱼',num:88}]},GameEffectRequest:{effects:[{id:16,value:100}]},
+      FishEncyclopediaRequest:{fishList:[14,7,2,1],rewardId:1},OnWaterRequest:{fishingLevel:{level:2,enhance:0,criticalRate:0}}};
+    const snapshot={raw,ok:structuredClone(raw),outcomes:Object.fromEntries(Object.keys(raw).map(name=>[name,{status:'SUCCESS'}])),failed:{}};
+    app.sessions.set('account-A',cached(snapshot,'restored-time'));
+    const restored=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+    assert.equal(restored.collection.nextStage,null);
+    assert.equal(restored.collection.rewardId,null);
+    assert.equal(restored.inventory.owned,null);
+    assert.equal(restored.inventory.capacity,null);
+    assert.deepEqual(app.counts(),{creates:0,collects:0});
+    await bindCached(app,'account-A',snapshot,'current-time');
+    assert.equal((await app.call('?account=account-A','GET','/api/overview')).data.fishing.collection.nextStage.eligible,true);
+    snapshot.failed.FishEncyclopediaRequest='synthetic failure';
+    snapshot.outcomes.FishEncyclopediaRequest.status='FAILED';
+    const failed=(await app.call('?account=account-A','GET','/api/overview')).data.fishing;
+    assert.equal(failed.collection.rewardId,null);
+    assert.equal(failed.collection.nextStage,null);
+    assert.equal(failed.inventory.owned,88);
+    const explorer=await app.call('?account=account-A&domain=collections');
+    const fish=explorer.data.entries.find(row=>row.request==='FishEncyclopediaRequest');
+    assert.equal(fish.status,'FAILED');
+    assert.equal(fish.parsed,null);
+    assert.deepEqual(app.counts(),{creates:0,collects:1});
+  } finally {await app.close();}
+});
