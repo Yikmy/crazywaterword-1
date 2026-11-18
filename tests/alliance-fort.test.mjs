@@ -139,3 +139,43 @@ test('every replan checks current session/clock; serialized facts need a fresh l
  const f=await ready(),unbound=parseAllianceFortObservations(observations(f.facts),{context:f.facts.identityContext,parameters,config,available:Object.keys(protocol)});assert.equal(unbound.fort.cityId,7);assert.equal(planAllianceFort(unbound,f.options).actions.length,0);assert.equal(planAllianceFort(clone(f.facts),f.options).actions.length,0);assert.equal(planAllianceFort(rebuild(f,observations(f.facts)),f.options).actions.length,1);
 });
 test('post-write verification cannot confirm after current clock invalidation',async()=>{const f=await ready(),a=await after(f);assert.equal(verifyAllianceFort(f.operation,f.facts,a.after,a.response).confirmed,true);f.st.clock=false;assert.equal(verifyAllianceFort(f.operation,f.facts,a.after,a.response).confirmed,false);});
+
+for(const [type,count]of [['挖沙船',1],['挖沙船',2],['炮台',3]])test('PRO-002 '+type+' explicit '+count+' material batch keeps later source valid across original merit decay',async()=>{
+ const {prepareAllianceFortWorkflow}=await import('../src/alliance-fort.mjs'),{validateWorkflow}=await import('../src/workflow.mjs'),{GAMEPLAY_MODULES}=await import('../src/function-registry.mjs');
+ const ids=config.tables.WorldFortCfg.data.find(row=>row.fortId===type).donateCost.map(row=>row[0]).slice(0,count);
+ const stock=Object.fromEntries(ids.map(id=>[id,20]));stock.功勋=10;stock.技能书=9;
+ const f=await ready({type,stock,used:499},{parameters:{cityId:7}}),sources=viewAllianceFort(f.facts,f.options).donationSources;
+ const input={cityId:7,donations:ids.map(itemId=>({itemId,num:2,expectedFortHash:sources.find(row=>row.itemId===itemId).expectedFortHash})),maxDurationMs:60000};
+ const prepared=prepareAllianceFortWorkflow(f.facts,{config,moduleConfig:enabled,...input});validateWorkflow(prepared.graph,{modules:GAMEPLAY_MODULES});
+ assert.equal(prepared.steps.length,count);assert.deepEqual(prepared.budget.resources,ids.map(id=>({id,num:2})));
+ const fixed=clone(prepared.budget);let merit=10;
+ for(const [i,step]of prepared.steps.entries()){
+  f.options.parameters=step.parameters;const before=await surveyAllianceFort(f.client,protocol,f.options),op=planAllianceFort(before,f.options).actions[0];
+  assert.ok(op);assert.deepEqual(op.target,step.target);assert.equal(op.reward.num,i===0?5000:2000);
+  assert.equal(verifyAllianceFort(op,before,before,{}).confirmed,false);
+  const response=apply(f),next=await surveyAllianceFort(f.client,protocol,f.options);assert.equal(verifyAllianceFort(op,before,next,response).confirmed,true);
+  merit+=op.reward.num;assert.equal(f.st.stock.get('功勋'),merit);assert.equal(f.st.stock.get('技能书'),9);
+ }
+ assert.equal(f.st.used,499+count*2);for(const id of ids)assert.equal(f.st.stock.get(id),18);
+ assert.deepEqual(prepared.budget,fixed);assert.equal(f.st.fort.state,0);
+});
+
+test('PRO-002 six known material schema never invents demand absent from current authoritative fort configuration',async()=>{
+ const {prepareAllianceFortWorkflow,validateAllianceFortPreparation}=await import('../src/alliance-fort.mjs');
+ const f=await ready({},{parameters:{cityId:7}}),sources=viewAllianceFort(f.facts,f.options).donationSources;
+ const donations=config.tables.FortDonateMaterialCfg.data.map(row=>({itemId:row.id,num:1,expectedFortHash:sources.find(value=>value.itemId===row.id)?.expectedFortHash??'0'.repeat(64)}));
+ const input={cityId:7,donations,maxDurationMs:60000};assert.equal(validateAllianceFortPreparation(input).donations.length,6);
+ assert.throws(()=>prepareAllianceFortWorkflow(f.facts,{config,moduleConfig:enabled,...input}));
+ for(const invalid of [[],[...donations,donations[0]],[donations[0],donations[0]],Array(2)])assert.throws(()=>validateAllianceFortPreparation({...input,donations:invalid}),{code:'INVALID_PARAMETERS'});
+ let called=false;const accessor=[donations[0]];Object.defineProperty(accessor,'0',{enumerable:true,get(){called=true;throw Error('must not read');}});
+ assert.throws(()=>validateAllianceFortPreparation({...input,donations:accessor}),{code:'INVALID_PARAMETERS'});assert.equal(called,false);
+});
+
+test('PRO-002 batch source rejects same-material progress or next-day changes instead of silently replanning donations',async()=>{
+ const {prepareAllianceFortWorkflow}=await import('../src/alliance-fort.mjs');
+ const f=await ready({},{parameters:{cityId:7}}),source=viewAllianceFort(f.facts,f.options).donationSources.find(row=>row.itemId==='耐火砖');
+ const input={cityId:7,donations:[{itemId:'耐火砖',num:2,expectedFortHash:source.expectedFortHash}],maxDurationMs:60000};
+ f.st.fort.process=[{itemId:'耐火砖',num:1}];const changed=await surveyAllianceFort(f.client,protocol,f.options);assert.throws(()=>prepareAllianceFortWorkflow(changed,{config,moduleConfig:enabled,...input}));
+ f.st.fort.process=[];f.st.onClock=()=>{const now=Date.now()+86400000;return {status:'TRUSTED',reliable:true,accountId:f.client.factContext.accountId,generation:f.client.factContext.generation,nowMs:now,earliestMs:now-1,latestMs:now+1,source:'PingResponse.serverTimestamp'};};
+ const tomorrow=await surveyAllianceFort(f.client,protocol,f.options);assert.throws(()=>prepareAllianceFortWorkflow(tomorrow,{config,moduleConfig:enabled,...input}));
+});

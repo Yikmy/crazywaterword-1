@@ -140,3 +140,34 @@ test('W19 formation unlock refusal survives reconnect without changing original 
  const f=serviceFixture({apply:false}),a=f.session();try{a.synthetic.onWrite=()=>{throw Object.assign(Error('synthetic definite unlock refusal'),{code:'REJECTED'});};assert.equal((await f.execute(a,await f.displayed(a))).record.finalStatus,'REJECTED');const bytes=fs.readFileSync(f.file,'utf8');a.generation=a.client.factContext.generation=4;a.connectionId=a.client.factContext.connectionId='replacement-unlock';await assert.rejects(f.displayed(a),{code:'REJECTION_MEMORY_ACTIVE'});a.player.worldId='18';assert.equal((await f.displayed(a)).actions.length,1);a.player.worldId='17';await assert.rejects(f.displayed(a),{code:'REJECTION_MEMORY_ACTIVE'});assert.equal(a.synthetic.writes.length,1);assert.equal(fs.readFileSync(f.file,'utf8'),bytes);
  }finally{await f.cleanup();}
 });
+
+for(const count of [1,23])test('FRM-005 explicit batch '+count+' preserves all original blueprints and formation through sequential replanning',async()=>{
+ const {prepareFormationUnlockWorkflow}=await import('../src/formation-unlock.mjs'),{validateWorkflow}=await import('../src/workflow.mjs');
+ const stock=Object.fromEntries(Array.from({length:count},(_,i)=>['阵型'+(i+2)+'图纸',1]));stock.技能书=10;
+ const f=fake({stock}),config=cfg(),targets=Array.from({length:count},(_,i)=>({presetId:i+2})),base=opts(config,{parameters:{}});
+ const initial=await surveyFormationUnlock(f.client,protocol,base),input={targets,maxDurationMs:60000},prepared=prepareFormationUnlockWorkflow(initial,{config,player:base.player,moduleConfig:enabled,...input});
+ validateWorkflow(prepared.graph,{modules:GAMEPLAY_MODULES});assert.equal(prepared.steps.length,count);
+ assert.deepEqual(prepared.budget.resources,targets.map(row=>({id:'阵型'+row.presetId+'图纸',num:1})));
+ const fixed=clone(prepared.budget),originalFormation=clone(f.state.formation);
+ for(const step of prepared.steps){
+  const options={...base,parameters:step.parameters},before=await surveyFormationUnlock(f.client,protocol,options),planned=planFormationUnlock(before,options);
+  assert.equal(planned.actions.length,1);const op=planned.actions[0];assert.deepEqual(op.target,step.target);assert.deepEqual(op.costs,step.costs);
+  assert.equal(verifyFormationUnlock(op,before,before,null).confirmed,false);
+  await f.client.sendWatch(op.action.request,op.action.body);
+  const after=await surveyFormationUnlock(f.client,protocol,options);assert.equal(verifyFormationUnlock(op,before,after,null).confirmed,true);
+  assert.deepEqual(f.state.formation,originalFormation);assert.equal(f.state.stock.get('技能书'),10);
+ }
+ assert.equal(f.state.writes.length,count);assert.deepEqual(f.state.ids,targets.map(row=>row.presetId));assert.deepEqual(prepared.budget,fixed);
+ assert.equal([...f.state.stock].filter(([id,num])=>id.endsWith('图纸')&&num!==0).length,0);
+});
+
+test('FRM-005 batch rejects unowned or unlocked final template and zero 24 duplicate sparse or accessor targets',async()=>{
+ const {prepareFormationUnlockWorkflow,validateFormationUnlockPreparation}=await import('../src/formation-unlock.mjs');
+ const f=await ready(),targets=[{presetId:2},{presetId:3}],input={targets,maxDurationMs:60000};
+ const prepare=()=>prepareFormationUnlockWorkflow(f.facts,{config:f.config,player:f.options.player,moduleConfig:enabled,...input});assert.equal(prepare().steps.length,2);
+ f.state.stock.delete('阵型3图纸');f.facts=await surveyFormationUnlock(f.client,protocol,f.options);assert.throws(prepare);
+ f.state.stock.set('阵型3图纸',1);f.state.ids.push(3);f.facts=await surveyFormationUnlock(f.client,protocol,f.options);assert.throws(prepare);
+ for(const invalid of [[],Array.from({length:24},(_,i)=>({presetId:i+2})),[targets[0],targets[0]],Array(2)])assert.throws(()=>validateFormationUnlockPreparation({...input,targets:invalid}),{code:'INVALID_PARAMETERS'});
+ let called=false;const accessor=[targets[0]];Object.defineProperty(accessor,'0',{enumerable:true,get(){called=true;throw Error('must not read');}});
+ assert.throws(()=>validateFormationUnlockPreparation({...input,targets:accessor}),{code:'INVALID_PARAMETERS'});assert.equal(called,false);
+});
