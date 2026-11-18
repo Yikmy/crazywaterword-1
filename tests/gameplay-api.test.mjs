@@ -2587,3 +2587,96 @@ for(const outcome of ['success','compass-unknown','order-unknown','order-refused
   assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{client.stop();await app.close();}
 });
+
+for (const unconfirmed of [false, true]) {
+ test('browser offline museum case acceleration '+(unconfirmed?'stops on UNKNOWN':'settles both cases'), {
+  skip: !process.env.CW_TEST_BROWSER, timeout: 45000
+ }, async () => {
+  const {app, session, input}=await museumGrowthHttpFixture('speedCase',{unconfirmed});
+  const state=session.museumState;
+  const cases=state.info.exhibitions[0].cases;
+  const originalTimes=cases.map(row=>row.upgradeFinishTime);
+  const writes=()=>app.requests.filter(row=>row.name==='MuseumSpeedUpCaseRequest');
+  try {
+   await withOfflineBrowser(app, async ({evaluate,waitFor}) => {
+    const {graph,simulation}=await evaluate('('+(async()=>{
+     const find=selector=>document.querySelector(selector);
+     const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+      for(let attempt=0;attempt<100;attempt++){
+       const element=find(selector);
+       if(accept(element))return element;
+       await new Promise(resolve=>setTimeout(resolve,75));
+      }
+      throw Error(selector+' '+find('#gp-museum-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+     };
+     if(globalThis.pageErrors.length)throw Error(globalThis.pageErrors.join(', '));
+     await wait('#account',element=>element?.value==='A');
+     (await wait('#tabs button[data-tab="museum"]')).click();
+     (await wait('#gp-museum-load')).click();
+     const parameters=await wait('#gp-museum-parameters');
+     parameters.value=JSON.stringify({payment:'ITEM',useNum:1});
+     parameters.dispatchEvent(new Event('input',{bubbles:true}));
+     (await wait('#gp-museum-survey')).click();
+     const mode=await wait('[data-museum-growth-batch-mode]',element=>element&&!element.disabled&&Array.from(element.options).some(option=>option.value==='speedCase'));
+     mode.value='speedCase';
+     mode.dispatchEvent(new Event('change',{bubbles:true}));
+     const section=mode.parentElement;
+     const choices=Array.from(section.querySelectorAll('[data-growth-batch-target]')).filter(element=>!element.disabled);
+     if(choices.length!==2||choices.some(element=>element.checked))throw Error('Expected two unselected case targets');
+     for(const choice of choices)choice.click();
+     const duration=section.querySelector('[data-growth-batch-duration]');
+     duration.value='60';
+     duration.dispatchEvent(new Event('input',{bubbles:true}));
+     section.querySelector('[data-growth-batch-prepare]').click();
+     const editor=await wait('#wf-json',element=>element?.value.includes('speedCase'));
+     const graph=JSON.parse(editor.value);
+     (await wait('#tabs button[data-tab="workflow"]')).click();
+     (await wait('#wf-simulate')).click();
+     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+     return {graph,simulation:JSON.parse(output.textContent)};
+    }).toString()+')()');
+    const actions=graph.nodes.filter(node=>node.type==='ACTION');
+    assert.deepEqual(actions.map(node=>node.parameters),input.targets);
+    assert.deepEqual(graph.nodes.map(node=>node.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+    assert.deepEqual(graph.budget.resources,[{id:'加速器',num:2}]);
+    assert.equal(graph.budget.uids.length,2);
+    assert.equal(simulation.requestsSent,0);
+    assert.equal(simulation.runtimeCreated,false);
+    await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');
+    await evaluate("document.getElementById('wf-start').click()");
+    const count=unconfirmed?1:2;
+    for(let index=0;index<count;index++){
+     await waitFor(async()=>{
+      return evaluate(`(() => {
+       const status=JSON.parse(document.getElementById('wf-status').textContent||'{}');
+       return status.currentNode===${JSON.stringify(actions[index].id)}&&
+        status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;
+      })()`);
+     },'case '+index+' authorization');
+     assert.equal(writes().length,index);
+     await evaluate("document.getElementById('wf-authorize').click()");
+     await waitFor(()=>{
+      const record=app.history.list('A')[0];
+      return record?.workflowNodeId===actions[index].id&&record.finalStatus===(unconfirmed?'UNKNOWN':'SUCCESS');
+     },'case '+index+' settlement');
+     const next=unconfirmed?'UNKNOWN':index===actions.length-1?'COMPLETED':'AWAITING_AUTHORIZATION';
+     await waitFor(async()=>{
+      const {data}=await app.call('/api/workflows');
+      if(data.status.status===next&&(next!=='AWAITING_AUTHORIZATION'||data.status.currentNode===actions[index+1].id))return true;
+      await evaluate("document.getElementById('wf-resume').click()");
+      return false;
+     },'case '+index+' workflow transition');
+    }
+    assert.equal(await evaluate('globalThis.confirmations'),count);
+    assert.deepEqual(writes().map(row=>row.body),actions.slice(0,count).map(({parameters})=>({
+     exhibitionId:parameters.exhibitionId,caseIndex:parameters.caseIndex,speedUp:{type:2,useNum:1}
+    })));
+    assert.deepEqual(cases.map(row=>row.upgradeFinishTime),originalTimes.map((value,i)=>value-(unconfirmed?(i===0?59:0):60)));
+    assert.equal(state.caseItems,2-count);
+    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+    assert.deepEqual(app.history.list('B'),[]);
+    assert.deepEqual(app.counts(),{clients:0,collections:0});
+   });
+  } finally { await app.close(); }
+ });
+}
