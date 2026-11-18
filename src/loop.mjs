@@ -174,6 +174,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募仅支持明确英雄或古董、免费单次及自有1/10/50券的原参数');}
         steps.push({phase,index,module:'free-recruit',parameters,selection});continue;
       }
+      if(phase==='tasks'&&row?.kind==='trial-challenge'){
+        exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks试炼须明确原Function参数和raidId=1/2/3');
+        try{parameters=validateTrialChallengeParameters(row.parameters);if(!Object.hasOwn(parameters,'raidId'))invalid('需要明确副本');}catch{invalid('Tasks试炼仅接受明确raidId=1/2/3及可选下一关stageId，禁止扫荡、购买和广告');}
+        steps.push({phase,index,module:'trial-challenge',parameters,selection});continue;
+      }
       if(phase==='tasks'&&row?.kind==='free-gold'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks点金须明确原Function参数；普通免费单次使用空对象');
         try{parameters=validateFreeGoldParameters(row.parameters);}catch{invalid('Tasks点金仅接受原免费单次及完整expectedGold状态，禁止付费或自定义次数');}
