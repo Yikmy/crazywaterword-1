@@ -3438,6 +3438,40 @@ test('compass Tasks draft sends the exact surveyed spin and unchanged budget to 
  h.run("selectAccount('B')");await button.click();assert.equal(h.node('wf-unified-intent').value,'');
 });
 
+test('museum page submits only the selected current expeditions for item acceleration',async()=>{
+ const h=await boot(),duration=300000;
+ const rows=[1,2].map(stageId=>{
+  const costs=[{id:'博物馆加速',num:1}],target={stageId};
+  return {actionType:'speedExplore',actionId:'museum:speedExplore:'+stageId,target,costs,endTime:1800005400,
+   parameters:{stageId,useNum:1,payment:'ITEM',expectedSpeedHash:String(stageId).repeat(64)},
+   budgetClaims:{resources:costs,quotas:[],uids:[{type:'museum-explore-stage',id:String(stageId)}]}};
+ });
+ const snapshot={accountId:'A',module:'museum',csrfToken:'synthetic-csrf-A',config:{enabled:true,exploration:true},status:{running:false,blocked:false},view:{candidates:[],explorationSelection:{stages:rows.map(row=>({...row.target,status:'EXPLORING'}))},speedPreparation:rows}};
+ const loading=h.node('gp-museum-load').click();
+ h.respond('/api/gameplay',snapshot,{module:'museum'});await loading;
+ const fields=()=>descendants(h.node('gp-museum-facts'));
+ const control=key=>fields().find(row=>row.dataset[key]);
+ const mode=control('museumBusinessMode');mode.value='explore-speed-batch';mode.onchange();
+ control('museumBusinessQuantity').value='1';await control('museumBusinessPrepare').click();
+ assert.deepEqual(JSON.parse(h.node('gp-museum-parameters').value),{payment:'ITEM',useNum:1});
+ const survey=h.node('gp-museum-survey').click();
+ h.respond('/api/gameplay/survey',structuredClone(snapshot));await survey;
+ const batchMode=control('museumGrowthBatchMode');batchMode.value='speedExplore';batchMode.onchange();
+ const picks=fields().filter(row=>row.dataset.growthBatchTarget);
+ assert.equal(picks.length,2);assert.ok(picks.every(row=>!row.disabled));assert.ok(picks.every(row=>!row.checked));
+ picks[1].checked=true;picks[1].onchange();
+ const pending=control('growthBatchPrepare').click();
+ const route='/api/gameplay/museum/growth/prepare';
+ const payload={actionType:'speedExplore',targets:[rows[1].parameters],maxDurationMs:duration};
+ assertMutation(h.pending(route),route,payload);
+ const {target,costs,budgetClaims,parameters,actionId}=rows[1],selection={actionId};
+ const nodes=[{id:'start',type:'START'},{id:'grow-0',type:'ACTION',module:'museum',parameters,selection},{id:'verify-0',type:'VERIFY',module:'museum'},{id:'stop',type:'STOP'}];
+ const graph={version:1,id:'synthetic-museum-speed',name:'synthetic museum',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget:budgetClaims,runPolicy:{maxDurationMs:duration,maxActions:1,modules:['museum']}};
+ h.respond(route,{...payload,accountId:'A',resumable:false,requiresFreshPlan:true,requiresAuthorization:true,steps:[{target,costs,budgetClaims,parameters,selection}],budget:budgetClaims,graph});await pending;
+ assert.deepEqual(conditionGraph(h),graph);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);
+});
+
 test('cross-ship cargo page loads the selected slots with one checked budget',async()=>{
  const spec={module:'fleet',actionId:'fleet:cargoFill:1:1',actionType:'cargoFill',parameters:{shipIndex:1,cargoIndex:1},costs:[{id:'wood',num:2}],facts:{cargo:{inventoryReliable:true,ships:[1,2].map(shipIndex=>({
   shipIndex,reliable:true,status:0,preparationHash:String(shipIndex).repeat(64),

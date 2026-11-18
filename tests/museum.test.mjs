@@ -204,6 +204,34 @@ test('professional multi-team graph validates actual output and rejects changed 
  const {f,c,input,projection}=await exploreBatchFixture(),out={accountId:'A',...prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input})};assert.deepEqual(check(out,input,projection,'A'),out.graph);assert.throws(()=>check(out,input,projection,'B'));
  for(const mutate of [out=>out.steps[0].target.heroIds.push('C'),out=>out.steps[0].costs[0].num++,out=>out.budget.uids.pop(),out=>out.graph.nodes.splice(2,1)]){const changed=structuredClone(out);mutate(changed);assert.throws(()=>check(changed,input,projection,'A'));}
 });
+test('explicit expedition acceleration uses current timers, cumulative owned items and checked page graph',async()=>{
+ const f=working(await read(fake(),{}));
+ f.stages.push({...structuredClone(f.stages[0]),stageId:2});
+ const projection=view(f,{parameters:{payment:'ITEM',useNum:1}});
+ const input={actionType:'speedExplore',targets:projection.speedPreparation.map(row=>row.parameters),maxDurationMs:60000};
+ assert.deepEqual(input.targets.map(row=>row.stageId),[1,2]);
+ const prepare=source=>prepareMuseumGrowthWorkflow(source,{config,moduleConfig,...input});
+ const result=prepare(f);
+ assert.deepEqual(result.budget.resources,[{id:MUSEUM_SPEED_ITEM,num:2}]);
+ assert.throws(()=>prepare({...f,stock:new Map([[MUSEUM_SPEED_ITEM,1]])}));
+ assert.equal(view(f,{parameters:{payment:'ITEM',useNum:2}}).speedPreparation.length,0);
+ const {GAMEPLAY_SCRIPT}=await import('../src/gameplay-page.mjs');
+ const start=GAMEPLAY_SCRIPT.indexOf('function gpGrowthBatchGraph(');
+ const end=GAMEPLAY_SCRIPT.indexOf('\nfunction ',start+1);
+ const check=new Function(GAMEPLAY_SCRIPT.slice(start,end)+';return gpGrowthBatchGraph')();
+ assert.deepEqual(check({...result,accountId:'A'},input,projection,'A','museum'),result.graph);
+ const changed=structuredClone(result);
+ changed.steps[1].parameters.useNum++;
+ assert.throws(()=>check({...changed,accountId:'A'},input,projection,'A','museum'));
+ const after=structuredClone(f);
+ after.stock.set(MUSEUM_SPEED_ITEM,2);
+ const op=planMuseum(f,{config,moduleConfig,parameters:input.targets[0],selections:[result.steps[0].selection.actionId]}).actions[0];
+ after.stages[0].expedition.endTime-=1800;
+ assert.equal(verifyMuseum(op,f,after),true);
+ after.stages[1].expedition.endTime--;
+ assert.equal(verifyMuseum(op,f,after),false);
+});
+
 test('explicit popularity claims isolate each threshold and reserve fixed claim UIDs while preserving ordinary single claims',async()=>{
  const f=await read(fake(),{});f.topPopularity=200;const c=structuredClone(config);c.tables.MuseumAchievementCfg.data.push({score:200,rewards:[['小麦',3]]});
  const projection=museumView(f,{config:c,moduleConfig,parameters:{}}),input={actionType:'claimAchievement',targets:[{popularityThreshold:100},{popularityThreshold:200}],maxDurationMs:60000},out=prepareMuseumGrowthWorkflow(f,{config:c,moduleConfig,...input});
