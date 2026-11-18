@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { loadProtocol } from '../src/proto.mjs';
 import { extractTables } from '../src/config.mjs';
-import { tradeModule, surveyTrade, viewTrade, planTrade, validateTradeParameters, validateTradeConfig, validateTradeLegClockObservation } from '../src/trade.mjs';
+import { tradeModule, surveyTrade, viewTrade, planTrade, validateTradeParameters, validateTradeConfig, validateTradeLegClockObservation, prepareTradeBuyWorkflow, validateTradeBuyPreparation } from '../src/trade.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { validateFunctionContract } from '../src/function-contracts.mjs';
 const protocol=loadProtocol(),copy=v=>structuredClone(v);
@@ -123,7 +123,7 @@ async function saleFixture(t,{apply=true,file=null,connectionId='trade-connectio
  if(buy){options.parameters={action:'buy',cityId:1,goodsId:1001,num:2};state.city.goods[0].price=40;}
  client.request=async(name,body,response,_timeout,opts={})=>{
   wire(name,body);
-  if(opts.mutate){await state.onDispatch?.(name,body);opts.beforeDispatch?.();assert.equal(name,speed?'TradeSpeedRequest':move?'TradeMoveRequest':buy?'TradeBuyRequest':'TradeSellRequest');state.writes.push({name,body:copy(body)});if(state.apply&&speed){state.info.cargo.moveEndTime-=1800*body.useNum;state.stock.find(row=>row.itemId==='海商王加速').num-=body.useNum;}else if(state.apply&&move){state.info.cargo={cargoLv:1,cityId:body.cityId,moveStartTime:Math.floor(state.wall/1000),moveEndTime:Math.floor(state.wall/1000)+7200,moveToCityId:body.mvToCityId};}else if(state.apply&&buy){const price=state.city.goods.find(r=>r.goodsId===body.goodsId).price;state.info.player.coins-=price*body.buyNum;const same=state.info.player.goods.find(r=>r.goodsId===body.goodsId&&r.cityId===body.cityId&&r.buyPrice===price);if(same)same.num+=body.buyNum;else state.info.player.goods.push({pid:99,goodsId:body.goodsId,num:body.buyNum,buyPrice:price,cityId:body.cityId});}else if(state.apply){const row=state.info.player.goods.find(r=>r.pid===body.pid),price=state.city.goods.find(r=>r.goodsId===row.goodsId).price,profit=Math.ceil((price-row.buyPrice)*body.sellNum*1.03);state.info.player.coins+=row.buyPrice*body.sellNum+profit;state.info.player.profit+=profit;state.info.player.maxCoins=Math.max(state.info.player.maxCoins,state.info.player.coins);row.num-=body.sellNum;if(row.num===0)state.info.player.goods=state.info.player.goods.filter(r=>r!==row);}await state.onWrite?.(name,body);return wire(response,state.receiptOverride??(speed?{moveEndTime:state.info.cargo.moveEndTime}:move?{cargo:state.info.cargo}:{player:state.info.player}));}
+  if(opts.mutate){await state.onDispatch?.(name,body);opts.beforeDispatch?.();assert.equal(name,speed?'TradeSpeedRequest':move?'TradeMoveRequest':buy?'TradeBuyRequest':'TradeSellRequest');state.writes.push({name,body:copy(body)});if(state.apply&&speed){state.info.cargo.moveEndTime-=1800*body.useNum;state.stock.find(row=>row.itemId==='海商王加速').num-=body.useNum;}else if(state.apply&&move){state.info.cargo={cargoLv:1,cityId:body.cityId,moveStartTime:Math.floor(state.wall/1000),moveEndTime:Math.floor(state.wall/1000)+7200,moveToCityId:body.mvToCityId};}else if(state.apply&&buy){const price=state.city.goods.find(r=>r.goodsId===body.goodsId).price;state.info.player.coins-=price*body.buyNum;const same=state.info.player.goods.find(r=>r.goodsId===body.goodsId&&r.cityId===body.cityId&&r.buyPrice===price);if(same)same.num+=body.buyNum;else state.info.player.goods.push({pid:98+state.writes.length,goodsId:body.goodsId,num:body.buyNum,buyPrice:price,cityId:body.cityId});}else if(state.apply){const row=state.info.player.goods.find(r=>r.pid===body.pid),price=state.city.goods.find(r=>r.goodsId===row.goodsId).price,profit=Math.ceil((price-row.buyPrice)*body.sellNum*1.03);state.info.player.coins+=row.buyPrice*body.sellNum+profit;state.info.player.profit+=profit;state.info.player.maxCoins=Math.max(state.info.player.maxCoins,state.info.player.coins);row.num-=body.sellNum;if(row.num===0)state.info.player.goods=state.info.player.goods.filter(r=>r!==row);}await state.onWrite?.(name,body);return wire(response,state.receiptOverride??(speed?{moveEndTime:state.info.cargo.moveEndTime}:move?{cargo:state.info.cargo}:{player:state.info.player}));}
   state.reads.push(name);await state.onRead?.(name);let value=name==='TradeInfoRequest'?state.info:name==='TradeCityRequest'?state.city:name==='TradeGuildRadarRequest'?{radar:state.radar}:name==='AllItemRequest'?{items:state.stock}:name==='AllResourceRequest'?{list:state.resources}:null;
   if(Object.hasOwn(state.overrides,name))value=state.overrides[name];if(value instanceof Error)throw value;assert.ok(value,'unexpected read '+name);return wire(response,value);
  };
@@ -276,3 +276,73 @@ test('C524 owned speed definite refusal survives reconnect without clearing memo
 
 for(const [ms,readiness]of [[10800001,'WAITING_BY_CLOCK'],[10800999,'BOUNDARY_UNCERTAIN'],[10801002,'READY_BY_CLOCK']])test('trade leg clock observation preserves exact endpoint and no arrival claim '+readiness,async t=>{const f=await saleFixture(t,{move:true});Object.assign(f.state.info.cargo,{moveStartTime:10000,moveEndTime:10801,moveToCityId:2});setTradeClock(f,ms);const view=viewTrade(await f.survey(),f.options),o=view.cooldownObservation;assert.equal(o.status,'OBSERVED');assert.equal(o.readiness,readiness);assert.deepEqual(o.leg,{period:7,cargoLv:1,cityId:1,moveStartTime:10000,moveEndTime:10801,moveToCityId:2});assert.equal(o.arrivalConfirmed,false);assert.equal(o.executable,false);assert.equal(o.eligibility,null);assert.equal(o.autoResume,false);assert.deepEqual(validateTradeLegClockObservation(o),o);assert.equal(f.state.writes.length,0);for(const patch of [{arrivalConfirmed:true},{executable:true},{eligibility:true},{autoResume:true},{readiness:'ARRIVED'},{leg:{...o.leg,moveStartTime:10802}},{leg:{...o.leg,moveToCityId:o.leg.cityId}},{source:'local-clock'},{serverBounds:{earliestMs:1,latestMs:0}},{permitId:'no'}])assert.throws(()=>validateTradeLegClockObservation({...o,...patch}));});
 for(const reason of ['not-moving','wrong-origin','wrong-target','lost-source','identity','read-fail','changed-info'])test('trade leg clock remains UNKNOWN for '+reason,async t=>{const f=await saleFixture(t,{move:true});Object.assign(f.state.info.cargo,{moveStartTime:10000,moveEndTime:10801,moveToCityId:2});if(reason==='not-moving')f.state.info.cargo.moveStartTime=0;if(reason==='wrong-origin')f.options.parameters.cityId=3;if(reason==='wrong-target')f.options.parameters.mvToCityId=3;if(reason==='lost-source')f.push('SCAllActivity',{});if(reason==='read-fail')f.state.overrides.TradeInfoRequest=Error('timeout');if(reason==='changed-info'){let n=0;f.state.onRead=name=>{if(name==='TradeInfoRequest'&&++n===2)f.state.info.cargo.moveEndTime++;};}const facts=await f.survey();if(reason==='identity')f.client.factContext.connectionId='other';const o=viewTrade(facts,f.options).cooldownObservation;assert.equal(o.status,'UNKNOWN');assert.equal(o.leg,null);assert.equal(o.serverBounds,null);assert.equal(o.sourceAt,null);assert.equal(f.state.writes.length,0);});
+
+
+async function multiBuyFixture(t,count=2){
+ const f=await saleFixture(t,{buy:true}),template=f.options.config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
+ assert.ok(template);
+ f.options.config.tables.TradeGoodsCfg.data=Array.from({length:count},(_,i)=>({...copy(template),goodsId:1001+i,capacity:1,maxCount:100}));
+ f.state.info.player.goods=[];f.state.info.player.coins=100;f.state.info.player.maxCoins=100;
+ f.state.city.goods=Array.from({length:count},(_,i)=>({goodsId:1001+i,stock:0,price:2}));
+ f.options.parameters={action:'buy',cityId:1,goodsId:1001,num:1};
+ const facts=await f.survey(),view=viewTrade(facts,f.options);
+ assert.equal(view.status,'OBSERVED');assert.equal(view.buyPreparation.length,count);
+ const buys=view.buyPreparation.map(row=>({goodsId:row.goodsId,num:1,expectedBuyHash:row.expectedBuyHash}));
+ return {...f,facts,view,input:{cityId:1,expectedPeriod:7,buys,maxDurationMs:60000}};
+}
+
+for(const count of [1,24])test('trade buy preparation composes '+count+' distinct original market quotes with fixed initial budget',async t=>{
+ const f=await multiBuyFixture(t,count),prepared=prepareTradeBuyWorkflow(f.facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...f.input});
+ assert.equal(prepared.steps.length,count);assert.equal(prepared.capacityUsed,count);
+ assert.deepEqual(prepared.graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.goodsId),f.input.buys.map(row=>row.goodsId));
+ assert.equal(prepared.graph.nodes.filter(row=>row.type==='VERIFY').length,count);
+ assert.deepEqual(prepared.budget.resources,[{id:'TRADE_COINS:7',num:count*2}]);
+ assert.equal(prepared.budget.quotas.length,count);assert.equal(prepared.budget.uids.length,count);
+ assert.deepEqual(prepared.graph.budget,prepared.budget);assert.equal(prepared.resumable,false);assert.equal(f.state.writes.length,0);
+});
+
+test('trade buy preparation rejects bad targets, combined cost and combined capacity without dispatch',async t=>{
+ const f=await multiBuyFixture(t,2),input=f.input;
+ for(const bad of [{...input,buys:[]},{...input,buys:[input.buys[0],input.buys[0]]},{...input,buys:Array(1)},
+  {...input,buys:Array(25).fill(input.buys[0])},{...input,buys:[{...input.buys[0],price:0}]},
+  {...input,maxDurationMs:0},{...input,maxDurationMs:86400001}])assert.throws(()=>validateTradeBuyPreparation(bad));
+ let calls=0;assert.throws(()=>validateTradeBuyPreparation({...input,buys:[{goodsId:1001,num:1,get expectedBuyHash(){calls++;throw Error('getter');}}]}));assert.equal(calls,0);
+ f.state.info.player.coins=3;let facts=await f.survey();
+ let buys=viewTrade(facts,f.options).buyPreparation.map(row=>({goodsId:row.goodsId,num:1,expectedBuyHash:row.expectedBuyHash}));
+ assert.throws(()=>prepareTradeBuyWorkflow(facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...input,buys}),/不足|资格/);
+ f.state.info.player.coins=100;const ship=f.options.config.tables.TradeShipCfg.data.find(row=>row.lv===1);ship.capacity=1;
+ facts=await f.survey();buys=viewTrade(facts,f.options).buyPreparation.map(row=>({goodsId:row.goodsId,num:1,expectedBuyHash:row.expectedBuyHash}));
+ assert.throws(()=>prepareTradeBuyWorkflow(facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...input,buys}),/仓位|资格/);
+ assert.equal(f.state.writes.length,0);
+});
+
+
+for(const outcome of ['success','unknown-first','unknown-second','refused-second'])test('trade buy Service and Workflow preserve per-good authorization and stop '+outcome,async t=>{
+ const f=await multiBuyFixture(t,2);
+ const prepared=await f.service.prepareTradeBuySource(f.session,f.input);
+ assert.equal(prepared.accountId,'trade-A');assert.equal(f.state.writes.length,0);
+ assert.deepEqual(prepared.budget.resources,[{id:'TRADE_COINS:7',num:4}]);
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id===f.session.id?f.session:null,
+  isCurrent:(session,generation,client)=>session===f.session&&session.generation===generation&&session.client===client,
+  claim:(id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ let status=await runner.start(f.session.id,prepared.graph);const runId=status.runId;
+ const count=outcome==='unknown-first'?1:2;
+ for(let i=0;i<count;i++){
+  assert.equal(status.status,'AWAITING_AUTHORIZATION');assert.equal(status.runId,runId);
+  assert.equal(status.plan.parameters.goodsId,1001+i);assert.equal(f.state.writes.length,i);
+  const faulty=outcome==='unknown-first'&&i===0||['unknown-second','refused-second'].includes(outcome)&&i===1;
+  f.state.apply=!faulty;f.state.onWrite=outcome==='refused-second'&&i===1?()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});}:null;
+  const permit=f.authorize(status.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);
+  const record=f.durable.list(f.session.id)[0],result=faulty?(outcome==='refused-second'?'REJECTED':'UNKNOWN'):'SUCCESS';
+  assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowId,runId);
+  assert.equal(record.workflowNodeId,'buy-'+i);assert.throws(()=>f.service.execute(f.session,permit));
+  status=await runner.resume();
+ }
+ assert.equal(status.status,outcome==='success'?'COMPLETED':outcome==='refused-second'?'FAILED':'UNKNOWN');
+ assert.deepEqual(f.state.writes.map(row=>row.body.goodsId),Array.from({length:count},(_,i)=>1001+i));
+ assert.equal(f.state.info.player.coins,outcome==='success'?96:outcome==='unknown-first'?100:98);
+ const budget=f.service.workflowBudget(f.session.id);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);
+ assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,count);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome.startsWith('unknown'));
+});
