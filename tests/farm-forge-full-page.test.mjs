@@ -3407,3 +3407,37 @@ test('resident-order Tasks declaration uses the exact professional candidate and
  assert.deepEqual(graph.budget,budget);assert.equal(writes(h).length,0);assert.equal(h.confirmations.length,0);
  h.run("selectAccount('B')");await button.click();assert.equal(h.node('wf-unified-intent').value,'');
 });
+
+
+test('cross-ship cargo page loads the selected slots with one checked budget',async()=>{
+ const spec={module:'fleet',actionId:'fleet:cargoFill:1:1',actionType:'cargoFill',parameters:{shipIndex:1,cargoIndex:1},costs:[{id:'wood',num:2}],facts:{cargo:{inventoryReliable:true,ships:[1,2].map(shipIndex=>({
+  shipIndex,reliable:true,status:0,preparationHash:String(shipIndex).repeat(64),
+  slots:[{cargoIndex:1,id:'wood',required:2,have:4,missing:0,filled:false,reliable:true}]
+ }))}}};
+ const h=await boot(),read=h.node('gp-fleet-load').click();
+ const response=data(spec);response.config={enabled:true,cargoFill:true};
+ h.respond('/api/gameplay',response,{module:'fleet'});await read;
+ const controls=descendants(h.node('gp-fleet-cargo')),checks=controls.filter(node=>node.dataset.cargoFillIndex),
+  duration=controls.find(node=>node.dataset.cargoFillBatchDuration),prepare=controls.find(node=>node.dataset.cargoFillBatchPrepare);
+ assert.equal(checks.length,2);assert.ok(prepare);assert.ok(checks.every(check=>!check.checked));
+ duration.value='60';await prepare.click();assert.equal(writes(h).length,0);
+ checks.forEach(check=>{check.checked=true;check.onchange();});
+ const loads=spec.facts.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,cargoIndices:[1],expectedCargoHash:preparationHash}));
+ const payload={action:'fill',loads,maxDurationMs:60000},route='/api/gameplay/fleet/cargo/prepare';
+ const budget={resources:[{id:'wood',num:4}],quotas:[],uids:[]};
+ const nodes=[{id:'start',type:'START'}],steps=loads.map(({shipIndex,expectedCargoHash})=>{
+  const parameters={shipIndex,cargoIndex:1,expectedCargoHash},suffix=shipIndex+'-1';
+  nodes.push({id:'fill-'+suffix,type:'ACTION',module:'fleet',parameters,selection:{actionId:'fleet:cargoFill:'+shipIndex+':1'}},
+   {id:'verify-'+suffix,type:'VERIFY',module:'fleet'});
+  return {shipIndex,cargoIndex:1,parameters,costs:[{id:'wood',num:2}]};
+ });nodes.push({id:'stop',type:'STOP'});
+ const graph={version:1,id:'cargo-fill-ships-test',name:'Cross-ship',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),
+  budget,runPolicy:{maxDurationMs:60000,maxActions:2,modules:['fleet']}};
+ const reply={...payload,accountId:'A',steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true};
+ const original=h.node('wf-json').value,bad=structuredClone(reply);bad.budget.resources[0].num=3;
+ let pending=prepare.click();assertMutation(h.pending(route),route,payload);h.respond(route,bad);await pending;
+ assert.equal(h.node('wf-json').value,original);
+ pending=prepare.click();assertMutation(h.pending(route),route,payload);h.respond(route,reply);await pending;
+ assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);
+ assert.equal(writes(h).length,2);assert.equal(h.confirmations.length,0);
+});

@@ -2060,17 +2060,44 @@ function gpRenderFleetFormation(view,draft={}) {
 }
 
 function gpCargoSelectable(){const s=gpGet('fleet');return gpReady('fleet')&&!s.pending&&!s.dirty&&!s.targetDraftPending&&!s.configDirty&&!s.data?.status?.blocked&&!s.data?.status?.running&&!snapshot?.busy&&snapshot?.connected;}
-function gpCargoFillGraph(data,payload,accountId){
- const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b),graph=data.graph;
- if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||data.shipIndex!==payload.shipIndex||data.expectedCargoHash!==payload.expectedCargoHash||data.maxDurationMs!==payload.maxDurationMs||!same(data.cargoIndices,payload.cargoIndices)||!Array.isArray(data.steps)||data.steps.length!==payload.cargoIndices.length||!Array.isArray(data.budget?.resources)||!same(data.budget.quotas,[])||!same(data.budget.uids,[]))throw Error('装货组合账号、原货船状态、所选货格或预算不匹配');
- const nodes=[{id:'start',type:'START'}];
- data.steps.forEach((step,i)=>{
-  const cargoIndex=payload.cargoIndices[i],parameters=step.parameters;
-  if(step.cargoIndex!==cargoIndex||!parameters||Object.keys(parameters).length!==3||parameters.shipIndex!==payload.shipIndex||parameters.cargoIndex!==cargoIndex||typeof parameters.expectedCargoHash!=='string'||!/^[a-f0-9]{64}$/.test(parameters.expectedCargoHash)||i===0&&parameters.expectedCargoHash!==payload.expectedCargoHash||!Array.isArray(step.costs))throw Error('装货步骤或预期状态不匹配');
-  nodes.push({id:'fill-'+cargoIndex,type:'ACTION',module:'fleet',parameters,selection:{actionId:'fleet:cargoFill:'+payload.shipIndex+':'+cargoIndex}},{id:'verify-'+cargoIndex,type:'VERIFY',module:'fleet'});
- });
+function gpCargoFillGraph(data,payload,accountId,view){
+ const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+ const same=(a,b)=>canonical(a)===canonical(b),graph=data.graph,multiShip=payload.action==='fill';
+ const loads=multiShip?payload.loads:[payload];
+ const matches=multiShip?data.action==='fill'&&same(data.loads,payload.loads)
+  :data.shipIndex===payload.shipIndex&&data.expectedCargoHash===payload.expectedCargoHash&&same(data.cargoIndices,payload.cargoIndices);
+ const count=loads.reduce((total,load)=>total+load.cargoIndices.length,0);
+ if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true
+  ||!matches||data.maxDurationMs!==payload.maxDurationMs||!Array.isArray(data.steps)||data.steps.length!==count
+  ||!Array.isArray(data.budget?.resources)||!same(data.budget.quotas,[])||!same(data.budget.uids,[]))throw Error('装货组合账号、原货船状态、所选货格或预算不匹配');
+ const nodes=[{id:'start',type:'START'}],totals=new Map();
+ let stepIndex=0;
+ for(const load of loads){
+  const ship=multiShip&&view.cargo?.ships?.find(ship=>ship.shipIndex===load.shipIndex);
+  for(const [i,cargoIndex] of load.cargoIndices.entries()){
+   const step=data.steps[stepIndex++],parameters=step?.parameters;
+   if(step?.cargoIndex!==cargoIndex||!parameters||Object.keys(parameters).length!==3||parameters.shipIndex!==load.shipIndex
+    ||parameters.cargoIndex!==cargoIndex||typeof parameters.expectedCargoHash!=='string'||!/^[a-f0-9]{64}$/.test(parameters.expectedCargoHash)
+    ||i===0&&parameters.expectedCargoHash!==load.expectedCargoHash||!Array.isArray(step.costs))throw Error('装货步骤或预期状态不匹配');
+   if(multiShip){
+    const slot=ship?.slots?.find(slot=>slot.cargoIndex===cargoIndex);
+    if(step.shipIndex!==load.shipIndex||ship?.preparationHash!==load.expectedCargoHash||slot?.reliable!==true||slot.filled!==false
+     ||typeof slot.id!=='string'||!Number.isSafeInteger(slot.required)||slot.required<1
+     ||!same(step.costs,[{id:slot.id,num:slot.required}]))throw Error('装货步骤与所选货格材料不一致');
+    const total=(totals.get(slot.id)||0)+slot.required;
+    if(!Number.isSafeInteger(total))throw Error('装货总成本超出可靠范围');
+    totals.set(slot.id,total);
+   }
+   const suffix=multiShip?load.shipIndex+'-'+cargoIndex:cargoIndex;
+   nodes.push({id:'fill-'+suffix,type:'ACTION',module:'fleet',parameters,selection:{actionId:'fleet:cargoFill:'+load.shipIndex+':'+cargoIndex}},{id:'verify-'+suffix,type:'VERIFY',module:'fleet'});
+  }
+ }
+ if(multiShip&&(data.budget.resources.length!==totals.size||new Set(data.budget.resources.map(row=>row?.id)).size!==totals.size
+  ||data.budget.resources.some(row=>!totals.has(row?.id)||!same(row,{id:row.id,num:totals.get(row.id)}))))throw Error('装货累计预算与所选货格材料不一致');
  nodes.push({id:'stop',type:'STOP'});
- if(graph?.version!==1||!same(graph.nodes,nodes)||!same(graph.edges,nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})))||!same(graph.budget,data.budget)||!same(graph.runPolicy,{maxDurationMs:payload.maxDurationMs,maxActions:data.steps.length,modules:['fleet']}))throw Error('装货步骤、验证顺序或原累计预算不匹配');return graph;
+ if(graph?.version!==1||!same(graph.nodes,nodes)||!same(graph.edges,nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})))
+  ||!same(graph.budget,data.budget)||!same(graph.runPolicy,{maxDurationMs:payload.maxDurationMs,maxActions:count,modules:['fleet']}))throw Error('装货步骤、验证顺序或原累计预算不匹配');
+ return graph;
 }
 function gpCargoClaimGraph(data,payload,view,accountId){
  const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b),graph=data.graph;
@@ -2109,8 +2136,10 @@ function gpRenderCargo(view){
  const show=value=>value===null||value===undefined?'未知':String(value);
  const select=(parent,actionId,label)=>{if(!actionId)return;const candidate=s.data?.view?.candidates?.find(row=>row.actionId===actionId),button=gpEl('button',label);button.dataset.cargoAction=actionId;button._blocked=!candidate||gpBlocked(candidate);button.disabled=button._blocked||!gpCargoSelectable();button.onclick=()=>{if(button.disabled||!gpCargoSelectable()||!gpSafe(scope,revision)||gpGet('fleet')!==s||s.data?.view!==view)return;const fresh=gpGet('fleet').data?.view?.candidates?.find(row=>row.actionId===actionId);if(!fresh||gpBlocked(fresh)||gpCandidateParametersChanged('fleet',fresh))return;s.selected.clear();s.selected.add(actionId);s.plan=null;s.revision++;if(fresh.parameters)$('gp-fleet-parameters').value=gpJson(fresh.parameters);gpClear($('gp-fleet-plan-view'));gpRender('fleet',s.data,s.scope);$('gp-fleet-hint').textContent='已选择此货船候选；请预览具体计划并授权。';};s.cargoControls.push(button);parent.appendChild(button);};
  gpRenderCargoClaims(box,view);
+ const shipChoices=[];
  for(const ship of cargo.ships||[]){
   const section=gpEl('article'),checks=[];
+  shipChoices.push({ship,checks});
   section.appendChild(gpEl('h4','货船 '+show(ship.shipIndex)+' · '+(ship.statusText||show(ship.status))));
   if(ship.reason)section.appendChild(gpEl('p','阻塞：'+ship.reason));
   const table=gpEl('table'),head=gpEl('tr');for(const text of ['组合选择','货格','物资','需求','持有','缺少','状态/选择'])head.appendChild(gpEl('th',text));table.appendChild(head);
@@ -2138,6 +2167,43 @@ function gpRenderCargo(view){
    finally{if(gpSafe(requestScope,revision)&&gpGet('fleet')===s){s.pending=false;gpControls('fleet');}}
   };
   section.appendChild(prepare);section.appendChild(gpEl('p','只使用本次自有材料。每格沿用原装货合同，拒绝、UNKNOWN、需求或预期状态变化即停止；最后一格可触发出航，不含到港领奖或下一航次。准备不执行、不授权，重启不续跑。'));box.appendChild(section);
+ }
+
+ if(shipChoices.filter(({checks})=>checks.some(check=>!check._blocked)).length>1){
+  const section=gpEl('div'),source=$('gp-fleet-parameters').value;
+  const duration=gpEl('input'),label=gpEl('label','跨船装货总时长（秒）');
+  duration.type='number';duration.min='1';duration.max='86400';duration.step='1';duration.value='';
+  duration.dataset.cargoFillBatchDuration='true';label.appendChild(duration);section.appendChild(label);
+  const prepare=gpEl('button','准备跨船装货');prepare.type='button';prepare.dataset.cargoFillBatchPrepare='true';
+  section.appendChild(prepare);box.appendChild(section);
+  for(const control of [duration,prepare]){control._workflowPrepare=true;s.cargoControls.push(control);}
+  const live=()=>gpSafe(scope,revision)&&gpGet('fleet')===s&&s.data?.view===view
+   &&$('gp-fleet-parameters').value===source&&Array.from(box.children).includes(section);
+  const selection=()=>shipChoices.flatMap(({ship,checks})=>{
+   const cargoIndices=checks.filter(check=>check.checked&&!check._blocked).map(check=>Number(check.dataset.cargoFillIndex)).sort((a,b)=>a-b);
+   return cargoIndices.length?[{shipIndex:ship.shipIndex,cargoIndices,expectedCargoHash:ship.preparationHash}]:[];
+  });
+  duration.oninput=()=>{if(live()&&gpCargoSelectable()&&wfEditorEditable()){gpInvalidate('fleet',false);wfInvalidateSettingPlans();}};
+  prepare.onclick=async()=>{
+   if(prepare.disabled||!live()||!gpCargoSelectable()||!wfEditorEditable())return;
+   const loads=selection(),count=loads.reduce((total,load)=>total+load.cargoIndices.length,0),time=duration.value,seconds=Number(time);
+   if(loads.length<2||count>24||!/^[1-9][0-9]*$/.test(time)||!Number.isSafeInteger(seconds)||seconds>86400){
+    $('gp-fleet-hint').textContent='请在至少两艘船上勾选货格，总计最多24格，并填写1至86400秒。';return;
+   }
+   const payload={action:'fill',loads,maxDurationMs:seconds*1000},selected=JSON.stringify(loads),config=s.data.config;
+   const requestScope=viewGuard.begin('cargo-fill-prepare'),editor=captureStageRecommendationEditor(),edit=++s.revision;
+   const active=()=>gpSafe(requestScope,revision)&&live()&&s.revision===edit&&s.data?.config===config
+    &&!s.configDirty&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&duration.value===time&&JSON.stringify(selection())===selected;
+   s.plan=null;s.selected.clear();gpClear($('gp-fleet-plan-view'));s.pending=true;gpControls('fleet');
+   try{
+    const reply=await operationMutation('/api/gameplay/fleet/cargo/prepare',payload,requestScope);
+    if(!active())return;
+    editor.accept(gpCargoFillGraph(reply,payload,requestScope.account,view));
+    $('wf-hint').textContent='已载入跨船装货流程。核对累计材料预算，每格单独授权。';
+    $('gp-fleet-hint').textContent=reply.limitation;
+   }catch(error){if(active())$('gp-fleet-hint').textContent=error.message;}
+   finally{if(gpSafe(requestScope,revision)&&gpGet('fleet')===s){s.pending=false;gpControls('fleet');}}
+  };
  }
 
  const summary=gpEl('table'),heading=gpEl('tr');for(const text of ['待装总需求','需求量','持有','总缺少'])heading.appendChild(gpEl('th',text));summary.appendChild(heading);for(const item of cargo.shortages||[]){const tr=gpEl('tr');for(const value of [item.id,item.required,item.have,item.missing])tr.appendChild(gpEl('td',show(value)));summary.appendChild(tr);}box.appendChild(summary);for(const note of cargo.notes||[])box.appendChild(gpEl('p',note));

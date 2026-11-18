@@ -144,24 +144,74 @@ export function validateCargoFillPreparation(value){
   if(Reflect.ownKeys(value).length!==4||!['shipIndex','cargoIndices','expectedCargoHash','maxDurationMs'].every(k=>{const d=Object.getOwnPropertyDescriptor(value,k);return d?.enumerable&&Object.hasOwn(d,'value');})||!Number.isInteger(value.shipIndex)||value.shipIndex<1||value.shipIndex>2147483647||!fieldDense(value.cargoIndices)||!value.cargoIndices.length||value.cargoIndices.length>24||value.cargoIndices.some(v=>!Number.isInteger(v)||v<1||v>2147483647)||new Set(value.cargoIndices).size!==value.cargoIndices.length||typeof value.expectedCargoHash!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedCargoHash)||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('装货组合须明确一艘货船、1至24个不同货格、当前状态摘要和有限总时长');
   return {shipIndex:value.shipIndex,cargoIndices:[...value.cargoIndices].sort((a,b)=>a-b),expectedCargoHash:value.expectedCargoHash,maxDurationMs:value.maxDurationMs};
 }
-export function prepareCargoFillWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}){
-  const p=validateCargoFillPreparation(input),opts=validateFleetConfig(moduleConfig),stock=cargoInventory(facts);
-  const raw=facts?.cargoReliable===true&&cargoHeaderReliable(facts.ships)?facts.ships.find(s=>s.index===p.shipIndex):null,ship=cargoShip(raw);
-  if(!opts.enabled||!opts.cargoFill||!stock||!ship||ship.status!==0||cargoSnapshotHash(ship)!==p.expectedCargoHash)throw invalid('装货组合缺少开启配置、完整库存或与所选摘要一致的采购状态');
-  const simulated=structuredClone(raw),ledger=new ResourceLedger(stock),nodes=[{id:'start',type:'START'}],steps=[];
-  for(const cargoIndex of p.cargoIndices){
-    const state=cargoShip(simulated);if(!state||!state.orderItem[cargoIndex-1]||state.orderItem[cargoIndex-1].filled!==false)throw invalid('所选货格不是当前采购状态中明确未装的一格');
-    const parameters={shipIndex:p.shipIndex,cargoIndex,expectedCargoHash:cargoSnapshotHash(state)},selection=fleetCargoFillSelection({shipIndex:p.shipIndex,cargoIndex});
-    const planned=planFleet({...facts,ships:facts.ships.map(s=>s.index===p.shipIndex?simulated:s)}, {config,moduleConfig:opts,parameters,selections:[selection],ledger});
-    const action=planned.actions?.[0];if(planned.actions?.length!==1||action.actionType!=='cargoFill')throw invalid('装货组合不能按当前自有材料与原单格合同完成全部选择；不使用预期奖励扩充预算');
-    steps.push({cargoIndex,parameters:structuredClone(parameters),costs:structuredClone(action.costs)});
-    nodes.push({id:'fill-'+cargoIndex,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+cargoIndex,type:'VERIFY',module:'fleet'});
-    simulated.orderItem[cargoIndex-1].filled=true;
+export function validateCargoFillBatchPreparation(value) {
+  strictParameters(value, ['action','loads','maxDurationMs']);
+  const keys = ['action','loads','maxDurationMs'];
+  const hasData = (row,key) => { const descriptor = Object.getOwnPropertyDescriptor(row,key); return descriptor?.enumerable && Object.hasOwn(descriptor,'value'); };
+  if (Reflect.ownKeys(value).length !== keys.length || !keys.every(key => hasData(value,key))
+    || value.action !== 'fill' || !fieldDense(value.loads) || value.loads.length < 1 || value.loads.length > 24
+    || !Number.isSafeInteger(value.maxDurationMs) || value.maxDurationMs < 1 || value.maxDurationMs > 86400000) {
+    throw invalid('跨船装货须明确fill、货船及货格列表和有限总时长');
+  }
+  const loads = value.loads.map(row => {
+    const fields = ['shipIndex','cargoIndices','expectedCargoHash'];
+    strictParameters(row,fields);
+    if (Reflect.ownKeys(row).length !== fields.length || !fields.every(key => hasData(row,key))) {
+      throw invalid('每艘货船须明确船号、货格及当前状态摘要');
+    }
+    const {shipIndex,cargoIndices,expectedCargoHash} = validateCargoFillPreparation({...row,maxDurationMs:value.maxDurationMs});
+    return {shipIndex,cargoIndices,expectedCargoHash};
+  });
+  if (new Set(loads.map(row => row.shipIndex)).size !== loads.length
+    || loads.reduce((total,row) => total + row.cargoIndices.length,0) > 24) {
+    throw invalid('每艘货船只声明一次，所有货船总计最多24格');
+  }
+  return {action:'fill',loads,maxDurationMs:value.maxDurationMs};
+}
+
+export function prepareCargoFillWorkflow(facts,{config=facts?.config,moduleConfig=FLEET_DEFAULT_CONFIG,...input}={}) {
+  const multiShip = Object.hasOwn(input,'action');
+  const payload = multiShip ? validateCargoFillBatchPreparation(input) : validateCargoFillPreparation(input);
+  const loads = multiShip ? payload.loads : [payload];
+  const opts = validateFleetConfig(moduleConfig), stock = cargoInventory(facts);
+  if (!opts.enabled || !opts.cargoFill || !stock || facts?.cargoReliable !== true || !cargoHeaderReliable(facts.ships)) {
+    throw invalid('装货组合缺少开启配置、完整库存或可靠货船状态');
+  }
+  const ledger = new ResourceLedger(stock), nodes = [{id:'start',type:'START'}], steps = [];
+  for (const {shipIndex,cargoIndices,expectedCargoHash} of loads) {
+    const raw = facts.ships.find(ship => ship.index === shipIndex), ship = cargoShip(raw);
+    if (!ship || ship.status !== 0 || cargoSnapshotHash(ship) !== expectedCargoHash) {
+      throw invalid('所选货船采购状态或全船摘要已改变，须重新调查');
+    }
+    const simulated = structuredClone(raw);
+    const planningFacts = {...facts,ships:facts.ships.map(ship => ship.index === shipIndex ? simulated : ship)};
+    for (const cargoIndex of cargoIndices) {
+      const state = cargoShip(simulated);
+      if (state?.orderItem[cargoIndex-1]?.filled !== false) throw invalid('所选货格不是当前采购状态中明确未装的一格');
+      const parameters = {shipIndex,cargoIndex,expectedCargoHash:cargoSnapshotHash(state)};
+      const selection = fleetCargoFillSelection({shipIndex,cargoIndex});
+      const planned = planFleet(planningFacts,{config,moduleConfig:opts,parameters,selections:[selection],ledger});
+      const action = planned.actions?.[0];
+      if (planned.actions?.length !== 1 || action.actionType !== 'cargoFill') {
+        throw invalid('装货组合不能按当前自有材料与原单格合同完成全部选择');
+      }
+      steps.push({...(multiShip ? {shipIndex} : {}),cargoIndex,parameters:structuredClone(parameters),costs:structuredClone(action.costs)});
+      const suffix = multiShip ? shipIndex + '-' + cargoIndex : cargoIndex;
+      nodes.push({id:'fill-'+suffix,type:'ACTION',module:'fleet',parameters,selection},{id:'verify-'+suffix,type:'VERIFY',module:'fleet'});
+      simulated.orderItem[cargoIndex-1].filled = true;
+    }
   }
   nodes.push({id:'stop',type:'STOP'});
-  const budget={resources:[...ledger.reserved].sort(([a],[b])=>a.localeCompare(b)).map(([id,num])=>({id,num})),quotas:[],uids:[]},fingerprint=cargoSnapshotHash({payload:p,budget,steps});
-  return {...p,steps,budget,graph:{version:1,id:'cargo-fill-'+fingerprint.slice(0,20),name:'货船 '+p.shipIndex+' 明确货格有限装货',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['fleet']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
-    limitation:'仅处理本次明确采购状态中的所选货格，每格重新调查、核对预期状态、独立计划授权并验证原typed奖励和完整库存；预算只用准备时已持有材料。货船状态/需求变化、拒绝或UNKNOWN停止后续执行，不补购、不加速、不领取到港奖励、不循环到新采购状态。摘要只比较本次完整状态，不是服务端唯一航次ID；准备不执行、不授权，重启只读。'};
+  const budget = {resources:[...ledger.reserved].sort(([a],[b]) => a.localeCompare(b)).map(([id,num]) => ({id,num})),quotas:[],uids:[]};
+  const fingerprint = cargoSnapshotHash({payload,budget,steps});
+  const graph = {
+    version:1,id:(multiShip ? 'cargo-fill-ships-' : 'cargo-fill-')+fingerprint.slice(0,20),
+    name:multiShip ? '明确多船逐格装货' : '货船 '+payload.shipIndex+' 明确货格有限装货',
+    nodes,edges:nodes.slice(1).map((node,i) => ({from:nodes[i].id,to:node.id})),budget,
+    runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:['fleet']},
+  };
+  return {...payload,steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,
+    limitation:'每格重新调查、确认原货船与货格、独立授权并验证原奖励和完整库存。父预算按准备时的自有材料固定。状态变化、拒绝或UNKNOWN停止后续。'};
 }
 
 // Compose the original repair plan once, preserving its priority and cumulative

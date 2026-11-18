@@ -181,3 +181,35 @@ for(const entry of ['dailies','loop','tasks','loop-tasks'])test('unified '+entry
   assert.equal(fs.readFileSync(f.file,'utf8'),bytes);assert.equal(restarted.writes.length,0);assert.deepEqual(restarted.service.executionMemory('B').events,[]);
  }finally{runner.stop();await runner.settle();await restarted?.cleanup();await f.cleanup();}
 });
+
+
+test('prepared cross-ship cargo uses one initial budget and independently confirms each slot',async()=>{
+ const f=fixture({ships:[ship(1),ship(2),ship(3)]});
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id==='A'?f.target:null,
+  isCurrent:(account,generation,client)=>account===f.target&&account.generation===generation&&account.client===client,
+  claim:(_id,runId,options)=>f.service.claimWorkflow(f.target,runId,options)});
+ try {
+  const observed=await f.service.surveyModule(f.target,'fleet');
+  const loads=observed.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,cargoIndices:[1],expectedCargoHash:preparationHash}));
+  const payload={action:'fill',loads,maxDurationMs:60000};
+  await assert.rejects(f.service.prepareCargoFillSource(f.target,payload),{code:'INVALID_INPUT'});
+  const prepared=await f.service.prepareCargoFillSource(f.target,{...payload,loads:[{...loads[1],cargoIndices:[2,1]},loads[0]]});
+  assert.equal(f.writes.length,0);
+  assert.deepEqual(prepared.budget,{resources:[{id:'木材',num:8},{id:'石头',num:2}].sort((a,b)=>a.id.localeCompare(b.id)),quotas:[],uids:[]});
+  let pending=await runner.start('A',prepared.graph);
+  const expected=[[2,1],[2,2],[1,1]];
+  for(const [i,[shipIndex,cargoIndex]] of expected.entries()){
+   assert.equal(pending.status,'AWAITING_AUTHORIZATION');
+   assert.equal(pending.authorizationOffer,undefined);
+   assert.equal(f.writes.length,i);
+   assert.equal(pending.plan.actions[0].actionId,'fleet:cargoFill:'+shipIndex+':'+cargoIndex);
+   assert.equal((await f.execute(pending.plan)).status.finalStatus,'SUCCESS');
+   pending=await runner.resume();
+  }
+  assert.equal(pending.status,'COMPLETED');
+  assert.deepEqual(f.writes.map(({body})=>[body.shipIndex,body.cargoIndex[0]]),expected);
+  assert.deepEqual(f.target.synthetic.ships.map(row=>row.status),[0,1,0]);
+  assert.equal(pending.trace.filter(row=>row.type==='VERIFY'&&row.result==='CONFIRMED').length,3);
+  assert.equal(f.service.workflowBudget('A').state,'CLOSED');
+ }finally{runner.stop();await runner.settle();await f.cleanup();}
+});

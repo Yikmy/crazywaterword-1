@@ -2195,3 +2195,39 @@ test('resident-order Tasks HTTP requires individual approval for two original su
   assert.equal(app.history.list('A').length,2);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+
+test('cargo preparation HTTP accepts explicit cross-ship loads and preserves legacy single-ship input',async()=>{
+ const testProtocol={...protocol};
+ for(const kind of ['MyFleets','AllItem','AllResource','CargoShips','WorldInfo','GuildInfo','FillCargoShip'])
+  for(const suffix of ['Request','Response'])testProtocol[kind+suffix]??={};
+ const app=await harness({includeCargo:true,testProtocol});
+ try{
+  const session=app.ready('A'),ships=[1,2].map(index=>({index,status:0,arriveTime:0,
+   orderItem:[{asset:{type:0,id:'wood',num:2},filled:false,reward:{asset:[{type:1,id:'EXP',num:1}]}}],reward:[{type:0,id:'badge',num:1}]}));
+  session.client.request=async(name,_body,_response,_timeout,options)=>{
+   assert.notEqual(options?.mutate,true);
+   const facts={MyFleetsRequest:{fleets:[]},AllItemRequest:{items:[{itemId:'wood',num:4}]},
+    AllResourceRequest:{list:[]},CargoShipsRequest:{ship:ships},WorldInfoRequest:{cities:[]},GuildInfoRequest:{}};
+   assert.ok(Object.hasOwn(facts,name),name);return structuredClone(facts[name]);
+  };
+  await app.call('/api/gameplay?module=fleet');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'fleet',config:{enabled:true,cargoFill:true}}})).status,200);
+  const observed=await app.call('/api/gameplay/survey',{body:{module:'fleet',parameters:{}}});
+  assert.equal(observed.status,200,JSON.stringify(observed.data));
+  const loads=observed.data.view.cargo.ships.map(({shipIndex,preparationHash})=>({shipIndex,cargoIndices:[1],expectedCargoHash:preparationHash}));
+  assert.equal(loads.length,2);
+  const route='/api/gameplay/fleet/cargo/prepare',body={action:'fill',loads,maxDurationMs:60000};
+  assert.equal((await app.call(route,{body,authorized:false})).status,403);
+  const prepared=await app.call(route,{body});
+  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  assert.deepEqual(prepared.data.steps.map(step=>step.shipIndex),[1,2]);
+  assert.deepEqual(prepared.data.budget.resources,[{id:'wood',num:4}]);
+  const legacy=await app.call(route,{body:{...loads[0],maxDurationMs:60000}});
+  assert.equal(legacy.status,200,JSON.stringify(legacy.data));
+  assert.equal(legacy.data.graph.nodes[1].id,'fill-1');
+  ships[1].orderItem[0].asset.num=3;
+  assert.equal((await app.call(route,{body})).status,400);
+  assert.equal(app.history.list('A').length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

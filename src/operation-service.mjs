@@ -14,7 +14,7 @@ import { prepareFreeGoldWorkflow, validateFreeGoldPreparation } from './free-gol
 import { prepareTrialWorkflow, validateTrialPreparation } from './trial-challenge.mjs';
 import { prepareMailWorkflow, validateMailPreparation } from './mail.mjs';
 import { dailyDriverAllowsOperation } from './dailies.mjs';
-import { prepareFleetMoveWorkflow, validateFleetMovePreparation, prepareFleetFieldWorkflow, validateFleetFieldPreparation, fleetCacheOverview, prepareCargoFillWorkflow, validateCargoFillPreparation, prepareCargoClaimWorkflow, validateCargoClaimPreparation, prepareFleetRepairWorkflow, validateFleetRepairPreparation } from './fleet.mjs';
+import { prepareFleetMoveWorkflow, validateFleetMovePreparation, prepareFleetFieldWorkflow, validateFleetFieldPreparation, fleetCacheOverview, prepareCargoFillWorkflow, validateCargoFillPreparation, validateCargoFillBatchPreparation, prepareCargoClaimWorkflow, validateCargoClaimPreparation, prepareFleetRepairWorkflow, validateFleetRepairPreparation } from './fleet.mjs';
 import { prepareAllianceFortWorkflow, validateAllianceFortPreparation } from './alliance-fort.mjs';
 import { prepareAllianceCancelWorkflow, validateAllianceCancelPreparation, prepareAllianceOrderWorkflow, validateAllianceOrderPreparation, prepareAllianceShipWorkflow, validateAllianceShipPreparation, prepareAllianceTechWorkflow, validateAllianceTechPreparation, allianceId, allianceCacheOverview } from './alliance.mjs';
 import {prepareFarmHarvestWorkflow,validateFarmHarvestPreparation,prepareFarmPlantWorkflow,validateFarmPlantPreparation} from './farm-operations.mjs';
@@ -612,14 +612,16 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     }finally{release();}
   }
   async function prepareCargoFillSource(session,payload){
-    const claiming=Object.getOwnPropertyDescriptor(payload??{},'action')?.value==='claim';
-    payload=claiming?validateCargoClaimPreparation(payload):validateCargoFillPreparation(payload);
+    const action = Object.getOwnPropertyDescriptor(payload??{},'action')?.value;
+    const claiming = action === 'claim', multiShip = action === 'fill';
+    payload = claiming ? validateCargoClaimPreparation(payload)
+      : multiShip ? validateCargoFillBatchPreparation(payload) : validateCargoFillPreparation(payload);
     const release=acquire(session,'operations:CARGO_FILL_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
       plans.delete(session.id);
       const adapter=adapterFor('fleet'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'fleet').config;
       const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'fleet').config})),dependency=dependencies();
-      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:claiming?{}:{shipIndex:payload.shipIndex},signal:session.abort.signal});current(session,generation,client);
+      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:claiming||multiShip?{}:{shipIndex:payload.shipIndex},signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('货船准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=(claiming?prepareCargoClaimWorkflow:prepareCargoFillWorkflow)(facts,{config,moduleConfig,...payload});
       return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
@@ -727,9 +729,14 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       throw error('工作流运行期限已到，旧计划与授权不可续用', 'RUN_BUDGET_CLOSED');
     }
   }
-  // Orders declared as Tasks require a fresh user confirmation for each plan.
-  const requiresIndividualOrderAuthorization = graph => ['tasks','loop'].includes(graph.preparation?.entry)
-    && graph.nodes.some(node => node.type === 'ACTION' && node.module === 'orders' && /^tasks-[0-9]+-[0-9]+$/.test(node.id));
+  // These prepared graphs require a fresh user confirmation for each plan.
+  function requiresIndividualAuthorization(graph) {
+    const hasTaskOrders = ['tasks','loop'].includes(graph.preparation?.entry)
+      && graph.nodes.some(node => node.type === 'ACTION' && node.module === 'orders' && /^tasks-[0-9]+-[0-9]+$/.test(node.id));
+    const hasCargoBatch = graph.id.startsWith('cargo-fill-ships-')
+      && graph.nodes.some(node => node.type === 'ACTION' && node.module === 'fleet' && /^fill-[0-9]+-[0-9]+$/.test(node.id));
+    return hasTaskOrders || hasCargoBatch;
+  }
   function claimWorkflow(session, runId, { limits = null, expiresAt = null, graph = null, eventCursor = null } = {}) {
     if (expiresAt !== null && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= clock() || limits === null)) throw error('工作流运行期限必须有效且具有明确累计预算', 'INVALID_INPUT', 400);
     let contract=null,roundLimit=null,notBefore=null;if(graph!==null){const validated=validateWorkflow(graph,{modules}).workflow;if(!validated.runPolicy||operationDigest(validated.budget)!==operationDigest(normalizeBudgetClaims(limits))||expiresAt===null||Date.parse(expiresAt)>clock()+validated.runPolicy.maxDurationMs)throw error('运行图与明确父预算/期限不一致','INVALID_INPUT',400);notBefore=validated.runPolicy.schedule?workflowScheduledAt(validated.runPolicy.schedule,new Date(Date.parse(expiresAt)-validated.runPolicy.maxDurationMs).toISOString()):null;if(notBefore!==null&&(Date.parse(notBefore)<=clock()||Date.parse(notBefore)>=Date.parse(expiresAt)))throw error('时间触发已错过或超出本次期限','SCHEDULE_MISSED');roundLimit=validated.runPolicy.maxRounds??null;const identity=executionContext(session);if([identity.playerId,identity.worldId].every(value=>typeof value==='string'&&value.trim()===value&&value.length>0||Number.isSafeInteger(value)&&value>=0))contract={accountId:session.id,runId,workflowId:validated.id,graphHash:operationDigest(validated),executionContext:identity,graph:validated,dependencies:workflowDependencyVersion(session,validated),expiresAt,...(validated.runPolicy.schedule&&validated.runPolicy.schedule.kind!=='ONCE'?{scheduledAt:notBefore}:{})};}
@@ -746,10 +753,10 @@ function assertWorkflowApprovalScope(session,parent,checkDependencies=true){
  current(session,parent.generation,parent.client);assertWorkflowDeadline(session,parent.runId);parent.context.assertScope(parentScope(session,parent.runId));
  if(operationDigest(executionContext(session))!==operationDigest(parent.contract.executionContext)||checkDependencies&&operationDigest(workflowDependencyVersion(session,parent.contract.graph))!==operationDigest(parent.contract.dependencies))throw error('运行授权的角色、世界、连接或业务配置版本已变化','STALE_PLAN');
 }
-function workflowAuthorizationOffer(session,runId){const parent=workflowBudgets.get(session.id);return parent?.runId===runId&&parent.context?.snapshot().state==='ACTIVE'&&parent.contract&&!requiresIndividualOrderAuthorization(parent.contract.graph)?clone(parent.contract):null;}
+function workflowAuthorizationOffer(session,runId){const parent=workflowBudgets.get(session.id);return parent?.runId===runId&&parent.context?.snapshot().state==='ACTIVE'&&parent.contract&&!requiresIndividualAuthorization(parent.contract.graph)?clone(parent.contract):null;}
 async function authorizeWorkflow(session,payload,persist){
  exact(payload,['offer','batchId','planHash','confirm']);const parent=workflowBudgets.get(session.id),scheduled=(parent?.notBefore!==null&&parent?.notBefore!==undefined&&clock()<Date.parse(parent.notBefore)||parent?.eventCursor&&parent.event===null)&&payload.batchId===null&&payload.planHash===null,entry=scheduled?null:lookup(session,payload);
- if(payload.confirm!==true||!payload.offer||typeof payload.offer!=='object'||!parent?.contract||!scheduled&&(entry.workflowId!==parent.runId||payload.planHash!==entry.public.planHash)||operationDigest(payload.offer)!==operationDigest(parent.contract)||typeof persist!=='function'||requiresIndividualOrderAuthorization(parent.contract.graph))throw error('必须明确确认本账号当前整图策略、触发时间、期限、身份与累计预算','AUTHORIZATION_REQUIRED',403);
+ if(payload.confirm!==true||!payload.offer||typeof payload.offer!=='object'||!parent?.contract||!scheduled&&(entry.workflowId!==parent.runId||payload.planHash!==entry.public.planHash)||operationDigest(payload.offer)!==operationDigest(parent.contract)||typeof persist!=='function'||requiresIndividualAuthorization(parent.contract.graph))throw error('必须明确确认本账号当前整图策略、触发时间、期限、身份与累计预算','AUTHORIZATION_REQUIRED',403);
  assertWorkflowApprovalScope(session,parent);
  if(parent.approval||entry?.permit||entry?.consumed||scheduled&&plans.get(session.id)?.workflowId===parent.runId||runs.get(session.id)?.running)throw error('有限运行授权已处理或当前批次已有授权/执行','PERMIT_USED');
  const audit={scope:clone(parent.contract),approvedAt:now(),resumable:false};parent.approval={audit,active:false,batches:new Set()};
