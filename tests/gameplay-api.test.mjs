@@ -1761,8 +1761,8 @@ for(const [kind,type,table,tierId]of [['open-rank-order',1,'OpenRankOrderTaskCfg
  const f=await openRankWarHttpReady(app,{kind,unconfirmed});client=f.client;const cached=await app.call('/api/gameplay?module=task-rewards');assert.equal(cached.data.config.enabled,false);assert.equal(app.requests.length,0);await app.enable();const args={module:'task-rewards',parameters};assert.equal((await app.call('/api/gameplay/survey',{body:args,authorized:false})).status,403);const surveyed=await app.survey(parameters);assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));const candidate=surveyed.data.view.candidates[0];assert.equal(candidate.executable,true,JSON.stringify(candidate));assert.equal(candidate.target.type,type);assert.equal(candidate.action,undefined);const planned=await app.call('/api/operations/plan',{body:{...args,mode:'Manual',selections:[candidate.actionId]}});assert.equal(planned.status,200,JSON.stringify(planned.data));assert.deepEqual(planned.data.resourceBudget,[]);assert.equal(app.requests.some(r=>r.name==='GotOpenRankRewardRequest'),false);const permit=await app.approve(planned.data);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');const records=(await app.call('/api/operations/history')).data.runs;assert.equal(records[0].finalStatus,unconfirmed?'UNKNOWN':'SUCCESS',JSON.stringify(records[0]));assert.deepEqual(app.requests.filter(r=>r.name==='GotOpenRankRewardRequest').map(r=>r.body),[{type,id:tierId}]);assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,403);assert.deepEqual((await app.call('/api/operations/history',{id:'B'})).data.runs,[]);if(unconfirmed){const count=app.requests.length;assert.equal((await app.survey(parameters)).data.code,'RESPONSE_UNCERTAIN');assert.equal(app.requests.length,count);}assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{client?.stop();await app.close();}
 });
-async function compassHttpFixture(unconfirmed){
- const {loadConfig}=await import('../src/config.mjs'),{trustedGameClock}=await import('../src/state-facts.mjs'),config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')}),app=await harness({includeCompass:true,testProtocol:heroWireProtocol,configOverride:config});let client;
+async function compassHttpFixture(unconfirmed,{includeOrders=false}={}){
+ const {loadConfig}=await import('../src/config.mjs'),{trustedGameClock}=await import('../src/state-facts.mjs'),config=loadConfig({file:path.resolve(import.meta.dirname,'../work/cdn/config_cn_pack.json')}),app=await harness({includeCompass:true,includeOrders,testProtocol:heroWireProtocol,configOverride:config});let client;
  try{
   const cached=await app.call('/api/gameplay?module=compass-wheel');assert.equal(cached.status,200);assert.equal(cached.data.config.enabled,false);assert.equal(app.sessions.size,0);
   const session=app.ready('A'),player={playerId:'9007199254740993',worldId:'1000001',level:30},clock=trustedGameClock({accountId:'A',generation:1,wallNow:()=>1000000,monotonicNow:()=>100});let socket;
@@ -2495,4 +2495,95 @@ for(const unconfirmed of [false,true])test('browser offline compass Tasks '+(unc
   assert.equal(await evaluate('globalThis.confirmations'),1);
   assert.deepEqual(app.counts(),{clients:0,collections:0});
  });}finally{client.stop();await app.close();}
+});
+
+for(const outcome of ['success','compass-unknown','order-unknown','order-refused'])test('cross-domain offline Tasks compass and resident order '+outcome,async()=>{
+ const {app,client,activityId,ticket,currency,stock}=await compassHttpFixture(outcome==='compass-unknown',{includeOrders:true});
+ const order=revision=>({index:0,workerId:'worker-'+revision,textId:revision+1,isSpecial:false,refreshTime:0,requirements:[{id:'wood',num:2}]});
+ let revision=0;
+ const wood={itemId:'wood',num:2};stock.push(wood);
+ const request=client.request.bind(client);
+ const writes=()=>app.requests.filter(row=>row.mutate);
+ client.request=async(name,body,response,timeout,options)=>{
+  if(name==='FinishWorkerOrderRequest'){
+   assert.equal(options.mutate,true);
+   heroWire(name,body);
+   options.beforeDispatch?.();
+   assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+   app.requests.push({id:'A',name,body:structuredClone(body),mutate:true});
+   if(outcome==='order-refused')throw Object.assign(Error('synthetic order refusal'),{code:'REJECTED'});
+   if(outcome!=='order-unknown'){revision++;wood.num-=2;}
+   return heroWire(response,{reward:{asset:[]}});
+  }
+  const facts={OnWaterRequest:{building:[],workerOrder:[order(revision)],orderOfTheDay:{orderNum:revision,rewardedNum:0}},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]}};
+  if(Object.hasOwn(facts,name)){assert.notEqual(options?.mutate,true);return heroWire(response,facts[name]);}
+  return request(name,body,response,timeout,options);
+ };
+ try{
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'orders',config:{enabled:true}}})).status,200);
+  const parameters={activityId,count:1};
+  const read=async(module,parameters)=>{
+   const result=await app.call('/api/gameplay/survey',{body:{module,parameters}});
+   assert.equal(result.status,200,JSON.stringify(result.data));
+   const rows=result.data.view.candidates.filter(row=>row.executable);
+   assert.equal(rows.length,1,JSON.stringify(result.data.view.candidates));
+   return rows[0];
+  };
+  const compass=await read('compass-wheel',parameters),resident=await read('orders',{});
+  const tasks=[{kind:'compass-wheel',parameters,actionId:compass.actionId},{kind:'resident-order',actionId:resident.actionId}];
+  const budget={...compass.budgetClaims,resources:[...compass.budgetClaims.resources,{id:'wood',num:2}]};
+  const prepared=await app.call('/api/workflows/prepare',{body:{entry:'tasks',tasks,budget,runPolicy:{maxActions:2,maxDurationMs:60000,modules:['compass-wheel','orders']}}});
+  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const graph=prepared.data.graph,actions=graph.nodes.filter(node=>node.type==='ACTION');
+  assert.deepEqual(actions.map(node=>node.module),['compass-wheel','orders']);
+  const simulation=await app.call('/api/workflows/simulate',{body:{graph}});
+  assert.equal(simulation.status,200,JSON.stringify(simulation.data));
+  assert.equal(simulation.data.requestsSent,0);
+  assert.equal(simulation.data.runtimeCreated,false);
+  assert.deepEqual(writes(),[]);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  let runId;
+  const expected=outcome==='compass-unknown'?['UNKNOWN']:['SUCCESS',outcome==='order-unknown'?'UNKNOWN':outcome==='order-refused'?'REJECTED':'SUCCESS'];
+  for(const [index,result] of expected.entries()){
+   const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   runId??=waiting.runId;
+   assert.equal(waiting.runId,runId);
+   assert.equal(waiting.plan.module,actions[index].module);
+   assert.deepEqual(waiting.plan.actions.map(row=>row.actionId),[tasks[index].actionId]);
+   assert.equal(writes().length,index);
+   const plan=waiting.plan;
+   const foreign=await app.call('/api/operations/authorize',{id:'B',body:{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true}});
+   assert.notEqual(foreign.status,200);
+   assert.equal(writes().length,index);
+   const approval=await app.approve(plan);
+   assert.equal(approval.status,200,JSON.stringify(approval.data));
+   assert.equal((await app.call('/api/operations/execute',{body:approval.data})).status,200);
+   await app.operations.settle('A');
+   const record=app.history.list('A')[0];
+   assert.equal(record.finalStatus,result,record.stopReason);
+   assert.equal(record.workflowNodeId,actions[index].id);
+   assert.equal(record.workflowId,runId);
+   assert.notEqual((await app.call('/api/operations/execute',{body:approval.data})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  const terminal=outcome==='success'?'COMPLETED':outcome==='order-refused'?'FAILED':'UNKNOWN';
+  await waitForWorkflow(app,terminal);
+  assert.deepEqual(writes().map(row=>row.name),expected.length===1?['SpinCompassWheelRequest']:['SpinCompassWheelRequest','FinishWorkerOrderRequest']);
+  assert.deepEqual(stock.map(item=>item.num),outcome==='compass-unknown'?[10,0,2]:[8,10,outcome==='success'?0:2]);
+  assert.equal(stock[1].itemId,currency);
+  assert.equal(app.history.list('B').length,0);
+  const parent=app.operations.workflowBudget('A');
+  assert.equal(parent.state,'CLOSED');
+  assert.equal(parent.resumable,false);
+  assert.deepEqual(parent.limits,budget);
+  assert.equal(parent.batches.length,expected.length);
+  const historyFile=app.history.storagePath;
+  const reopened=createExecutionHistory({file:historyFile});
+  assert.equal(reopened.unresolved('A'),terminal==='UNKNOWN');
+  assert.deepEqual(reopened.list('A').map(record=>record.finalStatus),expected.slice().reverse());
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+  await app.call('/api/workflows/resume',{body:{}});
+  assert.equal(writes().length,expected.length);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{client.stop();await app.close();}
 });
