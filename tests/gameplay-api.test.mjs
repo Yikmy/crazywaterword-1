@@ -2789,10 +2789,10 @@ test('browser offline resource chain requires a fresh confirmation for every mod
     await waitFor(()=>enabled('wf-resume'),'resume control for '+action.id);
     await click('wf-resume');
    }
-   await waitFor(async()=>{
-    const {data}=await app.call('/api/workflows');
-    return data.status.status==='COMPLETED';
-   },'workflow completion');
+   await waitFor(()=>evaluate(`(() => {
+    const text=document.getElementById('wf-status').textContent;
+    return text && JSON.parse(text).status==='COMPLETED';
+   })()`),'workflow completion');
    assert.equal(await evaluate('globalThis.confirmations'),4);
    assert.deepEqual(state.writes.map(row=>row.n),[
     'SelectPackRequest','StartFactoryProduceRequest','SpeedUpUpgradeBuildingRequest','SpeedUpFactoryProduceRequest'
@@ -2842,5 +2842,74 @@ test('cross-domain offline resource chain stops at the cumulative accelerator li
   assert.deepEqual(audit.limits,graph.budget);
   await app.call('/api/workflows/resume',{body:{}});
   assert.equal(state.writes.length,3);
+ } finally {await app.close();}
+});
+
+
+test('browser offline resource chain stops when cumulative accelerator budget is insufficient', {
+ skip: !process.env.CW_TEST_BROWSER, timeout: 55000
+}, async () => {
+ const {app,state,graph}=await resourceCitySimulation();
+ graph.budget.resources.find(resource=>resource.id==='加速器').num=19;
+ const actions=graph.nodes.filter(node=>node.type==='ACTION');
+ try {
+  await withOfflineBrowser(app, async ({evaluate,waitFor}) => {
+   const click=id=>evaluate('document.getElementById('+JSON.stringify(id)+').click()');
+   const enabled=id=>evaluate('!document.getElementById('+JSON.stringify(id)+').disabled');
+   await waitFor(()=>evaluate("document.getElementById('account').value==='A'"),'account selection');
+   await evaluate("document.querySelector('#tabs button[data-tab=\"workflow\"]').click()");
+   await waitFor(()=>enabled('wf-json-apply'),'workflow editor');
+   await evaluate('document.getElementById("wf-json").value='+JSON.stringify(JSON.stringify(graph)));
+   await click('wf-json-apply');
+   await waitFor(()=>enabled('wf-simulate'),'simulation control');
+   await click('wf-simulate');
+   const simulation=await waitFor(()=>evaluate(`(() => {
+    const text=document.getElementById('wf-result').textContent;
+    return text.includes('"requestsSent"') && JSON.parse(text);
+   })()`),'simulation result');
+   assert.equal(simulation.requestsSent,0);
+   assert.equal(simulation.runtimeCreated,false);
+   assert.equal(state.writes.length,0);
+   await waitFor(()=>enabled('wf-start'),'start control');
+   await click('wf-start');
+   let runId;
+   for(const [index,action] of actions.entries()) {
+    const pending=await waitFor(()=>evaluate(`(() => {
+     const text=document.getElementById('wf-status').textContent;
+     const status=text?JSON.parse(text):{};
+     return status.currentNode===${JSON.stringify(action.id)} &&
+      status.status==='AWAITING_AUTHORIZATION' &&
+      !document.getElementById('wf-authorize').disabled && status;
+    })()`),'authorization for '+action.id);
+    runId??=pending.runId;
+    assert.equal(pending.runId,runId);
+    assert.deepEqual(pending.plan.parameters,action.parameters);
+    assert.equal(state.writes.length,index);
+    await click('wf-authorize');
+    await waitFor(()=>{
+     const record=app.history.list('A')[0];
+     return record?.workflowNodeId===action.id &&
+      record.finalStatus===(index===3?'NOT_EXECUTED':'SUCCESS');
+    },'settlement for '+action.id);
+    await waitFor(()=>enabled('wf-resume'),'resume control for '+action.id);
+    await click('wf-resume');
+   }
+   await waitFor(()=>evaluate(`(() => {
+    const text=document.getElementById('wf-status').textContent;
+    return text && !JSON.parse(text).running;
+   })()`),'workflow stopped');
+   assert.equal(await evaluate('globalThis.confirmations'),4);
+   assert.deepEqual(state.writes.map(row=>row.n),[
+    'SelectPackRequest','StartFactoryProduceRequest','SpeedUpUpgradeBuildingRequest'
+   ]);
+   assert.equal(state.stock.get('加速器'),10);
+   assert.deepEqual(app.history.list('A').map(row=>row.finalStatus),
+    ['NOT_EXECUTED','SUCCESS','SUCCESS','SUCCESS']);
+   const audit=app.operations.workflowBudget('A');
+   assert.equal(audit.state,'CLOSED');
+   assert.equal(audit.reserved.resources.find(resource=>resource.id==='加速器').num,10);
+   assert.deepEqual(audit.limits,graph.budget);
+   assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
  } finally {await app.close();}
 });
