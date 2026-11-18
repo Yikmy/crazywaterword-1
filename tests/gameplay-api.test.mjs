@@ -2275,3 +2275,104 @@ test('cargo preparation HTTP accepts explicit cross-ship loads and preserves leg
   assert.equal(app.history.list('A').length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('browser offline city preparation opens the original Workflow and simulates zero writes', {
+ skip: !process.env.CW_TEST_BROWSER,
+ timeout: 40000
+}, async () => {
+ const {spawn}=await import('node:child_process');
+ const {setTimeout:delay}=await import('node:timers/promises');
+ const {app,state}=await accelerationCancellationHttp('city');
+ const profile=fs.mkdtempSync(path.join(root,'browser-'));
+ const origin='http://127.0.0.1:'+app.server.address().port;
+ const browser=spawn(process.env.CW_TEST_BROWSER, [
+  '--headless=new','--no-first-run','--disable-background-networking','--remote-debugging-port=0',
+  '--user-data-dir='+profile,origin
+ ],{stdio:'ignore',windowsHide:true});
+ let launchError,socket;
+ browser.on('error',error=>{launchError=error;});
+ async function waitFor(read,description){
+  for(let attempt=0;attempt<100;attempt++){
+   if(launchError)throw launchError;
+   const result=await read();
+   if(result)return result;
+   await delay(100);
+  }
+  assert.fail('Timed out waiting for '+description);
+ }
+ try{
+  const port=await waitFor(()=>{
+   const file=path.join(profile,'DevToolsActivePort');
+   return fs.existsSync(file)&&Number(fs.readFileSync(file,'utf8').split('\n')[0]);
+  },'browser startup');
+  const page=await waitFor(async()=>{
+   const response=await fetch('http://127.0.0.1:'+port+'/json/list');
+   return (await response.json()).find(item=>item.url===origin+'/');
+  },'local console page');
+  socket=new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve,reject)=>{
+   socket.addEventListener('open',resolve,{once:true});
+   socket.addEventListener('error',reject,{once:true});
+  });
+  let commandId=0;
+  const command=(method,params={})=>new Promise((resolve,reject)=>{
+   const id=++commandId;
+   const onMessage=event=>{
+    const reply=JSON.parse(event.data);
+    if(reply.id!==id)return;
+    socket.removeEventListener('message',onMessage);
+    if(reply.error||reply.result.exceptionDetails)reject(Error(JSON.stringify(reply.error??reply.result.exceptionDetails)));
+    else resolve(reply.result);
+   };
+   socket.addEventListener('message',onMessage);
+   socket.send(JSON.stringify({id,method,params}));
+  });
+  const evaluate=async expression=>(await command('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression})).result.value;
+  await command('Page.enable');
+  await command('Page.addScriptToEvaluateOnNewDocument',{source:"globalThis.pageErrors=[]; addEventListener('error',e=>pageErrors.push(e.message+' '+e.lineno));"});
+  await command('Page.reload');
+  await waitFor(async()=>{
+   try{return await evaluate("document.readyState === 'complete' && !!globalThis.pageErrors && !!document.querySelector('#gp-city-survey')");}
+   catch(error){if(!/Execution context was destroyed|Cannot find context/.test(error.message))throw error;return false;}
+  },'console initialization');
+  const result=await evaluate('('+(async()=>{
+
+     const find=selector=>document.querySelector(selector);
+     async function wait(selector,accept=element=>element&&!element.disabled){
+      for(let attempt=0;attempt<80;attempt++){
+       const element=find(selector);
+       if(accept(element))return element;
+       await new Promise(resolve=>setTimeout(resolve,75));
+      }
+      throw Error(selector+' '+find('#gp-city-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+     }
+     if(globalThis.pageErrors?.length)throw Error(globalThis.pageErrors.join(', '));
+     await wait('#account',element=>element?.value==='A');
+     (await wait('#tabs button[data-tab="city"]')).click();
+     (await wait('#gp-city-load')).click();
+     (await wait('#gp-city-survey')).click();
+     const target=await wait('[data-city-preparation-target]');
+     if(target.checked)throw Error('City target unexpectedly selected');
+     target.click();
+     const duration=await wait('[data-city-preparation-duration]');
+     duration.value='60';
+     duration.dispatchEvent(new Event('input',{bubbles:true}));
+     (await wait('[data-city-preparation-prepare]')).click();
+     const editor=await wait('#wf-json',element=>element?.value.includes('speedUpUpgrade'));
+     const graph=JSON.parse(editor.value);
+     (await wait('#tabs button[data-tab="workflow"]')).click();
+     (await wait('#wf-simulate')).click();
+     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+     return {graph,simulation:JSON.parse(output.textContent)};
+    }).toString()+')()');
+  assert.deepEqual(result.graph.nodes.map(node=>node.type),['START','ACTION','VERIFY','STOP']);
+  assert.deepEqual(result.graph.budget.resources,[{id:'加速器',num:10}]);
+  assert.equal(result.simulation.requestsSent,0);
+  assert.equal(result.simulation.runtimeCreated,false);
+  assert.deepEqual(state.writes,[]);
+ }finally{
+  socket?.close();
+  browser.kill();
+  await app.close();
+ }
+});
