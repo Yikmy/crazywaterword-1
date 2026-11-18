@@ -3343,7 +3343,7 @@ async function allianceTechBatchHttpFixture(outcome='success',{count=2,failAt=1}
  try {
   const session=app.ready('A');session.player={playerId:'1',worldId:1000001,level:20};session.connectionId='tech-batch-A';
   session.client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};
-  const levels=new Map(),stock=new Map([['公会科技点',Math.ceil(count/2)*20],['联盟职级科技点',Math.floor(count/2)*10]]),writes=[];
+  const levels=new Map(),stock=new Map([['公会科技点',Math.ceil(count/2)*20],['联盟职级科技点',Math.floor(count/2)*10]]),writes=[],state={onRead:null};
   session.client.request=async(name,body,response,_timeout,options)=>{
    heroWire(name,body);
    if(name==='UpgradeGuildTechRequest'){
@@ -3355,6 +3355,7 @@ async function allianceTechBatchHttpFixture(outcome='success',{count=2,failAt=1}
     return heroWire(response,{tech:{techId:body.techId,level}});
    }
    assert.notEqual(options?.mutate,true);
+   await state.onRead?.(name);
    const facts={GuildInfoRequest:{guild:{guildId:'10',welfarePack:[],gotWelfareTime:0}},
     GuildMemberRequest:{titleList:[{guildTitle:1,members:[{playerId:'1',online:true}]}]},
     GuildAidListRequest:{askItems:[]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{},GuildCityInfoRequest:{cities:[]},
@@ -3364,7 +3365,7 @@ async function allianceTechBatchHttpFixture(outcome='success',{count=2,failAt=1}
   };
   await app.call('/api/gameplay?module=alliance');
   assert.equal((await app.call('/api/gameplay/config',{body:{module:'alliance',config:{enabled:true,tech:true}}})).status,200);
-  return {app,session,rows,levels,stock,writes};
+  return {app,session,rows,levels,stock,writes,state,config};
  }catch(error){await app.close();throw error;}
 }
 
@@ -3475,5 +3476,83 @@ for(const outcome of ['success','unknown','refused'])test('alliance tech HTTP 24
   assert.equal(app.history.list('A').length,24);const budget=app.operations.workflowBudget('A');
   assert.equal(budget.state,'CLOSED');assert.deepEqual(budget.limits,graph.budget);assert.equal(budget.batches.length,24);
   assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+
+for(const phase of ['prepare','execute'])for(const change of ['account','player','world','generation','connection','client','disconnect','abort','config'])
+ test('alliance tech HTTP '+phase+' rejects changed '+change+' before dispatch',async()=>{
+ const {app,session,rows,levels,stock,writes,state,config}=await allianceTechBatchHttpFixture();
+ try{
+  const targets=rows.map(({techId})=>({techId,targetLevel:1})),route='/api/gameplay/alliance/tech/prepare',body={targets,maxDurationMs:60000};
+  let permit;
+  if(phase==='execute'){
+   const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+   assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+  }
+  const client=session.client;let hit=false;
+  state.onRead=name=>{
+   if(hit||name!=='GuildTechInfoRequest')return;hit=true;
+   if(change==='account')client.factContext.accountId='B';
+   if(change==='player')session.player.playerId='2';
+   if(change==='world')session.player.worldId=2000001;
+   if(change==='generation')client.factContext.generation=++session.generation;
+   if(change==='connection')client.factContext.connectionId=session.connectionId='replaced';
+   if(change==='client')session.client={...client};
+   if(change==='disconnect')client.connected=false;
+   if(change==='abort')session.abort.abort();
+   if(change==='config')config.tables.GuildTechCfg.data[0].techPointCost++;
+  };
+  if(phase==='prepare'){
+   const reply=await app.call(route,{body});assert.notEqual(reply.status,200,JSON.stringify(reply.data));
+   assert.equal(app.history.list('A').length,0);
+  }else{
+   const reply=await app.call('/api/operations/execute',{body:permit.data});
+   if(reply.status===200)await app.operations.settle('A');
+   assert.notEqual(app.operations.status('A').finalStatus,'SUCCESS');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  }
+  assert.equal(hit,true);assert.deepEqual(writes,[]);assert.equal(levels.size,0);assert.deepEqual([...stock.values()],[20,10]);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+
+test('browser offline alliance tech prepares and simulates 24 selected technologies without authorization',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:60000
+},async()=>{
+ const {app,rows,writes}=await allianceTechBatchHttpFixture('success',{count:24});
+ try{
+  await withOfflineBrowser(app,async({evaluate})=>{
+   const {graph,simulation,confirmations}=await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-alliance-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="alliance"]')).click();
+    (await wait('#gp-alliance-load')).click();(await wait('#gp-alliance-survey')).click();
+    await wait('[data-alliance-tech-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-alliance-tech-target]'));
+    if(choices.length!==24||choices.some(element=>element.checked||element.disabled))throw Error('Expected 24 unselected eligible technologies');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-alliance-tech-duration]');duration.value='180';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-alliance-tech-prepare]')).click();
+    const editor=await wait('#wf-json',element=>element?.value.includes('alliance-tech-'));const graph=JSON.parse(editor.value);
+    (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+    return {graph,simulation:JSON.parse(output.textContent),confirmations:globalThis.confirmations||0};
+   }).toString()+')()');
+   assert.deepEqual(graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters),rows.map(({techId})=>({techId,targetLevel:1})));
+   assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);
+   assert.deepEqual(graph.budget,{resources:[{id:'公会科技点',num:240},{id:'联盟职级科技点',num:120}],quotas:[],uids:[]});
+   assert.equal(graph.runPolicy.maxActions,24);assert.equal(graph.runPolicy.maxDurationMs,180000);
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(confirmations,0);
+   assert.deepEqual(writes,[]);assert.equal(app.history.list('A').length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
  }finally{await app.close();}
 });
