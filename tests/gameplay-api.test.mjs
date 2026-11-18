@@ -2320,9 +2320,14 @@ async function withOfflineBrowser(app,exercise){
   let commandId=0;
   const command=(method,params={})=>new Promise((resolve,reject)=>{
    const id=++commandId;
+   const timer=setTimeout(()=>{
+    socket.removeEventListener('message',onMessage);
+    reject(Error('Browser command timed out: '+method));
+   },10000);
    const onMessage=event=>{
     const reply=JSON.parse(event.data);
     if(reply.id!==id)return;
+    clearTimeout(timer);
     socket.removeEventListener('message',onMessage);
     if(reply.error||reply.result.exceptionDetails)reject(Error(JSON.stringify(reply.error??reply.result.exceptionDetails)));
     else resolve(reply.result);
@@ -2342,6 +2347,8 @@ async function withOfflineBrowser(app,exercise){
  }finally{
   socket?.close();
   browser.kill();
+  // Edge may retain a local HTTP connection after its parent process exits.
+  app.server.closeAllConnections();
  }
 }
 
