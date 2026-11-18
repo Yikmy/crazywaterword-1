@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { surveyAlliance, allianceView, allianceTechView, planAlliance, verifyAlliance, validateAllianceConfig } from '../src/alliance.mjs';
+import { surveyAlliance, allianceView, allianceTechView, planAlliance, verifyAlliance, validateAllianceConfig, prepareAllianceTechWorkflow, validateAllianceTechPreparation } from '../src/alliance.mjs';
 import { ResourceLedger } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { allianceModule } from '../src/alliance.mjs';
@@ -139,4 +139,40 @@ for(const fault of ['other-item','gold','other-tech'])test('original technology 
  }return value;};
  const result=await executeBusinessOperation(c,protocol,op,{adapter:allianceModule,config,moduleConfig,parameters,player,allowMutate:true,budget});
  assert.equal(result.status,'UNKNOWN');assert.equal(result.unresolvedWrite,true);assert.equal(c.writes.length,1);assert.equal(budget.ledger.reserved.get('公会科技点'),24);assert.equal(c.uncertainWrites.size,1);
+});
+
+
+function multiTechConfig(count=24){
+ const rows=Array.from({length:count},(_,i)=>({season:1,techId:10101+i,type:i<12?'世界':'职级基地',name:'科技'+i,group:'测试',techPointCost:i<12?20:10,techPointCostGrowth:0}));
+ return {tables:{GuildTechCfg:{data:rows},TechUnlockCfg:{data:rows.map(row=>({techId:row.techId,maxLevel:10,openStage:1,preTech:0,preTechLevel:0}))}}};
+}
+for(const count of [1,24])test('technology preparation composes '+count+' exact next levels and initial point budgets',async()=>{
+ const cfg=multiTechConfig(),client=fake({GuildTechInfoRequest:{tech:[]},AllItemRequest:{items:[{itemId:'公会科技点',num:240},{itemId:'联盟职级科技点',num:120}]}});
+ const facts=await read(client,{parameters:{}}),targets=cfg.tables.GuildTechCfg.data.slice(0,count).map(row=>({techId:row.techId,targetLevel:1}));
+ const prepared=prepareAllianceTechWorkflow(facts,{config:cfg,moduleConfig,targets,maxDurationMs:60000});
+ assert.equal(prepared.guildId,'10');assert.equal(prepared.playerId,'1');assert.equal(prepared.steps.length,count);
+ assert.deepEqual(prepared.steps.map(row=>row.parameters),targets);
+ assert.deepEqual(prepared.budget,{resources:count===1?[{id:'公会科技点',num:20}]:[{id:'公会科技点',num:240},{id:'联盟职级科技点',num:120}],quotas:[],uids:[]});
+ assert.equal(prepared.graph.nodes.filter(row=>row.type==='ACTION').length,count);
+ assert.equal(prepared.graph.nodes.filter(row=>row.type==='VERIFY').length,count);
+ assert.deepEqual(prepared.graph.budget,prepared.budget);assert.equal(prepared.graph.runPolicy.maxActions,count);
+ assert.equal(prepared.resumable,false);assert.equal(prepared.requiresAuthorization,true);assert.equal(client.writes.length,0);
+});
+
+test('technology preparation rejects bad targets, future prerequisites and cumulative point shortfall without writes',async()=>{
+ const cfg=multiTechConfig(),client=fake({GuildTechInfoRequest:{tech:[]},AllItemRequest:{items:[{itemId:'公会科技点',num:39},{itemId:'联盟职级科技点',num:120}]}});
+ const facts=await read(client,{parameters:{}}),targets=[{techId:10101,targetLevel:1},{techId:10102,targetLevel:1}];
+ for(const bad of [
+  {targets:[],maxDurationMs:60000},{targets:[targets[0],targets[0]],maxDurationMs:60000},
+  {targets:Array(1),maxDurationMs:60000},{targets:Array.from({length:25},(_,i)=>({techId:10101+i,targetLevel:1})),maxDurationMs:60000},
+  {targets:[{...targets[0],cost:0}],maxDurationMs:60000},{targets,maxDurationMs:0},{targets,maxDurationMs:86400001},
+ ])assert.throws(()=>validateAllianceTechPreparation(bad));
+ let calls=0;assert.throws(()=>validateAllianceTechPreparation({targets:[{techId:10101,get targetLevel(){calls++;throw Error('getter');}}],maxDurationMs:60000}));
+ assert.equal(calls,0);
+ assert.throws(()=>prepareAllianceTechWorkflow(facts,{config:cfg,moduleConfig,targets,maxDurationMs:60000}),/不足|不可执行/);
+ assert.throws(()=>prepareAllianceTechWorkflow(facts,{config:cfg,moduleConfig,targets:[{techId:10101,targetLevel:2}],maxDurationMs:60000}));
+ const dependent=multiTechConfig();dependent.tables.TechUnlockCfg.data[1].preTech=10101;dependent.tables.TechUnlockCfg.data[1].preTechLevel=1;
+ const rich={...facts,stock:new Map([['公会科技点',240],['联盟职级科技点',120]])};
+ assert.throws(()=>prepareAllianceTechWorkflow(rich,{config:dependent,moduleConfig,targets,maxDurationMs:60000}),/资格/);
+ assert.equal(client.writes.length,0);
 });

@@ -3334,3 +3334,146 @@ test('browser offline arrived Cargo prepares and simulates the 24-ship limit wit
   });
  } finally{await app.close();}
 });
+
+
+async function allianceTechBatchHttpFixture(outcome='success',{count=2,failAt=1}={}){
+ const rows=Array.from({length:count},(_,i)=>({season:1,techId:10101+i,type:i%2?'职级基地':'世界',group:'测试',name:'科技'+i,techPointCost:i%2?10:20,techPointCostGrowth:0}));
+ const config={tables:{GuildTechCfg:{data:rows},TechUnlockCfg:{data:rows.map(row=>({techId:row.techId,maxLevel:10,openStage:1,preTech:0,preTechLevel:0}))}}};
+ const app=await harness({includeAlliance:true,includeAllianceFort:true,testProtocol:heroWireProtocol,configOverride:config});
+ try {
+  const session=app.ready('A');session.player={playerId:'1',worldId:1000001,level:20};session.connectionId='tech-batch-A';
+  session.client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};
+  const levels=new Map(),stock=new Map([['公会科技点',Math.ceil(count/2)*20],['联盟职级科技点',Math.floor(count/2)*10]]),writes=[];
+  session.client.request=async(name,body,response,_timeout,options)=>{
+   heroWire(name,body);
+   if(name==='UpgradeGuildTechRequest'){
+    assert.equal(options.mutate,true);options.beforeDispatch?.();
+    assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');writes.push(structuredClone(body));
+    if(outcome==='refused'&&writes.length===failAt)throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    const row=rows.find(value=>value.techId===body.techId),level=(levels.get(body.techId)??0)+1;
+    if(outcome==='success'||writes.length!==failAt){levels.set(body.techId,level);const id=row.type==='世界'?'公会科技点':'联盟职级科技点';stock.set(id,stock.get(id)-row.techPointCost);}
+    return heroWire(response,{tech:{techId:body.techId,level}});
+   }
+   assert.notEqual(options?.mutate,true);
+   const facts={GuildInfoRequest:{guild:{guildId:'10',welfarePack:[],gotWelfareTime:0}},
+    GuildMemberRequest:{titleList:[{guildTitle:1,members:[{playerId:'1',online:true}]}]},
+    GuildAidListRequest:{askItems:[]},MyGuildAidRequest:{aids:[]},GuildOrderRequest:{},GuildCityInfoRequest:{cities:[]},
+    CounterInfoRequest:{counters:[]},AllItemRequest:{items:[...stock].filter(([,num])=>num>0).map(([itemId,num])=>({itemId,num}))},
+    AllResourceRequest:{list:[]},GuildTechInfoRequest:{tech:[...levels].map(([techId,level])=>({techId,level}))},SeasonTaskStageRequest:{stage:1}};
+   assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
+  };
+  await app.call('/api/gameplay?module=alliance');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'alliance',config:{enabled:true,tech:true}}})).status,200);
+  return {app,session,rows,levels,stock,writes};
+ }catch(error){await app.close();throw error;}
+}
+
+for(const outcome of ['success','unknown','refused'])test('alliance tech HTTP prepares and executes two point types '+outcome,async()=>{
+ const {app,rows,levels,stock,writes}=await allianceTechBatchHttpFixture(outcome);
+ try{
+  const targets=rows.map(({techId})=>({techId,targetLevel:1})),route='/api/gameplay/alliance/tech/prepare',body={targets,maxDurationMs:60000};
+  assert.equal((await app.call(route,{body,authorized:false})).status,403);
+  const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  const budget={resources:[{id:'公会科技点',num:20},{id:'联盟职级科技点',num:10}],quotas:[],uids:[]};
+  assert.deepEqual(prepared.data.budget,budget);const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');
+  assert.deepEqual(actions.map(row=>row.parameters),targets);
+  const simulation=await app.call('/api/workflows/simulate',{body:{graph}});assert.equal(simulation.data.requestsSent,0);assert.equal(writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);let runId;const count=outcome==='success'?2:1;
+  for(let i=0;i<count;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId??=pending.runId;
+   assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);assert.equal(writes.length,i);
+   assert.deepEqual(pending.plan.parameters,targets[i]);const permit=await app.approve(pending.plan);assert.equal(permit.status,200);
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const record=app.history.list('A')[0];assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,actions[i].id);
+   assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED',record.stopReason);
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
+  }
+  await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
+  assert.deepEqual(writes,targets.slice(0,count).map(({techId})=>({techId})));
+  assert.deepEqual([...levels],outcome==='success'?targets.map(({techId})=>[techId,1]):[]);
+  assert.deepEqual([...stock.values()],outcome==='success'?[0,0]:[20,10]);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
+
+
+for(const outcome of ['success','unknown'])test('browser offline alliance tech '+(outcome==='success'?'settles both point types':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:55000
+},async()=>{
+ const {app,rows,writes,stock}=await allianceTechBatchHttpFixture(outcome);
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   const {graph,simulation}=await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-alliance-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="alliance"]')).click();
+    (await wait('#gp-alliance-load')).click();(await wait('#gp-alliance-survey')).click();
+    await wait('[data-alliance-tech-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-alliance-tech-target]'));
+    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected eligible technologies');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-alliance-tech-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-alliance-tech-prepare]')).click();
+    const editor=await wait('#wf-json',element=>element?.value.includes('alliance-tech-'));const graph=JSON.parse(editor.value);
+    (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+    return {graph,simulation:JSON.parse(output.textContent)};
+   }).toString()+')()');
+   const actions=graph.nodes.filter(row=>row.type==='ACTION');
+   assert.deepEqual(actions.map(row=>row.parameters),rows.map(({techId})=>({techId,targetLevel:1})));
+   assert.deepEqual(graph.budget,{resources:[{id:'公会科技点',num:20},{id:'联盟职级科技点',num:10}],quotas:[],uids:[]});
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
+   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
+   const count=outcome==='success'?2:1;
+   for(let i=0;i<count;i++){
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
+     return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
+    assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+   }
+   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+   assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes,rows.slice(0,count).map(({techId})=>({techId})));
+   assert.deepEqual([...stock.values()],outcome==='success'?[0,0]:[20,10]);
+   assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ }finally{await app.close();}
+});
+
+
+for(const outcome of ['success','unknown','refused'])test('alliance tech HTTP 24-target workflow '+outcome+' at final technology',{timeout:240000},async()=>{
+ const {app,rows,levels,stock,writes}=await allianceTechBatchHttpFixture(outcome,{count:24,failAt:24});
+ try{
+  const targets=rows.map(({techId})=>({techId,targetLevel:1}));
+  const prepared=await app.call('/api/gameplay/alliance/tech/prepare',{body:{targets,maxDurationMs:180000}});
+  assert.equal(prepared.status,200,JSON.stringify(prepared.data));const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');
+  assert.equal(actions.length,24);assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);
+  assert.deepEqual(graph.budget,{resources:[{id:'公会科技点',num:240},{id:'联盟职级科技点',num:120}],quotas:[],uids:[]});
+  const simulation=await app.call('/api/workflows/simulate',{body:{graph}});assert.equal(simulation.data.requestsSent,0);assert.equal(writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);let runId;
+  for(let i=0;i<24;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId??=pending.runId;
+   assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);assert.deepEqual(pending.plan.parameters,targets[i]);
+   assert.equal(writes.length,i);const permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const result=i===23?(outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED'):'SUCCESS';
+   const record=app.history.list('A')[0];assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowNodeId,actions[i].id);
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.call('/api/workflows/resume',{body:{}});
+  }
+  await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
+  assert.deepEqual(writes,targets.map(({techId})=>({techId})));assert.equal(levels.size,outcome==='success'?24:23);
+  assert.deepEqual([...stock.values()],outcome==='success'?[0,0]:[0,10]);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  assert.equal(app.history.list('A').length,24);const budget=app.operations.workflowBudget('A');
+  assert.equal(budget.state,'CLOSED');assert.deepEqual(budget.limits,graph.budget);assert.equal(budget.batches.length,24);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
