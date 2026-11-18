@@ -168,6 +168,11 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         }catch{invalid('只读观察须使用原任务Function的明确完整目标');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
       }
+      if(phase==='tasks'&&row?.kind==='free-recruit'){
+        exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks招募须明确原Function业务参数，免费单次使用空对象');
+        try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募仅支持明确英雄或古董、免费单次及自有1/10/50券的原参数');}
+        steps.push({phase,index,module:'free-recruit',parameters,selection});continue;
+      }
       if(phase==='tasks'&&row?.kind==='afk-income'){
         exact(row,['kind','level','afkStartTime','afkFinishTime']);
         try{parameters=validateAfkLevelRewardsParameters({action:'income',level:row.level,afkStartTime:row.afkStartTime,afkFinishTime:row.afkFinishTime});}catch{invalid('Tasks普通挂机收益须明确等级和完整区间');}
