@@ -3634,3 +3634,42 @@ for(const mode of ['success','account-tamper','guild-tamper','state-tamper','cos
  assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);
  assert.equal(h.confirmations.length,0);
 });
+
+
+for(const action of ['feed','level'])for(const mode of ['success','cost-tamper','uid-tamper','late-selection','late-editor','late-account'])
+ test('Pet batch PAGE '+action+' preserves original targets and rejects '+mode,async()=>{
+ const rows=Array.from({length:2},(_,i)=>{
+  const parameters=action==='feed'?{action,buildingId:'1宠物培育室',jobIdx:i}:{action,buildingId:(i+1)+'宠物',uid:(9007199254740993n+BigInt(i)).toString()};
+  const target=action==='feed'?{...parameters,petId:'蓝宠物1',startTime:900+i,finishTime:2000+i}:{...parameters,level:1};
+  const costs=action==='feed'?[{id:'粗铁',num:4},{id:'鱼肠线',num:12}]:[{id:'宠物经验',num:1300}];
+  const uids=action==='feed'?[{type:'pet-job',id:parameters.buildingId+':'+i+':'+(900+i)}]:[{type:'pet',id:parameters.uid},{type:'pet-serving-building',id:parameters.buildingId}];
+  return {module:'pet',actionId:'pet:'+action+':'+i,actionType:action.toUpperCase(),parameters,target,costs,
+   budgetClaims:{resources:costs,quotas:[],uids},executable:true,blockedReason:null,label:'synthetic pet'};
+ });
+ const spec={module:'pet',actionId:rows[0].actionId,actionType:rows[0].actionType,parameters:rows[0].parameters,costs:rows[0].costs,facts:{rooms:[],pets:[],serving:[]}};
+ const h=await boot(),read=h.node('gp-pet-load').click(),response=data(spec);response.view.candidates=rows;
+ h.respond('/api/gameplay',response,{module:'pet'});await read;
+ const controls=descendants(h.node('gp-pet-facts')),checks=controls.filter(node=>node.dataset.growthBatchTarget),
+  duration=controls.find(node=>node.dataset.growthBatchDuration),prepare=controls.find(node=>node.dataset.growthBatchPrepare);
+ assert.equal(checks.length,2);assert.ok(checks.every(node=>!node.checked&&!node.disabled));
+ await prepare.click();assert.equal(writes(h).length,0);
+ checks.forEach(node=>{node.checked=true;node.onchange();});duration.value='60';duration.oninput();
+ const targets=rows.map(row=>row.parameters),payload={targets,maxDurationMs:60000},nodes=[{id:'start',type:'START'}];
+ const steps=rows.map((row,i)=>{const selection={actionId:row.actionId};
+  nodes.push({id:'grow-'+i,type:'ACTION',module:'pet',parameters:row.parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'pet'});
+  return {parameters:row.parameters,selection,target:row.target,costs:row.costs,budgetClaims:row.budgetClaims};
+ });nodes.push({id:'stop',type:'STOP'});
+ const budget={resources:rows[0].costs.map(row=>({...row,num:row.num*2})),quotas:[],uids:rows.flatMap(row=>row.budgetClaims.uids)};
+ const graph={version:1,id:'pet-growth-test',name:'Pet growth',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),
+  budget,runPolicy:{maxDurationMs:60000,maxActions:2,modules:['pet']}};
+ const reply=structuredClone({...payload,accountId:'A',steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true});
+ const pending=prepare.click(),route='/api/gameplay/pet/growth/prepare';assertMutation(h.pending(route),route,payload);
+ if(mode==='cost-tamper')reply.steps[0].costs[0].num++;
+ if(mode==='uid-tamper')reply.graph.budget.uids[0].id='other';
+ if(mode==='late-selection')checks[1].checked=false;
+ if(mode==='late-editor')h.node('wf-json').value='edited';
+ if(mode==='late-account')h.run("selectAccount('B');selectAccount('A');");
+ const before=h.node('wf-json').value;h.respond(route,reply);await pending;
+ if(mode==='success')assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);else assert.equal(h.node('wf-json').value,before);
+ assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(h.confirmations.length,0);
+});

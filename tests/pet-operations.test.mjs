@@ -470,8 +470,8 @@ test('ordinary Pet observed conditions do not change original Service UNKNOWN re
  const next=f.newService();await assert.rejects(next.surveyModule({...f.session,client:{...f.client,uncertainWrites:new Map()}},'pet',parameters),{code:'RECOVERY_UNCERTAIN'});assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].name,'PetFeedRequest');
 });
 
-async function petBatchFixture(t,{action='feed',count=2,stop=null}={}){
- const f=fixture(t,{shared:true,level:action==='level'});await f.ready;const {state}=f,originalPet=structuredClone(state.pets[0]);let targets;
+async function petBatchFixture(t,{action='feed',count=2,stop=null,http=false}={}){
+ const f=fixture(t,{shared:true,level:action==='level',http});await f.ready;const {state}=f,originalPet=structuredClone(state.pets[0]);let targets;
  if(action==='level'){
   targets=Array.from({length:count},(_,i)=>({action,buildingId:(i+2)+'宠物',uid:(9007199254770000n+BigInt(i)).toString()}));
   state.pets=[originalPet,...targets.map(p=>({...structuredClone(originalPet),uid:p.uid}))];
@@ -519,4 +519,38 @@ for(const action of ['feed','level'])test('Pet prepared batch '+action+' rejects
  for(const targets of [[],Array(1),[accessor],[f.targets[0],f.targets[0]],[f.targets[0],collision],[...f.targets,{...f.targets[0]}]])await assert.rejects(f.service.preparePetGrowthSource(f.session,{targets,maxDurationMs:60000}),{code:'INVALID_PARAMETERS'});
  assert.equal(getters,0);assert.equal(f.state.reads.length,0);if(action==='level'){f.state.buildings.find(row=>row.buildingId===f.targets.at(-1).buildingId).petServe.petUid='0';f.push();}else f.room.petBreed.breedQ.pop();
  await assert.rejects(f.service.preparePetGrowthSource(f.session,f.input),{code:'INVALID_PARAMETERS'});assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(account),[]);
+});
+
+
+for(const action of ['feed','level'])for(const outcome of ['success','unknown','refused'])
+ test('Pet batch actual localhost HTTP '+action+' '+outcome+' uses original per-target authorization',{timeout:60000},async t=>{
+ const f=await petBatchFixture(t,{action,count:2,http:'listen',stop:outcome==='success'?null:{index:1,kind:outcome}});
+ await new Promise(resolve=>f.app.server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+f.app.server.address().port;
+ const get=async(route,id=account)=>{const response=await fetch(base+route+(route.includes('?')?'&':'?')+'account='+encodeURIComponent(id),{headers:{connection:'close'}});return {status:response.status,data:await response.json()};};
+ const info=await get('/api/gameplay?module=pet');assert.equal(info.status,200);const csrf=info.data.csrfToken;assert.ok(csrf);
+ const post=async(route,body,{id=account,authorized=true}={})=>{const response=await fetch(base+route+'?account='+encodeURIComponent(id),{method:'POST',headers:{connection:'close',origin:base,'content-type':'application/json',...(authorized?{'x-cw-csrf':csrf}:{})},body:JSON.stringify(body)});return {status:response.status,data:await response.json()};};
+ const route='/api/gameplay/pet/growth/prepare';assert.equal((await post(route,f.input,{authorized:false})).status,403);
+ const prepared=await post(route,f.input);assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+ assert.equal(prepared.data.accountId,account);assert.deepEqual(prepared.data.budget.resources,f.per.map(row=>({...row,num:row.num*2})));
+ assert.equal(prepared.data.budget.uids.length,action==='level'?4:2);const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');
+ assert.deepEqual(actions.map(row=>row.parameters),f.targets);
+ const simulation=await post('/api/workflows/simulate',{graph});assert.equal(simulation.status,200);assert.equal(simulation.data.requestsSent,0);assert.equal(f.state.writes.length,0);
+ assert.equal((await post('/api/workflows/start',{graph})).status,200);
+ let runId;const count=outcome==='success'?2:1;
+ for(let i=0;i<count;i++){
+  let pending;for(let attempt=0;attempt<100;attempt++){pending=(await get('/api/workflows')).data.status;if(pending.status==='AWAITING_AUTHORIZATION')break;await new Promise(resolve=>setTimeout(resolve,20));}
+  assert.equal(pending.status,'AWAITING_AUTHORIZATION',JSON.stringify(pending));runId??=pending.runId;assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);
+  assert.equal(f.state.writes.length,i);const plan=pending.plan,authorization=await post('/api/operations/authorize',{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});
+  assert.equal(authorization.status,200,JSON.stringify(authorization.data));assert.equal((await post('/api/operations/execute',authorization.data)).status,200);
+  await f.service.settle(account);const record=f.durable.list(account)[0];
+  assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED',record.stopReason);
+  assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,actions[i].id);
+  assert.notEqual((await post('/api/operations/execute',authorization.data)).status,200);await post('/api/workflows/resume',{});
+ }
+ const final=(await get('/api/workflows')).data.status;assert.equal(final.status,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED',JSON.stringify(final));
+ assert.equal(f.state.writes.length,count);assert.equal(f.durable.list(account).length,count);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(account),outcome==='unknown');
+ const budget=f.service.workflowBudget(account);assert.equal(budget.state,'CLOSED');assert.deepEqual(budget.limits,prepared.data.budget);
+ assert.equal((await get('/api/workflows/history?workflowRunId='+runId,'other-account')).status,404);
+ assert.deepEqual(f.counts(),{clients:0,collections:0});
 });
