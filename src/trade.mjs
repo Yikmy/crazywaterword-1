@@ -285,17 +285,24 @@ export function prepareTradeSaleWorkflow(f,{config=f?.configEvidence,moduleConfi
  return {...p,steps,budget,graph:{version:1,id:'trade-sales-'+hash({p,steps}).slice(0,20),name:'当前港口明确持货逐批出售',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['trade']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅当前港口明确勾选的持货全批非亏损出售；原Function每批重新调查活动窗口、港口、持货、价格与配置身份，单次授权、专用TradeSell回执及独立TradeInfo完整结算验证。活动/航次/持货/报价变化、拒绝或UNKNOWN停止，不重发、不移动或购买。固定原持货quota/UID父预算，预计售得不补额度，maxCoins/profit沿原专用回执独立确认，不猜公式或目的港行情。'};
 }
 
+function selectedTradeCandidate(f,options,view,parameters){
+ return parameters.action==='speed'?speedCandidate(f,options):parameters.action==='move'?moveCandidate(f,options):
+  (parameters.action==='buy'?buyCandidate:saleCandidate)(f,options,view);
+}
 export function viewTrade(f,options={}){
  const parameters=validateTradeParameters(options.parameters??f?.parameters??{}),view=observationTrade(f,options);
  view.salePreparation=tradeSaleTargets(f,view);view.buyPreparation=tradeBuyTargets(f,view);
  view.cooldownObservation=tradeLegClockObservation(f);view.route=routeObservation(f);view.speed={policy:speedPolicy(options.config??f?.configEvidence),owned:f?.stockReliable?f.stock.get(tradeSpeedItem)??0:null,arrivalConfirmed:false};
- if(parameters.action){const speeding=parameters.action==='speed',moving=parameters.action==='move',buy=parameters.action==='buy';view.candidates=[speeding?speedCandidate(f,options):moving?moveCandidate(f,options):(buy?buyCandidate:saleCandidate)(f,options,view)];view.blocked=view.blocked.filter(row=>row.actionType!==(speeding?'SPEED':moving?'MOVE':buy?'BUY':'SELL'));}
+ if(parameters.action){const speeding=parameters.action==='speed',moving=parameters.action==='move',buy=parameters.action==='buy';view.candidates=[selectedTradeCandidate(f,options,view,parameters)];view.blocked=view.blocked.filter(row=>row.actionType!==(speeding?'SPEED':moving?'MOVE':buy?'BUY':'SELL'));}
  view.notes.push('卖出须明确港口、持货批次和数量，单次非亏损；预计售得不进入预算。maxCoins/profit仅采纳专用回执并独立复读，不猜测更新公式。');return view;
 }
 export function planTrade(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}){
  parameters=validateTradeParameters(parameters);if(!dense(selections)||selections.length>1||selections.some(v=>typeof v!=='string'||!v.length||v.length>300))throw invalid('贸易每批只能选择一个精确actionId');
  if(!same(parameters,f?.parameters??{}))return {module:'trade',actions:[],notes:[]};
- const row=parameters.action?viewTrade(f,{...options,parameters}).candidates.find(r=>r.executable&&selections.includes(r.actionId)):null;
+ // A plan needs only the selected candidate, not all preparable market/holding
+ // hashes. Both paths still use the same observation and candidate checks.
+ const candidate=parameters.action?selectedTradeCandidate(f,{...options,parameters},observationTrade(f,options),parameters):null;
+ const row=candidate?.executable&&selections.includes(candidate.actionId)?candidate:null;
  return {module:'trade',actions:row&&ledger.reserve(row.costs)?[row]:[],notes:['行情预览不是到账；仅明确单次买入、非亏损卖出、Radar 单航段或自有道具保持未来终点的加速可生成候选，其他交易分支保持独立。']};
 }
 export function verifyTrade(operation,before,after,result){

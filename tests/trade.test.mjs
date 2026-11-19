@@ -346,3 +346,43 @@ for(const outcome of ['success','unknown-first','unknown-second','refused-second
  assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,count);
  assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome.startsWith('unknown'));
 });
+
+
+for(const outcome of ['success','unknown-last','refused-last'])test('trade multi-buy 24-target Service and Workflow '+outcome,{timeout:600000},async t=>{
+ const f=await multiBuyFixture(t,24),input={...f.input,maxDurationMs:480000};
+ const prepared=await f.service.prepareTradeBuySource(f.session,input);
+ assert.deepEqual(prepared.budget.resources,[{id:'TRADE_COINS:7',num:48}]);
+ assert.equal(prepared.budget.quotas.length,24);assert.equal(prepared.budget.uids.length,24);
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id===f.session.id?f.session:null,
+  isCurrent:(session,generation,client)=>session===f.session&&session.generation===generation&&session.client===client,
+  claim:(id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ let status=await runner.start(f.session.id,prepared.graph);const runId=status.runId;
+ for(let i=0;i<24;i++){
+  assert.equal(status.status,'AWAITING_AUTHORIZATION',JSON.stringify(status));assert.equal(status.runId,runId);
+  assert.equal(status.plan.parameters.goodsId,1001+i);assert.equal(status.plan.actions.length,1);assert.equal(f.state.writes.length,i);
+  const faulty=i===23&&outcome!=='success';f.state.apply=!faulty;
+  f.state.onWrite=faulty&&outcome==='refused-last'?()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});}:null;
+  const permit=f.authorize(status.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);
+  const record=f.durable.list(f.session.id)[0],result=faulty?(outcome==='refused-last'?'REJECTED':'UNKNOWN'):'SUCCESS';
+  assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,'buy-'+i);
+  assert.equal(f.state.saved.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+  assert.throws(()=>f.service.execute(f.session,permit));status=await runner.resume();
+ }
+ assert.equal(status.status,outcome==='success'?'COMPLETED':outcome==='refused-last'?'FAILED':'UNKNOWN');
+ assert.deepEqual(f.state.writes.map(row=>row.body.goodsId),Array.from({length:24},(_,i)=>1001+i));
+ assert.equal(f.state.info.player.coins,outcome==='success'?52:54);assert.equal(f.state.info.player.goods.length,outcome==='success'?24:23);
+ const budget=f.service.workflowBudget(f.session.id);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);
+ assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,24);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome==='unknown-last');
+});
+
+
+for(const action of ['sell','buy','move','speed'])test('trade plan uses identical original '+action+' candidate without list projection',async t=>{
+ const f=await saleFixture(t,action==='sell'?{}:{[action]:true}),facts=await f.survey();
+ const candidate=viewTrade(facts,f.options).candidates[0];assert.equal(candidate.executable,true,JSON.stringify(candidate));
+ const planned=planTrade(facts,{...f.options,selections:[candidate.actionId]});
+ assert.deepEqual(planned.actions,[candidate]);
+ assert.deepEqual(planTrade(facts,{...f.options,selections:['unrelated']}).actions,[]);
+ assert.equal(f.state.writes.length,0);
+});

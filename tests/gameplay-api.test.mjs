@@ -2283,7 +2283,7 @@ test('cargo preparation HTTP accepts explicit cross-ship loads and preserves leg
  }finally{await app.close();}
 });
 
-async function withOfflineBrowser(app,exercise){
+async function withOfflineBrowser(app,exercise,{commandTimeoutMs=10000}={}){
  const {spawn}=await import('node:child_process');
  const {setTimeout:delay}=await import('node:timers/promises');
  const profile=fs.mkdtempSync(path.join(root,'browser-'));
@@ -2294,8 +2294,8 @@ async function withOfflineBrowser(app,exercise){
  ],{stdio:'ignore',windowsHide:true});
  let launchError,socket;
  browser.on('error',error=>{launchError=error;});
- async function waitFor(read,description){
-  for(let attempt=0;attempt<100;attempt++){
+ async function waitFor(read,description,attempts=100){
+  for(let attempt=0;attempt<attempts;attempt++){
    if(launchError)throw launchError;
    const result=await read();
    if(result)return result;
@@ -2322,8 +2322,8 @@ async function withOfflineBrowser(app,exercise){
    const id=++commandId;
    const timer=setTimeout(()=>{
     socket.removeEventListener('message',onMessage);
-    reject(Error('Browser command timed out: '+method));
-   },10000);
+    reject(Error('Browser command timed out: '+method+' '+String(params.expression??'').slice(0,120)));
+   },commandTimeoutMs);
    const onMessage=event=>{
     const reply=JSON.parse(event.data);
     if(reply.id!==id)return;
@@ -3606,13 +3606,13 @@ for(const mode of ['budget-tamper','late-editor'])test('browser offline alliance
 });
 
 
-async function tradeMultiBuyHttpFixture(outcome='success'){
+async function tradeMultiBuyHttpFixture(outcome='success',{count=2}={}){
  const config=structuredClone(tradeSellHttpConfig),template=config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
- assert.ok(template);config.tables.TradeGoodsCfg.data=[1001,1002].map(goodsId=>({...structuredClone(template),goodsId,capacity:1,maxCount:100}));
+ assert.ok(template);config.tables.TradeGoodsCfg.data=Array.from({length:count},(_,i)=>({...structuredClone(template),goodsId:1001+i,capacity:1,maxCount:100}));
  const app=await harness({includeTrade:true,configOverride:config});let client;
  try{
-  let state;({client,state}=await tradeSellHttpReady(app,{buy:true}));state.info.player.goods=[];
-  const market=[1001,1002].map(goodsId=>({goodsId,stock:0,price:2})),writes=[];
+  let state,session;({client,state,session}=await tradeSellHttpReady(app,{buy:true}));state.info.player.goods=[];state.onRead=null;
+  const market=Array.from({length:count},(_,i)=>({goodsId:1001+i,stock:0,price:2})),writes=[];
   client.request=async(name,body,response,_timeout,options={})=>{
    heroWire(name,body);
    if(options.mutate){
@@ -3623,12 +3623,13 @@ async function tradeMultiBuyHttpFixture(outcome='success'){
     if(outcome==='success'){state.info.player.coins-=2*body.buyNum;state.info.player.goods.push({pid:98+writes.length,goodsId:body.goodsId,num:body.buyNum,buyPrice:2,cityId:1});}
     return heroWire(response,{player:state.info.player});
    }
+   await state.onRead?.(name);
    const facts={TradeInfoRequest:state.info,TradeCityRequest:{goods:market},AllItemRequest:{items:[{itemId:'无关',num:9}]},AllResourceRequest:{list:[{res:3,amount:100},{res:4,amount:50}]}};
    assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
   };
   await app.call('/api/gameplay?module=trade');
   assert.equal((await app.call('/api/gameplay/config',{body:{module:'trade',config:{enabled:true}}})).status,200);
-  return {app,client,state,market,writes};
+  return {app,session,client,state,market,writes,config};
  }catch(error){client?.stop();await app.close();throw error;}
 }
 
@@ -3709,5 +3710,99 @@ for(const outcome of ['success','unknown'])test('browser offline trade multi-buy
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
+ }finally{client.stop();await app.close();}
+});
+
+
+for(const phase of ['prepare','execute'])for(const change of ['account','player','world','generation','connection','client','disconnect','abort','config','price','market-stock','period','port'])
+ test('trade multi-buy HTTP '+phase+' rejects changed '+change+' before dispatch',async()=>{
+ const {app,session,client,state,market,writes,config}=await tradeMultiBuyHttpFixture();
+ try{
+  const parameters={action:'buy',cityId:1,goodsId:1001,num:1};
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'trade',parameters}});assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const buys=surveyed.data.view.buyPreparation.map(row=>({goodsId:row.goodsId,num:1,expectedBuyHash:row.expectedBuyHash}));
+  const route='/api/gameplay/trade/buy/prepare',body={cityId:1,expectedPeriod:7,buys,maxDurationMs:60000};let permit;
+  if(phase==='execute'){
+   const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+   assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+  }
+  let hit=false;state.onRead=name=>{
+   if(hit||name!=='TradeCityRequest')return;hit=true;
+   if(change==='account')client.factContext.accountId='B';
+   if(change==='player')session.player.playerId='2';
+   if(change==='world')session.player.worldId='2000001';
+   if(change==='generation')client.factContext.generation=++session.generation;
+   if(change==='connection')client.factContext.connectionId=session.connectionId='replaced';
+   if(change==='client')session.client={...client};
+   if(change==='disconnect')client.state='CLOSED';
+   if(change==='abort')session.abort.abort();
+   if(change==='config')config.tables.TradeGoodsCfg.data[0].capacity++;
+   if(change==='price')market[0].price++;
+   if(change==='market-stock')market[0].stock++;
+   if(change==='period')state.info.period++;
+   if(change==='port')state.info.cargo.cityId=2;
+  };
+  if(phase==='prepare'){
+   const reply=await app.call(route,{body});assert.notEqual(reply.status,200,JSON.stringify(reply.data));assert.equal(app.history.list('A').length,0);
+  }else{
+   const reply=await app.call('/api/operations/execute',{body:permit.data});if(reply.status===200)await app.operations.settle('A');
+   assert.notEqual(app.operations.status('A').finalStatus,'SUCCESS');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  }
+  assert.equal(hit,true);assert.deepEqual(writes,[]);assert.equal(state.info.player.coins,100);assert.equal(state.info.player.goods.length,0);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{session.client=client;client.stop();await app.close();}
+});
+
+
+test('browser offline trade multi-buy prepares and simulates 24 goods without authorization',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:120000
+},async()=>{
+ const {app,client,writes}=await tradeMultiBuyHttpFixture('success',{count:24});
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<300;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-trade-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="trade"]')).click();(await wait('#gp-trade-load')).click();
+    const parameters=await wait('#gp-trade-parameters');parameters.value=JSON.stringify({action:'buy',cityId:1,goodsId:1001,num:1});
+    parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
+   }).toString()+')()');
+   await waitFor(()=>evaluate("!!document.querySelector('[data-trade-buy-batch-target]:not(:disabled)')"),'24-good observation',300);
+   await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<100;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-trade-hint')?.textContent);
+    };
+    const choices=Array.from(document.querySelectorAll('[data-trade-buy-batch-target]')),quantities=Array.from(document.querySelectorAll('[data-trade-buy-batch-quantity]'));
+    if(choices.length!==24||quantities.length!==24||choices.some(element=>element.checked||element.disabled)||quantities.some(element=>element.value!==''))throw Error('Expected 24 unselected goods and empty quantities');
+    for(let i=0;i<24;i++){choices[i].click();quantities[i].value='1';quantities[i].dispatchEvent(new Event('input',{bubbles:true}));}
+    const duration=await wait('[data-trade-buy-batch-duration]');duration.value='480';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-trade-buy-batch-prepare]')).click();
+   }).toString()+')()');
+   const graph=await waitFor(()=>evaluate(`(() => {const editor=document.getElementById('wf-json');
+    return editor?.value.includes('trade-buys-')&&JSON.parse(editor.value);})()`),'prepared 24-good graph',300);
+   await evaluate("document.querySelector('#tabs button[data-tab=\"workflow\"]').click()");
+   await waitFor(()=>evaluate("!document.getElementById('wf-simulate').disabled"),'simulation control');
+   await evaluate("document.getElementById('wf-simulate').click()");
+   const simulation=await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-result').textContent;
+    return text.includes('"requestsSent"')&&JSON.parse(text);})()`),'simulation');
+   const confirmations=await evaluate('globalThis.confirmations||0');
+   assert.deepEqual(graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.goodsId),Array.from({length:24},(_,i)=>1001+i));
+   assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);
+   assert.deepEqual(graph.budget.resources,[{id:'TRADE_COINS:7',num:48}]);
+   assert.equal(graph.budget.quotas.length,24);assert.equal(graph.budget.uids.length,24);
+   assert.equal(graph.runPolicy.maxActions,24);assert.equal(graph.runPolicy.maxDurationMs,480000);
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(confirmations,0);
+   assert.deepEqual(writes,[]);assert.equal(app.history.list('A').length,0);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  },{commandTimeoutMs:45000});
  }finally{client.stop();await app.close();}
 });
