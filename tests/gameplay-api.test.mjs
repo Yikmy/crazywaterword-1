@@ -3808,29 +3808,30 @@ test('browser offline trade multi-buy prepares and simulates 24 goods without au
 });
 
 
-async function tradeMultiSaleHttpFixture(outcome='success'){
+async function tradeMultiSaleHttpFixture(outcome='success',{count=2,failAt=1}={}){
  const config=structuredClone(tradeSellHttpConfig),template=config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
- assert.ok(template);config.tables.TradeGoodsCfg.data=[1001,1002].map(goodsId=>({...structuredClone(template),goodsId,capacity:1,maxCount:100}));
+ assert.ok(template);config.tables.TradeGoodsCfg.data=Array.from({length:count},(_,i)=>({...structuredClone(template),goodsId:1001+i,capacity:1,maxCount:100}));
  const app=await harness({includeTrade:true,configOverride:config});let client;
  try{
-  let state;({client,state}=await tradeSellHttpReady(app));
-  state.info.player.goods=[1,2].map(pid=>({pid,goodsId:1000+pid,num:1,buyPrice:50,cityId:2}));
-  const market=[1001,1002].map(goodsId=>({goodsId,stock:0,price:51})),writes=[];
+  let state,session;({client,state,session}=await tradeSellHttpReady(app));state.onRead=null;
+  state.info.player.goods=Array.from({length:count},(_,i)=>({pid:i+1,goodsId:1001+i,num:1,buyPrice:50,cityId:2}));
+  const market=Array.from({length:count},(_,i)=>({goodsId:1001+i,stock:0,price:51})),writes=[];
   client.request=async(name,body,response,_timeout,options={})=>{
    heroWire(name,body);
    if(options.mutate){
     assert.equal(name,'TradeSellRequest');options.beforeDispatch?.();
     assert.equal(app.history.list('A')[0].actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');writes.push(structuredClone(body));
-    if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
-    if(outcome==='success'){state.info.player.coins+=52;state.info.player.profit+=2;state.info.player.maxCoins=state.info.player.coins;state.info.player.goods=state.info.player.goods.filter(row=>row.pid!==body.pid);}
+    if(outcome==='refused'&&writes.length===failAt)throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    if(outcome==='success'||writes.length!==failAt){state.info.player.coins+=52;state.info.player.profit+=2;state.info.player.maxCoins=state.info.player.coins;state.info.player.goods=state.info.player.goods.filter(row=>row.pid!==body.pid);}
     return heroWire(response,{player:state.info.player});
    }
+   await state.onRead?.(name);
    const facts={TradeInfoRequest:state.info,TradeCityRequest:{goods:market},AllItemRequest:{items:[{itemId:'无关',num:9}]},AllResourceRequest:{list:[{res:3,amount:100},{res:4,amount:50}]}};
    assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
   };
   await app.call('/api/gameplay?module=trade');
   assert.equal((await app.call('/api/gameplay/config',{body:{module:'trade',config:{enabled:true}}})).status,200);
-  return {app,client,state,market,writes};
+  return {app,session,client,state,market,writes,config};
  }catch(error){client?.stop();await app.close();throw error;}
 }
 
@@ -3909,6 +3910,135 @@ for(const outcome of ['success','unknown'])test('browser offline trade multi-sal
    assert.equal(state.info.player.coins,outcome==='success'?204:100);assert.equal(state.info.player.goods.length,outcome==='success'?0:2);
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ }finally{client.stop();await app.close();}
+});
+
+
+for(const phase of ['prepare','execute'])for(const change of ['account','player','world','generation','connection','client','disconnect','abort','config','price','holding','period','port'])
+ test('trade multi-sale HTTP '+phase+' rejects changed '+change+' before dispatch',async()=>{
+ const {app,session,client,state,market,writes,config}=await tradeMultiSaleHttpFixture();
+ try{
+  const parameters={action:'sell',cityId:1,pid:1,num:1};
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'trade',parameters}});assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const sales=surveyed.data.view.salePreparation.map(({parameters})=>({pid:parameters.pid,num:parameters.num,expectedSaleHash:parameters.expectedSaleHash}));
+  const route='/api/gameplay/trade/sale/prepare',body={cityId:1,expectedPeriod:7,sales,maxDurationMs:60000};let permit;
+  if(phase==='execute'){
+   const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+   assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+  }
+  let hit=false;state.onRead=name=>{
+   if(hit||name!=='TradeCityRequest')return;hit=true;
+   if(change==='account')client.factContext.accountId='B';
+   if(change==='player')session.player.playerId='2';
+   if(change==='world')session.player.worldId='2000001';
+   if(change==='generation')client.factContext.generation=++session.generation;
+   if(change==='connection')client.factContext.connectionId=session.connectionId='replaced';
+   if(change==='client')session.client={...client};
+   if(change==='disconnect')client.state='CLOSED';
+   if(change==='abort')session.abort.abort();
+   if(change==='config')config.tables.TradeGoodsCfg.data[0].capacity++;
+   if(change==='price')market[0].price++;
+   if(change==='holding')state.info.player.goods[0].num++;
+   if(change==='period')state.info.period++;
+   if(change==='port')state.info.cargo.cityId=2;
+  };
+  if(phase==='prepare'){
+   const reply=await app.call(route,{body});assert.notEqual(reply.status,200,JSON.stringify(reply.data));assert.equal(app.history.list('A').length,0);
+  }else{
+   const reply=await app.call('/api/operations/execute',{body:permit.data});if(reply.status===200)await app.operations.settle('A');
+   assert.notEqual(app.operations.status('A').finalStatus,'SUCCESS');
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  }
+  assert.equal(hit,true);assert.deepEqual(writes,[]);assert.equal(state.info.player.coins,100);assert.equal(state.info.player.goods.length,2);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),false);
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{session.client=client;client.stop();await app.close();}
+});
+
+
+test('browser offline trade multi-sale prepares and simulates 24 holdings without authorization',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:120000
+},async()=>{
+ const {app,client,writes}=await tradeMultiSaleHttpFixture('success',{count:24});
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-trade-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="trade"]')).click();(await wait('#gp-trade-load')).click();
+    const parameters=await wait('#gp-trade-parameters');parameters.value=JSON.stringify({action:'sell',cityId:1,pid:1,num:1});
+    parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
+   }).toString()+')()');
+   await waitFor(()=>evaluate("!!document.querySelector('[data-trade-sale-batch-target]:not(:disabled)')"),'24-holding observation',300);
+   await evaluate('('+(async()=>{
+    const choices=Array.from(document.querySelectorAll('[data-trade-sale-batch-target]'));
+    if(choices.length!==24||choices.some(element=>element.checked||element.disabled))throw Error('Expected 24 unselected holdings');
+    for(const choice of choices)choice.click();
+    const duration=document.querySelector('[data-trade-sale-batch-duration]');duration.value='480';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    document.querySelector('[data-trade-sale-batch-prepare]').click();
+   }).toString()+')()');
+   const graph=await waitFor(()=>evaluate(`(() => {const editor=document.getElementById('wf-json');
+    return editor?.value.includes('trade-sales-')&&JSON.parse(editor.value);})()`),'prepared 24-holding graph',300);
+   await evaluate("document.querySelector('#tabs button[data-tab=\"workflow\"]').click()");
+   await waitFor(()=>evaluate("!document.getElementById('wf-simulate').disabled"),'simulation control');
+   await evaluate("document.getElementById('wf-simulate').click()");
+   const simulation=await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-result').textContent;
+    return text.includes('"requestsSent"')&&JSON.parse(text);})()`),'simulation');
+   assert.deepEqual(graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.pid),Array.from({length:24},(_,i)=>i+1));
+   assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);assert.deepEqual(graph.budget.resources,[]);
+   assert.equal(graph.budget.quotas.length,24);assert.equal(graph.budget.uids.length,24);
+   assert.equal(graph.runPolicy.maxActions,24);assert.equal(graph.runPolicy.maxDurationMs,480000);
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);
+   assert.equal(await evaluate('globalThis.confirmations||0'),0);assert.deepEqual(writes,[]);assert.equal(app.history.list('A').length,0);
+   assert.deepEqual(app.counts(),{clients:0,collections:0});
+  },{commandTimeoutMs:45000});
+ }finally{client.stop();await app.close();}
+});
+
+
+for(const kind of ['buy','sale'])for(const mode of ['budget-tamper','late-editor'])
+ test('browser offline trade multi-'+kind+' rejects '+mode+' preparation',{skip:!process.env.CW_TEST_BROWSER,timeout:45000},async()=>{
+ const {app,client,writes}=kind==='buy'?await tradeMultiBuyHttpFixture():await tradeMultiSaleHttpFixture();
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   await evaluate('('+(async(kind)=>{
+    const find=selector=>document.querySelector(selector),wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-trade-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');(await wait('#tabs button[data-tab="trade"]')).click();(await wait('#gp-trade-load')).click();
+    const parameters=await wait('#gp-trade-parameters');parameters.value=JSON.stringify(kind==='buy'?{action:'buy',cityId:1,goodsId:1001,num:1}:{action:'sell',cityId:1,pid:1,num:1});
+    parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
+    const prefix=kind==='buy'?'trade-buy-batch':'trade-sale-batch';await wait('[data-'+prefix+'-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-'+prefix+'-target]'));
+    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected trade targets');
+    choices.forEach(element=>element.click());
+    if(kind==='buy')for(const quantity of document.querySelectorAll('[data-trade-buy-batch-quantity]')){quantity.value='1';quantity.dispatchEvent(new Event('input',{bubbles:true}));}
+    const duration=await wait('[data-'+prefix+'-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=async(...args)=>{const response=await originalFetch(...args);
+     if(String(args[0]).includes('/api/gameplay/trade/'+kind+'/prepare')){
+      globalThis.capturedTradeResponse=await response.json();await new Promise(resolve=>{globalThis.releaseTradeResponse=resolve;});
+      return new Response(JSON.stringify(globalThis.capturedTradeResponse),{status:response.status,headers:{'content-type':'application/json'}});
+     }return response;};
+    (await wait('[data-'+prefix+'-prepare]')).click();
+   }).toString()+')('+JSON.stringify(kind)+')');
+   await waitFor(()=>evaluate('!!globalThis.releaseTradeResponse'),'intercepted prepare response');
+   if(mode==='budget-tamper')await evaluate("globalThis.capturedTradeResponse.graph.budget.quotas[0].num++");
+   else await evaluate("document.getElementById('wf-json').value='edited by user'");
+   const before=await evaluate("document.getElementById('wf-json').value");await evaluate('globalThis.releaseTradeResponse()');
+   await waitFor(()=>evaluate(`!document.querySelector('[data-trade-${kind}-batch-prepare]').disabled`),'preparation settled');
+   assert.equal(await evaluate("document.getElementById('wf-json').value"),before);
+   if(mode==='budget-tamper')assert.match(await evaluate("document.getElementById('gp-trade-hint').textContent"),/逐项验证|父预算/);
+   assert.deepEqual(writes,[]);assert.equal(app.history.list('A').length,0);
+   assert.equal(await evaluate('globalThis.confirmations||0'),0);assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
  }finally{client.stop();await app.close();}
 });

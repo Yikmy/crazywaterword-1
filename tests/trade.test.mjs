@@ -449,3 +449,32 @@ for(const outcome of ['success','unknown-first','unknown-second','refused-second
  assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,count);
  assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome.startsWith('unknown'));
 });
+
+
+for(const outcome of ['success','unknown-last','refused-last'])test('trade multi-sale 24-target Service and Workflow '+outcome,{timeout:600000},async t=>{
+ const f=await multiSaleFixture(t,24),input={...f.input,maxDurationMs:480000};
+ const prepared=await f.service.prepareTradeSaleSource(f.session,input);
+ assert.deepEqual(prepared.budget.resources,[]);assert.equal(prepared.budget.quotas.length,24);assert.equal(prepared.budget.uids.length,24);
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id===f.session.id?f.session:null,
+  isCurrent:(session,generation,client)=>session===f.session&&session.generation===generation&&session.client===client,
+  claim:(id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ let status=await runner.start(f.session.id,prepared.graph);const runId=status.runId;
+ for(let i=0;i<24;i++){
+  assert.equal(status.status,'AWAITING_AUTHORIZATION',JSON.stringify(status));assert.equal(status.runId,runId);
+  assert.equal(status.plan.parameters.pid,i+1);assert.equal(status.plan.actions.length,1);assert.equal(f.state.writes.length,i);
+  const faulty=i===23&&outcome!=='success';f.state.apply=!faulty;
+  f.state.onWrite=faulty&&outcome==='refused-last'?()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});}:null;
+  const permit=f.authorize(status.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);
+  const record=f.durable.list(f.session.id)[0],result=faulty?(outcome==='refused-last'?'REJECTED':'UNKNOWN'):'SUCCESS';
+  assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,'sale-'+i);
+  assert.equal(f.state.saved.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+  assert.throws(()=>f.service.execute(f.session,permit));status=await runner.resume();
+ }
+ assert.equal(status.status,outcome==='success'?'COMPLETED':outcome==='refused-last'?'FAILED':'UNKNOWN');
+ assert.deepEqual(f.state.writes.map(row=>row.body.pid),Array.from({length:24},(_,i)=>i+1));
+ assert.equal(f.state.info.player.coins,outcome==='success'?1348:1296);assert.equal(f.state.info.player.goods.length,outcome==='success'?0:1);
+ const budget=f.service.workflowBudget(f.session.id);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);
+ assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,24);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome==='unknown-last');
+});
