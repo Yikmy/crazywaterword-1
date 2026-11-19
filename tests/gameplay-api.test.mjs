@@ -3806,3 +3806,109 @@ test('browser offline trade multi-buy prepares and simulates 24 goods without au
   },{commandTimeoutMs:45000});
  }finally{client.stop();await app.close();}
 });
+
+
+async function tradeMultiSaleHttpFixture(outcome='success'){
+ const config=structuredClone(tradeSellHttpConfig),template=config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
+ assert.ok(template);config.tables.TradeGoodsCfg.data=[1001,1002].map(goodsId=>({...structuredClone(template),goodsId,capacity:1,maxCount:100}));
+ const app=await harness({includeTrade:true,configOverride:config});let client;
+ try{
+  let state;({client,state}=await tradeSellHttpReady(app));
+  state.info.player.goods=[1,2].map(pid=>({pid,goodsId:1000+pid,num:1,buyPrice:50,cityId:2}));
+  const market=[1001,1002].map(goodsId=>({goodsId,stock:0,price:51})),writes=[];
+  client.request=async(name,body,response,_timeout,options={})=>{
+   heroWire(name,body);
+   if(options.mutate){
+    assert.equal(name,'TradeSellRequest');options.beforeDispatch?.();
+    assert.equal(app.history.list('A')[0].actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');writes.push(structuredClone(body));
+    if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    if(outcome==='success'){state.info.player.coins+=52;state.info.player.profit+=2;state.info.player.maxCoins=state.info.player.coins;state.info.player.goods=state.info.player.goods.filter(row=>row.pid!==body.pid);}
+    return heroWire(response,{player:state.info.player});
+   }
+   const facts={TradeInfoRequest:state.info,TradeCityRequest:{goods:market},AllItemRequest:{items:[{itemId:'无关',num:9}]},AllResourceRequest:{list:[{res:3,amount:100},{res:4,amount:50}]}};
+   assert.ok(Object.hasOwn(facts,name),name);return heroWire(response,facts[name]);
+  };
+  await app.call('/api/gameplay?module=trade');
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'trade',config:{enabled:true}}})).status,200);
+  return {app,client,state,market,writes};
+ }catch(error){client?.stop();await app.close();throw error;}
+}
+
+for(const outcome of ['success','unknown','refused'])test('trade multi-sale HTTP keeps exact holdings, budgets and '+outcome,async()=>{
+ const {app,client,state,writes}=await tradeMultiSaleHttpFixture(outcome);
+ try{
+  const parameters={action:'sell',cityId:1,pid:1,num:1};
+  const surveyed=await app.call('/api/gameplay/survey',{body:{module:'trade',parameters}});assert.equal(surveyed.status,200,JSON.stringify(surveyed.data));
+  const sales=surveyed.data.view.salePreparation.map(({parameters})=>({pid:parameters.pid,num:parameters.num,expectedSaleHash:parameters.expectedSaleHash}));assert.equal(sales.length,2);
+  const body={cityId:1,expectedPeriod:7,sales,maxDurationMs:60000},route='/api/gameplay/trade/sale/prepare';
+  assert.equal((await app.call(route,{body,authorized:false})).status,403);
+  const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  assert.deepEqual(prepared.data.budget.resources,[]);assert.equal(prepared.data.budget.quotas.length,2);assert.equal(prepared.data.budget.uids.length,2);
+  const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.pid),[1,2]);
+  const sim=await app.call('/api/workflows/simulate',{body:{graph}});assert.equal(sim.data.requestsSent,0);assert.equal(writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);let runId;const count=outcome==='success'?2:1;
+  for(let i=0;i<count;i++){
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;runId??=pending.runId;assert.equal(pending.runId,runId);
+   assert.equal(pending.currentNode,actions[i].id);assert.equal(writes.length,i);const permit=await app.approve(pending.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
+   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   const record=app.history.list('A')[0];assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,actions[i].id);
+   assert.equal(record.finalStatus,outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED',record.stopReason);
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.call('/api/workflows/resume',{body:{}});
+  }
+  await waitForWorkflow(app,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');
+  assert.deepEqual(writes,Array.from({length:count},(_,i)=>({cityId:1,pid:i+1,sellNum:1})));
+  assert.equal(state.info.player.coins,outcome==='success'?204:100);assert.equal(state.info.player.goods.length,outcome==='success'?0:2);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{client.stop();await app.close();}
+});
+
+
+for(const outcome of ['success','unknown'])test('browser offline trade multi-sale '+(outcome==='success'?'settles both holdings':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:60000
+},async()=>{
+ const {app,client,state,writes}=await tradeMultiSaleHttpFixture(outcome);
+ try{
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   const {graph,simulation}=await evaluate('('+(async()=>{
+    const find=selector=>document.querySelector(selector);
+    const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     throw Error(selector+' '+find('#gp-trade-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+    };
+    await wait('#account',element=>element?.value==='A');
+    (await wait('#tabs button[data-tab="trade"]')).click();(await wait('#gp-trade-load')).click();
+    const parameters=await wait('#gp-trade-parameters');parameters.value=JSON.stringify({action:'sell',cityId:1,pid:1,num:1});
+    parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
+    await wait('[data-trade-sale-batch-target]',element=>element&&!element.disabled);
+    const choices=Array.from(document.querySelectorAll('[data-trade-sale-batch-target]'));
+    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected holdings');
+    for(const choice of choices)choice.click();
+    const duration=await wait('[data-trade-sale-batch-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    (await wait('[data-trade-sale-batch-prepare]')).click();
+    const editor=await wait('#wf-json',element=>element?.value.includes('trade-sales-'));const graph=JSON.parse(editor.value);
+    (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+    return {graph,simulation:JSON.parse(output.textContent)};
+   }).toString()+')()');
+   const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.pid),[1,2]);
+   assert.deepEqual(graph.budget.resources,[]);assert.equal(graph.budget.quotas.length,2);assert.equal(graph.budget.uids.length,2);
+   assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
+   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
+   const count=outcome==='success'?2:1;
+   for(let i=0;i<count;i++){
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
+     return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
+    assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+   }
+   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+   assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes,Array.from({length:count},(_,i)=>({cityId:1,pid:i+1,sellNum:1})));
+   assert.equal(state.info.player.coins,outcome==='success'?204:100);assert.equal(state.info.player.goods.length,outcome==='success'?0:2);
+   assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ }finally{client.stop();await app.close();}
+});

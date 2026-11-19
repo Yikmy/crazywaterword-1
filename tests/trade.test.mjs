@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { loadProtocol } from '../src/proto.mjs';
 import { extractTables } from '../src/config.mjs';
-import { tradeModule, surveyTrade, viewTrade, planTrade, validateTradeParameters, validateTradeConfig, validateTradeLegClockObservation, prepareTradeBuyWorkflow, validateTradeBuyPreparation } from '../src/trade.mjs';
+import { tradeModule, surveyTrade, viewTrade, planTrade, validateTradeParameters, validateTradeConfig, validateTradeLegClockObservation, prepareTradeBuyWorkflow, validateTradeBuyPreparation, prepareTradeSaleWorkflow, validateTradeSalePreparation } from '../src/trade.mjs';
 import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { validateFunctionContract } from '../src/function-contracts.mjs';
 const protocol=loadProtocol(),copy=v=>structuredClone(v);
@@ -385,4 +385,67 @@ for(const action of ['sell','buy','move','speed'])test('trade plan uses identica
  assert.deepEqual(planned.actions,[candidate]);
  assert.deepEqual(planTrade(facts,{...f.options,selections:['unrelated']}).actions,[]);
  assert.equal(f.state.writes.length,0);
+});
+
+
+async function multiSaleFixture(t,count=2){
+ const f=await saleFixture(t),template=f.options.config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
+ assert.ok(template);
+ f.options.config.tables.TradeGoodsCfg.data=Array.from({length:count},(_,i)=>({...copy(template),goodsId:1001+i,capacity:1,maxCount:100}));
+ f.state.info.player.goods=Array.from({length:count},(_,i)=>({pid:i+1,goodsId:1001+i,num:1,buyPrice:50,cityId:2}));
+ f.state.city.goods=Array.from({length:count},(_,i)=>({goodsId:1001+i,stock:0,price:51}));
+ f.options.parameters={action:'sell',cityId:1,pid:1,num:1};
+ const facts=await f.survey(),view=viewTrade(facts,f.options);
+ assert.equal(view.status,'OBSERVED');assert.equal(view.salePreparation.length,count);
+ const sales=view.salePreparation.map(({parameters})=>({pid:parameters.pid,num:parameters.num,expectedSaleHash:parameters.expectedSaleHash}));
+ return {...f,facts,view,input:{cityId:1,expectedPeriod:7,sales,maxDurationMs:60000}};
+}
+
+for(const count of [1,24])test('trade sale preparation composes '+count+' original non-loss full holdings with fixed quotas',async t=>{
+ const f=await multiSaleFixture(t,count),prepared=prepareTradeSaleWorkflow(f.facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...f.input});
+ assert.equal(prepared.steps.length,count);
+ assert.deepEqual(prepared.graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.pid),f.input.sales.map(row=>row.pid));
+ assert.equal(prepared.graph.nodes.filter(row=>row.type==='VERIFY').length,count);
+ assert.deepEqual(prepared.budget.resources,[]);assert.equal(prepared.budget.quotas.length,count);assert.equal(prepared.budget.uids.length,count);
+ assert.deepEqual(prepared.graph.budget,prepared.budget);assert.equal(prepared.resumable,false);assert.equal(f.state.writes.length,0);
+});
+
+test('trade sale preparation rejects malformed, partial, stale, loss and cumulative overflow without dispatch',async t=>{
+ const f=await multiSaleFixture(t,2),input=f.input;
+ for(const bad of [{...input,sales:[]},{...input,sales:[input.sales[0],input.sales[0]]},{...input,sales:Array(1)},
+  {...input,sales:Array(25).fill(input.sales[0])},{...input,sales:[{...input.sales[0],price:51}]},
+  {...input,maxDurationMs:0},{...input,maxDurationMs:86400001}])assert.throws(()=>validateTradeSalePreparation(bad));
+ let calls=0;assert.throws(()=>validateTradeSalePreparation({...input,sales:[{pid:1,num:1,get expectedSaleHash(){calls++;throw Error('getter');}}]}));assert.equal(calls,0);
+ assert.throws(()=>prepareTradeSaleWorkflow(f.facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...input,sales:[{...input.sales[0],num:2}]}),/全批|数量/);
+ f.state.city.goods[1].price=49;let facts=await f.survey();
+ assert.throws(()=>prepareTradeSaleWorkflow(facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...input}));
+ f.state.city.goods[1].price=51;f.state.info.player.coins=2147483600;f.state.info.player.maxCoins=2147483600;facts=await f.survey();
+ const sales=viewTrade(facts,f.options).salePreparation.map(({parameters})=>({pid:parameters.pid,num:parameters.num,expectedSaleHash:parameters.expectedSaleHash}));
+ assert.throws(()=>prepareTradeSaleWorkflow(facts,{config:f.options.config,moduleConfig:f.options.moduleConfig,...input,sales}),/余额|资格/);
+ assert.equal(f.state.writes.length,0);
+});
+
+for(const outcome of ['success','unknown-first','unknown-second','refused-second'])test('trade sale Service and Workflow preserve per-holding authorization and stop '+outcome,async t=>{
+ const f=await multiSaleFixture(t,2),prepared=await f.service.prepareTradeSaleSource(f.session,f.input);
+ assert.equal(prepared.accountId,'trade-A');assert.equal(f.state.writes.length,0);assert.deepEqual(prepared.budget.resources,[]);
+ const runner=createWorkflowRunner({operations:f.service,modules:GAMEPLAY_MODULES,getSession:id=>id===f.session.id?f.session:null,
+  isCurrent:(session,generation,client)=>session===f.session&&session.generation===generation&&session.client===client,
+  claim:(id,runId,options)=>f.service.claimWorkflow(f.session,runId,options)});
+ t.after(async()=>{runner.stop();await runner.settle();});
+ let status=await runner.start(f.session.id,prepared.graph);const runId=status.runId,count=outcome==='unknown-first'?1:2;
+ for(let i=0;i<count;i++){
+  assert.equal(status.status,'AWAITING_AUTHORIZATION');assert.equal(status.runId,runId);assert.equal(status.plan.parameters.pid,i+1);assert.equal(f.state.writes.length,i);
+  const faulty=outcome==='unknown-first'&&i===0||['unknown-second','refused-second'].includes(outcome)&&i===1;
+  f.state.apply=!faulty;f.state.onWrite=outcome==='refused-second'&&i===1?()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});}:null;
+  const permit=f.authorize(status.plan);f.service.execute(f.session,permit);await f.service.settle(f.session.id);
+  const record=f.durable.list(f.session.id)[0],result=faulty?(outcome==='refused-second'?'REJECTED':'UNKNOWN'):'SUCCESS';
+  assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,'sale-'+i);
+  assert.throws(()=>f.service.execute(f.session,permit));status=await runner.resume();
+ }
+ assert.equal(status.status,outcome==='success'?'COMPLETED':outcome==='refused-second'?'FAILED':'UNKNOWN');
+ assert.deepEqual(f.state.writes.map(row=>row.body.pid),Array.from({length:count},(_,i)=>i+1));
+ assert.equal(f.state.info.player.coins,outcome==='success'?204:outcome==='unknown-first'?100:152);
+ const budget=f.service.workflowBudget(f.session.id);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);
+ assert.deepEqual(budget.limits,prepared.budget);assert.equal(budget.batches.length,count);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome.startsWith('unknown'));
 });
