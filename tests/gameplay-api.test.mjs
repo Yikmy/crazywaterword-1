@@ -51,13 +51,13 @@ for(const name of ['MuseumInfo','AllAntique','MuseumStartExplore','MuseumSpeedUp
 for(const name of ['FinishGuildOrder','GotGuildWelfarePack'])for(const suffix of ['Request','Response'])protocol[name+suffix]??={};
 const allianceDailyCfg={tables:{GuildOrderNumCfg:{data:[{season:1,playerLevel:1,maxNum:3}]}}};
 const museumDailyCfg={tables:{MuseumExpeditionTeamCfg:{data:[{teamCount:1,playerLevel:28}]},MuseumExpeditionStageCfg:{data:[{stageId:1,areaLevelReq:[]}]},MuseumExpeditionConditionCfg:{data:[{conditionId:100,heroCount:3}]},MuseumExploreTimeFactorCfg:{data:[{factor:1,playerLevel:1},{factor:2,playerLevel:30}]}}};
-async function harness({includeCity=false,includeTasksBusiness=false,includeTreasure=false,includeAllianceFort=false,includeFormationUnlock=false,includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null,preserveWorkflow=false,historyFile=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
+async function harness({includeCity=false,includeTasksBusiness=false,includeTreasure=false,includeAllianceFort=false,includeFormationUnlock=false,includeCompass=false,recruitState=null,testProtocol=protocol,configOverride=null,includeProduction=false,includeOrders=false,unconfirmed=false,includeCargo=false,includeTrade=false,includeAllianceOrders=false,includeMuseum=false,includePirate=false,includeStage=false,includeAlliance=false,includeHeroes=false,includeFragments=false,includeMaterialPacks=false,includeDailyReward=false,includeDailyActivity=false,includeDailyGift=false,includeWeeklyGift=false,includeUniqueGift=false,includeChipGift=false,includeChipTask=false,includeWorkflowTasks=false,includeFreeRecruit=false,includeAfk=false,includeFarm=false,includeForge=false,includeExpedition=false,badTechReply=false,collectSnapshot=null,preserveWorkflow=false,historyFile=null,orderRules=null}={}){includeWeeklyGift ||= includeUniqueGift||includeChipGift||includeChipTask;
  // Each harness has its own module registry. Keep same-test restart evidence,
  // but do not load another test's Workflow contracts or authorization history.
  if(!preserveWorkflow)for(const name of ['workflows.json','workflows.json.anchor'])fs.rmSync(path.join(root,name),{force:true});
  saveStore({version:1,activeId:'A',accounts:[account('A'),account('B')]});let clients=0,collections=0;const requests=[];const modules={formation:formationModule,...(includeCity?{city:GAMEPLAY_MODULES.city}:{}),...(includeTasksBusiness?{'free-gold':GAMEPLAY_MODULES['free-gold'],'trial-challenge':GAMEPLAY_MODULES['trial-challenge']}:{}),...(includeTreasure?{treasure:GAMEPLAY_MODULES.treasure}:{}),...(includeFormationUnlock?{'formation-unlock':GAMEPLAY_MODULES['formation-unlock']}:{}),...(includeCompass?{'compass-wheel':GAMEPLAY_MODULES['compass-wheel']}:{}),...(includeForge?{'equipment-forge':GAMEPLAY_MODULES['equipment-forge']}:{}),...(includeProduction?{production:GAMEPLAY_MODULES.production}:{}),...(includeOrders?{orders:GAMEPLAY_MODULES.orders}:{}),...(includeCargo?{fleet:GAMEPLAY_MODULES.fleet}:{}),...(includeTrade?{trade:GAMEPLAY_MODULES.trade}:{}),...(includePirate?{'pirate-sweep':GAMEPLAY_MODULES['pirate-sweep']}:{}),...(includeFreeRecruit?{'free-recruit':GAMEPLAY_MODULES['free-recruit']}:{}),...(includeAfk?{'afk-level-rewards':GAMEPLAY_MODULES['afk-level-rewards']}:{}),...(includeWeeklyGift||includeDailyGift||includeDailyReward||includeDailyActivity||includeWorkflowTasks?{'task-rewards':GAMEPLAY_MODULES['task-rewards']}:{}),...(includeMaterialPacks?{'material-packs':GAMEPLAY_MODULES['material-packs']}:{}),...(includeFarm?{farm:GAMEPLAY_MODULES.farm}:{}),...(includeMuseum?{museum:GAMEPLAY_MODULES.museum}:{}),...(includeHeroes?{heroes:heroModule}:{}),...(includeAlliance||includeAllianceOrders||includeAllianceFort?{alliance:includeAllianceFort?GAMEPLAY_MODULES.alliance:allianceModule}:{}),...(includeStage?{stage:{id:'stage',defaultConfig:{enabled:false}}}:{})};const hc=structuredClone(heroCfg);if(includeFragments){hc.tables.HeroCfg.data.forEach(row=>{row.type='英雄';row.universalItemId='蓝卡万能碎片';});hc.tables.ItemCfg={data:[{id:'蓝卡万能碎片',type:'英雄万能碎片',quality:'BLUE'},...['tank','ranger'].map(id=>({id:id+'碎片',type:'英雄碎片',quality:'BLUE'}))]};}const history=createExecutionHistory({file:historyFile??path.join(root,'execution-'+Math.random()+'.json')});const moduleSettings=createModuleSettings({file:path.join(root,'settings-'+Math.random()+'.json'),modules});
  const memory=includeAllianceOrders?createExecutionMemory({file:history.storagePath+'.memory.json'}):null;
- const app=createConsole({port:0,protocol:testProtocol,tracePath:path.join(root,'trace-'+Math.random()+'.log'),clientFactory(){clients++;throw Error('Real client forbidden');},collect(...args){collections++;if(collectSnapshot)return collectSnapshot(...args);throw Error('Full collector forbidden');},operationOptions:{history,...(memory?{memory}:{}),...(includeStage||includeMuseum||includeAllianceOrders||includeCargo||includeTrade?{}:{modules}),moduleSettings,getConfig:()=>configOverride??(includeAllianceOrders?allianceDailyCfg:includeMuseum?museumDailyCfg:includeChipTask?chipTaskCfg:includeChipGift?chipGiftCfg:includeUniqueGift?uniqueGiftCfg:includeWeeklyGift?weeklyGiftCfg:includeDailyGift?dailyGiftCfg:includeDailyActivity?dailyActivityCfg:includeDailyReward?dailyRewardCfg:includeMaterialPacks?materialPackCfg:includeExpedition?{tables:{...cfg.tables,ExpeditionRaidCfg:{data:[{raidId:1001,unlockLv:30,heroCount:10}]}}}:includeFarm?farmCfg:includeHeroes?hc:includeAlliance?allianceCfg:cfg),loadRules:()=>({config:{version:1,enabled:true,rules:[]}})}});await app.listen();const origin='http://127.0.0.1:'+app.server.address().port;let csrf;
+ const app=createConsole({port:0,protocol:testProtocol,tracePath:path.join(root,'trace-'+Math.random()+'.log'),clientFactory(){clients++;throw Error('Real client forbidden');},collect(...args){collections++;if(collectSnapshot)return collectSnapshot(...args);throw Error('Full collector forbidden');},operationOptions:{history,...(memory?{memory}:{}),...(includeStage||includeMuseum||includeAllianceOrders||includeCargo||includeTrade?{}:{modules}),moduleSettings,getConfig:()=>configOverride??(includeAllianceOrders?allianceDailyCfg:includeMuseum?museumDailyCfg:includeChipTask?chipTaskCfg:includeChipGift?chipGiftCfg:includeUniqueGift?uniqueGiftCfg:includeWeeklyGift?weeklyGiftCfg:includeDailyGift?dailyGiftCfg:includeDailyActivity?dailyActivityCfg:includeDailyReward?dailyRewardCfg:includeMaterialPacks?materialPackCfg:includeExpedition?{tables:{...cfg.tables,ExpeditionRaidCfg:{data:[{raidId:1001,unlockLv:30,heroCount:10}]}}}:includeFarm?farmCfg:includeHeroes?hc:includeAlliance?allianceCfg:cfg),loadRules:()=>({config:orderRules??{version:1,enabled:true,rules:[]}})}});await app.listen();const origin='http://127.0.0.1:'+app.server.address().port;let csrf;
  const call=(route='/api/gameplay?module=formation',{id='A',body,method=body===undefined?'GET':'POST',headers={},authorized=true}={})=>new Promise((resolve,reject)=>{const url=new URL(route,origin);if(id!==null)url.searchParams.set('account',id);const req=http.request(url,{method,headers:{connection:'close','content-type':'application/json',...(authorized?{origin,...(csrf?{'x-cw-csrf':csrf}:{})}:{}),...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',chunk=>text+=chunk);res.on('end',()=>{const data=JSON.parse(text);if(data.csrfToken)csrf=data.csrfToken;resolve({status:res.statusCode,data,text});});});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));});
  const ready=id=>{const forgeEquip=(uid,equipId='蓝武器1')=>({uid,equipId,level:0,star:0,refineLv:0,attr:[],rerollAttrs:[]}),forgeState={queue:{makeId:1001,finishTime:900,equipId:'蓝武器1',star:0},stock:20,gold:100,pool:[forgeEquip('9007199254740993'),forgeEquip('9007199254740994')],heroes:[{heroId:'tank',level:1,star:1,power:'1',skillLevels:[1],equips:[forgeEquip('9007199254740994')]}],refused:false,onRead:null};const allianceOrderState={stock:10,completed:0,refreshAt:1800003600,requirements:[{id:'小麦',num:2}],cities:[{cityId:1},{cityId:2}],refused:false};const museumState={info:{uncollectedRevenue:10,topPopularity:0,claimedAchievements:[],exhibitions:[{exhibitionId:1,level:1,keywordLevels:[1,1,1],cases:[]}],exploreStages:[{stageId:1,progress:0,expedition:{startTime:0,endTime:0,heroIds:[],cost:{asset:[{id:'小麦',num:2}]},conditionId:100,factor:1}}]},stock:10,refused:false,onRead:null};const weekState={activityTime:[{type:includeChipTask||includeChipGift?6:includeUniqueGift?7:4,period:includeChipTask?3001:includeChipGift?1001:includeUniqueGift?20001:12,startTime:900,endTime:2000}]},weeklyState=includeChipTask?{round:1,score:2000,gotTaskId:[],gifts:[{giftId:1000,paidTimes:0}]}:includeChipGift?{round:1,score:100,gotTaskId:[1],gifts:[{giftId:1000,paidTimes:0},{giftId:1001,paidTimes:1}]}:includeUniqueGift?{gift:[{giftId:1001,gotTimes:1,charge:30}],floor:2,selectId:1001,gotFloor:1,buyTimes:0,prizePos:[{prizeId:2,pos:1}],gotFree:false}:{gift:[{giftId:1000,gotTimes:0,charge:0}],gotInfo:{times:0,gotStage:0}};const giftState={heroId:'马斯克',resetTime:1,boughtPack:[],drawnPack:[]};const dailyActivityStock=new Map();const dailyState={dailyTask:[{id:1001,progress:1,targetProgress:1,rewardClaimed:false}],dailyActivity:40,weeklyActivity:85,dailyRewardClaimed:[],weeklyRewardClaimed:[],dailyResetTime:2000},dailyResources=[{res:1,amount:100},{res:3,amount:200},...(includeWeeklyGift||includeDailyGift?[{res:4,amount:50}]:[])];let current=initial(),techLevel=1,techPoints=10000;const expedition={raidId:1001,stageFormId:0,endTime:2000,passedStage:0,hero:[{heroId:'tank',hp:'9007199254740993'}],buff:[],gotFinal:false,isFirst:true,formation:initial(),stageBuff:[],stagePower:'9007199254740995',passedRaid:[]};
  const materialStock=new Map([['原料自选包',5],['工事材料自选包',4],['无关道具',7]]);
@@ -2215,21 +2215,24 @@ for(const module of ['city','production'])for(const change of ['account','player
 });
 
 
-test('resident-order Tasks HTTP requires individual approval for two original submissions',async()=>{
+async function residentOrderTasksHttp(outcome='success',{failAt=1,historyFile=null,preserveWorkflow=false}={}){
  const order=(index,revision=0)=>({index,workerId:'worker-'+index+'-'+revision,textId:revision+1,isSpecial:false,refreshTime:0,requirements:[{id:'wood',num:2}]});
- const orders=[order(0),order(1)],dispatched=[];
- let completed=0,stock=4;
- const app=await harness({includeOrders:true,testProtocol:{...protocol,FinishWorkerOrderRequest:{},FinishWorkerOrderResponse:{}}});
- try {
+ const state={orders:[order(0),order(1)],writes:[],completed:0,stock:4,onRead:null,rules:{version:1,enabled:true,rules:[]}};
+ const app=await harness({includeOrders:true,testProtocol:heroWireProtocol,orderRules:state.rules,historyFile,preserveWorkflow});
+ try{
   const session=app.ready('A');
   session.client.request=async(name,body,response,_timeout,options)=>{
+   heroWire(name,body);
    if(name==='FinishWorkerOrderRequest'){
     assert.equal(options.mutate,true);options.beforeDispatch?.();
-    dispatched.push(body.index);orders[body.index]=order(body.index,1);completed++;stock-=2;
-    return {reward:{asset:[]}};
+    assert.equal(app.history.list('A')[0].actions[0].requestStatus,'DISPATCHING');
+    state.writes.push(body.index);
+    if(outcome==='refused'&&state.writes.length===failAt)throw Object.assign(Error('synthetic order refusal'),{code:'REJECTED'});
+    if(outcome!=='unknown'||state.writes.length!==failAt){state.orders[body.index]=order(body.index,1);state.completed++;state.stock-=2;}
+    return heroWire(response,{reward:{asset:[]}});
    }
-   assert.notEqual(options?.mutate,true);
-   const replies={OnWaterRequest:{building:[],workerOrder:orders,orderOfTheDay:{orderNum:completed,rewardedNum:0}},AllItemRequest:{items:stock?[{itemId:'wood',num:stock}]:[]},AllResourceRequest:{list:[]},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]}};
+   assert.notEqual(options?.mutate,true);await state.onRead?.(name);
+   const replies={OnWaterRequest:{building:[],workerOrder:state.orders,orderOfTheDay:{orderNum:state.completed,rewardedNum:0}},AllItemRequest:{items:state.stock?[{itemId:'wood',num:state.stock}]:[]},AllResourceRequest:{list:[]},MyResFieldsRequest:{info:{fields:[]}},MyFleetsRequest:{fleets:[]}};
    assert.ok(Object.hasOwn(replies,name),name);return heroWire(response,replies[name]);
   };
   await app.call('/api/gameplay?module=orders');
@@ -2238,23 +2241,90 @@ test('resident-order Tasks HTTP requires individual approval for two original su
   assert.equal(observed.status,200,JSON.stringify(observed.data));
   const tasks=observed.data.view.candidates.filter(row=>row.executable===true).map(({actionId})=>({kind:'resident-order',actionId}));
   assert.equal(tasks.length,2,JSON.stringify(observed.data.view.candidates));
-  const budget={resources:[{id:'wood',num:4}],quotas:[],uids:[]};
-  const prepared=await app.call('/api/workflows/prepare',{body:{entry:'tasks',tasks,budget,runPolicy:{maxActions:2,maxDurationMs:60000,modules:['orders']}}});
-  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
-  const started=await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}});
-  assert.equal(started.status,200,JSON.stringify(started.data));
-  for (const [index,{actionId}] of tasks.entries()){
+  return {app,session,state,tasks,order};
+ }catch(error){await app.close();throw error;}
+}
+async function prepareResidentOrderTasks(app,tasks,entry,budgetNum=4){
+ const budget={resources:[{id:'wood',num:budgetNum}],quotas:[],uids:[]};
+ const prepared=await app.call('/api/workflows/prepare',{body:{entry,tasks,budget,...(entry==='loop'?{rounds:1,everyMs:0}:{}),runPolicy:{maxActions:2,maxDurationMs:60000,modules:['orders']}}});
+ assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+ return {graph:prepared.data.graph,budget};
+}
+for(const entry of ['tasks','loop'])for(const scenario of ['success','unknown-first','unknown-last','refused-first','refused-last'])test('resident-order '+entry+' HTTP '+scenario+' preserves exact per-order authorization and restart protection',async()=>{
+ const outcome=scenario.split('-')[0],failAt=scenario.endsWith('last')?2:1;
+ const {app,session,state,tasks}=await residentOrderTasksHttp(outcome,{failAt});let restarted;
+ try{
+  const {graph,budget}=await prepareResidentOrderTasks(app,tasks,entry);
+  const simulation=await app.call('/api/workflows/simulate',{body:{graph}});
+  assert.equal(simulation.status,200);assert.equal(simulation.data.requestsSent,0);assert.equal(simulation.data.runtimeCreated,false);assert.deepEqual(state.writes,[]);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  const count=outcome==='success'?2:failAt,expected=Array.from({length:count},(_,i)=>outcome!=='success'&&i===count-1?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');
+  let runId,lastPermit,lastPlan;
+  for(const [index,result] of expected.entries()){
    const waiting=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
-   assert.equal(waiting.authorizationOffer,undefined);assert.equal(waiting.plan.actions[0].actionId,actionId);
-   assert.equal(waiting.plan.actions.length,1);assert.equal(dispatched.length,index);
-   const permit=await app.approve(waiting.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));
-   assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);
-   await app.operations.settle('A');
-   const resumed=await app.call('/api/workflows/resume',{body:{}});assert.equal(resumed.status,200,JSON.stringify(resumed.data));
+   runId??=waiting.runId;assert.equal(waiting.runId,runId);
+   assert.equal(waiting.authorizationOffer,undefined);assert.deepEqual(waiting.plan.actions.map(row=>row.actionId),[tasks[index].actionId]);assert.equal(state.writes.length,index);
+   lastPlan=waiting.plan;
+   assert.notEqual((await app.call('/api/operations/authorize',{id:'B',body:{batchId:lastPlan.batchId,planHash:lastPlan.planHash,approvedActionIds:[tasks[index].actionId],resourceBudget:lastPlan.resourceBudget,confirm:true}})).status,200);
+   const permit=await app.approve(lastPlan);assert.equal(permit.status,200,JSON.stringify(permit.data));lastPermit=permit.data;
+   assert.equal((await app.call('/api/operations/execute',{body:lastPermit})).status,200);await app.operations.settle('A');
+   const record=app.history.list('A')[0];assert.equal(record.finalStatus,result,JSON.stringify(record));assert.equal(record.workflowId,runId);
+   assert.equal(record.actions[0].actionId,tasks[index].actionId);assert.equal(record.actions[0].target.index,index);
+   assert.notEqual((await app.call('/api/operations/execute',{body:lastPermit})).status,200);
+   await app.call('/api/workflows/resume',{body:{}});
   }
-  await waitForWorkflow(app,'COMPLETED');assert.deepEqual(dispatched,[0,1]);assert.equal(stock,0);
-  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.operations.workflowBudget('A').reserved.resources,budget.resources);
-  assert.equal(app.history.list('A').length,2);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
+  await waitForWorkflow(app,terminal);assert.deepEqual(state.writes,Array.from({length:count},(_,i)=>i));
+  assert.equal(state.stock,4-2*expected.filter(value=>value==='SUCCESS').length);assert.equal(state.completed,expected.filter(value=>value==='SUCCESS').length);
+  const parent=app.operations.workflowBudget('A');assert.equal(parent.state,'CLOSED');assert.deepEqual(parent.limits,budget);assert.deepEqual(parent.reserved.resources,[{id:'wood',num:2*count}]);
+  assert.equal(app.history.list('A').length,count);assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+  const historyFile=app.history.storagePath,wfFile=path.join(root,'workflows.json'),syntheticRequest=session.client.request;
+  await app.close();const historyBytes=fs.readFileSync(historyFile,'utf8'),wfBytes=fs.readFileSync(wfFile,'utf8');
+  restarted=await harness({includeOrders:true,testProtocol:heroWireProtocol,orderRules:state.rules,historyFile,preserveWorkflow:true});
+  const read=await restarted.call('/api/workflows/history?workflowRunId='+runId);
+  assert.equal(read.status,200,JSON.stringify(read.data));assert.equal(read.data.readOnly,true);assert.equal(read.data.resumable,false);
+  assert.equal((await restarted.call('/api/workflows/history?workflowRunId='+runId,{id:'B'})).status,404);
+  assert.equal(restarted.history.unresolved('A'),outcome==='unknown');assert.equal(restarted.history.unresolved('B'),false);
+  assert.deepEqual(restarted.history.list('A').map(row=>row.finalStatus),expected.slice().reverse());
+  await restarted.call('/api/gameplay?module=orders');
+  const restartedSession=restarted.ready('A');
+  restartedSession.client.request=async(...args)=>{assert.notEqual(args.at(-1)?.mutate,true);return syntheticRequest(...args);};
+  assert.equal((await restarted.call('/api/gameplay/config',{body:{module:'orders',config:{enabled:true}}})).status,200);
+  if(outcome!=='success'){
+   const blocked=await restarted.call('/api/operations/plan',{body:{module:'orders',mode:'Manual',parameters:{},selections:[tasks[failAt-1].actionId]}});
+   assert.notEqual(blocked.status,200,JSON.stringify(blocked.data));assert.equal(blocked.data.code,outcome==='unknown'?'RECOVERY_UNCERTAIN':'REJECTION_MEMORY_ACTIVE');
+   const memory=await restarted.call('/api/operations/memory');assert.equal(memory.status,200,JSON.stringify(memory.data));
+   assert.ok(memory.data.events.some(row=>row.status===(outcome==='unknown'?'UNKNOWN':'REJECTED')));assert.deepEqual((await restarted.call('/api/operations/memory',{id:'B'})).data.events,[]);
+  }
+  assert.notEqual((await restarted.approve(lastPlan)).status,200);assert.notEqual((await restarted.call('/api/operations/execute',{body:lastPermit})).status,200);
+  await restarted.call('/api/workflows/resume',{body:{}});assert.equal(restarted.requests.length,0);assert.equal(state.writes.length,count);
+  assert.equal(fs.readFileSync(historyFile,'utf8'),historyBytes);assert.equal(fs.readFileSync(wfFile,'utf8'),wfBytes);assert.deepEqual(restarted.counts(),{clients:0,collections:0});
+ }finally{if(restarted)await restarted.close();await app.close();}
+});
+for(const entry of ['tasks','loop'])for(const change of ['order','rules','inventory','parent-budget'])test('resident-order '+entry+' HTTP stops stale '+change+' before the second submission',async()=>{
+ const {app,state,tasks,order}=await residentOrderTasksHttp();
+ try{
+  const {graph}=await prepareResidentOrderTasks(app,tasks,entry,change==='parent-budget'?2:4);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+  const first=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+  const permit=await app.approve(first.plan);assert.equal(permit.status,200);
+  assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');assert.equal(app.history.list('A')[0].finalStatus,'SUCCESS');
+  if(change==='order')state.orders[1]=order(1,2);
+  if(change==='rules')state.rules.rules.push({id:'changed-policy',priority:1,type:'INVENTORY_AVAILABLE',enabled:false,params:{},onFail:'KEEP'});
+  if(change==='inventory')state.stock=1;
+  await app.call('/api/workflows/resume',{body:{}});
+  let stopped;
+  if(change==='parent-budget'){
+   const second=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   const secondPermit=await app.approve(second.plan);assert.equal(secondPermit.status,200);
+   await app.call('/api/operations/execute',{body:secondPermit.data});await app.operations.settle('A');
+   assert.equal(app.history.list('A')[0].finalStatus,'NOT_EXECUTED');assert.equal(app.history.list('A')[0].actions[0].dispatched,false);assert.deepEqual(state.writes,[0]);
+   await app.call('/api/workflows/resume',{body:{}});stopped=(await waitForWorkflow(app,'UNKNOWN')).status;
+  }else stopped=(await waitForWorkflow(app,'FAILED')).status;
+  assert.equal(stopped.running,false);assert.deepEqual(state.writes,[0]);assert.equal(state.completed,1);
+  assert.equal(app.history.list('A').length,change==='parent-budget'?2:1);assert.equal(app.history.unresolved('A'),false);assert.deepEqual(app.history.list('B'),[]);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  await app.call('/api/workflows/resume',{body:{}});assert.deepEqual(state.writes,[0]);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
 
@@ -4073,4 +4143,113 @@ test('browser offline museum first load accepts empty cache then surveys', {skip
    assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
  }finally{session.client.stop();await app.close();}
+});
+
+
+for(const entry of ['tasks','loop'])for(const outcome of ['success','unknown','refused'])test('browser offline resident-order '+entry+' '+outcome+' uses professional targets and individual confirmation',{
+ skip:!process.env.CW_TEST_BROWSER,timeout:60000
+},async()=>{
+ const {app,state,tasks}=await residentOrderTasksHttp(outcome);
+ try{await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+  const result=await evaluate('('+(async(entry)=>{
+   const find=selector=>document.querySelector(selector);
+   const wait=async(selector,accept=element=>element&&!element.disabled)=>{
+    for(let attempt=0;attempt<100;attempt++){
+     const element=find(selector);if(accept(element))return element;
+     await new Promise(resolve=>setTimeout(resolve,75));
+    }
+    throw Error(selector+' '+find('#ops-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+   };
+   await wait('#account',element=>element?.value==='A');
+   (await wait('#tabs button[data-tab="orders-execution"]')).click();
+   (await wait('#ops-load')).click();(await wait('#ops-survey')).click();
+   await wait('[data-order-task-action-id]',()=>document.querySelectorAll('[data-order-task-action-id]').length===2);
+   const targets=[...document.querySelectorAll('[data-order-task-action-id]')];
+   for(const button of targets)button.click();
+   const editor=await wait('#wf-unified-intent',element=>{try{return JSON.parse(element?.value).tasks.length===2;}catch{return false;}});
+   const intent=JSON.parse(editor.value);intent.entry=entry;
+   intent.budget={resources:[{id:'wood',num:4}],quotas:[],uids:[]};
+   intent.runPolicy={maxActions:2,maxDurationMs:60000,modules:['orders']};
+   editor.value=JSON.stringify(intent);editor.dispatchEvent(new Event('input',{bubbles:true}));
+   (await wait('#tabs button[data-tab="workflow"]')).click();
+   (await wait('#wf-unified-prepare')).click();
+   const graphEditor=await wait('#wf-json',element=>element?.value.includes(intent.tasks[1].actionId));
+   const graph=JSON.parse(graphEditor.value);
+   (await wait('#wf-simulate')).click();
+   const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+   return {intent,graph,simulation:JSON.parse(output.textContent),errors:globalThis.pageErrors};
+  }).toString()+')('+JSON.stringify(entry)+')');
+  assert.deepEqual(result.errors,[]);assert.equal(result.intent.entry,entry);assert.deepEqual(result.intent.tasks,tasks);
+  assert.deepEqual(result.graph.nodes.filter(node=>node.type==='ACTION').map(node=>[node.module,node.selection]),tasks.map(task=>['orders',{actionId:task.actionId}]));
+  assert.deepEqual(result.graph.budget,{resources:[{id:'wood',num:4}],quotas:[],uids:[]});
+  assert.equal(result.simulation.requestsSent,0);assert.equal(result.simulation.runtimeCreated,false);assert.deepEqual(state.writes,[]);assert.deepEqual(app.history.list('A'),[]);
+  await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'resident-order start');
+  await evaluate("document.getElementById('wf-start').click()");
+  const count=outcome==='success'?2:1;
+  for(let index=0;index<count;index++){
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
+    return status.status==='AWAITING_AUTHORIZATION'&&status.plan?.actions?.[0]?.actionId===${JSON.stringify(tasks[index].actionId)}&&!document.getElementById('wf-authorize').disabled;})()`),'resident-order individual approval '+index);
+   const pending=(await app.call('/api/workflows')).data.status;
+   assert.equal(pending.status,'AWAITING_AUTHORIZATION');assert.deepEqual(pending.plan.actions.map(row=>row.actionId),[tasks[index].actionId]);assert.equal(pending.authorizationOffer,undefined);assert.equal(state.writes.length,index);
+   await evaluate("document.getElementById('wf-authorize').click()");
+   const expected=outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED';
+   await waitFor(()=>app.history.list('A').length===index+1&&app.history.list('A')[0]?.finalStatus===expected,'resident-order exact settlement');
+   const terminal=index+1<count?'AWAITING_AUTHORIZATION':outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
+   await waitFor(async()=>{
+    const status=(await app.call('/api/workflows')).data.status;
+    if(status.status===terminal&&(terminal!=='AWAITING_AUTHORIZATION'||status.plan.batchId!==pending.plan.batchId))return true;
+    await evaluate("if(!document.getElementById('wf-resume').disabled)document.getElementById('wf-resume').click()");return false;
+   },'resident-order '+terminal);
+  }
+  assert.deepEqual(state.writes,outcome==='success'?[0,1]:[0]);assert.equal(state.stock,outcome==='success'?0:4);assert.equal(state.completed,outcome==='success'?2:0);
+  assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.history.list('B'),[]);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
+  await app.call('/api/workflows/resume',{body:{}});assert.equal(state.writes.length,count);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ });}finally{await app.close();}
+});
+
+
+for(const entry of ['tasks','loop'])for(const phase of ['plan','dispatch'])for(const change of ['player','world','connection','generation','client','disconnect','cancel'])test('resident-order '+entry+' HTTP '+phase+' rejects changed '+change+' without dispatch',async()=>{
+ const {app,session,state,tasks}=await residentOrderTasksHttp();
+ try{
+  const {graph}=await prepareResidentOrderTasks(app,tasks,entry);
+  let permit;
+  if(phase==='dispatch'){
+   assert.equal((await app.call('/api/workflows/start',{body:{graph}})).status,200);
+   const pending=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;
+   permit=await app.approve(pending.plan);assert.equal(permit.status,200);
+  }
+  let changed=false;const originalClient=session.client;
+  state.onRead=name=>{
+   if(changed||name!=='OnWaterRequest')return;changed=true;
+   if(change==='player')session.player.playerId='changed-player';
+   if(change==='world')session.player.worldId=2000001;
+   if(change==='connection')session.connectionId='changed-connection';
+   if(change==='generation'){session.generation++;session.busy='successor';}
+   if(change==='client'){session.client={...originalClient};session.busy='successor';}
+   if(change==='disconnect')originalClient.connected=false;
+   if(change==='cancel')session.abort.abort();
+  };
+  if(phase==='plan'){
+   const started=await app.call('/api/workflows/start',{body:{graph}});
+   assert.equal(started.status,200,JSON.stringify(started.data));
+   let stopped;
+   for(let attempt=0;attempt<60;attempt++){
+    stopped=(await app.call('/api/workflows')).data.status;
+    if(!stopped.running)break;
+    await new Promise(resolve=>setImmediate(resolve));
+   }
+   assert.ok(['FAILED','CANCELLED'].includes(stopped.status),JSON.stringify(stopped));
+  }else{
+   await app.call('/api/operations/execute',{body:permit.data});await app.operations.settle('A');
+   await app.call('/api/workflows/resume',{body:{}});
+   assert.notEqual((await app.call('/api/operations/execute',{body:permit.data})).status,200);
+  }
+  assert.equal(changed,true);assert.deepEqual(state.writes,[]);assert.equal(state.stock,4);assert.equal(state.completed,0);
+  assert.equal(app.history.unresolved('A'),false);assert.deepEqual(app.history.list('B'),[]);
+  assert.ok(app.history.list('A').every(run=>run.actions.every(row=>row.dispatched!==true&&row.unresolvedWrite!==true)));
+  if(['generation','client'].includes(change))assert.equal(session.busy,'successor');
+  assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
 });
