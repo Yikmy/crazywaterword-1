@@ -203,7 +203,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
             throw Error('缺少明确抽取目标');
           }
         } catch {
-          invalid('Tasks罗盘须明确原活动、1/5/10/50次数和当前抽取候选actionId');
+          invalid('Tasks罗盘须明确原活动、原抽取次数或累计领奖范围和当前候选actionId');
         }
         steps.push({phase, index, module:'compass-wheel', parameters, selection:{actionId:row.actionId}});
         continue;

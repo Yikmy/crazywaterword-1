@@ -109,3 +109,34 @@ for (const outcome of ['success','unknown','stale']) test('compass Tasks Workflo
 });
 
 test('compass empty parameters are read-only and disabled selection cannot create a plan',async t=>{const f=fixture();t.after(()=>f.client.stop());const options={...f.options,parameters:{}},facts=await surveyCompassWheel(f.client,protocol,options);assert.equal(viewCompassWheel(facts,options).candidates[0].executable,false);assert.equal(f.state.reads.includes('CompassWheelInfoRequest'),false);assert.equal(f.state.writes.length,0);const x=await ready(t);assert.equal(planCompassWheel(x.facts,{...x.options,moduleConfig:{enabled:false},selections:[x.operation.actionId]}).actions.length,0);});
+
+
+async function scoreFixture(t,{score=800,claimedId=0,expectedTierId=3,outcome='success',afterClose=false}={}){
+ const f=fixture();t.after(()=>f.client.stop());f.state.info.score=score;f.state.info.claimedId=claimedId;f.options.config.tables.LinkageLSRCompassWheelScoreRewardCfg=clone(actual.tables.LinkageLSRCompassWheelScoreRewardCfg);f.options.parameters={action:'claim',activityId:aid,expectedScore:score,expectedClaimedId:claimedId,expectedTierId};
+ if(afterClose){f.state.wall=1950000;f.client.gameClock=trustedGameClock({accountId:'synthetic-compass',generation:3,wallNow:()=>f.state.wall,monotonicNow:()=>f.state.mono});f.client.gameClock.markPing(f.state.wall);f.client.gameClock.observePong(wire('PingResponse',{clientTimestamp:f.state.wall,serverTimestamp:f.state.wall}));}
+ const read=f.client.request.bind(f.client);f.client.request=async(n,b,r,timeout,opts)=>{if(!opts?.mutate)return read(n,b,r,timeout,opts);assert.equal(n,'ClaimCompassWheelRewardRequest');wire(n,b);f.state.onDispatch?.();opts.beforeDispatch?.();f.state.writes.push({name:n,body:clone(b)});if(outcome==='rejected')throw Object.assign(Error('synthetic score refusal'),{code:'REJECTED'});
+ const tiers=actual.tables.LinkageLSRCompassWheelScoreRewardCfg.data.filter(row=>row.id>claimedId&&row.score<=score),rewards=new Map();for(const row of tiers)for(const [id,num]of row.rewards)rewards.set(id,(rewards.get(id)??0)+num);const result={claimedId:tiers.at(-1)?.id??claimedId,reward:{asset:[...rewards].map(([id,num])=>({type:0,id,num}))}};
+ if(outcome!=='unknown'){f.state.info.claimedId=result.claimedId;for(const [id,num]of rewards){const row=f.state.stock.find(row=>row.itemId===id);if(row)row.num+=num;else f.state.stock.push({itemId:id,num});}}
+ if(outcome==='wrong-info')f.state.info.times++;if(outcome==='wrong-stock')f.state.stock.find(row=>row.itemId==='unrelated').num++;if(outcome==='wrong-receipt')result.reward.asset[0].num++;await f.state.onWrite?.();return wire(r,result);};
+ const facts=await surveyCompassWheel(f.client,protocol,f.options),view=viewCompassWheel(facts,f.options),row=view.candidates[0],operation=planCompassWheel(facts,{...f.options,selections:[row.actionId]}).actions[0];return {...f,facts,view,row,operation};
+}
+
+test('compass score claim exposes exact reached range and original zero-cost held-item rewards',async t=>{
+ const f=await scoreFixture(t);assert.ok(f.operation,JSON.stringify(f.row));assert.equal(f.operation.actionType,'CLAIM');assert.deepEqual(f.operation.action,{request:'ClaimCompassWheelRewardRequest',response:'ClaimCompassWheelRewardResponse',body:{activityId:aid}});assert.deepEqual(f.operation.costs,[]);assert.deepEqual(new Map(f.operation.rewards.map(r=>[r.id,r.num])),new Map([['橙5徽章自选包',1],['活动26捞尸人_货币',150],['橙装材料自选包',25],['精铁',4000]]));assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'compass-wheel-reward',id:aid+':0>3'}]});assert.doesNotThrow(()=>assertPaymentAllowed({...f.operation.action,costs:[]}));
+ for(const body of [{activityId:aid,num:1},{activityId:aid,tierId:3},{activityId:aid,buy:true}])assert.throws(()=>assertPaymentAllowed({...f.operation.action,body,costs:[]}));assert.throws(()=>assertPaymentAllowed(f.operation.action));assert.equal(planCompassWheel(clone(f.facts),{...f.options,selections:[f.row.actionId]}).actions.length,0);
+ for(const p of [{...f.options.parameters,count:1},{...f.options.parameters,expectedScore:'800'},{...f.options.parameters,expectedTierId:0}])assert.throws(()=>validateCompassWheelParameters(p));
+ const result=await run(f);assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(f.state.info.claimedId,3);assert.equal(f.state.info.score,800);assert.equal(f.state.info.times,10);assert.equal(f.state.stock.find(r=>r.itemId===ticket).num,1000);assert.equal(f.state.writes.length,1);
+});
+
+test('compass score claim uses reward-only window after spins close and supports all configured tiers',async t=>{
+ const f=await scoreFixture(t,{afterClose:true,score:671600,expectedTierId:65});assert.ok(f.operation,JSON.stringify(f.row));assert.equal((await run(f)).status,'SUCCESS');assert.equal(f.state.info.claimedId,65);assert.equal(f.state.stock.find(r=>r.itemId===ticket).num,1000);assert.equal(f.operation.rewards.some(r=>r.id==='红0徽章定制自选包'),true);
+});
+
+test('compass score claim refuses changed qualification, expired window, unknown config and reward overflow',async t=>{
+ for(const mode of ['score','claimed','target','config','truncated','duplicate-item','window','overflow']){const f=await scoreFixture(t);if(mode==='score')f.state.info.score++;if(mode==='claimed')f.state.info.claimedId=1;if(mode==='target')f.operation.parameters.expectedTierId=4;if(mode==='config')f.options.config.tables.LinkageLSRCompassWheelScoreRewardCfg.data[0].score=31;if(mode==='truncated')f.options.config.tables.LinkageLSRCompassWheelScoreRewardCfg.data.pop();if(mode==='duplicate-item')f.options.config.tables.ItemCfg.data.push(clone(f.options.config.tables.ItemCfg.data.find(r=>r.id==='精铁')));if(mode==='window'){f.state.wall=2000001;f.state.mono+=1000001;}if(mode==='overflow')f.state.stock.push({itemId:'精铁',num:Number.MAX_SAFE_INTEGER});const result=await run(f);assert.equal(result.dispatched,false,mode+JSON.stringify(result));assert.equal(f.state.writes.length,0);}
+ const f=await scoreFixture(t);f.state.onDispatch=()=>{f.state.wall=2000001;f.state.mono+=1000001;};assert.notEqual((await run(f)).status,'SUCCESS');assert.equal(f.state.writes.length,0);
+});
+
+for(const outcome of ['unknown','wrong-info','wrong-stock','wrong-receipt','rejected'])test('compass score claim keeps '+outcome+' unconfirmed without replay',async t=>{
+ const f=await scoreFixture(t,{outcome}),result=await run(f);assert.equal(result.status,outcome==='rejected'?'REJECTED':'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);assert.equal(result.verification.status==='CONFIRMED',false);
+});

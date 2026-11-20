@@ -1276,36 +1276,38 @@ function gpRenderDomain(id,view){
  const table=(title,headers,rows)=>{box.appendChild(gpEl('h3',title));const element=gpEl('table'),heading=gpEl('tr');for(const label of headers)heading.appendChild(gpEl('th',label));element.appendChild(heading);for(const row of rows){const tr=gpEl('tr');for(const value of row)tr.appendChild(gpEl('td',show(value)));element.appendChild(tr);}box.appendChild(element);};
  if(id==='city'){gpRenderCityPreparation(box,view);table('建筑状态与下一等级',['建筑','等级','状态','原材料需求','下一等级条件'],(view?.buildings||[]).map(row=>[row.buildingId,row.level,row.status,operationCosts(row.materialCosts),gpJson(row.upgradeConditions)]));
  }else if(id==='compass-wheel'){
-  box.appendChild(gpEl('p','使用持有铜钱抽取；资格、累计领奖和到账分开。保底仅显示服务器原值。购买及自动重抽未开放。'));
+  box.appendChild(gpEl('p','抽取使用持有铜钱；累计积分奖零支出，须独立准备范围和授权。资格与到账分开，保底仅显示服务器原值。购买及自动重抽未开放。'));
   const scope=viewGuard.capture(),revision=gpRevision,aid=gpEl('input'),count=gpEl('select'),prepare=gpEl('button','使用明确罗盘参数');aid.type='text';aid.dataset.compassActivity='true';aid.setAttribute('aria-label','罗盘活动ID');aid.value=view?.window?.activityId||'';count.dataset.compassCount='true';count.setAttribute('aria-label','罗盘次数');for(const n of [1,5,10,50]){const o=gpEl('option',String(n));o.value=String(n);count.appendChild(o);}prepare.dataset.compassPrepare='true';box.appendChild(aid);box.appendChild(count);box.appendChild(prepare);s.actionControls.push(aid,count,prepare);
   prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view)return;if(!/^[1-9][0-9]{0,18}$/.test(aid.value)||BigInt(aid.value)>=(1n<<63n)||![1,5,10,50].includes(Number(count.value))){$('gp-'+id+'-hint').textContent='请填写明确正int64活动ID及1/5/10/50次';return;}$('gp-'+id+'-parameters').value=gpJson({activityId:aid.value,count:Number(count.value)});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备罗盘参数；重新只读探测，预览后单次授权。';};
   const activities=Array.isArray(view?.activitySelections)?view.activitySelections:null,activity=gpEl('select');activity.dataset.compassObservedActivity='true';const blank=gpEl('option','请选择本账号已观察罗盘活动');blank.value='';activity.appendChild(blank);
   for(const row of activities||[]){if(typeof row?.activityId!=='string'||!/^[1-9][0-9]{0,18}$/.test(row.activityId)||(activities.filter(other=>other?.activityId===row.activityId).length!==1))continue;const option=gpEl('option',row.activityId+' · 赛季 '+row.season+' · 窗口 '+row.subOpenTime+'–'+row.subCloseTime);option.value=row.activityId;activity.appendChild(option);}activity.value='';activity._blocked=activities===null;s.actionControls.push(activity);box.appendChild(activity);
   activity.onchange=()=>{if(activity.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view||!activities?.some(row=>row.activityId===activity.value))return;aid.value=activity.value;};box.appendChild(gpEl('p','活动列表复用原连接的活动身份和窗口解析；观察到活动不代表开放或抽奖资格。明确次数并准备后仍须重新调查和授权；手填入口保留。'));
+  const claim=view?.scoreClaim,claimPrepare=gpEl('button','准备当前累计积分奖参数');claimPrepare.type='button';claimPrepare.dataset.compassClaimPrepare='true';claimPrepare._blocked=!claim?.parameters;s.actionControls.push(claimPrepare);box.appendChild(claimPrepare);
+  if(claim){table('当前已达标未领积分档（尚须重新调查）',['档位','积分门槛','原配置奖励'],(claim.tiers||[]).map(row=>[row.id,row.score,gpJson(row.rewards)]));box.appendChild(gpEl('p','准备范围 '+claim.parameters.expectedClaimedId+' → '+claim.parameters.expectedTierId+' · 总奖励 '+operationCosts(claim.rewards)+'。领取请求会收取当前全部已达标未领档；积分、已领档或配置变化须重新准备，不抽取、不打开奖励包。'));}
+  claimPrepare.onclick=()=>{if(claimPrepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id).data?.view!==view||aid.value!==claim?.parameters?.activityId)return;$('gp-'+id+'-parameters').value=gpJson(claim.parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备明确累计领奖范围；请重新调查、核对零支出与所有奖励，再预览并单独授权。';};
   const spin=view?.candidates?.length===1?view.candidates[0]:null;
   const taskSource=$('gp-'+id+'-parameters').value;
-  const addTask=gpEl('button','将当前罗盘抽取加入Tasks声明');
+  const addTask=gpEl('button',spin?.actionType==='CLAIM'?'将当前累计领奖加入Tasks声明':'将当前罗盘抽取加入Tasks声明');
   addTask.type='button';
   addTask.dataset.compassTaskPrepare='true';
   addTask._workflowPrepare=true;
-  addTask._blocked=spin?.executable!==true||spin.actionType!=='SPIN';
-  if(!addTask._blocked)count.value=String(spin.parameters.count);
+  addTask._blocked=spin?.executable!==true||!['SPIN','CLAIM'].includes(spin.actionType);
+  if(!addTask._blocked&&spin.actionType==='SPIN')count.value=String(spin.parameters.count);
   addTask.onclick=()=>{
    if(addTask.disabled||addTask._blocked||!gpDomainSelectable(id)||!wfUnifiedEditable()||
       !gpSafe(scope,revision)||gpGet(id).data?.view!==view||$('gp-'+id+'-parameters').value!==taskSource)return;
    try {
-    if(aid.value!==spin.parameters.activityId||Number(count.value)!==spin.parameters.count)throw Error('活动或次数已改变，请重新调查候选。');
+    if(aid.value!==spin.parameters.activityId||spin.actionType==='SPIN'&&Number(count.value)!==spin.parameters.count)throw Error('活动或次数已改变，请重新调查候选。');
     const intent=$('wf-unified-intent').value.trim()?wfUnifiedData():{entry:'tasks',tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}};
     if(!['tasks','loop'].includes(intent.entry))throw Error('请先将声明入口改为Tasks或Loop。');
     if(intent.tasks.length>=48)throw Error('Tasks步骤已达48项上限。');
-    if(intent.tasks.some(row=>row.kind==='compass-wheel'&&row.actionId===spin.actionId))throw Error('当前抽取候选已在Tasks草稿中。');
-    const {activityId,count:spinCount}=spin.parameters;
-    intent.tasks.push({kind:'compass-wheel',parameters:{activityId,count:spinCount},actionId:spin.actionId});
+    if(intent.tasks.some(row=>row.kind==='compass-wheel'&&row.actionId===spin.actionId))throw Error('当前罗盘候选已在Tasks草稿中。');
+    intent.tasks.push({kind:'compass-wheel',parameters:JSON.parse(JSON.stringify(spin.parameters)),actionId:spin.actionId});
     wfInvalidateSettingPlans();
     $('wf-unified-intent').value=gpJson(intent);
     wfUnifiedRender();
     wfControls();
-    $('gp-'+id+'-hint').textContent='已加入当前抽取。请核对自有券、配额和目标预算，再去Workflow生成预览。';
+    $('gp-'+id+'-hint').textContent=spin.actionType==='CLAIM'?'已加入明确累计奖。请核对零支出、领取范围和原UID预算，再去Workflow生成预览。':'已加入当前抽取。请核对自有券、配额和目标预算，再去Workflow生成预览。';
    }catch(error){$('gp-'+id+'-hint').textContent=error.message;}
   };
   box.appendChild(addTask);
@@ -2332,7 +2334,7 @@ const WF_UNIFIED_KINDS = {
  pet:'明确海兽投喂／服役升级','formation-unlock':'明确自有图纸解锁','equipment-forge':'明确装备厂制造／收取',
  'material-packs':'明确自有材料包兑换',fleet:'明确舰队／货船操作',alliance:'明确联盟操作',trade:'明确海商王操作',
  treasure:'明确世界宝藏派舰',farm:'明确单田种植／收取',formation:'明确阵容保存／切换',
- 'compass-wheel':'明确龙王罗盘抽取',
+ 'compass-wheel':'明确罗盘抽取或累计领奖',
  'resident-order':'明确居民订单提交（原候选actionId）','cargo-fill':'港口货轮单格装货（任务进度另查）','free-recruit':'明确英雄／古董招募（免费或自有券）','alliance-order':'联盟城市募兵订单',museum:'博物馆探险出发',stage:'有限主线战斗（不自动领奖）','free-gold':'普通免费点金','trial-challenge':'所选试炼首通（1英雄经验/2强化石/3海兽经验）','pirate-sweep':'单目标海面扫荡'
 };
 const wfUnifiedEditable = () => Boolean(current && !wfPending && !wfData?.status?.running);
@@ -2485,7 +2487,7 @@ function wfUnifiedRender() {
   const target=(row?.type==='WAIT'?row?.cooldown?.maxWaitMs:undefined)??row?.actionId??row?.maxPages??row?.level??row?.emailId??row?.packId??row?.tierId??(kind==='pirate-sweep'?row?.parameters?.uid:kind==='museum'?row?.parameters?.stageId:kind==='alliance-order'?row?.parameters?.cityId:kind==='cargo-fill'?row?.parameters?.shipIndex:kind==='trial-challenge'?(row?.parameters?.raidId??1):row?.taskId)??'';
   card.appendChild(gpEl('span',phase+' 第 '+(index+1)+' 项 · '+(WF_UNIFIED_KINDS[kind]||(row?.action==='observe'&&WF_TASK_REWARD_KINDS.includes(row.kind)?WF_UNIFIED_KINDS[row.kind]+'（只读观察）':kind)||'待核对业务')+(target!==''?' · '+target:'')));
   if(row?.actionId&&row?.parameters)card.appendChild(gpEl('p','明确业务参数：'+gpJson(row.parameters)+'。运行时重查同一候选，变化即停止；原累计预算不增加，每项仍须单独授权。'));
-  if(kind==='compass-wheel')card.appendChild(gpEl('p','活动 '+(row?.parameters?.activityId??'未知')+' · '+(row?.parameters?.count??'未知')+' 次。运行时重新核对原候选、券和活动窗口，再单独授权。结算UNKNOWN即停止。'));
+  if(kind==='compass-wheel')card.appendChild(gpEl('p',row?.parameters?.action==='claim'?'活动 '+row.parameters.activityId+' · 累计奖 '+row.parameters.expectedClaimedId+' → '+row.parameters.expectedTierId+' · 原积分 '+row.parameters.expectedScore+'。运行时重查原范围与领奖窗口，零支出但仍逐项授权，结算UNKNOWN即停止。':'活动 '+(row?.parameters?.activityId??'未知')+' · '+(row?.parameters?.count??'未知')+' 次。运行时重新核对原候选、券和活动窗口，再单独授权。结算UNKNOWN即停止。'));
   if(kind==='resident-order')card.appendChild(gpEl('p','绑定原订单身份和规则摘要；每项重新调查并单独授权，订单替换或规则变化停止。仅使用初始自有材料累计预算，收益不扩额，拒绝或UNKNOWN停止。每日订单档位领奖仍需独立证据。'));
   if(kind==='stage'){gpDetails(card,'原有限主线配置',row.parameters);card.appendChild(gpEl('p','原StageRunner逐场验证，重新调查并单次授权；战败重试或停止沿原有限配置，UNKNOWN停止且不重放。战斗不证明日常完成，不自动领取任务奖励。'));}
   if(kind==='afk-income'){const p=phase==='tasks'?row:row.parameters;card.appendChild(gpEl('p','明确挂机等级 '+String(p?.level??'UNKNOWN')+' · 区间 '+String(p?.afkStartTime??'UNKNOWN')+' → '+String(p?.afkFinishTime??'UNKNOWN')+'；可信时间重新探测，金额不预估，不自动升级或领取任务奖励，UNKNOWN停止且不重放。'));}
