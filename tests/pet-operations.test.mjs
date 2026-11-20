@@ -224,7 +224,7 @@ test('Pet D6 independently rejects targetless/extra bodies, zero/unknown costs a
  const good={request:'PetFeedRequest',response:null,body:{jobIdx:0},costs:claims.resources};assert.doesNotThrow(()=>assertPaymentAllowed(good));
  for(const extra of [{body:{}},{body:{jobIdx:-1}},{body:{jobIdx:'0'}},{body:{jobIdx:0,universal:false}},{costs:[]},{costs:[{id:'RUBY',num:1}]},{costs:undefined},{costs:[{id:'鱼肠线',num:0}]}])assert.throws(()=>assertPaymentAllowed({...good,...extra},{allowPaid:true}));
  assert.throws(()=>assertPaymentAllowed({request:'PetBreedRequest',body:{petId:'蓝宠物1',universal:false},costs:[{id:'GOLD',num:1}]}));
- assert.throws(()=>assertPaymentAllowed({request:'GetMaturePetRequest',body:{},costs:[]}));
+ assert.doesNotThrow(()=>assertPaymentAllowed({request:'GetMaturePetRequest',body:{},costs:[]}));for(const extra of [{body:{buildingId:'1宠物培育室'}},{costs:undefined},{costs:[{id:'RUBY',num:1}]}])assert.throws(()=>assertPaymentAllowed({request:'GetMaturePetRequest',body:{},costs:[],...extra}));
 });
 test('Pet actual Service persists resources, batch UID and dispatch intent then reopens confirmed history',async t=>{
  const f=fixture(t,{shared:true,mature:true}),p=await f.displayed();assert.deepEqual(p.budgetClaims,claims);assert.equal(p.actions[0].action,undefined);
@@ -706,4 +706,36 @@ for(const action of ['feed','level'])for(const {outcome,targetCount,failAt} of [
   assert.deepEqual(budget.reserved.resources,f.per.map(row=>({...row,num:row.num*count})));assert.equal(budget.reserved.uids.length,count*(action==='level'?2:1));
   assert.deepEqual(f.counts(),{clients:0,collections:0});
  },{commandTimeoutMs:targetCount===24?45000:20000});
+});
+
+// Explicit mature-cohort claiming reuses the existing codec, fake transport,
+// original Service/Workflow/History and parent budget. No live game or browser.
+async function matureFixture(t,{outcome='success',http=false,shared=false}={}){
+ const f=fixture(t,{http,shared});f.room.petBreed.maturePets=[{petId:'紫宠物2',star:0},{petId:'蓝宠物1',star:1},{petId:'紫宠物2',star:0}];
+ const initial=await f.survey({parameters:{action:'claim'}}),parameters=pet.viewPet(initial,f.options({parameters:{action:'claim'}})).claimPreparation;
+ assert.ok(parameters);const opts=()=>f.options({parameters});
+ f.client.sendWatch=async(name,body,{beforeDispatch}={})=>{wire(name,body);beforeDispatch();assert.equal(name,'GetMaturePetRequest');assert.deepEqual(body,{});const durable=f.file?f.durable.list(account)[0]:null;f.state.writes.push({name,body:structuredClone(body),durable});if(outcome==='rejected')return {status:'REJECTED'};
+  if(outcome!=='unknown'){for(const [i,row]of f.room.petBreed.maturePets.entries())f.state.pets.push({uid:String(BigInt(uid)+BigInt(i+1)),petId:row.petId,star:row.star,level:1,grade:i,baseAttrs:[{attr:1,value:100+i}],extAttrs:[]});f.room.petBreed.maturePets=[];}
+  f.state.afterWrite?.();await f.state.onWatch?.();return {status:'UNKNOWN'};
+ };
+ const before=await pet.surveyPet(f.client,protocol,opts()),operation=pet.planPet(before,opts()).actions[0];assert.ok(operation);
+ const run=(op=operation)=>{const scope={...f.client.factContext,runId:'pet-mature-run'},limits=op.budgetClaims,budget={scope,runBudget:createRunBudgetContext({scope,limits}),batchId:'pet-mature-batch',limits,ledger:null};return executeBusinessOperation(f.client,protocol,op,{adapter:pet.petModule,...opts(),allowMutate:true,budget});};
+ return {...f,parameters,before,operation,opts,run};
+}
+
+test('Pet mature claim binds complete duplicate cohort, new precise UIDs and zero inventory cost',async t=>{
+ const f=await matureFixture(t);assert.equal(protocol.GetMaturePetResponse,undefined);assert.equal(f.operation.actionType,'CLAIM');assert.deepEqual(f.operation.action,{request:'GetMaturePetRequest',response:null,body:{}});assert.deepEqual(f.operation.costs,[]);assert.equal(f.operation.budgetClaims.uids[0].type,'pet-mature-batch');const old=structuredClone(f.state.pets),stock=[...f.state.stock];const result=await f.run();assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(result.afterState.pets.length,3);assert.deepEqual(f.state.pets.slice(0,1),old);assert.equal(f.room.petBreed.maturePets.length,0);assert.deepEqual([...f.state.stock],stock);assert.equal(f.state.writes.length,1);assert.equal(pet.planPet(await pet.surveyPet(f.client,protocol,f.opts()),f.opts()).actions.length,0);
+});
+
+test('Pet mature claim rejects stale lists, ambiguous rooms, auto work and due jobs before dispatch',async t=>{
+ for(const mode of ['cohort','pool','queue','room','auto','building','clock','due','hash','scope','config']){const f=await matureFixture(t);if(mode==='cohort')f.room.petBreed.maturePets.pop();if(mode==='pool')f.state.pets[0].level++;if(mode==='queue')f.job.finishTime++;if(mode==='room')f.state.buildings.push({...structuredClone(f.room),buildingId:'2宠物培育室'});if(mode==='auto')f.room.auto=true;if(mode==='building')f.room.buildFinishTime=900;if(mode==='clock')f.state.clock=false;if(mode==='due')f.state.now=2000;if(mode==='hash')f.operation.parameters.expectedMatureHash='f'.repeat(64);if(mode==='scope')f.session.player.worldId='10';if(mode==='config')f.config.tables.PetBaseCfg.data.pop();const r=await f.run();assert.equal(r.dispatched,false,mode+JSON.stringify(r));assert.equal(f.state.writes.length,0);}
+ const f=await matureFixture(t);assert.equal(pet.planPet(structuredClone(f.before),f.opts()).actions.length,0);for(const p of [{...f.parameters,jobIdx:0},{...f.parameters,uid},{...parameters,expectedMatureHash:'a'.repeat(64)},{...f.parameters,expectedMatureHash:'bad'}])assert.throws(()=>pet.validatePetParameters(p));
+});
+
+test('Pet mature claim retains UNKNOWN for cohort, peer, inventory or natural maturity conflicts',async t=>{
+ for(const mode of ['unknown','wrong-species','wrong-level','missing','extra','old-pet','queue','building','inventory','new-mature','due','rejected']){const f=await matureFixture(t,{outcome:mode==='unknown'||mode==='rejected'?mode:'success'});f.state.afterWrite=()=>{if(mode==='wrong-species')f.state.pets[1].petId='蓝宠物1';if(mode==='wrong-level')f.state.pets[1].level=2;if(mode==='missing')f.state.pets.pop();if(mode==='extra')f.state.pets.push({...structuredClone(f.state.pets[1]),uid:'99'});if(mode==='old-pet')f.state.pets[0].level++;if(mode==='queue')f.job.finishTime--;if(mode==='building')f.state.buildings[1].level++;if(mode==='inventory')f.state.stock.set('其他',2);if(mode==='new-mature')f.room.petBreed.maturePets.push({petId:'蓝宠物1',star:0});if(mode==='due')f.state.now=2000;};const r=await f.run();assert.equal(r.status,mode==='rejected'?'REJECTED':'UNKNOWN',mode+JSON.stringify(r));assert.equal(f.state.writes.length,1);}
+});
+
+for(const outcome of ['success','unknown','rejected'])test('Pet mature claim original HTTP Tasks Workflow '+outcome+' preserves budget and durable uncertainty',async t=>{
+ const f=await matureFixture(t,{http:true,outcome});await f.call('/api/gameplay?module=pet');const surveyed=await f.call('/api/gameplay/survey',{body:{module:'pet',parameters:f.parameters}});assert.equal(surveyed.status,200);const row=surveyed.data.view.candidates.find(r=>r.executable);assert.ok(row);const prepared=await f.call('/api/workflows/prepare',{body:{entry:'tasks',tasks:[{kind:'pet',parameters:f.parameters,actionId:row.actionId}],budget:f.operation.budgetClaims}});assert.equal(prepared.status,200,JSON.stringify(prepared.data));const runner=f.runner(),first=await runner.start(account,prepared.data.graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const p=first.plan,authorized=await f.call('/api/operations/authorize',{body:{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(r=>r.actionId),resourceBudget:p.resourceBudget,confirm:true}});assert.equal(authorized.status,200,JSON.stringify(authorized.data));assert.equal((await f.call('/api/operations/execute',{body:authorized.data})).status,200);await f.service.settle(account);const final=await runner.resume();assert.equal(final.status,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.writes[0].body,{});assert.equal(f.state.writes[0].durable.actions[0].requestStatus,'DISPATCHING');assert.equal(createExecutionHistory({file:f.file}).unresolved(account),outcome==='unknown');assert.deepEqual(f.service.workflowBudget(account).reserved.uids,f.operation.budgetClaims.uids);assert.equal(f.service.workflowBudget(account).state,'CLOSED');assert.deepEqual((await f.call('/api/operations/history',{id:'other-account'})).data.runs,[]);assert.deepEqual(f.counts(),{clients:0,collections:0});
 });
