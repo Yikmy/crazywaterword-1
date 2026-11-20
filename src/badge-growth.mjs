@@ -18,10 +18,14 @@ const starTables = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeUnlockCfg', 'HeroBadgeA
 const starSource = 'v76 BadgeUtil.canUpOneStar; BadgeLvUpPop._refreshUpStar/_onBtnUse2; HeroBadgeStarCfg[nextStar].upBadgeNum and consume; owned stones only, decomposeUid=[]';
 export const BADGE_STAR_EVIDENCE = Object.freeze({source:starSource,requirement:'BIZ-R09',request:'BadgeStarRequest',response:'BadgeStarResponse',scope:'EXPLICIT_WORN_RED_SINGLE_STAR_NO_SACRIFICE',realGame:'REAL_UNVERIFIED'});
 const isPutOn = params => params != null && Object.hasOwn(params, 'action') && params.action === 'put-on';
+const isTakeOff = params => params?.action === 'take-off';
+const isWearing = params => isPutOn(params) || isTakeOff(params);
+const takeOffRequest='TakeOffBadgeRequest',takeOffSource='v76 BadgeSelectItem._onBtnTakeOff; BadgeModel.fixupBadge/allIdleBadge; explicit worn hero/UID, frozen original slot, zero cost';
+export const BADGE_TAKE_OFF_EVIDENCE=Object.freeze({source:takeOffSource,request:takeOffRequest,response:null,itemSha256:'df296fe90259b984c20f48425da075c3ff0fb855147b553f21f0a5c2dd09c45e',modelSha256:'f6db4e5cfc90e5da13e0147aa982f4b1b38b0a5c24605b4b4d942702e78f0177',scope:'EXPLICIT_WORN_HERO_UID_SLOT_TO_IDLE',realGame:'REAL_UNVERIFIED'});
 const xpItem = '徽章经验', gold = 'GOLD';
 const tables = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeAttrCfg', 'HeroBadgeLevelCfg', 'HeroBadgeUnlockCfg'];
 const putOnTables = ['HeroCfg', 'HeroBadgeCfg', 'HeroBadgeUnlockCfg', 'ModuleOpenCfg'];
-const tablesFor = params => isStar(params) ? starTables : isPutOn(params) ? putOnTables : tables;
+const tablesFor = params => isStar(params) ? starTables : isWearing(params) ? putOnTables : tables;
 const putOnSource = 'v76 /subpackages/main/game.js: BadgeSelectItem._onBtnOn; BadgeSelectPop; BadgeModel.idleBadgesByType/fixupBadge; HeroDetailBadge; ModuleOpenUtil.isOpen';
 const maxAgeMs = 30000, scope = Object.freeze({ kind: 'ACCOUNT' });
 const source = 'v76 /subpackages/main/game.js: BadgeLvUpPop._onBtnUse; BadgeUtil.calBadgeEnhanceNextLevelExp/calBadgeEnhanceGold/getBadgeMaxLevel; AllItemsModel.WellKnownItems.BADGE_EXP_ITEM';
@@ -92,12 +96,12 @@ export function validateBadgeGrowthConfig(config = {}) {
 
 export function validateBadgeGrowthParameters(parameters = {}) {
   if (!plainFields(parameters, ['heroId', 'uid', 'action', 'pos'])
-      || own(parameters, 'action') && !isPutOn(parameters) && !isStar(parameters)
-      || own(parameters, 'pos') && (!isPutOn(parameters) || !slot(parameters.pos))) {
-    throw invalid('纹章参数仅允许 heroId、uid；单次升星用 action=star；穿戴用 action=put-on 和 1 至 4 的整数槽位 pos');
+      || own(parameters, 'action') && !isWearing(parameters) && !isStar(parameters)
+      || own(parameters, 'pos') && (!isWearing(parameters) || !slot(parameters.pos))) {
+    throw invalid('纹章参数仅允许 heroId、uid；单次升星用 action=star；穿戴/卸下用 action=put-on/take-off 和 1 至 4 的原整数槽位 pos');
   }
   const out = {};
-  if (isPutOn(parameters) || isStar(parameters)) out.action = parameters.action;
+  if (isWearing(parameters) || isStar(parameters)) out.action = parameters.action;
   if (own(parameters, 'pos')) out.pos = parameters.pos;
   if (own(parameters, 'heroId')) {
     if (!id(parameters.heroId)) throw invalid('heroId 必须为明确英雄 ID');
@@ -125,7 +129,7 @@ function readCatalog(config, params) {
     badges: badges.map(({ id, career }) => ({ id, career })),
     unlocks: unlocks.map(({ pos, level }) => ({ pos, level })),
   };
-  if (isPutOn(params)) {
+  if (isWearing(params)) {
     const modules = table('ModuleOpenCfg');
     if (!dense(modules)) return null;
     const badgeModule = modules.filter(row => own(row, 'moduleId') && row.moduleId === '英雄徽章');
@@ -207,7 +211,7 @@ function contextOf(client, player, params) {
     connectionId: id(connectionId) ? connectionId : null,
     playerId: ids.length && ids.every(value => value !== null && value === ids[0]) ? ids[0] : null,
     worldId: own(player, 'worldId') ? exactPositive(player.worldId) : null,
-    ...(isPutOn(params) ? { playerLevel: own(player, 'level') && positive(player.level) ? player.level : null } : {}),
+    ...(isWearing(params) ? { playerLevel: own(player, 'level') && positive(player.level) ? player.level : null } : {}),
   };
 }
 
@@ -273,7 +277,7 @@ function authority(facts, config, params) {
   const ctx = facts?.identityContext, inputs = facts?.inputs;
   if (!id(ctx?.accountId) || !id(ctx.connectionId) || !Number.isSafeInteger(ctx.generation) || ctx.generation < 0
       || !ctx.playerId || exactPositive(ctx.playerId) !== ctx.playerId || !ctx.worldId || exactPositive(ctx.worldId) !== ctx.worldId
-      || isPutOn(params) && !positive(ctx.playerLevel)
+      || isWearing(params) && !positive(ctx.playerLevel)
       || !facts.catalog || !same(facts.catalog, readCatalog(config, params))) return false;
   if (!freshFacts(facts) || !queries.every(([key]) => same(facts.sourceFacts[key].value, inputs?.[key]))) return false;
   const ownership = parseBadgeOwnership(inputs?.badges, inputs?.heroes), inventory = parseOperationInventory(inputs?.items, inputs?.resources);
@@ -360,36 +364,38 @@ function emptyBadgeSlots(hero, state) {
 }
 
 function putOnCandidate(facts, params, { config, moduleConfig, state, includePlanEvidence = true }) {
+  const taking=isTakeOff(params),selectedRequest=taking?takeOffRequest:putOnRequest;
   const hero = state?.heroes.get(params.heroId), badge = state?.pool.get(params.uid);
   const heroCfg = state?.heroTypes.get(params.heroId), badgeCareer = badge && state.badgeCareers.get(badge.badgeId);
   const target = { heroId: params.heroId ?? null, uid: params.uid ?? null, pos: params.pos ?? null };
-  const action = { request: putOnRequest, response: null, body: { uid: params.uid, heroId: params.heroId, pos: params.pos } };
+  const action = { request: selectedRequest, response: null, body: { uid: params.uid, heroId: params.heroId, ...(!taking?{pos:params.pos}:{}) } };
   const costs = [];
   let blockedReason = null;
   if (!params.heroId || !params.uid || !params.pos) blockedReason = 'EXPLICIT_HERO_BADGE_UID_AND_SLOT_REQUIRED';
   else if (!moduleConfig.enabled) blockedReason = 'BADGE_GROWTH_MODULE_DISABLED';
   else if (!state) blockedReason = 'BADGE_AUTHORITY_OR_CONTEXT_UNKNOWN';
   else if (!state.moduleOpen) blockedReason = 'BADGE_MODULE_LEVEL_LOCKED';
-  else if (!hero || !badge || state.worn.has(params.uid)) blockedReason = 'EXACT_IDLE_OWNED_BADGE_REQUIRED';
+  else if (taking&&(!hero||!badge||!hero.badges.some(row=>row.uid===params.uid&&row.pos===params.pos))) blockedReason='EXACT_WORN_HERO_BADGE_SLOT_REQUIRED';
+  else if (!taking&&(!hero || !badge || state.worn.has(params.uid))) blockedReason = 'EXACT_IDLE_OWNED_BADGE_REQUIRED';
   else if (!derivedReliable(hero)) blockedReason = 'TARGET_HERO_DERIVED_STATE_UNKNOWN';
   else if (heroCfg?.type !== '英雄' || !badgeCareer || heroCfg.career !== badgeCareer
       || !state.slotLevels.has(params.pos) || hero.level < state.slotLevels.get(params.pos)) blockedReason = 'BADGE_SLOT_OR_CAREER_NOT_ELIGIBLE';
-  else if (hero.badges.some(row => row.pos === params.pos)) blockedReason = 'BADGE_SLOT_NOT_EMPTY';
-  else if (!facts.available?.includes(putOnRequest) || facts.available.includes('PutOnBadgeResponse')) blockedReason = 'PROTOCOL_UNAVAILABLE';
+  else if (!taking&&hero.badges.some(row => row.pos === params.pos)) blockedReason = 'BADGE_SLOT_NOT_EMPTY';
+  else if (!facts.available?.includes(selectedRequest) || facts.available.includes(taking?'TakeOffBadgeResponse':'PutOnBadgeResponse')) blockedReason = 'PROTOCOL_UNAVAILABLE';
   else {
     try { assertPaymentAllowed({ ...action, costs }); } catch (error) { blockedReason = error.code ?? 'COST_NOT_ALLOWED'; }
   }
   const executable = blockedReason === null;
   return {
-    module: moduleId, actionId: moduleId + ':PUT-ON:' + hash(target), actionType: 'PUT-ON', parameters: params, target,
+    module: moduleId, actionId: moduleId + (taking?':TAKE-OFF:':':PUT-ON:') + hash(target), actionType: taking?'TAKE-OFF':'PUT-ON', parameters: params, target,
     ...(includePlanEvidence ? {
       identity: executable ? hash({ context: facts.identityContext, ownership: facts.ownership, dependencies: badgeGrowthDependencyVersions({ config, moduleConfig, parameters: params }) }) : null,
       configEvidence: executable ? configEvidence(config, params) : null,
     } : {}),
     beforeState: hero && badge ? { ...(includePlanEvidence ? { hero: copy(hero) } : {}), badge: copy(badge) } : null,
     expectedState: badge ? { ...target, badgeId: badge.badgeId, level: badge.level, star: badge.star, exp: badge.exp } : null,
-    costs, costSource: putOnSource, budgetClaims: { resources: [], quotas: [], uids: params.uid ? [{ type: 'badge', id: params.uid }] : [] },
-    executable, blockedReason, label: '纹章穿戴 ' + (params.heroId ?? '') + ' ' + (params.pos ?? '') + ' ' + (params.uid ?? ''), ...(executable ? { action } : {}),
+    costs, costSource: taking?takeOffSource:putOnSource, budgetClaims: { resources: [], quotas: [], uids: params.uid ? [{ type: 'badge', id: params.uid }] : [] },
+    executable, blockedReason, label: (taking?'纹章卸下 ':'纹章穿戴 ') + (params.heroId ?? '') + ' ' + (params.pos ?? '') + ' ' + (params.uid ?? ''), ...(executable ? { action } : {}),
   };
 }
 
@@ -406,16 +412,18 @@ export function viewBadgeGrowth(facts, { config, moduleConfig, parameters = fact
   const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config, params), includePlanEvidence: false };
   const roster = options.authoritative ? facts.ownership.heroes : [];
   const notes = [...(facts?.notes ?? [])];
-  if (isPutOn(params)) {
+  if (isWearing(params)) {
     const state = putOnState(facts, options.authoritative), hero = state?.heroes.get(params.heroId);
     // An explicit hero bounds choices to that hero's proven empty slots and eligible idle UIDs.
     const slots = hero ? emptyBadgeSlots(hero, state).filter(pos => params.pos === undefined || pos === params.pos) : [];
-    const choices = !params.uid && hero
+    const choices = isTakeOff(params)&&hero
+      ? hero.badges.filter(row=>(!params.uid||row.uid===params.uid)&&(!params.pos||row.pos===params.pos)).map(row=>({...params,uid:row.uid,pos:row.pos}))
+      : !params.uid && hero
       ? slots.flatMap(pos => [...state.pool.values()].filter(badge => !state.worn.has(badge.uid)
         && state.badgeCareers.get(badge.badgeId) === state.heroTypes.get(params.heroId).career).map(({ uid }) => ({ ...params, pos, uid })))
       : [];
     const candidates = (choices.length ? choices : [params]).map(choice => putOnCandidate(facts, choice, { ...options, state }));
-    return { module: moduleId, mode: 'put-on', heroes: heroChoices(roster, state), bag: state ? [...state.pool.values()].filter(badge => !state.worn.has(badge.uid)).map(({uid, badgeId, level, star}) => ({uid, badgeId, level, star})) : null, candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: BADGE_PUT_ON_EVIDENCE };
+    return { module: moduleId, mode: params.action, heroes: heroChoices(roster, state), bag: state ? [...state.pool.values()].filter(badge => !state.worn.has(badge.uid)).map(({uid, badgeId, level, star}) => ({uid, badgeId, level, star})) : null, candidates, blocked: candidates.filter(row => !row.executable), notes, evidence: isTakeOff(params)?BADGE_TAKE_OFF_EVIDENCE:BADGE_PUT_ON_EVIDENCE };
   }
   const choices = [];
   for (const hero of roster) {
@@ -430,7 +438,7 @@ export function viewBadgeGrowth(facts, { config, moduleConfig, parameters = fact
 
 export function validateBadgeGrowthPreparation(value){
  if(!plainFields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!Array.isArray(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||Reflect.ownKeys(value.targets).length!==value.targets.length+1||!Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&own(d,'value'))||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('徽章组合须明确1至24个UID及有限总时长');
- const targets=value.targets.map(row=>{const p=validateBadgeGrowthParameters(row);if(!p.heroId||!p.uid||isPutOn(p)&&!p.pos)throw invalid('徽章组合须明确英雄、UID；空槽穿戴还须明确已解锁位置');return p;});
+ const targets=value.targets.map(row=>{const p=validateBadgeGrowthParameters(row);if(!p.heroId||!p.uid||isWearing(p)&&!p.pos)throw invalid('徽章组合须明确英雄、UID；穿戴须明确已解锁空槽，卸下须明确原佩戴槽位');return p;});
  if(new Set(targets.map(p=>p.uid)).size!==targets.length||targets.some(p=>(p.action??'level')!==(targets[0].action??'level'))||isPutOn(targets[0])&&new Set(targets.map(p=>p.heroId+':'+p.pos)).size!==targets.length)throw invalid('徽章UID和穿戴英雄/位置不得重复，同批须为同一种原动作');return {targets,maxDurationMs:value.maxDurationMs};
 }
 export function prepareBadgeGrowthWorkflow(facts,{config,moduleConfig=BADGE_GROWTH_DEFAULT_CONFIG,...input}={}){
@@ -439,13 +447,13 @@ export function prepareBadgeGrowthWorkflow(facts,{config,moduleConfig=BADGE_GROW
  const steps=p.targets.map((parameters,i)=>{const plan=planBadgeGrowth(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('所选徽章无当前成长资格或共享自有材料不足；须重新调查并明确选择');const row=plan.actions[0],selection={unique:true};
   nodes.push({id:'grow-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,target:copy(row.target),costs:copy(row.costs),budgetClaims:copy(row.budgetClaims)};
  });nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
- return {...p,steps,budget,graph:{version:1,id:'badge-growths-'+hash({p,steps,budget}).slice(0,20),name:isPutOn(p.targets[0])?'明确闲置徽章逐空槽穿戴':'明确已佩戴徽章逐件单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:isPutOn(p.targets[0])?'仅明确闲置自有徽章UID穿入当前已解锁空槽，每UID及英雄/位置一次。复用原PutOnBadge单项计划、职业/等级/槽位资格及完整徽章池、英雄槽位和库存不变验证；父UID固定，零资源支出，每项重新调查及单次授权，拒绝或UNKNOWN停止。不替换、转移、分解或补购，重启不续跑。':'同批仅原徽章等级或升星，每个已佩戴UID只一次，复用原planBadgeGrowth及共享ResourceLedger累计核自有经验/金币或升星石。原残余经验、等级上限、红徽章星级资格与完整英雄/徽章/库存结算保持；每件重新调查、预览和单次授权，父资源与UID固定。资格变化、拒绝或UNKNOWN停止，不穿戴替换/分解/补购，不自动重发或恢复执行。'};
+ return {...p,steps,budget,graph:{version:1,id:'badge-growths-'+hash({p,steps,budget}).slice(0,20),name:isTakeOff(p.targets[0])?'明确已佩戴徽章逐件卸下':isPutOn(p.targets[0])?'明确闲置徽章逐空槽穿戴':'明确已佩戴徽章逐件单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:isTakeOff(p.targets[0])?'仅明确已佩戴徽章UID从原英雄及原槽位卸下回闲置池，每UID一次，零资源支出。完整徽章池含残余经验、其他英雄/槽位和库存保持，各项重新调查与单次授权；原父UID/History/取消和UNKNOWN不重放，不分解/返还/替换或转移。':isPutOn(p.targets[0])?'仅明确闲置自有徽章UID穿入当前已解锁空槽，每UID及英雄/位置一次。复用原PutOnBadge单项计划、职业/等级/槽位资格及完整徽章池、英雄槽位和库存不变验证；父UID固定，零资源支出，每项重新调查及单次授权，拒绝或UNKNOWN停止。不替换、转移、分解或补购，重启不续跑。':'同批仅原徽章等级或升星，每个已佩戴UID只一次，复用原planBadgeGrowth及共享ResourceLedger累计核自有经验/金币或升星石。原残余经验、等级上限、红徽章星级资格与完整英雄/徽章/库存结算保持；每件重新调查、预览和单次授权，父资源与UID固定。资格变化、拒绝或UNKNOWN停止，不穿戴替换/分解/补购，不自动重发或恢复执行。'};
 }
 
 export function planBadgeGrowth(facts, { config, moduleConfig, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable ? facts.stock : null) } = {}) {
   const params = validateBadgeGrowthParameters(parameters);
   const options = { config, moduleConfig: validateBadgeGrowthConfig(moduleConfig), authoritative: authority(facts, config, params) };
-  const selected = isPutOn(params)
+  const selected = isWearing(params)
     ? putOnCandidate(facts, params, { ...options, state: putOnState(facts, options.authoritative) })
     : candidate(facts, params, options);
   return selected.executable && (selections === undefined || selections.includes(selected.actionId)) && freshFacts(facts) && ledger.reserve(selected.costs)
@@ -465,8 +473,8 @@ function verifyPutOn(params, contract, before, after) {
   const { hero: beforeHero, badge } = contract.beforeState;
   const afterHero = after.ownership.heroes.find(hero => hero.heroId === params.heroId);
   if (!afterHero || !derivedReliable(afterHero)) return fail('TARGET_HERO_DERIVED_STATE_UNKNOWN');
-  const expectedSlots = [...beforeHero.badges, { ...without(badge, ['exp']), pos: params.pos }].sort((a, b) => a.pos - b.pos);
-  if (!same(expectedSlots, afterHero.badges)) return fail('BADGE_EXACT_EMPTY_SLOT_ADDITION_NOT_CONFIRMED');
+  const taking=isTakeOff(params),expectedSlots = (taking?beforeHero.badges.filter(row=>row.uid!==params.uid):[...beforeHero.badges, { ...without(badge, ['exp']), pos: params.pos }]).sort((a, b) => a.pos - b.pos);
+  if (!same(expectedSlots, afterHero.badges)) return fail(taking?'BADGE_EXACT_WORN_SLOT_REMOVAL_NOT_CONFIRMED':'BADGE_EXACT_EMPTY_SLOT_ADDITION_NOT_CONFIRMED');
   if (!same(before.ownership.pool, after.ownership.pool)) return fail('BADGE_POOL_UNCHANGED_NOT_CONFIRMED');
   if (!same(without(beforeHero, ['power', 'attributes', 'badges']), without(afterHero, ['power', 'attributes', 'badges']))
       || !same(before.ownership.heroes.filter(hero => hero.heroId !== params.heroId), after.ownership.heroes.filter(hero => hero.heroId !== params.heroId))) {
@@ -477,7 +485,7 @@ function verifyPutOn(params, contract, before, after) {
   }
   if (!freshFacts(before) || !freshFacts(after)) return fail('BADGE_AUTHORITY_EXPIRED_DURING_VERIFICATION');
   return {
-    confirmed: true, reason: '完整 Badges 和 AllHero 复读确认闲置纹章穿戴至指定空槽，纹章池和库存不变',
+    confirmed: true, reason: taking?'完整Badges和AllHero复读确认指定原槽位仅移除选定徽章UID回闲置池，完整徽章池含经验及其他英雄/槽位和库存保持':'完整 Badges 和 AllHero 复读确认闲置纹章穿戴至指定空槽，纹章池和库存不变',
     afterState: { hero: copy(afterHero), badge: copy(badge) }, responseEvidence: null,
   };
 }
@@ -486,17 +494,17 @@ export function verifyBadgeGrowth(operation, before, after, responseBody) {
   const fail = reason => ({ confirmed: false, reason });
   let params;
   try { params = validateBadgeGrowthParameters(operation?.parameters); } catch { return fail('BADGE_OPERATION_CONTRACT_INVALID'); }
-  if (!isPutOn(params) && !noMaterial(responseBody)) return fail('BADGE_TYPED_RESPONSE_OR_MATERIAL_UNKNOWN');
+  if (!isWearing(params) && !noMaterial(responseBody)) return fail('BADGE_TYPED_RESPONSE_OR_MATERIAL_UNKNOWN');
   const config = { tables: Object.fromEntries(tablesFor(params).map(name => [name, operation?.configEvidence?.[name] ?? null])) };
   if (!authority(before, config, params) || !authority(after, config, params) || !same(before.identityContext, after.identityContext)) return fail('BADGE_AUTHORITY_OR_CONTEXT_UNKNOWN');
   if (queries.some(([key]) => after.sourceFacts[key].provenance.sourceAt < before.sourceFacts[key].provenance.sourceAt)) return fail('BADGE_POST_READ_PREDATES_DISPATCH_BASELINE');
   const options = { config, moduleConfig: { enabled: true }, authoritative: true };
-  const contract = isPutOn(params)
+  const contract = isWearing(params)
     ? putOnCandidate(before, params, { ...options, state: putOnState(before, true) })
     : candidate(before, params, options);
   if (!contract.executable || ['module', 'actionId', 'actionType', 'target', 'identity', 'beforeState', 'expectedState', 'costSource', 'costs', 'budgetClaims', 'action', 'configEvidence']
     .some(key => !same(operation[key], contract[key]))) return fail('BADGE_OPERATION_CONTRACT_MISMATCH');
-  if (isPutOn(params)) return verifyPutOn(params, contract, before, after);
+  if (isWearing(params)) return verifyPutOn(params, contract, before, after);
   if (isStar(params)) return verifyStar(params, contract, before, after);
 
   const { hero: beforeHero, badge: beforeBadge } = contract.beforeState;

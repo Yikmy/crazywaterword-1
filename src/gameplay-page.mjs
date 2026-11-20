@@ -699,11 +699,11 @@ function gpBadgeTargetSources(view){
 function gpRenderBadgeTarget(box,view){
  const id='badge-growth',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
  const {heroes,choices:observedChoices}=gpBadgeTargetSources(view);
- let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['heroId','uid','action','pos'].includes(key))||parameters.action!==undefined&&!['put-on','star'].includes(parameters.action))throw Error('unknown parameters');}catch{box.appendChild(gpEl('p','徽章目标格式未知；请先在高级参数中修正，再重新探测。'));return;}
+ let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['heroId','uid','action','pos'].includes(key))||parameters.action!==undefined&&!['put-on','star','take-off'].includes(parameters.action))throw Error('unknown parameters');}catch{box.appendChild(gpEl('p','徽章目标格式未知；请先在高级参数中修正，再重新探测。'));return;}
  const mode=gpEl('select'),hero=gpEl('select'),badge=gpEl('select'),slot=gpEl('select'),prepare=gpEl('button','准备徽章目标');
  mode.dataset.badgeTargetMode='true';hero.dataset.badgeTargetHero='true';badge.dataset.badgeTargetUid='true';slot.dataset.badgeTargetSlot='true';prepare.dataset.badgeTargetPrepare='true';
  const add=(select,value,text)=>{const option=gpEl('option',text);option.value=value;select.appendChild(option);};
- for(const [value,text]of [['level','已佩戴单次升级'],['star','已佩戴红徽章单次升星'],['put-on','自有闲置徽章穿到空槽']])add(mode,value,text);mode.value=parameters.action||'level';
+ for(const [value,text]of [['level','已佩戴单次升级'],['star','已佩戴红徽章单次升星'],['put-on','自有闲置徽章穿到空槽'],['take-off','卸下已佩戴徽章']])add(mode,value,text);mode.value=parameters.action||'level';
  add(hero,'','请选择英雄');for(const row of heroes||[])add(hero,row.heroId,row.heroId);hero.value='';
  for(const [text,control]of [['原动作种类',mode],['明确英雄',hero],['精确徽章UID',badge],['已解锁空槽',slot]]){const label=gpEl('label',text);label.appendChild(control);box.appendChild(label);}box.appendChild(prepare);
  for(const control of [mode,hero,badge,slot,prepare])state.actionControls.push(control);
@@ -719,12 +719,13 @@ function gpRenderBadgeTarget(box,view){
  };
  mode.onchange=hero.onchange=()=>{if(live())redraw();};
  prepare.onclick=()=>{
-  if(prepare.disabled||!live()||!heroes?.some(row=>row.heroId===hero.value)||!['level','star','put-on'].includes(mode.value)||badge.value&&!choices.some(row=>row.uid===badge.value)||slot.value&&!slots.includes(Number(slot.value)))return;
+  if(prepare.disabled||!live()||!heroes?.some(row=>row.heroId===hero.value)||!['level','star','put-on','take-off'].includes(mode.value)||badge.value&&!choices.some(row=>row.uid===badge.value)||slot.value&&!slots.includes(Number(slot.value)))return;
+  if(mode.value==='take-off'&&badge.value&&!Number.isInteger(choices.find(row=>row.uid===badge.value)?.pos))return;
   if(mode.value==='put-on'&&badge.value&&!slot.value){$('gp-'+id+'-hint').textContent='穿戴具体徽章还须选择本次已观察到的已解锁空槽。';return;}
-  const next={heroId:hero.value,...(mode.value!=='level'?{action:mode.value}:{}),...(badge.value?{uid:badge.value}:{}),...(mode.value==='put-on'&&slot.value?{pos:Number(slot.value)}:{})};
+  const next={heroId:hero.value,...(mode.value!=='level'?{action:mode.value}:{}),...(badge.value?{uid:badge.value}:{}),...(mode.value==='put-on'&&slot.value?{pos:Number(slot.value)}:mode.value==='take-off'&&badge.value?{pos:choices.find(row=>row.uid===badge.value)?.pos}:{})};
   $('gp-'+id+'-parameters').value=gpJson(next);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备徽章目标；请重新探测归属、空槽与成本，预览后单独授权。';
  };
- box.appendChild(gpEl('p','成长仅从该英雄已佩戴列表选择；穿戴仅从闲置列表和当前已解锁空槽选择。切换英雄或动作清除UID及槽位；未观察空槽时先只调查英雄，不替换已有徽章。'));
+ box.appendChild(gpEl('p','成长与卸下仅从该英雄已佩戴列表选择，卸下自动绑定该UID的原槽位并完整回闲置池；穿戴仅从闲置列表和当前已解锁空槽选择。切换英雄或动作清除UID及槽位；未观察空槽时先只调查英雄，不替换已有徽章。'));
  redraw();
 }
 
@@ -1663,6 +1664,7 @@ function gpRenderDomain(id,view){
   }
   draftButton('查看单次升级','badgeGrowthMode','level',()=>({}));
   draftButton('穿到空槽','badgeGrowthMode','put-on',()=>({action:'put-on'}));
+  draftButton('卸下已佩戴徽章','badgeGrowthMode','take-off',()=>({action:'take-off'}));
   draftButton('查看红徽章单次升星','badgeGrowthMode','star',()=>{const old=gpParse('gp-'+id+'-parameters'),draft={action:'star'};for(const key of ['heroId','uid'])if(old[key]!==undefined)draft[key]=old[key];return draft;});
   if(putOn){
    box.appendChild(gpEl('p','选择已解锁的空槽，再探测该槽可穿戴的自有闲置徽章。'));
@@ -2972,8 +2974,8 @@ function wfObservedParameterTargets(card,node,fields,live,invalidateDraft,sync,n
   const {rows,recipes}=gpForgeTargetSources(view);if(!['make','pick'].includes(parameters.action))return;for(const row of rows||[]){if(parameters.action==='pick')targets.push({label:row.buildingId+' / 单次收取',parameters:{action:'pick',buildingId:row.buildingId}});else for(const recipe of recipes||[])targets.push({label:row.buildingId+' / 配方 '+recipe.makeId,parameters:{action:'make',buildingId:row.buildingId,makeId:recipe.makeId,allowUniversal:false}});}
  }else if(node.module==='equipment-growth'||node.module==='badge-growth'){
   const parameters=node.parameters||{},badge=node.module==='badge-growth',source=badge?gpBadgeTargetSources(view):gpEquipmentTargetSources(view),action=parameters.action;
-  if(Object.keys(parameters).some(key=>!(badge?['heroId','uid','action','pos']:['heroId','uid','action']).includes(key))||action!==undefined&&!(badge?['put-on','star']:['initial-level','refine','put-on','star','take-off']).includes(action))return;
-  for(const hero of source.heroes||[]){const observed=source.choices(hero.heroId,action),rows=badge?observed.rows:observed||[];for(const row of rows){if(badge&&action==='put-on'){for(const pos of observed.slots)targets.push({label:hero.heroId+' / UID '+row.uid+' / 空槽 '+pos,parameters:{heroId:hero.heroId,uid:row.uid,pos}});}else targets.push({label:hero.heroId+' / UID '+row.uid,parameters:{heroId:hero.heroId,uid:row.uid}});}}
+  if(Object.keys(parameters).some(key=>!(badge?['heroId','uid','action','pos']:['heroId','uid','action']).includes(key))||action!==undefined&&!(badge?['put-on','star','take-off']:['initial-level','refine','put-on','star','take-off']).includes(action))return;
+  for(const hero of source.heroes||[]){const observed=source.choices(hero.heroId,action),rows=badge?observed.rows:observed||[];for(const row of rows){if(badge&&action==='put-on'){for(const pos of observed.slots)targets.push({label:hero.heroId+' / UID '+row.uid+' / 空槽 '+pos,parameters:{heroId:hero.heroId,uid:row.uid,pos}});}else targets.push({label:hero.heroId+' / UID '+row.uid+(badge&&action==='take-off'?' / 原槽位 '+row.pos:''),parameters:{heroId:hero.heroId,uid:row.uid,...(badge&&action==='take-off'?{pos:row.pos}:{})}});}}
  }else if(node.module==='task-rewards'){
   const kind=node.parameters?.kind,ids=gpTaskTargetIds(view,kind,node.parameters),key=gpTaskRewardUsesTier(kind)?'tierId':'taskId',selection=view.targetSelection;
   if(WF_TASK_REWARD_KINDS.includes(kind))for(const id of ids||[]){const parameters={kind,[key]:id,...(['daily','daily-activity'].includes(kind)&&node.parameters.expectedResetTime!==undefined?{expectedResetTime:node.parameters.expectedResetTime}:{})};if(kind==='weekly-chip-task'){if(!Number.isInteger(selection?.round)||selection.round<=0||selection.round>2147483647)continue;parameters.round=selection.round;}targets.push({label:gpJson(parameters),parameters});}
