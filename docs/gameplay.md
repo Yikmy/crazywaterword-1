@@ -179,7 +179,9 @@ ChurnInfo            UltraOpen            BlackList
 
 ### 3.7 世界地图：资源田、舰队、货船、海盗、世界 Boss
 
-原舰队专业页现支持明确单舰、自有加速器数量的维修加速：`SpeedUpRepairRequest {buildingId, speedUp:{type:2,useNum}}`，每件60秒。应用参数后须重新调查、预览和单独授权，也可加入原Tasks/Workflow；仅可信时钟可确定的继续维修或完成分支，完整舰队响应及库存精确净扣共同确认。来源变化、无效果或其他状态/库存改变保持UNKNOWN；行军钻石、货船独立加速、广告、补购及持续自动维修仍不开放。
+原舰队专业页现支持明确单舰、自有加速器数量的维修加速：`SpeedUpRepairRequest {buildingId, speedUp:{type:2,useNum}}`，每件60秒。应用参数后须重新调查、预览和单独授权，也可加入原Tasks/Workflow；仅可信时钟可确定的继续维修或完成分支，完整舰队响应及库存精确净扣共同确认。来源变化、无效果或其他状态/库存改变保持UNKNOWN；行军钻石、广告、补购及持续自动维修仍不开放。
+
+原港口专业页支持明确单船、自有加速器数量的货船加速：`SpeedUpShipRequest {index, speedUp:{type:2,useNum}}`，每件60秒。先应用参数、重新调查和预览，再单独授权；原候选可加入Tasks/Workflow。继续航行须精确缩短到达时间；到港须独立观察明确到港标志和时间，且早于原自然到达时间。两者均要求货格、预定奖励和其他船不变，完整库存只有所选道具净扣；不自动领取到港奖励。
 
 - 协议：`MyResFieldsRequest`、`MyFleetsRequest`、`CargoShipsRequest`、`AllPirateRequest`、`PirateKillRecordRequest`、`WorldBossInfoRequest`、`LimitedBossOpenRequest`、`RadarInfoRequest`。
 

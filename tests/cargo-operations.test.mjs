@@ -5,7 +5,8 @@ import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { ResourceLedger, RESOURCE_NAMES } from '../src/resource-ledger.mjs';
 
 // All transports and facts are synthetic. This suite never connects a socket,
-// opens an account/credential file, creates a Runtime or reads protocol assets.
+// opens an account/credential file or creates a Runtime. The cargo-item cases
+// use the existing local response Codec; all other fixtures below stay synthetic.
 const settings={enabled:true,cargoFill:true,cargoClaim:true};
 const slot=(id='木材',num=4)=>({asset:{type:0,id,num},filled:false,reward:{asset:[{type:1,id:'EXP',num:2},{type:1,id:'GOLD',num:3}]}});
 function ship(index=1){return {index,status:0,arriveTime:0,orderItem:[slot(),slot('石头',2)],reward:[{type:0,id:'藏品大师徽章',num:3}]};}
@@ -208,4 +209,32 @@ test('each batch retains one exact voyage action per ship while different ships 
  assert.equal(first.actions.length,1);assert.ok(first.notes.some(row=>row.includes('重新读取并规划授权')));
  f.ships.push(ship(2));const across=candidates(f).filter(row=>row.actionType==='cargoFill'&&row.target.cargoIndex===1);
  const second=planFleet(f,{moduleConfig:settings,selections:across.map(row=>row.actionId)});assert.equal(second.actions.length,2);assert.deepEqual(second.actions.map(row=>row.target.shipIndex),[1,2]);
+});
+
+
+async function cargoItemFixture({arriveTime=2000}={}){
+ const {loadProtocol}=await import('../src/proto.mjs'),{toSnapshotJson}=await import('../src/game.mjs'),protocol=loadProtocol(),wire=(name,value)=>protocol[name].decode(protocol[name].encode(value).finish());
+ const original=ship();original.status=1;original.arriveTime=arriveTime;original.orderItem.forEach(row=>row.filled=true);const state={ships:[original,ship(2)],stock:2,other:3,now:1000000,outcome:'success',writes:[],onSend:null},player={playerId:'1',worldId:'1000001'},moduleConfig={enabled:true,speedUp:true};
+ const client={connected:true,pending:[],watchers:[],factContext:{accountId:'cargo-item',connectionId:'cargo-item-connection',generation:1},gameClock:{read:()=>({status:'TRUSTED',reliable:true,source:'PingResponse.serverTimestamp',accountId:'cargo-item',generation:1,earliestMs:state.now,nowMs:state.now,latestMs:state.now})},async request(name,body,response,_timeout,options){assert.notEqual(options?.mutate,true);wire(name,body);const value={CargoShipsRequest:{ship:state.ships},MyFleetsRequest:{fleets:[]},WorldInfoRequest:{cities:[]},GuildInfoRequest:{},AllItemRequest:{items:[...(state.stock?[{itemId:'加速器',num:state.stock}]:[]),{itemId:'无关物品',num:state.other}]},AllResourceRequest:{list:[]}}[name];assert.ok(value,name);return wire(response,value);},async sendWatch(name,body,options){assert.equal(name,'SpeedUpShipRequest');wire(name,body);state.onSend?.();options.beforeDispatch();state.writes.push(toSnapshotJson(body));if(state.outcome==='rejected')return {status:'REJECTED'};if(state.outcome!=='unknown'){const row=state.ships.find(row=>row.index===body.index);row.arriveTime-=60*body.speedUp.useNum;state.stock-=body.speedUp.useNum;if(row.arriveTime*1000<=state.now){row.status=2;row.arriveTime=Math.floor(state.now/1000);}}if(state.outcome==='peer')state.ships[1].orderItem[0].asset.num++;if(state.outcome==='reward')state.ships[0].reward[0].num++;if(state.outcome==='inventory')state.other++;return {status:'UNKNOWN'};}};
+ const f=await surveyFleet(client,protocol,{moduleConfig,player}),source=fleetView(f,{moduleConfig}).cargoAcceleration[0];assert.ok(source);const parameters={action:'speed-cargo',shipIndex:1,useNum:2,expectedSpeedHash:source.expectedSpeedHash};return {state,client,protocol,player,moduleConfig,f,source,parameters,operation:()=>planFleet(f,{moduleConfig,parameters,selections:['fleet:speedUpCargo:1']}).actions[0]};
+}
+
+test('cargo item acceleration requires exact original source and owned ITEM payment only',async()=>{
+ const f=await cargoItemFixture(),{assertPaymentAllowed}=await import('../src/actions.mjs'),op=f.operation();assert.ok(op);assert.equal(f.source.maxUseNum,2);assert.deepEqual(op.action,{request:'SpeedUpShipRequest',response:null,body:{index:1,speedUp:{type:2,useNum:2}}});assert.deepEqual(op.costs,[{id:'加速器',num:2}]);assert.equal(op.expectedState.arriveTime,1880);assert.equal(op.expectedState.rewardClaimed,false);assert.doesNotThrow(()=>assertPaymentAllowed({...op.action,costs:op.costs}));assert.equal(fleetView(f.f,{moduleConfig:f.moduleConfig}).candidates.some(row=>row.actionType==='speedUpCargo'),false);assert.equal(fleetView(structuredClone(f.f),{moduleConfig:f.moduleConfig,parameters:f.parameters}).candidates[0].decision,'BLOCKED');
+ for(const speedUp of [{type:1,useNum:0},{type:3,useNum:2},{type:2,useNum:0},{type:2,useNum:2,buy:true}])assert.throws(()=>assertPaymentAllowed({...op.action,body:{index:1,speedUp},costs:op.costs}));assert.throws(()=>assertPaymentAllowed({...op.action,costs:[]}));
+ for(const p of [{...f.parameters,useNum:0},{...f.parameters,buildingId:'fleet'},{...f.parameters,cargoIndex:1},{...f.parameters,payment:'ITEM'}])assert.throws(()=>fleetModule.validateParameters(p));const getter={...f.parameters};Object.defineProperty(getter,'useNum',{enumerable:true,get(){throw Error('getter must not run');}});assert.throws(()=>fleetModule.validateParameters(getter),{code:'INVALID_INPUT'});
+});
+
+test('cargo item acceleration original executor confirms only exact voyage and complete inventory',async()=>{
+ for(const outcome of ['success','unknown','peer','reward','inventory','rejected']){const f=await cargoItemFixture();f.state.outcome=outcome;const result=await executeBusinessOperation(f.client,f.protocol,f.operation(),{adapter:fleetModule,moduleConfig:f.moduleConfig,player:f.player,allowMutate:true,window:0});assert.equal(result.status,outcome==='success'?'SUCCESS':outcome==='rejected'?'REJECTED':'UNKNOWN',JSON.stringify(result));assert.equal(f.state.writes.length,1);if(outcome==='success'){assert.equal(f.state.ships[0].arriveTime,1880);assert.equal(f.state.stock,0);assert.equal(f.state.other,3);}}
+});
+
+test('cargo item acceleration confirms independent early arrival without any reward income',async()=>{
+ const f=await cargoItemFixture({arriveTime:1120}),op=f.operation();assert.equal(op.expectedState.arrived,true);assert.equal(op.expectedState.arriveTime,null);const result=await executeBusinessOperation(f.client,f.protocol,op,{adapter:fleetModule,moduleConfig:f.moduleConfig,player:f.player,allowMutate:true,window:0});assert.equal(result.status,'SUCCESS',JSON.stringify(result));assert.equal(f.state.ships[0].status,2);assert.equal(f.state.stock,0);assert.equal(f.state.other,3);assert.equal(f.state.ships[0].reward[0].num,3);
+});
+
+test('cargo item acceleration stops on wrong hash, stock, identity, clock ambiguity and final dispatch expiry',async()=>{
+ for(const mutate of [f=>f.state.stock=1,f=>f.client.factContext.generation++,f=>f.state.ships[0].arriveTime++,f=>f.state.now=2000000]){const f=await cargoItemFixture(),op=f.operation();mutate(f);const result=await executeBusinessOperation(f.client,f.protocol,op,{adapter:fleetModule,moduleConfig:f.moduleConfig,player:f.player,allowMutate:true,window:0});assert.equal(result.dispatched,false,JSON.stringify(result));assert.equal(f.state.writes.length,0);}
+ const f=await cargoItemFixture();assert.equal(planFleet(f.f,{moduleConfig:f.moduleConfig,parameters:{...f.parameters,expectedSpeedHash:'0'.repeat(64)},selections:['fleet:speedUpCargo:1']}).actions.length,0);const op=f.operation();f.state.onSend=()=>{f.state.now=2000000;};const late=await executeBusinessOperation(f.client,f.protocol,op,{adapter:fleetModule,moduleConfig:f.moduleConfig,player:f.player,allowMutate:true,window:0});assert.notEqual(late.status,'SUCCESS');assert.equal(f.state.writes.length,0);
+ const g=await cargoItemFixture({arriveTime:1120});g.client.gameClock.read=()=>({status:'TRUSTED',reliable:true,accountId:'cargo-item',generation:1,earliestMs:999999,nowMs:1000000,latestMs:1000001});assert.equal(g.operation(),undefined);
 });
