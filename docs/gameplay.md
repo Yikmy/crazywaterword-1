@@ -179,6 +179,8 @@ ChurnInfo            UltraOpen            BlackList
 
 ### 3.7 世界地图：资源田、舰队、货船、海盗、世界 Boss
 
+原舰队专业页现支持明确单舰、自有加速器数量的维修加速：`SpeedUpRepairRequest {buildingId, speedUp:{type:2,useNum}}`，每件60秒。应用参数后须重新调查、预览和单独授权，也可加入原Tasks/Workflow；仅可信时钟可确定的继续维修或完成分支，完整舰队响应及库存精确净扣共同确认。来源变化、无效果或其他状态/库存改变保持UNKNOWN；行军钻石、货船独立加速、广告、补购及持续自动维修仍不开放。
+
 - 协议：`MyResFieldsRequest`、`MyFleetsRequest`、`CargoShipsRequest`、`AllPirateRequest`、`PirateKillRecordRequest`、`WorldBossInfoRequest`、`LimitedBossOpenRequest`、`RadarInfoRequest`。
 
 实测：资源田 `0/10`（上限 10）、舰队 0、货船 0、海盗 0（扫荡次数 0）、世界 Boss `raidId=0`、雷达 `raidId=0`。这些是世界服玩法，本账号等级尚低，基本未参与。

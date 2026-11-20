@@ -13,7 +13,11 @@ import { toSnapshotJson } from './game.mjs';
 
 export const FLEET_DEFAULT_CONFIG = Object.freeze({ enabled: false, repair: false, repairBelowDurabilityRatio: 0.8, repairMode: 'IMMEDIATE', maximumRepairPetrolPerPlan: 0, repairPriorityBuildingIds: [], stopRepair: false, move: false, cargoFill: false, cargoClaim: false, giveUpResourceField: false, formation: false, autoFight: false, speedUp: false, minimumDurabilityRatio: 0.8, petrolReserve: 0, scenarioId: 1 });
 function parametersOf(parameters = {}) {
-  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx', 'screenCenter', 'expectedCargoHash', 'expectedRepairHash']);
+  strictParameters(parameters, ['buildingId', 'cityId', 'shipIndex', 'cargoIndex', 'presetId', 'heroIds', 'heroPositions', 'resourceFieldGridIdx', 'screenCenter', 'expectedCargoHash', 'expectedRepairHash', 'action', 'useNum', 'expectedSpeedHash']);
+  if(['action','useNum','expectedSpeedHash'].some(key=>Object.hasOwn(parameters,key))){
+    if(Reflect.ownKeys(parameters).length!==4||!['action','buildingId','useNum','expectedSpeedHash'].every(key=>{const d=Object.getOwnPropertyDescriptor(parameters,key);return d?.enumerable&&Object.hasOwn(d,'value');})||parameters.action!=='speed-repair'||!nonempty(parameters.buildingId)||parameters.buildingId.trim()!==parameters.buildingId||parameters.buildingId.length>200||!Number.isInteger(parameters.useNum)||parameters.useNum<1||parameters.useNum>2147483647||typeof parameters.expectedSpeedHash!=='string'||!/^[a-f0-9]{64}$/.test(parameters.expectedSpeedHash))throw invalid('维修道具加速须明确speed-repair、单舰buildingId、自有useNum与当前expectedSpeedHash');
+    return {action:'speed-repair',buildingId:parameters.buildingId,useNum:parameters.useNum,expectedSpeedHash:parameters.expectedSpeedHash};
+  }
   if(Object.hasOwn(parameters,'resourceFieldGridIdx')){
     const keys=Reflect.ownKeys(parameters),d=Object.getOwnPropertyDescriptor(parameters,'resourceFieldGridIdx');
     if(keys.length!==1||!d?.enumerable||!Object.hasOwn(d,'value')||!Number.isInteger(d.value)||d.value<0||d.value>2147483647)throw invalid('放弃资源田须仅声明明确的非负int32 resourceFieldGridIdx');
@@ -289,6 +293,25 @@ export function fleetFormationBuildings(source) {
   return {buildingsReliable,buildings:buildingsReliable?rows.filter(row=>row.fleet).map(row=>({buildingId:row.buildingId,level:quantity(row.level),formation:parseFleetFormation(row.fleet.formation)})):[]};
 }
 export function validateFleetConfig(value = {}) { const result = moduleConfiguration(value, FLEET_DEFAULT_CONFIG); if (!Number.isFinite(result.minimumDurabilityRatio) || result.minimumDurabilityRatio <= 0 || result.minimumDurabilityRatio > 1 || quantity(result.petrolReserve) === null || !Number.isSafeInteger(result.scenarioId) || result.scenarioId < 1) throw invalid('舰队规则无效'); if (!Number.isFinite(result.repairBelowDurabilityRatio) || result.repairBelowDurabilityRatio <= 0 || result.repairBelowDurabilityRatio > 1 || !['IMMEDIATE','WAIT_NATURAL'].includes(result.repairMode) || !Number.isSafeInteger(result.maximumRepairPetrolPerPlan) || result.maximumRepairPetrolPerPlan < 0 || result.maximumRepairPetrolPerPlan > 1e9 || result.repairPriorityBuildingIds.some(id => !nonempty(id) || id.trim() !== id || id.length > 300) || new Set(result.repairPriorityBuildingIds).size !== result.repairPriorityBuildingIds.length) throw invalid('维修阈值、模式、计划预算或优先级无效'); return result; }
+// Fixed v76 ArmyPop -> SpeedUpPop(ITEM=2) -> SpeedUpRepairRequest;
+// SpeedUpPop._onEventSpeedUpFinish reduces 60 seconds per owned item.
+export const FLEET_REPAIR_SPEED_EVIDENCE=Object.freeze({entrySha256:'a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54',armyPopSha256:'70cef0a63f42d72db853393b3e5312f2363cecfbcdb22f169bf511ca6dfca428',speedPopSha256:'431698b6b1e27fc6b9a55134b1c96dc2a8b06a527a332cd4c0f8ed5128870650',speedResultSha256:'344c5aa1770faf4002532eabdad53a69d299ae830bf482322aa1d0fa5b5c63e5',secondsPerItem:60});
+const repairSpeedOwners=new WeakMap();
+const repairSpeedDigest=f=>stable({fleets:f.fleets,reliable:f.fleetReliable,stock:f.stock instanceof Map?[...f.stock]:null,stockReliable:f.stockReliable,sources:f.sources,sourceAt:f.sourceAt,protocolReady:f.protocolReady});
+function repairSpeedQuote(f,opts,buildingId){
+ const owner=repairSpeedOwners.get(f),clock=owner&&readGameTime(owner.client).gameTime,at=Math.min(...['MyFleetsRequest','AllItemRequest','AllResourceRequest'].map(name=>f.sourceAt?.[name]??NaN));
+ if(!owner||owner.client.connected!==true||stable(owner.context)!==stable(fieldContext(owner.client,owner.player))||owner.digest!==repairSpeedDigest(f)||!Number.isSafeInteger(at)||Date.now()<at||Date.now()-at>30000||clock?.status!=='TRUSTED'||clock.source!=='PingResponse.serverTimestamp'||clock.accountId!==owner.context.accountId||clock.generation!==owner.context.generation||!Number.isFinite(clock.latestMs)||f.fleetReliable!==true||!f.protocolReady?.SpeedUpRepairRequest)return null;
+ const all=f.sources?.MyFleetsRequest?.body?.fleets,found=Array.isArray(all)?all.filter(row=>row.buildingId===buildingId):[],raw=found.length===1?toSnapshotJson(found[0]):null,repair=raw?.repairing,stock=cargoInventory(f),have=cargoStockAmount(stock,'加速器');
+ if(!raw||raw.state!==4||raw.autoFight?.isOn!==false||raw.treasureLootUid!==0||!['durability','maxDura'].every(key=>ownCargo(raw,key)&&fieldUint(raw[key]))||raw.maxDura<=raw.durability||!repair||!['startTs','endTs','endDura'].every(key=>ownCargo(repair,key)&&fieldUint(repair[key]))||repair.startTs>=repair.endTs||repair.startTs*1000>clock.earliestMs||repair.endDura!==raw.maxDura||!stock||!Number.isSafeInteger(have)||have<1)return null;
+ const maxUseNum=Math.min(have,Math.max(0,Math.ceil((repair.endTs-clock.latestMs/1000)/60)),2147483647);if(maxUseNum<1)return null;
+ return {raw,maxUseNum,earliestMs:clock.earliestMs,latestMs:clock.latestMs,hash:createHash('sha256').update(stable({context:owner.context,raw,config:opts})).digest('hex')};
+}
+const repairSpeedExpected=(raw,useNum,completed)=>({repairEndTs:completed?null:raw?.repairing?.endTs-60*useNum,secondsReduced:60*useNum,completed});
+function repairSpeedCandidate(f,p,opts){
+ const quote=repairSpeedQuote(f,opts,p.buildingId),end=(quote?.raw.repairing.endTs-60*p.useNum)*1000,completed=quote?end<=quote.earliestMs:false;
+ const reason=!opts.enabled||!opts.speedUp?'MODULE_DISABLED':!quote?'REPAIR_SPEED_SOURCE_OR_BOUNDARY_UNKNOWN':quote.hash!==p.expectedSpeedHash?'REPAIR_SPEED_SOURCE_CHANGED':p.useNum>quote.maxUseNum?'REPAIR_SPEED_ITEM_OR_BOUNDARY':!completed&&end<=quote.latestMs?'REPAIR_SPEED_PHASE_UNCERTAIN':null;
+ return candidate('speedUpRepair',{buildingId:p.buildingId},[{id:'加速器',num:p.useNum}],'Fixed v76 ArmyPop/SpeedUpPop: owned ITEM=2, 60 seconds per item',{fleet:quote?.raw??null},repairSpeedExpected(quote?.raw,p.useNum,completed),'SpeedUpRepairRequest',null,{buildingId:p.buildingId,speedUp:{type:2,useNum:p.useNum}},p,reason);
+}
 const fieldOwners=new WeakMap();
 const fieldDense=value=>Array.isArray(value)&&Object.getPrototypeOf(value)===Array.prototype&&value.length<=10000&&Reflect.ownKeys(value).length===value.length+1&&Array.from({length:value.length},(_,i)=>Object.getOwnPropertyDescriptor(value,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
 const fieldUint=value=>Number.isInteger(value)&&value>=0&&value<=2147483647;
@@ -380,7 +403,7 @@ function verifyResourceField(operation,before,after){
  return verifyFleetResourceFieldOutcome(operation,resourceFieldState(before),resourceFieldState(after));
 }
 export async function surveyFleet(client, protocol, { config = null, player = null, signal, parameters = {}, moduleConfig = {} } = {}) {
-  parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig);
+  parameters=parametersOf(parameters); const opts = validateFleetConfig(moduleConfig),speedContext=opts.speedUp?fieldContext(client,player):null;
   if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return surveyResourceFields(client,protocol,{config,player,signal,parameters});
   const fieldObservation=opts.giveUpResourceField?await surveyResourceFields(client,protocol,{config,player,signal}):null;
   const names = ['MyFleetsRequest', 'AllItemRequest', 'AllResourceRequest', 'CargoShipsRequest', 'WorldInfoRequest', 'GuildInfoRequest'],sourceAt={},worldQuery=worldObservationQuery(parameters.screenCenter);
@@ -411,11 +434,13 @@ export async function surveyFleet(client, protocol, { config = null, player = nu
   const citiesReliable = sources.WorldInfoRequest.available && Array.isArray(cities) && cities.every(city => Number.isSafeInteger(city.id) && city.id > 0) && new Set(cities.map(city => city.id)).size === cities.length;
   const guildId = quantity(sources.GuildInfoRequest.body?.guild?.guildId), playerGuild = quantity(player?.guildId);
   const guildIdx = sources.GuildInfoRequest.available && guildId > 0 && (playerGuild === null || playerGuild === guildId) ? guildId % 1000 : null;
-  return { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, sourceAt, worldQuery, ...fleets, formationFacts, ...fleetInventory(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
+  const facts = { ...readGameTime(client), config, player: structuredClone(player), parameters: structuredClone(parameters), sources, sourceAt, worldQuery, ...fleets, formationFacts, ...fleetInventory(sources.AllItemRequest, sources.AllResourceRequest), repairParams,
     resourceFields:fieldObservation&&fieldCurrent(fieldObservation)?fieldObservation.resourceFields:null, cargoReliable, ships: cargoReliable ? structuredClone(ships) : [], citiesReliable, cities: citiesReliable ? cities.map(city => ({ id: city.id, state: quantity(city.state), guildIdx: quantity(city.guildIdx) })) : [], guildIdx,
     map: opts.move === true ? loadMapAsset(opts.scenarioId) : null,
-    protocolReady: Object.fromEntries(['RepairFleetRequest', 'StopRepairingRequest', 'SetFleetAutoFightRequest', 'FleetSaveFormationRequest', 'MoveFleetsToCityRequest', 'FillCargoShipRequest', 'DrawShipRewardRequest'].map(name => [name, Boolean(protocol?.[name] && (!['FillCargoShipRequest', 'DrawShipRewardRequest'].includes(name) || protocol?.[name.replace('Request', 'Response')]))])),
+    protocolReady: Object.fromEntries(['RepairFleetRequest', 'StopRepairingRequest', 'SetFleetAutoFightRequest', 'FleetSaveFormationRequest', 'MoveFleetsToCityRequest', 'FillCargoShipRequest', 'DrawShipRewardRequest', 'SpeedUpRepairRequest'].map(name => [name, Boolean(protocol?.[name] && (!['FillCargoShipRequest', 'DrawShipRewardRequest'].includes(name) || protocol?.[name.replace('Request', 'Response')]))])),
   };
+  if(speedContext&&nonempty(speedContext.accountId)&&nonempty(speedContext.connectionId)&&Number.isSafeInteger(speedContext.generation)&&speedContext.generation>=0&&speedContext.playerId&&speedContext.worldId&&stable(speedContext)===stable(fieldContext(client,player)))repairSpeedOwners.set(facts,{client,player,context:speedContext,opts,digest:repairSpeedDigest(facts)});
+  return facts;
 }
 function movementCost(facts, config, city) {
   if (!facts.citiesReliable || quantity(facts.guildIdx) === null || facts.guildIdx <= 0 || quantity(city.guildIdx) === null) return null;
@@ -457,6 +482,7 @@ function candidate(kind, target, costs, costSource, beforeState, expectedState, 
 }
 function buildCandidates(facts, { config = facts.config, parameters = facts.parameters ?? {}, moduleConfig = {} } = {}) {
   parametersOf(parameters); const opts = validateFleetConfig(moduleConfig), candidates = [];
+  if(parameters.action==='speed-repair')return [repairSpeedCandidate(facts,parameters,opts)];
   if(Object.hasOwn(parameters,'resourceFieldGridIdx'))return [resourceFieldCandidate(facts,parameters,opts)];
   const inventory = cargoInventory(facts);
   const disabled = feature => opts.enabled !== true || opts[feature] !== true ? 'MODULE_DISABLED' : null;
@@ -536,9 +562,9 @@ function buildCandidates(facts, { config = facts.config, parameters = facts.para
   });
   return candidates;
 }
-export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options); return { candidates, maintenancePreparation:candidates.filter(row=>['fleetStopRepair','fleetStopAutoFight'].includes(row.actionType)).map(row=>({actionType:row.actionType,buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), repairPreparation:candidates.filter(row=>row.actionType==='fleetRepair').map(row=>({buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), worldScope:{source:'WorldInfoResponse.cities',completeness:'CURRENT_RESPONSE_ONLY',query:facts.worldQuery?structuredClone(facts.worldQuery):null,sourceAt:facts.sourceAt?.WorldInfoRequest??null,status:facts.citiesReliable===true?'OBSERVED':'UNKNOWN'}, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
+export function fleetView(facts, options = {}) { const candidates=buildCandidates(facts,options),opts=validateFleetConfig(options.moduleConfig),repairAcceleration=opts.speedUp?(facts.fleets??[]).flatMap(fleet=>{const quote=repairSpeedQuote(facts,opts,fleet.buildingId);return quote?[{buildingId:fleet.buildingId,maxUseNum:quote.maxUseNum,endTs:quote.raw.repairing.endTs,expectedSpeedHash:quote.hash}]:[];}):[]; return { candidates, repairAcceleration, maintenancePreparation:candidates.filter(row=>['fleetStopRepair','fleetStopAutoFight'].includes(row.actionType)).map(row=>({actionType:row.actionType,buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), repairPreparation:candidates.filter(row=>row.actionType==='fleetRepair').map(row=>({buildingId:row.target.buildingId,expectedRepairHash:repairPreparationHash(row,validateFleetConfig(options.moduleConfig)),costs:structuredClone(row.costs),reason:row.reason,decision:row.decision})), worldScope:{source:'WorldInfoResponse.cities',completeness:'CURRENT_RESPONSE_ONLY',query:facts.worldQuery?structuredClone(facts.worldQuery):null,sourceAt:facts.sourceAt?.WorldInfoRequest??null,status:facts.citiesReliable===true?'OBSERVED':'UNKNOWN'}, resourceFields:facts.resourceFields??null, cargo:cargoShortageView(facts,{...options,candidates}), fleets: facts.fleets ?? [], cities: facts.cities ?? [], citiesReliable: facts.citiesReliable === true, ships: facts.ships ?? [], formations: facts.formationFacts?.buildings ?? [], formationReliability: { fleets: facts.fleetReliable === true, buildings: facts.formationFacts?.buildingsReliable === true, heroes: facts.formationFacts?.heroesReliable === true, presets: facts.formationFacts?.presetsReliable === true, config: facts.formationFacts?.catalog?.reliable === true }, formationCatalog: facts.formationFacts?.catalog ?? null, ownedHeroIds: facts.formationFacts?.ownedHeroIds ?? [], unlockedPresetIds: facts.formationFacts?.unlockedPresetIds ?? [], blocked: [
   { actionType: 'speedUpFleet', code: 'PREMIUM_BLOCKED', reason: '行军加速消耗 RUBY；配置为30/次，不属于免费操作' },
-  { actionType: 'speedUpRepair', code: 'PREMIUM_BLOCKED', reason: '维修加速可能消耗RUBY或道具；未授权' },
+  { actionType: 'speedUpRepair', code: 'EXACT_ITEM_SELECTION_REQUIRED', reason: '仅明确单舰、自有加速器数量和原维修来源摘要；每件60秒，继续维修或完成须确定且完整复读，钻石/广告/补购不开放' },
   { actionType: 'speedUpCargo', code: 'PREMIUM_BLOCKED', reason: '货船加速有独立支付参数，未授权' },
   { actionType: 'fleetFormation', code: 'EXACT_SELECTION_REQUIRED', reason: '需buildingId及明确站位/阵型；复用阵型校验，OnWater复读，不继承主线阵营授权' },
   { actionType: 'autoFight', code: 'AUTOMATION_UNVERIFIED', reason: 'VIP舰队委任会持续派遣，不属于本次单次移动授权' },
@@ -571,6 +597,15 @@ export function planFleet(facts, options = {}) {
 export function verifyFleet(operation, beforeFacts, afterFacts, response) {
   const type = operation?.actionType, target = operation?.target;
   if(type==='giveUpField')return verifyResourceField(operation,beforeFacts,afterFacts);
+  if(type==='speedUpRepair'){
+    const p=operation.parameters,before=beforeFacts?.sources?.MyFleetsRequest,after=afterFacts?.sources?.MyFleetsRequest,raw=before?.body?.fleets?.find(row=>row.buildingId===target?.buildingId),next=after?.body?.fleets?.find(row=>row.buildingId===target?.buildingId),costs=[{id:'加速器',num:p?.useNum}];
+    const end=raw?.repairing?.endTs-60*p?.useNum,completed=operation.expectedState?.completed,clock=afterFacts?.gameTime,owner=repairSpeedOwners.get(beforeFacts),afterOwner=repairSpeedOwners.get(afterFacts);
+    const phase=completed===true?next?.state===1&&!next.repairing&&next.durability===raw?.repairing?.endDura&&end*1000<=clock?.earliestMs:completed===false&&next?.state===4&&next?.repairing?.endTs===end&&end*1000>clock?.latestMs;
+    const valid=owner&&afterOwner&&stable(owner.context)===stable(afterOwner.context)&&owner.digest===repairSpeedDigest(beforeFacts)&&afterOwner.digest===repairSpeedDigest(afterFacts)&&clock?.accountId===owner.context.accountId&&clock.generation===owner.context.generation&&p?.expectedSpeedHash===createHash('sha256').update(stable({context:owner.context,raw:toSnapshotJson(raw),config:owner.opts})).digest('hex')&&before?.available===true&&after?.available===true&&beforeFacts.fleetReliable===true&&afterFacts.fleetReliable===true&&p?.action==='speed-repair'&&p.buildingId===target.buildingId&&Number.isInteger(p.useNum)&&p.useNum>0&&raw?.state===4&&raw?.autoFight?.isOn===false&&raw?.repairing&&raw.repairing.endTs>end&&clock?.status==='TRUSTED'&&clock.reliable===true&&phase&&operation.identity===stable(operation.beforeState)&&stable(operation.beforeState)===stable({fleet:toSnapshotJson(raw)})&&stable(operation.expectedState)===stable(repairSpeedExpected(raw,p.useNum,completed))&&stable(operation.costs)===stable(costs)&&stable(operation.action)===stable({request:'SpeedUpRepairRequest',response:null,body:{buildingId:target.buildingId,speedUp:{type:2,useNum:p.useNum}}})&&cargoInventoryMatches(beforeFacts,afterFacts,costs,[]);
+    if(!valid)return {confirmed:false,reason:'维修加速原目标、阶段/计时或完整库存精确净扣未确认；保留UNKNOWN'};
+    const normalize=value=>{const copy=toSnapshotJson(value);copy.fleets.sort((a,b)=>a.buildingId.localeCompare(b.buildingId));const row=copy.fleets.find(row=>row.buildingId===target.buildingId);if(completed){row.state=1;row.durability=raw.repairing.endDura;row.repairing=null;}else row.repairing.endTs=end;return copy;};
+    const confirmed=stable(normalize(before.body))===stable(normalize(after.body));return {confirmed,reason:confirmed?'仅指定舰队维修截止或完整完成状态及库存净扣一致':'维修或其他舰队/原响应状态变化，保留UNKNOWN'};
+  }
   if (type === 'fleetFormation') {
     const id = target?.buildingId, before = beforeFacts?.formationFacts, after = afterFacts?.formationFacts;
     const old = before?.buildings?.find(row => row.buildingId === id), current = after?.buildings?.find(row => row.buildingId === id);
