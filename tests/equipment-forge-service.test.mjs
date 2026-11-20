@@ -32,7 +32,7 @@ function fixture({enabled=true,apply=true,historyFile}={}){
       gameClock:{read(){return {status:'TRUSTED',reliable:true,nowMs:state.nowMs,earliestMs:state.nowMs,latestMs:state.nowMs,accountId,generation:client.factContext.generation};}},
       markUnverifiedWrite(name,body){this.uncertainWrites.set(JSON.stringify({name,body}),true);},confirmWatchedWrite(name,body){this.uncertainWrites.delete(JSON.stringify({name,body}));},
       mutate(name,body){state.writes.push({name,body:structuredClone(body),durableBeforeWrite:structuredClone(journal.at(-1))});const b=state.buildings.find(v=>v.buildingId===body.buildingId);let reply={equipId:b.equipMaking.equipId};
-        if(state.apply){if(name==='MakeEquipRequest'){b.equipMaking=making({finishTime:2000});state.stock.set('材料',state.stock.get('材料')-4);state.stock.set('GOLD',state.stock.get('GOLD')-20);}if(name==='PickMadeEquipRequest'){state.bag.push(equip('9007199254740996',{equipId:b.equipMaking.equipId,star:b.equipMaking.star,level:3,refineLv:2}));b.equipMaking=idle();}}
+        if(state.apply){if(name==='MakeEquipRequest'){b.equipMaking=making({finishTime:2000});state.stock.set('材料',state.stock.get('材料')-4);state.stock.set('GOLD',state.stock.get('GOLD')-20);}if(name==='PickMadeEquipRequest'){state.bag.push(equip((9007199254740995n+BigInt(state.writes.length)).toString(),{equipId:b.equipMaking.equipId,star:b.equipMaking.star,level:3,refineLv:2}));b.equipMaking=idle();}}
         state.onWrite?.(name,body);return reply;},
       async request(name,body,response,_timeout,opts){wire(name,body);if(opts?.mutate)return wire(response,this.mutate(name,body));state.reads.push(name);await state.onRead?.(name);
         if(name==='OnWaterRequest')return wire(response,{building:state.buildings});if(name==='AllItemRequest')return wire(response,{items:[...state.stock].filter(([id])=>id!=='GOLD').map(([itemId,num])=>({itemId,num}))});if(name==='AllResourceRequest')return wire(response,{list:[{res:3,amount:state.stock.get('GOLD')}]});if(name==='EquipsRequest')return wire(response,{equip:state.bag});if(name==='AllHeroRequest')return wire(response,{heroes:state.heroes});throw Error('Unexpected synthetic forge read '+name);},
@@ -154,5 +154,27 @@ for(const apply of [true,false])test('prepared multi-forge Service Workflow uses
  const next=await runner.resume();
  if(apply){assert.equal(next.status,'AWAITING_AUTHORIZATION');assert.deepEqual(next.plan.actions[0].target.buildingId,'2装备厂');assert.equal((await f.execute(target,next.plan)).status.finalStatus,'SUCCESS');assert.equal((await runner.resume()).status,'COMPLETED');assert.equal(target.synthetic.writes.length,2);}
  else{assert.notEqual(next.status,'AWAITING_AUTHORIZATION');assert.equal(target.synthetic.writes.length,1);assert.equal(f.durable.unresolved(target.id),true);}
+ }finally{await f.cleanup();}
+});
+
+for(const action of ['make','pick'])for(const unconfirmed of [false,true])test('24-factory '+action+' Workflow '+(unconfirmed?'stops on final UNKNOWN':'confirms every factory'),{timeout:240000},async()=>{
+ const f=fixture(),target=f.session();try{
+  const state=target.synthetic,queue=action==='make'?idle():making();
+  state.buildings=Array.from({length:24},(_,i)=>({buildingId:(i+1)+'装备厂',level:1,buildStartTime:0,buildFinishTime:0,equipMaking:structuredClone(queue)}));
+  state.stock=new Map([['材料',96],['GOLD',480]]);
+  const source=await f.service.prepareEquipmentForgeSource(target,{action,targets:state.buildings.map(({buildingId})=>({buildingId,expectedQueue:structuredClone(queue),...(action==='make'?{makeId:1001}:{})})),expectedEquipmentCounts:{武器:action==='make'?1:25,防具:0,饰品:0},maxDurationMs:600000});
+  assert.equal(source.graph.runPolicy.maxActions,24);assert.equal(material(source.graph.budget.resources),action==='make'?96:0);assert.equal(state.writes.length,0);
+  const runner=f.runner(target);let status=await runner.start(target.id,source.graph);
+  for(let i=0;i<24;i++){
+   assert.equal(status.status,'AWAITING_AUTHORIZATION');assert.equal(status.plan.actions[0].target.buildingId,(i+1)+'装备厂');
+   if(unconfirmed&&i===23)state.apply=false;
+   const result=await f.execute(target,status.plan);assert.equal(result.record.finalStatus,unconfirmed&&i===23?'UNKNOWN':'SUCCESS');
+   assert.equal(state.writes.length,i+1);assert.equal(state.writes[i].durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+   status=await runner.resume();
+  }
+  assert.equal(status.status,unconfirmed?'UNKNOWN':'COMPLETED');assert.equal(status.runBudget.state,'CLOSED');assert.equal(target.workflowOwner,null);
+  assert.equal(f.durable.unresolved(target.id),unconfirmed);assert.equal(f.durable.list(target.id).length,24);
+  assert.equal(state.stock.get('材料'),action==='make'?(unconfirmed?4:0):96);
+  assert.equal(state.bag.length,action==='pick'?(unconfirmed?25:26):2);
  }finally{await f.cleanup();}
 });
