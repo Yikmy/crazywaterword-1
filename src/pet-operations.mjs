@@ -15,12 +15,13 @@ const moduleId='pet',type='宠物培育室';
 const tables=['BuildingCfg','PetParamCfg','PetBaseCfg','ItemCfg'];
 const levelTables=['PetLevelCfg','PetAdvancedCfg'];
 const breedTables=['PetBreedCfg','PetSpeciesCfg'];
+const geneTables=[...breedTables,'SelectPackLibCfg'];
 const levelSource='v76 PetLevelUpPanel._initPet/_refreshUI/_toUpRequest; PetUtil.curMaxLevel/petBaseAttr/buildExtraAttrArr; PetModel.SCPetsUpdate; PetLevelCfg and PetAdvancedCfg';
 const queries=[['water','OnWaterRequest','OnWaterResponse'],['pets','AllPetRequest','AllPetResponse'],['items','AllItemRequest','AllItemResponse'],['resources','AllResourceRequest','AllResourceResponse']];
 const source='v76 PetFeedView._onBtnFood; PetUtil.breedSpeedSeconds; local reference pet.mjs#planPet; DispPetBreedJob and PetParamCfg[投喂减少培育时间]';
 export const PET_DEFAULT_CONFIG=Object.freeze({enabled:false});
 export const PET_EVIDENCE=Object.freeze({source,requirement:'BIZ-R08',request:'PetFeedRequest',response:'NO_DEDICATED_RESPONSE',
-  level:Object.freeze({request:'PetLevelUpRequest',response:'NO_DEDICATED_RESPONSE',source:levelSource}),ordinaryBreed:Object.freeze({source:'v76 PetFeedView._onBtnBreed/_refreshBreedCost/_refreshBreedSelect; PetUtil.speciesCfgBySeason; PetBreedCfg/PetSpeciesCfg',readOnly:true,executable:false,universal:false}),breed:Object.freeze({source:'v76 PetFeedView._onClickQueueItem/_onBtnBreed/_refreshBreedCost/_refreshFoodTime; WellKnownBuilding.BUILDING_PET_BREED_ID; PetBreedCfg/PetSpeciesCfg',request:'PetBreedRequest',response:null,scope:'EXPLICIT_OWNED_ORDINARY_GENES_ONE_NEW_QUEUE_JOB',viewSha256:'568bc1d29f04046d22922c18e526a8ced0afdfc00d0604c31215c5c5e230b6a6',petUtilSha256:'1c732f7fb14e03989390bfc9fc0369702c0d7020db46fb6d5f766f9c590f2191',buildingSha256:'3019b1a2782a28f791313db76f3c186712eca5a1e0e3c6a5b1aefc35cd26bcc2',universal:false}),claim:Object.freeze({source:'v76 PetFeedView._onBtnReward + WellKnownBuilding.BUILDING_PET_BREED_ID + PetModel._onSCPetsUpdate',request:'GetMaturePetRequest',response:null,scope:'EXPLICIT_CURRENT_MATURE_LIST',viewSha256:'568bc1d29f04046d22922c18e526a8ced0afdfc00d0604c31215c5c5e230b6a6',buildingSha256:'3019b1a2782a28f791313db76f3c186712eca5a1e0e3c6a5b1aefc35cd26bcc2',modelSha256:'efb4bb9f5d1235fdd2da33fe10ccbd391a628aeb047c5710875c7bc607dd8008'}),universal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
+  level:Object.freeze({request:'PetLevelUpRequest',response:'NO_DEDICATED_RESPONSE',source:levelSource}),ordinaryBreed:Object.freeze({source:'v76 PetFeedView._onBtnBreed/_refreshBreedCost/_refreshBreedSelect; PetUtil.speciesCfgBySeason; PetBreedCfg/PetSpeciesCfg',readOnly:true,executable:false,universal:false}),breed:Object.freeze({source:'v76 PetFeedView._onClickQueueItem/_onBtnBreed/_refreshBreedCost/_refreshFoodTime; WellKnownBuilding.BUILDING_PET_BREED_ID; PetBreedCfg/PetSpeciesCfg',request:'PetBreedRequest',response:null,scope:'EXPLICIT_OWNED_ORDINARY_GENES_ONE_NEW_QUEUE_JOB',viewSha256:'568bc1d29f04046d22922c18e526a8ced0afdfc00d0604c31215c5c5e230b6a6',petUtilSha256:'1c732f7fb14e03989390bfc9fc0369702c0d7020db46fb6d5f766f9c590f2191',buildingSha256:'3019b1a2782a28f791313db76f3c186712eca5a1e0e3c6a5b1aefc35cd26bcc2',universal:false}),claim:Object.freeze({source:'v76 PetFeedView._onBtnReward + WellKnownBuilding.BUILDING_PET_BREED_ID + PetModel._onSCPetsUpdate',request:'GetMaturePetRequest',response:null,scope:'EXPLICIT_CURRENT_MATURE_LIST',viewSha256:'568bc1d29f04046d22922c18e526a8ced0afdfc00d0604c31215c5c5e230b6a6',buildingSha256:'3019b1a2782a28f791313db76f3c186712eca5a1e0e3c6a5b1aefc35cd26bcc2',modelSha256:'efb4bb9f5d1235fdd2da33fe10ccbd391a628aeb047c5710875c7bc607dd8008'}),geneExchange:Object.freeze({source:'v76 PetFeedView._onBtnShowExchange/_refreshBreedCost; PetUtil.getUniversalItemId; FragExchangePop._refreshInfo/_onBtnExchange; AllItemsModel.WellKnownItems; SelectPackLibCfg',request:'PetFragExchangeRequest',response:null,ratio:'1:1',popupSha256:'cb98aefaca24d75fd3a5c0f9ea34909eedd3f81b3299eb257f627027b8324911',itemsSha256:'314e146f90c722d918114fbc42f5be4e16c72300652ef0f1e3f8ac2c579b35db'}),universal:'EXPLICIT_OWNED_PACK_EXCHANGE_ONLY',inlineUniversal:'EXCLUDED',automaticClaim:'EXCLUDED',realGame:'REAL_UNVERIFIED'});
 const own=(v,k)=>v!==null&&typeof v==='object'&&Object.hasOwn(v,k);
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const dense=v=>Array.isArray(v)&&v.length<=10000&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.getOwnPropertyDescriptor(v,i)).every(d=>d?.enumerable&&Object.hasOwn(d,'value'));
@@ -48,14 +49,15 @@ export function validatePetConfig(v={}){
   return {enabled:v.enabled??false};
 }
 export function validatePetParameters(v={}){
-  if(!fields(v,['action','buildingId','jobIdx','uid','expectedMatureHash','petId','expectedBreedHash']))throw invalid('海兽仅允许明确action、建筑、任务/海兽及原成熟或培育批次标识');
-  if(own(v,'action')&&!['feed','level','claim','breed'].includes(v.action))throw invalid('当前仅支持单次feed、level、明确成熟列表claim或自有普通基因breed');
+  if(!fields(v,['action','buildingId','jobIdx','uid','expectedMatureHash','petId','expectedBreedHash','num']))throw invalid('海兽仅允许明确action、建筑、任务/海兽及原成熟或培育批次标识');
+  if(own(v,'action')&&!['feed','level','claim','breed','gene-exchange'].includes(v.action))throw invalid('当前仅支持单次feed、level、明确成熟列表claim或自有普通基因breed、gene-exchange');
   if(own(v,'buildingId')&&!id(v.buildingId))throw invalid('buildingId 必须为明确培育室 ID');
   if(own(v,'jobIdx')&&!uint(v.jobIdx))throw invalid('jobIdx 必须为明确的非负 int32，不能使用显示槽位代替');
   if(own(v,'uid')&&(typeof v.uid!=='string'||exactUid(v.uid)!==v.uid))throw invalid('uid 必须为明确十进制海兽 UID');
   if(v.action==='level'&&own(v,'jobIdx')||v.action!=='level'&&own(v,'uid'))throw invalid('升级 UID 与投喂 jobIdx 不得混用');
   if(v.action==='claim'&&(own(v,'jobIdx')||own(v,'uid'))||own(v,'expectedMatureHash')&&(v.action!=='claim'||typeof v.expectedMatureHash!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedMatureHash)))throw invalid('成熟领取只绑定明确培育室及当前完整成熟列表摘要，不使用队列或已有海兽UID');
-  if(v.action==='breed'&&['jobIdx','uid','expectedMatureHash'].some(k=>own(v,k))||own(v,'petId')&&(v.action!=='breed'||!id(v.petId))||own(v,'expectedBreedHash')&&(v.action!=='breed'||typeof v.expectedBreedHash!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedBreedHash)))throw invalid('普通培育仅绑定明确海兽与当前队列标识，不混入投喂、成长或成熟领取');
+  if(v.action==='breed'&&['jobIdx','uid','expectedMatureHash'].some(k=>own(v,k))||own(v,'petId')&&(!['breed','gene-exchange'].includes(v.action)||!id(v.petId))||own(v,'expectedBreedHash')&&(v.action!=='breed'||typeof v.expectedBreedHash!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedBreedHash)))throw invalid('普通培育仅绑定明确海兽与当前队列标识，不混入投喂、成长或成熟领取');
+  if(v.action==='gene-exchange'&&['buildingId','jobIdx','uid','expectedMatureHash','expectedBreedHash'].some(k=>own(v,k))||own(v,'num')&&(v.action!=='gene-exchange'||!positive(v.num)))throw invalid('基因兑换只使用明确petId和正整数num，不混入培育、成长或领取目标');
   return {...v};
 }
 function catalog(config,action='feed'){
@@ -65,8 +67,8 @@ function catalog(config,action='feed'){
     ||!base.every(r=>own(r,'petId')&&id(r.petId)&&own(r,'star')&&uint(r.star))||!unique(base,r=>r.petId+':'+r.star)
     ||!items.every(r=>own(r,'id')&&id(r.id))||!unique(items,r=>r.id))return null;
   const speed=p.filter(r=>own(r,'paramName')&&r.paramName==='投喂减少培育时间');
-  if(!['level','claim','breed'].includes(action)&&(speed.length!==1||!own(speed[0],'paramValue')||!positive(speed[0].paramValue)))return null;
-  return {seconds:['level','claim','breed'].includes(action)?null:speed[0].paramValue,types:b.map(r=>r.buildingType),pets:base.map(({petId,star})=>({petId,star})),itemIds:items.map(r=>r.id)};
+  if(!['level','claim','breed','gene-exchange'].includes(action)&&(speed.length!==1||!own(speed[0],'paramValue')||!positive(speed[0].paramValue)))return null;
+  return {seconds:['level','claim','breed','gene-exchange'].includes(action)?null:speed[0].paramValue,types:b.map(r=>r.buildingType),pets:base.map(({petId,star})=>({petId,star})),itemIds:items.map(r=>r.id)};
 }
 // Original ordinary gene/GOLD observations remain read-only. Explicit breed
 // actions below additionally freeze the full room/pool and verify one new job;
@@ -180,7 +182,7 @@ function currentClock(f){
   return clock&&f.startClock&&f.endClock&&f.startClock.earliest<=f.endClock.earliest&&f.endClock.earliest<=clock.earliest?clock:null;
 }
 export function petDependencyVersions({config,moduleConfig=PET_DEFAULT_CONFIG,parameters={}}={}){
-  return {moduleConfig:validatePetConfig(moduleConfig),...Object.fromEntries([...tables,...(parameters.action==='level'?levelTables:parameters.action==='breed'?breedTables:[])].map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};
+  return {moduleConfig:validatePetConfig(moduleConfig),...Object.fromEntries([...tables,...(parameters.action==='level'?levelTables:parameters.action==='breed'?breedTables:parameters.action==='gene-exchange'?geneTables:[])].map(n=>['config.'+n,copy(config?.tables?.[n]??null)]))};
 }
 // Level effects are the fixed client's preview formula, never inferred from rewards.
 function levelPolicy(config,pet,playerLevel){
@@ -255,6 +257,35 @@ function breedCandidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
     expectedState:preparation?{petId:p.petId,breedTime:preparation.breedTime,newJobCount:1}:null,costs,costSource:PET_EVIDENCE.breed.source,
     budgetClaims:{resources:copy(costs),quotas:[],uids:p.expectedBreedHash?[{type:'pet-breed-batch',id:p.buildingId+':'+p.expectedBreedHash}]:[]},label:'普通基因单次培育 '+(p.petId??''),...(reason===null?{action}:{})};
 }
+// The fixed Pet popup converts one owned gene selection pack into one chosen
+// ordinary gene. Pack pools are separated at spId 4; BLUE/PURPLE have no pool 2.
+function genePreparation(f,config){
+  if(!breedingRoom(f,config))return [];
+  const definitions=breedDefinitions(config,f.catalog),lib=config?.tables?.SelectPackLibCfg?.data,raw=config?.tables?.PetBreedCfg?.data,items=config?.tables?.ItemCfg?.data,season=Number(BigInt(f.context.worldId)/1000000n%1000n),colors={BLUE:'蓝',PURPLE:'紫',ORANGE:'橙',RED:'红'};
+  if(!definitions||!same(f.breedDefinitions,definitions)||!dense(lib)||!positive(season))return [];
+  return definitions.flatMap(row=>{
+    const cfg=raw.find(r=>r.petId===row.petId),quality=own(cfg,'quality')?cfg.quality:null,color=colors[quality],first=row.spId<=3,sourceId=quality==='BLUE'?(first?'蓝宠基因自选包':null):quality==='PURPLE'?(first?'紫宠基因自选包':null):quality==='ORANGE'?'橙宠基因自选包'+(first?'':'2'):quality==='RED'?'红宠基因自选包'+(first?'':'2'):null,targetId=row.costs[0].id;
+    const from=items.find(r=>r.id===sourceId),to=items.find(r=>r.id===targetId),selected=lib.filter(r=>own(r,'itemId')&&r.itemId===sourceId&&own(r,'selectItemId')&&r.selectItemId===targetId);
+    if(!sourceId||!color||targetId!=='宠物'+row.spId+color+'基因'||!from||!own(from,'type')||from.type!=='自选包'||!own(from,'quality')||from.quality!==quality||!to||!own(to,'type')||to.type!=='宠物基因'||!own(to,'quality')||to.quality!==quality||selected.length!==1||!['type','num','season'].every(k=>own(selected[0],k))||selected[0].type!=='道具'||selected[0].num!==1||!positive(selected[0].season)||Math.max(row.season,row.speciesSeason,selected[0].season)>season)return [];
+    return [{petId:row.petId,sourceId,targetId,sourceNum:f.stock.get(sourceId)??0,targetNum:f.stock.get(targetId)??0}];
+  });
+}
+function geneCandidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
+  const route=genePreparation(f,config).find(row=>row.petId===p.petId),costs=route&&positive(p.num)?[{id:route.sourceId,num:p.num}]:[],target={petId:p.petId??null},action={request:'PetFragExchangeRequest',response:null,body:{fragItemId:route?.targetId,num:p.num}};
+  let reason=null;
+  if(!p.petId||!positive(p.num))reason='EXPLICIT_PET_GENE_AND_QUANTITY_REQUIRED';
+  else if(!moduleConfig.enabled)reason='PET_MODULE_DISABLED';
+  else if(!route)reason='PET_GENE_ROUTE_SEASON_OR_SOURCE_UNKNOWN';
+  else if(!f.available.includes(action.request)||f.available.includes('PetFragExchangeResponse'))reason='PROTOCOL_UNAVAILABLE';
+  else if(route.sourceNum<p.num)reason='PET_GENE_PACK_STOCK_INSUFFICIENT';
+  else if(safeResourceQuantity(route.targetNum+p.num)===null)reason='PET_GENE_TARGET_OVERFLOW';
+  else{try{assertPaymentAllowed({...action,costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}}
+  const beforeState=route?copy(route):null;
+  return {module:moduleId,actionId:'pet:GENE-EXCHANGE:'+hash({target,parameters:p}),actionType:'GENE-EXCHANGE',parameters:p,target,executable:reason===null,blockedReason:reason,
+    identity:route?hash({context:f.context,buildings:f.buildings,pets:f.pets,beforeState,dependencies:petDependencyVersions({config,moduleConfig,parameters:p})}):null,
+    configEvidence:Object.fromEntries([...tables,...geneTables].map(n=>[n,copy(config?.tables?.[n]??null)])),beforeState,expectedState:reason===null?{...copy(route),sourceNum:route.sourceNum-p.num,targetNum:route.targetNum+p.num}:null,costs,costSource:PET_EVIDENCE.geneExchange.source,
+    budgetClaims:{resources:copy(costs),quotas:[],uids:route?[{type:'pet-gene-exchange',id:route.targetId}]:[]},label:'基因自选包明确兑换 '+(p.petId??'')+' '+(p.num??''),...(reason===null?{action}:{})};
+}
 function claimCandidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG}={}){
   const valid=authority(f,config),snapshot=valid?matureSnapshot(f,config):null,clock=valid?currentClock(f):null,building=snapshot?.building;
   let reason=null;const action={request:'GetMaturePetRequest',response:null,body:{}},costs=[];
@@ -276,6 +307,7 @@ function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG,settlement=false}
   if(p.action==='level')return levelCandidate(f,p,{config,moduleConfig,settlement});
   if(p.action==='claim')return claimCandidate(f,p,{config,moduleConfig});
   if(p.action==='breed')return breedCandidate(f,p,{config,moduleConfig});
+  if(p.action==='gene-exchange')return geneCandidate(f,p,{config,moduleConfig});
   const valid=authority(f,config),building=valid?f.buildings.find(b=>b.buildingId===p.buildingId&&makeTypeResolver(config)(b.buildingId)===type):null,job=building?.petBreed?.breedQ.find(j=>j.idx===p.jobIdx);
   const clock=valid?currentClock(f):null,costs=job?costsOf(job.feedRequirements,f.catalog):[],duplicates=valid?f.buildings.flatMap(b=>b.petBreed?.breedQ??[]).filter(j=>j.idx===p.jobIdx).length:0;
   const action={request:'PetFeedRequest',response:null,body:{jobIdx:p.jobIdx}};let reason=null;
@@ -301,14 +333,14 @@ function candidate(f,p,{config,moduleConfig=PET_DEFAULT_CONFIG,settlement=false}
 }
 export function viewPet(f,{config,moduleConfig,parameters=f?.parameters??{}}={}){
   const p=validatePetParameters(parameters),valid=authority(f,config),rooms=valid?f.buildings.filter(b=>makeTypeResolver(config)(b.buildingId)===type&&own(b,'petBreed')):[],choices=[];
-  if(['claim','breed'].includes(p.action))choices.push(p);
+  if(['claim','breed','gene-exchange'].includes(p.action))choices.push(p);
   else if(p.action==='level'){for(const b of valid?f.buildings:[]){const uid=b.petServe&&exactUid(b.petServe.petUid);if(uid&&(!p.buildingId||p.buildingId===b.buildingId)&&(!p.uid||p.uid===uid))choices.push({action:'level',buildingId:b.buildingId,uid});}}
   else for(const b of rooms)if(!p.buildingId||p.buildingId===b.buildingId)for(const job of b.petBreed.breedQ)if(!own(p,'jobIdx')||p.jobIdx===job.idx)choices.push({action:'feed',buildingId:b.buildingId,jobIdx:job.idx});
   const candidates=(choices.length?choices:[p]).map(choice=>{
     const c=candidate(f,choice,{config,moduleConfig});return without(c,['identity','configEvidence']);
   });
   return {module:moduleId,mode:p.action??'feed',serving:valid?f.buildings.filter(b=>['宠物','宠物B','宠物C'].includes(makeTypeResolver(config)(b.buildingId))).map(b=>({buildingId:b.buildingId,uid:b.petServe?.petUid??null})):[],playerLevel:f?.levelSource?.playerLevel??null,rooms:rooms.map(b=>({buildingId:b.buildingId,level:b.level,queue:copy(b.petBreed)})),pets:valid?copy(f.pets):[],secondsReduced:valid?f.catalog.seconds:null,
-    breedPreparation:p.action==='breed'?breedPreparation(f,config):[],claimPreparation:p.action==='claim'?matureSnapshot(f,config)?.parameters??null:null,breeding:petBreedQualification(f,{config}),candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
+    genePreparation:p.action==='gene-exchange'?genePreparation(f,config):[],breedPreparation:p.action==='breed'?breedPreparation(f,config):[],claimPreparation:p.action==='claim'?matureSnapshot(f,config)?.parameters??null:null,breeding:petBreedQualification(f,{config}),candidates,blocked:candidates.filter(c=>!c.executable),notes:[...(f?.notes??[])],evidence:PET_EVIDENCE};
 }
 export function validatePetGrowthPreparation(value){
  if(!fields(value,['targets','maxDurationMs'])||Reflect.ownKeys(value).length!==2||!dense(value.targets)||Object.getPrototypeOf(value.targets)!==Array.prototype||value.targets.length<1||value.targets.length>24||!Number.isSafeInteger(value.maxDurationMs)||value.maxDurationMs<1||value.maxDurationMs>86400000)throw invalid('海兽组合须明确1至24个不同目标及有限总时长');
@@ -336,6 +368,12 @@ export function verifyPet(op,b,a){
   // the original job could not have matured naturally without this feed.
   const contract=candidate(b,p,{config,moduleConfig:{enabled:true},settlement:p.action==='level'});
   if(!contract.executable||['module','actionId','actionType','target','identity','beforeState','expectedState','costs','costSource','budgetClaims','action','configEvidence'].some(k=>!same(op[k],contract[k])))return fail('PET_OPERATION_CONTRACT_MISMATCH');
+  if(p.action==='gene-exchange'){
+    if(!same(b.buildings,a.buildings)||!same(b.pets,a.pets))return fail('PET_STATE_CHANGED_DURING_GENE_EXCHANGE');
+    if(!stockMatchesDelta(b.stock,a.stock,contract.costs,[{id:contract.beforeState.targetId,num:p.num}]))return fail('PET_EXACT_GENE_EXCHANGE_OR_OTHER_INVENTORY_CHANGED');
+    if(!authority(b,config)||!authority(a,config))return fail('PET_AUTHORITY_EXPIRED_DURING_VERIFICATION');
+    return {confirmed:true,reason:'独立完整库存确认对应自有基因自选包精确扣除、所选普通专属基因1:1净入，完整海兽/建筑/队列与其他库存不变；未自动培育',afterState:copy(contract.expectedState)};
+  }
   if(p.action==='breed'){
     const before=contract.beforeState.building,after=a.buildings.find(row=>row.buildingId===p.buildingId),clock=currentClock(a);
     if(!after||!clock||!b.endClock||clock.earliest<b.endClock.earliest||before.petBreed.breedQ.some(job=>job.finishTime<=clock.latest))return fail('PET_BREED_SETTLEMENT_CLOCK_OR_NATURAL_MATURITY_AMBIGUOUS');
@@ -385,4 +423,4 @@ export function verifyPet(op,b,a){
   return {confirmed:true,reason:'完整OnWater与AllPet及库存确认同批队列单次投喂、精确材料净扣和减时/成熟转移；未自动领取',afterState:{building:copy(after),effect}};
 }
 export const petModule=Object.freeze({id:moduleId,label:'海兽培育与投喂',capabilities:Object.freeze(['BIZ-R08']),defaultConfig:PET_DEFAULT_CONFIG,validateConfig:validatePetConfig,validateParameters:validatePetParameters,
-  survey:surveyPet,view:viewPet,plan:planPet,verify:verifyPet,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:petDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...[...tables,...levelTables,...breedTables].map(n=>'config.'+n)])});
+  survey:surveyPet,view:viewPet,plan:planPet,verify:verifyPet,rejectionIdentity:businessRejectionIdentityFromHistory,dependencyVersions:petDependencyVersions,dependencyKeys:Object.freeze(['moduleConfig',...[...tables,...levelTables,...geneTables].map(n=>'config.'+n)])});
