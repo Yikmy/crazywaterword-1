@@ -3987,3 +3987,66 @@ for(const kind of ['buy','sale'])for(const mode of ['budget-tamper','late-editor
   });
  }finally{client.stop();await app.close();}
 });
+
+
+async function forgeMultiBrowserFixture(action,outcome){
+ const {app,session}=await forgeHttp(),client=session.client,writes=[];
+ const idle={makeId:0,finishTime:0,equipId:'',star:0},making={makeId:1001,finishTime:900,equipId:'蓝武器1',star:0};
+ const state={buildings:['1装备厂','2装备厂'].map(buildingId=>({buildingId,level:1,buildStartTime:0,buildFinishTime:0,equipMaking:structuredClone(action==='make'?idle:making)})),pool:structuredClone(session.forgeState.pool),heroes:structuredClone(session.forgeState.heroes),stock:20,gold:100};
+ client.request=async(name,body,response,_timeout,options={})=>{
+  heroWire(name,body);
+  if(name==='PickMadeEquipRequest'){
+   options.beforeDispatch?.();writes.push({name,body:structuredClone(body)});
+   const building=state.buildings.find(row=>row.buildingId===body.buildingId),equipId=building.equipMaking.equipId;
+   if(outcome==='success'){state.pool.push({uid:(9007199254740994n+BigInt(writes.length)).toString(),equipId,level:0,star:0,refineLv:0,attr:[],rerollAttrs:[]});building.equipMaking=structuredClone(idle);}
+   return heroWire(response,{equipId});
+  }
+  const answers={OnWaterRequest:{building:state.buildings},EquipsRequest:{equip:state.pool},AllHeroRequest:{heroes:state.heroes},AllItemRequest:{items:[{itemId:'材料',num:state.stock}]},AllResourceRequest:{list:[{res:3,amount:state.gold}]}};
+  if(Object.hasOwn(answers,name))return heroWire(response,answers[name]);throw Error('Unexpected forge browser request '+name);
+ };
+ client.sendWatch=async(name,body,options={})=>{
+  assert.equal(name,'MakeEquipRequest');heroWire(name,body);options.beforeDispatch?.();writes.push({name,body:structuredClone(body)});
+  if(outcome==='success'){state.buildings.find(row=>row.buildingId===body.buildingId).equipMaking={...making,finishTime:2000};state.stock-=4;state.gold-=20;}
+  return {status:'UNKNOWN'};
+ };
+ return {app,session,client,state,writes};
+}
+
+for(const action of ['make','pick'])for(const outcome of ['success','unknown'])test('browser offline multi-forge '+action+' '+outcome,{skip:!process.env.CW_TEST_BROWSER,timeout:90000},async()=>{
+ const {app,client,state,writes}=await forgeMultiBrowserFixture(action,outcome);
+ try{await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+  const {graph,simulation}=await evaluate('('+(async(action)=>{
+   const find=selector=>document.querySelector(selector),wait=async(selector,accept=element=>element&&!element.disabled)=>{
+    for(let i=0;i<40;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+    throw Error(selector+' '+find('#gp-equipment-forge-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+   };
+   await wait('#account',element=>element?.value==='A');(await wait('#tabs button[data-tab="heroes"]')).click();
+   (await wait('#gp-equipment-forge-load')).click();(await wait('#gp-equipment-forge-survey')).click();
+   await wait('[data-forge-batch-action="'+action+'"]');
+   const choices=Array.from(document.querySelectorAll('[data-forge-batch-action="'+action+'"]'));
+   if(choices.length!==2||choices.some(element=>element.disabled||(action==='make'?element.value!=='' : element.checked)))throw Error('Expected two unselected factories');
+   for(const choice of choices){if(action==='make'){choice.value='1001';choice.dispatchEvent(new Event('change',{bubbles:true}));}else choice.click();}
+   const section=choices[0].closest('div'),duration=section.querySelector('input[type=number]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+   (await wait('[data-forge-batch-prepare="'+action+'"]')).click();
+   const editor=await wait('#wf-json',element=>element?.value.includes('forge-'+action+'-')),graph=JSON.parse(editor.value);
+   (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+   const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+   return {graph,simulation:JSON.parse(output.textContent)};
+  }).toString()+')('+JSON.stringify(action)+')');
+  const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.buildingId),['1装备厂','2装备厂']);
+  assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
+  await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
+  const count=outcome==='success'?2:1;
+  for(let i=0;i<count;i++){
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
+   assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
+   await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+   await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+  }
+  const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+  await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+  assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes.map(row=>row.body.buildingId),['1装备厂','2装备厂'].slice(0,count));
+  assert.equal(state.stock,action==='make'&&outcome==='success'?12:20);assert.equal(state.pool.length,action==='pick'&&outcome==='success'?4:2);
+  assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
+ });}finally{client.stop();await app.close();}
+});
