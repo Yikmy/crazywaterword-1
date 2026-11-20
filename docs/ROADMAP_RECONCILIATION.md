@@ -1688,6 +1688,8 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 
 本批仅专武首次激活切片由BLOCKED_EVIDENCE进入IMPLEMENTED_OFFLINE/REAL_UNVERIFIED。原95C仍53 EXISTING_FUNCTION/40 PARTIAL/2 PROTOCOL_ONLY，273 Inventory仍189 EXISTING_FUNCTION/78 PARTIAL/6 PROTOCOL_ONLY；原C225/C226及BIZ-H05/BIZ-R09保持PARTIAL，替换/完整养成及Pet培育成熟等原缺口未替代。原42P/16M/22W、依赖DAG与f997536历史审计末列保持；本批状态变动以原行当前注记及本段为准。未跑130文件集合、完整平台模拟或真实游戏，未push/merge；R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。
 
+2026-11-20 专武首次激活页面接线补齐（父974c885）：复核原gpRenderGrowthBatch发现英雄名单过滤只含原LEVEL/SKILL/EXCLUSIVE-LEVEL/STAR，新增EXCLUSIVE-ACTIVATE虽已能进入Tasks，未列入原逐名成长控件。本批直接补src/gameplay-page.mjs原过滤和提示，沿用同一prepare与gpGrowthBatchGraph验证器。扩展上一批已有页面用例，核激活名单默认不选、明确选择、原heroes/growth/prepare请求、原专武UID及材料父预算、ACTION/VERIFY图载入和零授权/执行；定向1/1通过，不重复累计前轮。初轮扩展用例使用通用夹具额外假阻塞候选，导致原图验证器正确拒绝同参数重复来源；改为原Function单候选与实际hero-exclusive UID预算后通过，未改验证器。失败/最终日志cw-feature-first-exclusive-activation-batch-page-20261120.log与-batch-page-verified-20261120.log保留；语法/diff通过。原总范围、账本状态及R7 IN_PROGRESS/R8 NOT_RUN/REAL_UNVERIFIED保持。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
