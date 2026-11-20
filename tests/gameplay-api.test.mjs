@@ -1428,6 +1428,17 @@ for(const outcome of ['success','unknown','refused'])test('forge preparation act
   if(outcome!=='success'){app.sessions.delete('A');app.ready('A');assert.notEqual((await app.call('/api/workflows/authorize-run',{body:approval})).status,200);assert.equal(app.requests.filter(row=>/^(PickMadeEquip|MakeEquip)Request$/.test(row.name)).length,1);}
  }finally{await app.close();}
 });
+test('multi-forge HTTP preparation accepts two explicit idle factories without writes',async()=>{
+ const {app,session}=await forgeHttp();try{
+  const queue={makeId:0,finishTime:0,equipId:'',star:0},request=session.client.request.bind(session.client);
+  session.client.request=async(name,body,response,...rest)=>name==='OnWaterRequest'?heroWire(response,{building:['1装备厂','2装备厂'].map(buildingId=>({buildingId,level:1,buildStartTime:0,buildFinishTime:0,equipMaking:queue}))}):request(name,body,response,...rest);
+  const input={action:'make',targets:['1装备厂','2装备厂'].map(buildingId=>({buildingId,expectedQueue:queue,makeId:1001})),expectedEquipmentCounts:{武器:1,防具:0,饰品:0},maxDurationMs:60000};
+  assert.equal((await app.call(forgeRoute,{body:input,authorized:false})).status,403);
+  const prepared=await app.call(forgeRoute,{body:input});assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  assert.equal(prepared.data.graph.runPolicy.maxActions,2);assert.deepEqual(prepared.data.graph.nodes.filter(row=>row.type==='ACTION').map(row=>row.parameters.buildingId),['1装备厂','2装备厂']);
+  assert.deepEqual(prepared.data.budget.resources,[{id:'材料',num:8},{id:'GOLD',num:40}]);assert.equal(app.requests.some(row=>/^(PickMadeEquip|MakeEquip)Request$/.test(row.name)),false);
+ }finally{await app.close();}
+});
 for(const change of ['account','player','world','connection','generation','configuration'])test('forge preparation HTTP fences late '+change+' without writing or clearing a new owner',async()=>{
  const {app,session,config}=await forgeHttp();try{let changed=false;session.forgeState.onRead=async()=>{if(changed)return;changed=true;if(change==='account')session.client.factContext.accountId='B';if(change==='player')session.player.playerId='9';if(change==='world')session.player.worldId=2000001;if(change==='connection')session.connectionId='changed';if(change==='generation'){session.generation++;session.busy='new-generation-owner';}if(change==='configuration')config.tables.BuildingEquipMakeCfg.data[0].costItem[0][1]++;};const reply=await app.call(forgeRoute,{body:forgeBody});assert.notEqual(reply.status,200);assert.equal(session.busy,change==='generation'?'new-generation-owner':null);assert.equal(app.requests.some(row=>/^(PickMadeEquip|MakeEquip)Request$/.test(row.name)),false);}finally{await app.close();}
 });
