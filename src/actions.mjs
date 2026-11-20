@@ -353,7 +353,7 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if(shipOrder&&(!fields(body,['shipId','crewId'])||!positiveInt32(body.shipId)||!positiveInt32(body.crewId)||!exactCosts(costs)||!costs.length||costs.some(row=>['GOLD','金币','4'].includes(row.id)||/万能|礼包|自选包|随机包/.test(row.id))))fail('COST_UNKNOWN','商船补货仅允许明确单船单舱、自有普通材料正成本；禁止购买、万能材料或额外参数');
   if(donateFort&&(!fields(body,['cityId','item','selectPackNum'])||!positiveInt32(body.cityId)||body.selectPackNum!==0||!fields(body.item,['itemId','num'])||!fortMaterials.includes(body.item.itemId)||!positiveInt32(body.item.num)||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.item.itemId||costs[0].num!==body.item.num))fail('COST_UNKNOWN','堡垒仅允许单城市、自有普通材料精确成本及selectPackNum=0');
   const exclusiveLevel=request==='HeroExclusiveLevelUpRequest';
-  if(exclusiveLevel&&(!fields(body,['heroId'])||!identifier(body.heroId)||!exactCosts(costs)||costs.length!==1||!['初级专武材料','中级专武材料','高级专武材料','特级专武材料'].includes(costs[0].id)))fail('COST_UNKNOWN','专武升级仅允许明确已激活英雄及单种自有专武材料正成本');
+  if(exclusiveLevel&&(!fields(body,['heroId'])||!identifier(body.heroId)||!exactCosts(costs)||costs.length!==1||!['初级专武材料','中级专武材料','高级专武材料','特级专武材料'].includes(costs[0].id)))fail('COST_UNKNOWN','专武激活/升级仅允许明确英雄及单种自有专武材料正成本；激活资格须由原英雄Function独立验证');
   const exclusiveStar=request==='HeroExclusiveStarUpRequest';
   if(exclusiveStar&&(!fields(body,['heroId','universal'])||!identifier(body.heroId)||body.universal!==false||!exactCosts(costs)||costs.length!==2||!costs.some(row=>row.id===body.heroId+'碎片')||!costs.some(row=>['橙专武升星石','红专武升星石'].includes(row.id))))fail('COST_UNKNOWN','专武升星仅允许自有同英雄碎片、对应品质升星石及universal=false');
   const refineEquip=request==='EquipRefineRequest';

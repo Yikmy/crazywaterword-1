@@ -7,8 +7,9 @@ import { assertPaymentAllowed } from './actions.mjs';
 import { ResourceLedger, operationBudgetClaims, resourceCosts, safeResourceQuantity, stockFromResponses, RESOURCE_NAMES } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
+import { PIRATE_QUOTA_EVIDENCE } from './pirate-quota.mjs';
 import { stableBusinessValue, businessRejectionIdentityFromHistory } from './business-functions.mjs';
-import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
+import { createStateFact, factsFreshnessPolicy, readGameTime } from './state-facts.mjs';
 
 const own = (value, key) => value !== null && typeof value === 'object' && Object.hasOwn(value, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -22,7 +23,8 @@ const hash = value => createHash('sha256').update(stableBusinessValue(value)).di
 const invalid = message => Object.assign(new Error(message), { code: 'INVALID_PARAMETERS', statusCode: 400 });
 const qualityCost = Object.freeze({ BLUE: 'consumeBlue', PURPLE: 'consumePur', ORANGE: 'consumeOra', RED: 'consumeRed' });
 const kinds = Object.freeze(['level', 'star', 'skill']);
-const exclusiveKinds = Object.freeze(['exclusive-level', 'exclusive-star']);
+const exclusiveKinds = Object.freeze(['exclusive-level', 'exclusive-star', 'exclusive-activate']);
+const activationSources=new WeakMap();
 const isExclusiveAction = action => exclusiveKinds.includes(action);
 const sources = Object.freeze({
   level: 'src/heroes.mjs#planHeroes; HeroUpgradeCfg[targetLevel].exp and reqPlayerLv',
@@ -47,7 +49,7 @@ export function validateHeroParameters(value = {}) {
   if (!plainFields(value, ['heroId', 'action', 'skillIdx', 'allowUniversal', 'num', 'expectedStar', 'expectedFragmentBalance', 'expectedStarCost'])) throw invalid('英雄参数只允许 heroId、action、skillIdx、allowUniversal、num 及明确升星前置');
   const out = {};
   if (own(value, 'heroId')) { if (!id(value.heroId)) throw invalid('heroId 必须为明确英雄 ID'); out.heroId = value.heroId; }
-  if (own(value, 'action')) { if (![...kinds, ...exclusiveKinds, 'fragment-exchange'].includes(value.action)) throw invalid('action 只允许 level、star、skill、exclusive-level、exclusive-star、fragment-exchange'); out.action = value.action; }
+  if (own(value, 'action')) { if (![...kinds, ...exclusiveKinds, 'fragment-exchange'].includes(value.action)) throw invalid('action 只允许 level、star、skill、exclusive-level、exclusive-star、exclusive-activate、fragment-exchange'); out.action = value.action; }
   if (own(value, 'skillIdx')) {
     if (value.action !== 'skill' || !positive(value.skillIdx) || value.skillIdx > 4) throw invalid('skillIdx 必须为 skill 动作的 1 至 4 槽位');
     out.skillIdx = value.skillIdx;
@@ -141,9 +143,11 @@ export async function surveyHeroOperations(client, protocol, { player, parameter
   const provenance = { accountId: context.accountId, generation: context.generation, scope: { kind: 'ACCOUNT' } };
   const sourceFacts = Object.fromEntries(['heroes', 'items', 'resources'].map((key, index) => [key, createStateFact(inputs[key], { ...provenance, source: queryTypes[index][1], sourceAt: responses[index].sourceAt, reliable: index === 0 ? heroes !== null : inventory.stockReliable })]));
   sourceFacts.inventory = createStateFact({ items: inputs.items, resources: inputs.resources }, { ...provenance, source: 'AllItemResponse+AllResourceResponse', sourceAt: Math.min(responses[1].sourceAt, responses[2].sourceAt), reliable: inventory.stockReliable });
-  return { module: 'heroes', heroes, heroesReliable: heroes !== null, playerId, playerLevel, ...inventory, parameters, available: Object.keys(protocol ?? {}), notes,
+  const facts = { module: 'heroes', heroes, heroesReliable: heroes !== null, playerId, playerLevel, ...inventory, parameters, available: Object.keys(protocol ?? {}), notes,
     identityContext: context, inputs, sourceFacts, exclusiveObservations,
     state: { playerId, playerLevel, heroes: heroes?.map(hero => hero.raw) ?? null, ...((isExclusiveAction(parameters.action) || parameters.action === 'fragment-exchange' || own(parameters, 'expectedStar')) ? { context } : {}) } };
+  if(parameters.action==='exclusive-activate')activationSources.set(facts,{client,player,context,worldOpenTime:own(player,'worldOpenTime')&&positive(player.worldOpenTime)?player.worldOpenTime:null,inactiveIds:rawHeroes===null?[]:observed[0].heroes.filter(inactiveExclusive).map(row=>row.heroId),digest:hash({inputs:facts.inputs,sourceFacts:facts.sourceFacts,heroes:facts.heroes})});
+  return facts;
 }
 function rows(config, name) { const value = config?.tables?.[name]?.data; return dense(value) && value.length ? value : null; }
 function ordered(rows, key, first = 0) { return rows.every((row, index) => own(row, key) && uint(row[key]) && row[key] >= first && (!index || rows[index - 1][key] < row[key])); }
@@ -254,7 +258,7 @@ export function viewHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_
 }
 export function validateHeroGrowthPreparation(value) {
   if (!plainFields(value,['targets','maxDurationMs']) || Reflect.ownKeys(value).length!==2 || !dense(value.targets) || Object.getPrototypeOf(value.targets)!==Array.prototype || value.targets.length<1 || value.targets.length>24 || Reflect.ownKeys(value.targets).length!==value.targets.length+1 || !Array.from({length:value.targets.length},(_,i)=>Object.getOwnPropertyDescriptor(value.targets,i)).every(d=>d?.enumerable&&own(d,'value')) || !Number.isSafeInteger(value.maxDurationMs) || value.maxDurationMs<1 || value.maxDurationMs>86400000) throw invalid('英雄成长组合须明确1至24个不同英雄目标及有限总时长');
-  const targets=value.targets.map(row=>{if(!plainFields(row,['heroId','action','skillIdx']))throw invalid('成长组合只使用原heroId/action/skillIdx，不混入碎片兑换或升星前置');const p=validateHeroParameters(row);if(!p.heroId||!['level','skill',...exclusiveKinds].includes(p.action)||p.action==='skill'&&!p.skillIdx)throw invalid('须明确英雄及等级、技能槽或已激活专武动作');return p;});
+  const targets=value.targets.map(row=>{if(!plainFields(row,['heroId','action','skillIdx']))throw invalid('成长组合只使用原heroId/action/skillIdx，不混入碎片兑换或升星前置');const p=validateHeroParameters(row);if(!p.heroId||!['level','skill',...exclusiveKinds].includes(p.action)||p.action==='skill'&&!p.skillIdx)throw invalid('须明确英雄及等级、技能槽或明确专武激活/成长动作');return p;});
   if(new Set(targets.map(p=>p.heroId)).size!==targets.length||targets.some(p=>p.action!==targets[0].action))throw invalid('每英雄仅一次，同批须为同一种成长动作');
   return {targets,maxDurationMs:value.maxDurationMs};
 }
@@ -263,7 +267,7 @@ export function prepareHeroGrowthWorkflow(facts,{config,moduleConfig=HERO_DEFAUL
   const ledger=new ResourceLedger(facts.stock),nodes=[{id:'start',type:'START'}];
   const steps=p.targets.map((parameters,i)=>{const plan=planHeroOperations(facts,{config,moduleConfig,parameters,ledger});if(plan.actions.length!==1)throw invalid('所选英雄无当前成长资格或共享自有材料不足；须重新调查并明确选择');const row=plan.actions[0],selection={unique:true};nodes.push({id:'grow-'+i,type:'ACTION',module:'heroes',parameters,selection},{id:'verify-'+i,type:'VERIFY',module:'heroes'});return {parameters,selection,target:clone(row.target),costs:clone(row.costs),budgetClaims:operationBudgetClaims(row)};});
   nodes.push({id:'stop',type:'STOP'});const budget={resources:[...ledger.reserved].filter(([,num])=>num>0).map(([id,num])=>({id,num})),quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
-  return {...p,steps,budget,graph:{version:1,id:'hero-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确英雄逐名单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['heroes']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批一种原成长动作，每英雄只一次等级、明确技能槽或已激活专武成长；复用原planHeroes/planHeroOperations、成本和完整英雄池/库存验证，共享Ledger仅预留准备时自有材料。每步重新调查、预览、单次授权并独立复读；资格变化、拒绝或UNKNOWN停止。不跨升星推导技能资格，不兑换/激活专武/补购/重放或恢复执行；原单次及兑换升星入口保留。'};
+  return {...p,steps,budget,graph:{version:1,id:'hero-growths-'+hash({p,steps,budget}).slice(0,20),name:'明确英雄逐名单次成长',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:['heroes']}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'同批一种原成长动作，每英雄只一次等级、明确技能槽或明确专武首次激活/成长；复用原planHeroes/planHeroOperations、成本和完整英雄池/库存验证，共享Ledger仅预留准备时自有材料。每步重新调查、预览、单次授权并独立复读；资格变化、拒绝或UNKNOWN停止。不跨升星推导技能资格，不兑换/补购/重放或恢复执行，首次激活与后续成长分批且各自重新调查授权；原单次及兑换升星入口保留。'};
 }
 
 export function planHeroOperations(facts, { config, moduleConfig = HERO_DEFAULT_CONFIG, parameters = {}, selections, ledger = new ResourceLedger(facts?.stockReliable === true ? facts.stock : null) } = {}) {
@@ -319,12 +323,13 @@ export function heroDependencyVersions({ config, moduleConfig = HERO_DEFAULT_CON
 export const heroModule = Object.freeze({ id: 'heroes', label: '英雄成长', capabilities: Object.freeze(['C221', 'C222', 'C223', 'C224', 'C225', 'C226']),
   defaultConfig: HERO_DEFAULT_CONFIG, validateConfig: validateHeroConfig, validateParameters: validateHeroParameters,
   survey: surveyHeroOperations, view: viewHeroOperations, plan: planHeroOperations, verify: verifyHeroOperation, rejectionIdentity: businessRejectionIdentityFromHistory,
-  dependencyVersions: heroDependencyVersions, dependencyKeys: Object.freeze(['moduleConfig', 'config.HeroCfg', 'config.HeroUpgradeCfg', 'config.HeroStarCfg', 'config.HeroSkillUpCfg', 'config.ExclusiveUpgradeCfg', 'config.ExclusiveStarCfg', 'config.ExclusiveShowCfg', 'config.ExclusiveWeaponCfg', 'config.ItemCfg']) });
+  dependencyVersions: heroDependencyVersions, dependencyKeys: Object.freeze(['moduleConfig', 'config.HeroCfg', 'config.HeroUpgradeCfg', 'config.HeroStarCfg', 'config.HeroSkillUpCfg', 'config.ExclusiveUpgradeCfg', 'config.ExclusiveStarCfg', 'config.ExclusiveShowCfg', 'config.ExclusiveWeaponCfg', 'config.ItemCfg','config.ModuleOpenCfg','config.GameplayOpenCfg']) });
 
 // Exclusive growth extends the existing hero adapter without changing the legacy planner.
 const exclusiveTables = Object.freeze(['HeroCfg', 'ExclusiveUpgradeCfg', 'ExclusiveStarCfg', 'ExclusiveShowCfg', 'ExclusiveWeaponCfg', 'ItemCfg']);
 const exclusiveStarTables = Object.freeze(exclusiveTables.filter(name => name !== 'ExclusiveUpgradeCfg'));
-const exclusiveTablesFor = action => action === 'exclusive-star' ? exclusiveStarTables : exclusiveTables;
+const exclusiveActivationTables=Object.freeze([...exclusiveTables,'ModuleOpenCfg','GameplayOpenCfg']);
+const exclusiveTablesFor = action => action === 'exclusive-activate' ? exclusiveActivationTables : action === 'exclusive-star' ? exclusiveStarTables : exclusiveTables;
 const exclusiveStarStones = Object.freeze(['橙专武升星石', '红专武升星石']);
 const exclusiveMaterials = Object.freeze(['初级专武材料', '中级专武材料', '高级专武材料', '特级专武材料']);
 const exclusiveSource = 'v76 /subpackages/main/game.js SHA256 a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54 HeroDetailExclusiveLevel.ts:1579 _refreshUI/_refreshBtn/_toUpRequest; current ExclusiveStarCfg.unlockLv; next ExclusiveUpgradeCfg.heroStar/cost[ORANGE:0,RED:1]';
@@ -348,6 +353,21 @@ export const HERO_EXCLUSIVE_STAR_EVIDENCE = Object.freeze({
   tableDataSha256: Object.freeze(Object.fromEntries(exclusiveStarTables.map(name => [name, HERO_EXCLUSIVE_LEVEL_EVIDENCE.tableDataSha256[name]]))),
   scope: 'OWNED_ACTIVE_SINGLE_STAR_ONLY', activation: 'EXCLUDED', universalExchange: 'BLOCKED_EVIDENCE', realGame: 'REAL_UNVERIFIED',
 });
+// The full AllHero response uses null/absent optional HeroExclusive for the
+// client's forging path. A malformed present object is not an inactive weapon.
+function inactiveExclusive(hero){
+ const descriptor=Object.getOwnPropertyDescriptor(hero??{},'exclusive')??Object.getOwnPropertyDescriptor(Object.getPrototypeOf(hero??{})??{},'exclusive');
+ return !descriptor||own(descriptor,'value')&&descriptor.value==null;
+}
+function activationOpening(f,config){
+ const source=activationSources.get(f),player=source?.player,context=f?.identityContext,clock=source&&readGameTime(source.client).gameTime;
+ if(!source||!context?.worldId||!context.playerId||source.client.connected!==true||!equal(source.context,context)||!equal(context,exclusiveContext(source.client,player))||source.digest!==hash({inputs:f.inputs,sourceFacts:f.sourceFacts,heroes:f.heroes})||!positive(source.worldOpenTime)||source.worldOpenTime!==player?.worldOpenTime||f.playerLevel!==player?.level||clock?.status!=='TRUSTED'||clock.source!=='PingResponse.serverTimestamp'||clock.accountId!==context.accountId||clock.generation!==context.generation)return null;
+ const gates=rows(config,'ModuleOpenCfg')?.filter(row=>row.moduleId==='英雄专武'),opens=rows(config,'GameplayOpenCfg')?.filter(row=>row.gameplay==='英雄专武'),season=Number(BigInt(context.worldId)/1000000n%1000n);
+ if(gates?.length!==1||!positive(gates[0].playerLevel)||f.playerLevel<gates[0].playerLevel||opens?.length!==1||!dense(opens[0].openDays)||!opens[0].openDays.length||!opens[0].openDays.every(positive)||!positive(season))return null;
+ const requiredDays=opens[0].openDays[Math.min(season-1,opens[0].openDays.length-1)],openMs=source.worldOpenTime*1000,opensAtMs=Math.max(openMs,...PIRATE_QUOTA_EVIDENCE.clockOffsetsMinutes.map(offset=>Math.floor((openMs+offset*60000)/86400000)*86400000-offset*60000+(requiredDays-1)*86400000));
+ return clock.earliestMs>=opensAtMs?{worldOpenTime:source.worldOpenTime,requiredDays,opensAtMs,profile:PIRATE_QUOTA_EVIDENCE.profile,playerLevel:f.playerLevel}:null;
+}
+export const HERO_EXCLUSIVE_ACTIVATION_EVIDENCE=Object.freeze({source:'Fixed v76 HeroDetailExclusiveLevel._refreshUI/_refreshBtn/_toUpRequest (absent exclusive -> level 0 -> 1); HeroDetailUtil.exclusiveOpenDayState; GameUtils.getWorldOpenDays; original supported clock profile',detailSha256:'b0432b543ca2e5ec359a352eb76dc122a118ba5f266b72bd54d21909ce4a9913',heroDetailUtilSha256:'87fef8db837364ce93132a97e8a865d84cdebc9cbd604fbe3a424e9f73759dda',gameUtilsSha256:'d8b834b571eaec46a74d8a8d1ebc8e1745b1b0561eee6b5ef670fb1476787551',scope:'EXPLICIT_OWNED_INACTIVE_FIRST_LEVEL',request:'HeroExclusiveLevelUpRequest',response:null,realGame:'REAL_UNVERIFIED'});
 function observedExclusive(value) {
   if (!own(value, 'exclusive') || !object(value.exclusive) || !own(value.exclusive, 'level') || !positive(value.exclusive.level)
     || !own(value.exclusive, 'star') || !uint(value.exclusive.star)) return null;
@@ -379,7 +399,7 @@ function exclusiveDerivedReliable(hero) {
 }
 function exclusiveConfig(config, hero, action) {
   const fail = reason => ({ reason, costs: [] }), heroes = rows(config, 'HeroCfg'), shows = rows(config, 'ExclusiveShowCfg'), weapons = rows(config, 'ExclusiveWeaponCfg'), stars = rows(config, 'ExclusiveStarCfg'), items = rows(config, 'ItemCfg');
-  const upgradingLevel = action === 'exclusive-level', upgrades = upgradingLevel ? rows(config, 'ExclusiveUpgradeCfg') : null;
+  const upgradingLevel = action !== 'exclusive-star', upgrades = upgradingLevel ? rows(config, 'ExclusiveUpgradeCfg') : null;
   if (!heroes || !heroes.every(row => own(row, 'id') && id(row.id)) || new Set(heroes.map(row => row.id)).size !== heroes.length) return fail('HERO_CONFIG_UNKNOWN');
   const cfg = heroes.find(row => row.id === hero.heroId);
   if (!cfg || !own(cfg, 'type') || cfg.type !== '英雄' || !own(cfg, 'quality') || !['ORANGE', 'RED'].includes(cfg.quality)) return fail('EXCLUSIVE_SUPPORTED_HERO_REQUIRED');
@@ -389,7 +409,7 @@ function exclusiveConfig(config, hero, action) {
   if (upgradingLevel && (!upgrades || !ordered(upgrades, 'level', 1) || !upgrades.every(row => own(row, 'heroStar') && positive(row.heroStar) && own(row, 'cost') && dense(row.cost) && row.cost.length === 2 && row.cost.every(pair)))) return fail('EXCLUSIVE_LEVEL_CONFIG_UNKNOWN');
   if (!stars || !ordered(stars, 'star') || !stars.every(row => own(row, 'unlockLv') && positive(row.unlockLv))) return fail('EXCLUSIVE_CAP_CONFIG_UNKNOWN');
   if (!items || !items.every(row => own(row, 'id') && id(row.id)) || new Set(items.map(row => row.id)).size !== items.length) return fail('EXCLUSIVE_MATERIAL_CONFIG_UNKNOWN');
-  const exclusive = observedExclusive(hero.raw), current = stars.find(row => row.star === exclusive.star);
+  const exclusive = action==='exclusive-activate'?{level:0,star:0}:observedExclusive(hero.raw), current = stars.find(row => row.star === exclusive.star);
   if (!current) return fail('EXCLUSIVE_CURRENT_STAR_CONFIG_UNKNOWN');
   if (!upgradingLevel) {
     // Current cap checks the observed level's consistency; the panel does not
@@ -419,15 +439,16 @@ function exclusiveStarCosts(hero, quality, current, stars, items) {
   return { reason: null, costs: [{ id: fragmentId, num: next.piece }, { id: stoneId, num: stones }] };
 }
 function exclusiveCandidate(facts, parameters, { config, moduleConfig, authority, includePlanEvidence = true }) {
-  const kind = parameters.action, star = kind === 'exclusive-star', actionType = kind.toUpperCase();
+  const kind = parameters.action, star = kind === 'exclusive-star', activating=kind==='exclusive-activate',opening=activating?activationOpening(facts,config):null, actionType = kind.toUpperCase();
   const hero = facts?.heroes?.find(row => row.heroId === parameters.heroId), exclusive = observedExclusive(hero?.raw), action = buildHeroAction({ kind, heroId: parameters.heroId });
   let reason = null, costs = [];
   if (!parameters.heroId) reason = 'EXPLICIT_HERO_AND_ATOMIC_ACTION_REQUIRED';
   else if (!moduleConfig.enabled) reason = 'HERO_MODULE_DISABLED';
   else if (!(authority ?? exclusiveAuthority(facts)) || !hero) reason = 'EXCLUSIVE_AUTHORITY_OR_CONTEXT_UNKNOWN';
-  else if (!exclusive || !facts.exclusiveObservations.some(row => row.heroId === hero.heroId && equal(row.exclusive, exclusive))) reason = 'OWNED_ACTIVE_EXCLUSIVE_REQUIRED';
+  else if(activating&&(!opening||!activationSources.get(facts)?.inactiveIds.includes(hero.heroId)||!inactiveExclusive(hero.raw)))reason='EXCLUSIVE_ACTIVATION_OPENING_OR_INACTIVE_STATE_UNKNOWN';
+  else if (!activating&&(!exclusive || !facts.exclusiveObservations.some(row => row.heroId === hero.heroId && equal(row.exclusive, exclusive)))) reason = 'OWNED_ACTIVE_EXCLUSIVE_REQUIRED';
   else if (!exclusiveDerivedReliable(hero)) reason = 'TARGET_HERO_DERIVED_STATE_UNKNOWN';
-  else { const eligibility = exclusiveConfig(config, hero, kind); reason = eligibility.reason; costs = eligibility.costs;
+  else { const eligibility = exclusiveConfig(config, activating?{...hero,raw:{...hero.raw,exclusive:{level:0,star:0}}}:hero, kind); reason = eligibility.reason; costs = eligibility.costs;
     if (!reason && !facts.available?.includes(action.request)) reason = 'PROTOCOL_UNAVAILABLE';
     else if (!reason && costs.some(cost => (facts.stock.get(cost.id) ?? 0) < cost.num)) reason = 'EXCLUSIVE_MATERIAL_STOCK_INSUFFICIENT';
     else if (!reason) { try { assertPaymentAllowed({ ...action, costs }); } catch (error) { reason = error.code ?? 'COST_NOT_ALLOWED'; } }
@@ -435,13 +456,13 @@ function exclusiveCandidate(facts, parameters, { config, moduleConfig, authority
   const target = { heroId: parameters.heroId ?? null };
   return { module: 'heroes', actionId: 'heroes:' + actionType + ':' + hash({ target, parameters }), actionType, target, parameters,
     ...(includePlanEvidence ? {
-      identity: hero ? hash({ context: facts.identityContext, playerLevel: facts.playerLevel, heroes: facts.heroes.map(row => row.raw), dependencies: heroDependencyVersions({ config, moduleConfig, parameters }) }) : null,
+      identity: hero ? hash({ context: facts.identityContext, playerLevel: facts.playerLevel, heroes: facts.heroes.map(row => row.raw), ...(activating?{activationOpening:opening}:{}), dependencies: heroDependencyVersions({ config, moduleConfig, parameters }) }) : null,
       configEvidence: Object.fromEntries(exclusiveTablesFor(kind).map(name => [name, clone(config?.tables?.[name] ?? null)])),
     } : {}),
-    beforeState: hero ? clone(hero.raw) : null, expectedState: hero && exclusive ? { ...growth(hero), exclusive: { level: exclusive.level + (star ? 0 : 1), star: exclusive.star + (star ? 1 : 0) } } : null,
-    costs, costSource: star ? exclusiveStarSource : exclusiveSource,
+    beforeState: hero ? clone(hero.raw) : null, expectedState: hero && (exclusive||activating) ? { ...growth(hero), exclusive: activating?{level:1,star:0}:{ level: exclusive.level + (star ? 0 : 1), star: exclusive.star + (star ? 1 : 0) } } : null,
+    costs, costSource: activating?HERO_EXCLUSIVE_ACTIVATION_EVIDENCE.source:star ? exclusiveStarSource : exclusiveSource,
     budgetClaims: { resources: clone(costs), quotas: [], uids: parameters.heroId ? [{ type: 'hero-exclusive', id: parameters.heroId }] : [] },
-    executable: reason === null, blockedReason: reason, notes: [], label: (star ? '英雄专武单次升星 ' : '英雄专武单次升级 ') + (parameters.heroId ?? ''), ...(reason === null ? { action } : {}) };
+    executable: reason === null, blockedReason: reason, notes: [], label: (activating?'英雄专武首次激活 ':star ? '英雄专武单次升星 ' : '英雄专武单次升级 ') + (parameters.heroId ?? ''), ...(reason === null ? { action } : {}) };
 }
 function verifyExclusiveGrowth(operation, beforeFacts, afterFacts, parameters) {
   const fail = reason => ({ confirmed: false, reason });
@@ -452,12 +473,12 @@ function verifyExclusiveGrowth(operation, beforeFacts, afterFacts, parameters) {
   const before = beforeFacts.heroes.find(row => row.heroId === parameters.heroId), after = afterFacts.heroes.find(row => row.heroId === parameters.heroId);
   if (!before || !after || !observedExclusive(after.raw) || !exclusiveDerivedReliable(before) || !exclusiveDerivedReliable(after)) return fail('TARGET_HERO_DERIVED_STATE_UNKNOWN');
   const dimension = parameters.action === 'exclusive-star' ? 'star' : 'level';
-  const expected = { ...clone(before.raw), exclusive: { ...clone(before.raw.exclusive), [dimension]: before.raw.exclusive[dimension] + 1 }, power: after.raw.power, attributes: clone(after.raw.attributes) };
+  const expected = { ...clone(before.raw), exclusive: parameters.action==='exclusive-activate'?{level:1,star:0}:{ ...clone(before.raw.exclusive), [dimension]: before.raw.exclusive[dimension] + 1 }, power: after.raw.power, attributes: clone(after.raw.attributes) };
   if (!equal(expected, after.raw)) return fail(dimension === 'star' ? 'EXACT_SINGLE_EXCLUSIVE_STAR_NOT_CONFIRMED' : 'EXACT_SINGLE_EXCLUSIVE_LEVEL_NOT_CONFIRMED');
   const others = facts => facts.heroes.filter(row => row.heroId !== parameters.heroId).map(row => row.raw);
   if (!equal(others(beforeFacts), others(afterFacts))) return fail('NON_TARGET_HERO_CHANGED');
   if (!stockMatchesDelta(beforeFacts.stock, afterFacts.stock, contract.costs, [])) return fail('EXACT_EXCLUSIVE_MATERIAL_DEBIT_OR_OTHER_INVENTORY_CHANGED');
-  return { confirmed: true, reason: (dimension === 'star' ? '新 AllHero 完整复读确认已有专武单次星级+1、等级不变、对应碎片和升星石精确扣除及非目标状态不变' : '新 AllHero 完整复读确认已有专武单次等级+1、所选材料精确扣除及非目标状态不变') + '；仅目标power/attributes允许权威派生变化', afterState: clone(after.raw), responseEvidence: null };
+  return { confirmed: true, reason: (parameters.action==='exclusive-activate'?'新 AllHero 完整复读确认原未激活专武首次1级0星、配置材料精确扣除及非目标状态不变':dimension === 'star' ? '新 AllHero 完整复读确认已有专武单次星级+1、等级不变、对应碎片和升星石精确扣除及非目标状态不变' : '新 AllHero 完整复读确认已有专武单次等级+1、所选材料精确扣除及非目标状态不变') + '；仅目标power/attributes允许权威派生变化', afterState: clone(after.raw), responseEvidence: null };
 }
 
 // Same fixed v76 FragExchangePop evidence used by antique exchange. The request

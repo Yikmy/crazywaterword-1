@@ -100,7 +100,7 @@ test('C226 request codec requires the universal field even for an explicit false
 
 test('C226 selector is explicit and binds two owned costs and the same exclusive UID as LEVEL', async () => {
   assert.deepEqual(validateHeroParameters(parameters()), parameters());
-  for (const extra of [{ allowUniversal: true }, { allowUniversal: false }, { universal: false }, { count: 1 }, { request }, { action: 'exclusive-activate' }]) {
+  for (const extra of [{ allowUniversal: true }, { allowUniversal: false }, { universal: false }, { count: 1 }, { request }]) {
     assert.throws(() => validateHeroParameters({ ...parameters(), ...extra }), { code: 'INVALID_PARAMETERS' });
   }
   assert.ok(heroModule.capabilities.includes('C226'));

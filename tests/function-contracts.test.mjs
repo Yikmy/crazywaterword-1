@@ -176,15 +176,15 @@ test('sparse, extended, subclassed and oversized JSON arrays fail closed', () =>
   invalid(() => validateFunctionParameters('formation', adapter('formation'), Object.fromEntries(Array.from({ length: 51 }, (_, index) => ['k' + index, 1]))));
 });
 
-test('exclusive LEVEL extends existing hero contract without activation or guessed typed response',()=>{
- const c=FUNCTION_CONTRACTS.heroes;assert.deepEqual(c.requirementIds.C,['C221','C222','C223','C224','C225','C226']);assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-level'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-LEVEL'));assert.equal(c.verification.typedResponseAlone,false);assert.ok(c.implementation.blockedCapabilities.some(r=>r.capability==='EXCLUSIVE_ACTIVATION'&&!r.executable));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-level').keys,['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
+test('exclusive LEVEL and activation extend existing hero contract without guessed typed response',()=>{
+ const c=FUNCTION_CONTRACTS.heroes;assert.deepEqual(c.requirementIds.C,['C221','C222','C223','C224','C225','C226']);assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-level'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-LEVEL'));assert.equal(c.verification.typedResponseAlone,false);assert.ok(c.implementation.actions.includes('EXCLUSIVE-ACTIVATE')&&c.inputSchema.properties.action.enum.includes('exclusive-activate'));assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-level').keys,['config.ExclusiveUpgradeCfg','config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
 });
 
 test('exclusive STAR extends the same contract without level-only configuration or universal input',()=>{
  const c=FUNCTION_CONTRACTS.heroes;assert.ok(c.inputSchema.properties.action.enum.includes('exclusive-star'));assert.ok(c.implementation.actions.includes('EXCLUSIVE-STAR'));assert.equal(c.verification.typedResponseAlone,false);
  assert.deepEqual(c.dependencyVersions.conditional.find(r=>r.when==='parameters.action=exclusive-star').keys,['config.ExclusiveStarCfg','config.ExclusiveShowCfg','config.ExclusiveWeaponCfg','config.ItemCfg']);
  assert.deepEqual(validateFunctionParameters('heroes',heroModule,{action:'exclusive-star',heroId:'A'}),{action:'exclusive-star',heroId:'A'});
- for(const extra of [{allowUniversal:false},{universal:false},{star:1},{action:'exclusive-activate'}])invalid(()=>validateFunctionParameters('heroes',heroModule,{action:'exclusive-star',heroId:'A',...extra}));
+ for(const extra of [{allowUniversal:false},{universal:false},{star:1}])invalid(()=>validateFunctionParameters('heroes',heroModule,{action:'exclusive-star',heroId:'A',...extra}));
 });
 
 test('badge growth C228 contract declares typed evidence plus reread and leaves other branches blocked',()=>{
