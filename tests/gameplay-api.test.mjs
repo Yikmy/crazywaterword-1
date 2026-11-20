@@ -3158,13 +3158,16 @@ for(const outcome of ['success','unknown','refused'])test('arrived Cargo HTTP pr
 });
 
 
-for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '+(outcome==='success'?'settles two selected voyages':'stops on first UNKNOWN'),{
- skip:!process.env.CW_TEST_BROWSER,timeout:55000
+for(const {outcome,shipCount,failAt} of [
+ ...['success','unknown'].map(outcome=>({outcome,shipCount:2,failAt:1})),
+ ...['success','unknown','refused'].map(outcome=>({outcome,shipCount:24,failAt:24}))
+])test('browser offline arrived Cargo '+(shipCount===24?'executes 24 selected voyages '+outcome+' at final voyage':outcome==='success'?'settles two selected voyages':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:shipCount===24?240000:55000
 },async()=>{
- const fixture=await arrivedCargoHttpFixture(outcome),{app,writes}=fixture;
+ const fixture=await arrivedCargoHttpFixture(outcome,{count:shipCount,failAt}),{app,writes}=fixture;
  try {
   await withOfflineBrowser(app,async({evaluate,waitFor})=>{
-   const {graph,simulation}=await evaluate('('+(async()=>{
+   const {graph,simulation}=await evaluate('('+(async(shipCount)=>{
     const find=selector=>document.querySelector(selector);
     const wait=async(selector,accept=element=>element&&!element.disabled)=>{
      for(let attempt=0;attempt<100;attempt++){
@@ -3180,10 +3183,10 @@ for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '
     (await wait('#gp-fleet-survey')).click();
     await wait('[data-cargo-claim-target]',element=>element&&!element.disabled);
     const choices=Array.from(document.querySelectorAll('[data-cargo-claim-target]'));
-    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected arrived ships');
+    if(choices.length!==shipCount||choices.some(element=>element.checked||element.disabled))throw Error('Expected '+shipCount+' unselected arrived ships');
     for(const choice of choices)choice.click();
     const duration=await wait('[data-cargo-claim-duration]');
-    duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    duration.value=shipCount===24?'180':'60';duration.dispatchEvent(new Event('input',{bubbles:true}));
     (await wait('[data-cargo-claim-prepare]')).click();
     const editor=await wait('#wf-json',element=>element?.value.includes('cargoClaim'));
     const graph=JSON.parse(editor.value);
@@ -3191,15 +3194,16 @@ for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '
     (await wait('#wf-simulate')).click();
     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
     return {graph,simulation:JSON.parse(output.textContent)};
-   }).toString()+')()');
+   }).toString()+')('+JSON.stringify(shipCount)+')');
    const actions=graph.nodes.filter(row=>row.type==='ACTION');
-   assert.deepEqual(actions.map(row=>row.parameters.shipIndex),[1,2]);
-   assert.deepEqual(graph.nodes.map(row=>row.type),['START','ACTION','VERIFY','ACTION','VERIFY','STOP']);
+   assert.deepEqual(actions.map(row=>row.parameters.shipIndex),Array.from({length:shipCount},(_,i)=>i+1));
+   assert.deepEqual(graph.nodes.map(row=>row.type),['START',...Array.from({length:shipCount},()=>['ACTION','VERIFY']).flat(),'STOP']);
+   assert.equal(graph.runPolicy.maxActions,shipCount);assert.equal(graph.runPolicy.maxDurationMs,shipCount===24?180000:60000);
    assert.deepEqual(graph.budget,{resources:[],quotas:[],uids:[]});
    assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
    await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');
    await evaluate("document.getElementById('wf-start').click()");
-   const count=outcome==='success'?2:1;
+   const count=outcome==='success'?shipCount:failAt;
    for(let i=0;i<count;i++){
     await waitFor(()=>evaluate(`(() => {
      const text=document.getElementById('wf-status').textContent;
@@ -3210,16 +3214,21 @@ for(const outcome of ['success','unknown'])test('browser offline arrived Cargo '
     assert.equal(writes.length,i);
     await evaluate("document.getElementById('wf-authorize').click()");
     await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&
-     record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+     record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i);
     await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);
     await evaluate("document.getElementById('wf-resume').click()");
    }
-   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+   const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;
     return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
    assert.equal(await evaluate('globalThis.confirmations'),count);
    assert.deepEqual(writes,Array.from({length:count},(_,i)=>({index:i+1})));
-   assert.equal(fixture.badges,outcome==='success'?2:0);
+   assert.equal(fixture.badges,outcome==='success'?shipCount:failAt-1);
+   const records=app.history.list('A');assert.equal(records.length,count);
+   assert.deepEqual(records.slice().reverse().map(row=>row.finalStatus),Array.from({length:count},(_,i)=>outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS'));
+   assert.deepEqual(records.slice().reverse().map(row=>row.workflowNodeId),actions.slice(0,count).map(row=>row.id));
+   assert.equal(app.operations.workflowBudget('A').batches.length,count);assert.deepEqual(app.operations.workflowBudget('A').limits,graph.budget);
+   assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
    assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
@@ -3415,13 +3424,16 @@ for(const outcome of ['success','unknown','refused'])test('alliance tech HTTP pr
 });
 
 
-for(const outcome of ['success','unknown'])test('browser offline alliance tech '+(outcome==='success'?'settles both point types':'stops on first UNKNOWN'),{
- skip:!process.env.CW_TEST_BROWSER,timeout:55000
+for(const {outcome,techCount,failAt} of [
+ ...['success','unknown'].map(outcome=>({outcome,techCount:2,failAt:1})),
+ ...['success','unknown','refused'].map(outcome=>({outcome,techCount:24,failAt:24}))
+])test('browser offline alliance tech '+(techCount===24?'executes 24 technologies '+outcome+' at final technology':outcome==='success'?'settles both point types':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:techCount===24?240000:55000
 },async()=>{
- const {app,rows,writes,stock}=await allianceTechBatchHttpFixture(outcome);
+ const {app,rows,levels,writes,stock}=await allianceTechBatchHttpFixture(outcome,{count:techCount,failAt});
  try{
   await withOfflineBrowser(app,async({evaluate,waitFor})=>{
-   const {graph,simulation}=await evaluate('('+(async()=>{
+   const {graph,simulation}=await evaluate('('+(async(techCount)=>{
     const find=selector=>document.querySelector(selector);
     const wait=async(selector,accept=element=>element&&!element.disabled)=>{
      for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
@@ -3432,32 +3444,39 @@ for(const outcome of ['success','unknown'])test('browser offline alliance tech '
     (await wait('#gp-alliance-load')).click();(await wait('#gp-alliance-survey')).click();
     await wait('[data-alliance-tech-target]',element=>element&&!element.disabled);
     const choices=Array.from(document.querySelectorAll('[data-alliance-tech-target]'));
-    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected eligible technologies');
+    if(choices.length!==techCount||choices.some(element=>element.checked||element.disabled))throw Error('Expected '+techCount+' unselected eligible technologies');
     for(const choice of choices)choice.click();
-    const duration=await wait('[data-alliance-tech-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    const duration=await wait('[data-alliance-tech-duration]');duration.value=techCount===24?'180':'60';duration.dispatchEvent(new Event('input',{bubbles:true}));
     (await wait('[data-alliance-tech-prepare]')).click();
     const editor=await wait('#wf-json',element=>element?.value.includes('alliance-tech-'));const graph=JSON.parse(editor.value);
     (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
     return {graph,simulation:JSON.parse(output.textContent)};
-   }).toString()+')()');
+   }).toString()+')('+JSON.stringify(techCount)+')');
    const actions=graph.nodes.filter(row=>row.type==='ACTION');
    assert.deepEqual(actions.map(row=>row.parameters),rows.map(({techId})=>({techId,targetLevel:1})));
-   assert.deepEqual(graph.budget,{resources:[{id:'公会科技点',num:20},{id:'联盟职级科技点',num:10}],quotas:[],uids:[]});
+   assert.deepEqual(graph.budget,{resources:[{id:'公会科技点',num:Math.ceil(techCount/2)*20},{id:'联盟职级科技点',num:Math.floor(techCount/2)*10}],quotas:[],uids:[]});
+   assert.equal(graph.runPolicy.maxActions,techCount);assert.equal(graph.runPolicy.maxDurationMs,techCount===24?180000:60000);
    assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
    await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
-   const count=outcome==='success'?2:1;
+   const count=outcome==='success'?techCount:failAt;
    for(let i=0;i<count;i++){
     await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
      return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
     assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
-    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i);
     await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
    }
-   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+   const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
    assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes,rows.slice(0,count).map(({techId})=>({techId})));
-   assert.deepEqual([...stock.values()],outcome==='success'?[0,0]:[20,10]);
+   const successful=outcome==='success'?techCount:failAt-1;assert.equal(levels.size,successful);
+   assert.deepEqual([...stock.values()],[20*(Math.ceil(techCount/2)-Math.ceil(successful/2)),10*(Math.floor(techCount/2)-Math.floor(successful/2))]);
+   const records=app.history.list('A');assert.equal(records.length,count);
+   assert.deepEqual(records.slice().reverse().map(row=>row.finalStatus),Array.from({length:count},(_,i)=>outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS'));
+   assert.deepEqual(records.slice().reverse().map(row=>row.workflowNodeId),actions.slice(0,count).map(row=>row.id));
+   assert.equal(app.operations.workflowBudget('A').batches.length,count);assert.deepEqual(app.operations.workflowBudget('A').limits,graph.budget);
+   assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
   });
