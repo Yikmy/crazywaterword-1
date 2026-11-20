@@ -121,8 +121,8 @@ test('Action cancellation after synthetic login sends no first write; silent res
   await cancelled.connect();
   await assert.rejects(runAction(cancelled, protocol, 'afkDraw', {}, { allowMutate: true, signal: controller.signal }), { code: 'CANCELLED' });
   assert.equal(requests, 0);
-  const silent = { connected: true, async sendWatch(name, body) { watches++; assert.equal(name, 'SetBuildingAutoWorkRequest'); assert.deepEqual(body, { buildingId: 'fixture-building', isOn: true }); return { status: 'UNKNOWN', name }; } };
-  const result = await runAction(silent, protocol, 'buildingAutoWork', { buildingId: 'fixture-building', isOn: true }, { allowMutate: true });
+  const silent = { connected: true, async sendWatch(name, body) { watches++; assert.equal(name, 'CancelFactoryAutoProduceRequest'); assert.deepEqual(body, { buildingId: 'fixture-building' }); return { status: 'UNKNOWN', name }; } };
+  const result = await runAction(silent, protocol, 'factoryCancelAutoProduce', { buildingId: 'fixture-building' }, { allowMutate: true });
   assert.equal(watches, 1); assert.equal(result.status, 'UNKNOWN'); assert.equal(result.ok, null);
   assert.equal(result.response, null); assert.equal(result.body, null);
 });

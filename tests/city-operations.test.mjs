@@ -1,3 +1,5 @@
+import { assertPaymentAllowed } from '../src/actions.mjs';
+import { factoryAutoProduceEntitled } from '../src/city-operations.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cityView, planCityOperations, executeCityAction, surveyCityOperations } from '../src/city-operations.mjs';
@@ -20,7 +22,7 @@ const config = { tables: {
 } };
 const protocol = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'MyResFields', 'MyFleets',
   'BuildBuilding', 'UpgradeBuilding', 'FinishUpgradeBuilding', 'CollectBuildingProduct', 'GainFactoryProduce',
-  'StartFactoryProduce', 'SpeedUpUpgradeBuilding', 'SpeedUpFactoryProduce']
+  'StartFactoryProduce', 'SpeedUpUpgradeBuilding', 'SpeedUpFactoryProduce', 'CancelFactoryAutoProduce']
   .flatMap((name) => [[name + 'Request', {}], [name + 'Response', {}]]));
 const rawBuilding = (buildingId = '1民居', extra = {}) => ({ buildingId, level: 1, buildStartTime: 0, buildFinishTime: 0, product: { asset: [] }, ...extra });
 const rawFactory = (extra = {}) => rawBuilding('1材料厂', { factory: { autoProductId: '', factoryQ: [], finishedProducts: [] }, ...extra });
@@ -539,4 +541,22 @@ for (const kind of ['build', 'upgrade']) test('construction incomplete inventory
     { read(name) { if (name === 'AllItemRequest') return { items: [{ itemId: '木材', num: 2 }, { itemId: '木材', num: 2 }] }; } });
   assert.equal(cityView(await read(client), { config }).candidates.some(row => row.actionType === kind), false);
   assert.deepEqual(client.writes, []);
+});
+
+test('factory auto stop uses original planner and confirms only explicit mode removal with unchanged full state and stock',async()=>{
+ const factory=rawFactory({factory:{autoProductId:'布匹',factoryQ:[{idx:0,productId:'燃料',finishTime:2000000000}],finishedProducts:[{id:'布匹',num:1}]}}),client=fake([rawBuilding(),factory],undefined,{read(n,c){if(n==='OnWaterRequest')return {building:structuredClone(c.buildings),workerOrder:[],autoProduceForever:true};},write(n,b,c){assert.equal(n,'CancelFactoryAutoProduceRequest');assert.deepEqual(b,{buildingId:'1材料厂'});c.buildings[1].factory.autoProductId='';}});
+ const before=await read(client),row=cityView(before,{config}).candidates.find(r=>r.actionType==='stopAutoProduce');assert.ok(row);assert.deepEqual(row.costs,[]);assert.equal(planWorld(before,{config}).actions.some(a=>a.kind==='stopAutoProduce'),false);
+ const original=structuredClone(client.buildings),result=await execute(client,row);assert.equal(result.status,'SUCCESS');original[1].factory.autoProductId='';assert.deepEqual(client.buildings,original);assert.equal(client.stock.get('木材'),4);assert.equal(client.writes.length,1);
+});
+test('factory auto stop keeps missing rights and uncertain expiry unknown instead of using local time',()=>{
+ const clock={status:'TRUSTED',reliable:true,source:'PingResponse.serverTimestamp',accountId:'A',generation:1,earliestMs:999999,nowMs:1000000,latestMs:1000001};
+ assert.equal(factoryAutoProduceEntitled({rawOnWater:{autoProduceEndTime:2000},autoProductionClock:clock}),true);
+ for(const f of [{rawOnWater:{}},{rawOnWater:{autoProduceForever:false,autoProduceEndTime:2000}},{rawOnWater:{autoProduceEndTime:1000},autoProductionClock:clock},{rawOnWater:{autoProduceEndTime:2000},autoProductionClock:{...clock,latestMs:2000000}},{rawOnWater:{autoProduceForever:'true'}}])assert.equal(factoryAutoProduceEntitled(f),false);
+});
+test('factory auto stop no effect, omitted flag, queue changes or inventory changes remain UNKNOWN',async()=>{
+ for(const fault of ['no-effect','missing','queue','stock']){const client=fake([rawFactory({factory:{autoProductId:'布匹',factoryQ:[{idx:0,productId:'燃料',finishTime:2000000000}],finishedProducts:[]}})],undefined,{read(n,c){if(n==='OnWaterRequest')return {building:structuredClone(c.buildings),workerOrder:[],autoProduceForever:true};},write(n,b,c){if(fault!=='no-effect')c.buildings[0].factory.autoProductId='';if(fault==='missing')delete c.buildings[0].factory.autoProductId;if(fault==='queue')c.buildings[0].factory.factoryQ=[];if(fault==='stock')c.stock.set('木材',3);}}),row=cityView(await read(client),{config}).candidates.find(r=>r.actionType==='stopAutoProduce');assert.ok(row);assert.equal((await execute(client,row)).status,'UNKNOWN',fault);assert.equal(client.confirmations.length,0);assert.equal(client.writes.length,1);}
+});
+test('factory auto stop payment contract admits only exact cancellation and zero expenditure',()=>{
+ assert.doesNotThrow(()=>assertPaymentAllowed({request:'CancelFactoryAutoProduceRequest',body:{buildingId:'1材料厂'},costs:[]}));
+ for(const action of [{request:'CancelFactoryAutoProduceRequest',body:{buildingId:'1材料厂'}},{request:'CancelFactoryAutoProduceRequest',body:{buildingId:'1材料厂',productId:'布匹'},costs:[]},{request:'CancelFactoryAutoProduceRequest',body:{buildingId:'1材料厂'},costs:[{id:'木材',num:1}]},{request:'SetFactoryAutoProduceRequest',body:{buildingId:'1材料厂',productId:'布匹'},costs:[]},{request:'SetBuildingAutoWorkRequest',body:{buildingId:'1装备厂',isOn:true},costs:[]}])assert.throws(()=>assertPaymentAllowed(action,{allowPaid:true}),{code:'COST_UNKNOWN'});
 });

@@ -7,6 +7,7 @@ import { ResourceLedger, resourceCosts, safeResourceQuantity } from './resource-
 import { assertExecutionActive, executionOutcome, operationResult } from './execution.mjs';
 import { selectProductionCandidates } from './production-policy.mjs';
 import { stockMatchesDelta } from './naval-facts.mjs';
+import { readGameTime } from './state-facts.mjs';
 
 const exactDebitKinds = new Set(['build', 'upgrade', 'startProduce', 'speedUpUpgrade', 'speedUpProduce']);
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
@@ -41,13 +42,20 @@ export function decorateCitySurvey(survey, capturedResponses) {
   return { ...survey, productionInventoryReliable: inventory.stockReliable, rawOnWater: toSnapshotJson(raw ?? null), rawAllItem: toSnapshotJson(captured('AllItemRequest') ?? null), rawAllResource: toSnapshotJson(captured('AllResourceRequest') ?? null), cityReliability: { buildings, byBuilding } };
 }
 
+export const FACTORY_AUTO_STOP_EVIDENCE = Object.freeze({source:'Fixed v76 FactoryPop._onBtnAuto/_toAutoProduce',packageSha256:'4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444',entrySha256:'a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54',moduleSha256:'83c3269aa1ac07eda85f23db4d42ac227c4d2ac65ac640df89d21db7b522c9ce',cancelByte:2205214,semantics:'Existing entitlement and selected current autoProductId; exact CancelFactoryAutoProduceRequest {buildingId}, no dedicated response; independent explicit empty autoProductId, unchanged queue and complete inventory required'});
+export function factoryAutoProduceEntitled(survey, clock=survey?.autoProductionClock){
+ const raw=survey?.rawOnWater;if(!raw||Object.hasOwn(raw,'autoProduceForever')&&typeof raw.autoProduceForever!=='boolean')return false;
+ if(Object.hasOwn(raw,'autoProduceForever')&&raw.autoProduceForever===true)return true;
+ return Object.hasOwn(raw,'autoProduceEndTime')&&Number.isInteger(raw.autoProduceEndTime)&&raw.autoProduceEndTime>0&&raw.autoProduceEndTime<=2147483647&&clock?.status==='TRUSTED'&&clock.reliable===true&&clock.source==='PingResponse.serverTimestamp'&&typeof clock.accountId==='string'&&clock.accountId.length>0&&Number.isSafeInteger(clock.generation)&&clock.generation>=0&&[clock.earliestMs,clock.nowMs,clock.latestMs].every(n=>Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER)&&clock.earliestMs<=clock.nowMs&&clock.nowMs<=clock.latestMs&&clock.latestMs<raw.autoProduceEndTime*1000;
+}
+
 export async function surveyCityOperations(client, protocol, options = {}) {
   const captured = new Map();
   const observed = new Proxy(client, { get(target, key) {
     if (key !== 'request') { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
     return async (...args) => { const value = await target.request(...args); captured.set(args[0], value); return value; };
   } });
-  return decorateCitySurvey(await surveyWorld(observed, protocol, options), captured);
+  return { ...decorateCitySurvey(await surveyWorld(observed, protocol, options), captured), autoProductionClock: readGameTime(client).gameTime };
 }
 
 function stateOf(building) {
@@ -66,7 +74,7 @@ function isReliable(survey, building, kind) {
   const info = survey.cityReliability?.byBuilding?.[building.buildingId];
   if (!survey.cityReliability?.buildings || !info?.base || !building.type) return false;
   if (kind === 'collectProduct') return !building.factory && info.product;
-  if (['gainFactory', 'startProduce', 'speedUpProduce'].includes(kind)) return info.factory && info.queue && info.finishedProducts;
+  if (['gainFactory', 'startProduce', 'speedUpProduce', 'stopAutoProduce'].includes(kind)) return info.factory && info.queue && info.finishedProducts;
   return true;
 }
 
@@ -79,17 +87,22 @@ function expected(kind, building, recipe, index) {
   if (kind === 'finishUpgrade') return { levelAtLeast: building.level + 1, buildFinishTime: 0 };
   if (kind === 'collectProduct' || kind === 'gainFactory') return { collected: true, inventoryIncreased: true };
   if (kind === 'startProduce') return { productId: recipe.itemId, queuedOrFinished: true };
+  if (kind === 'stopAutoProduce') return {autoProductId:'',queueUnchanged:true,inventoryUnchanged:true};
   return { ...(index === undefined ? {} : { index }), finishTimeReduced: true };
 }
 
 // Derive requests only through planWorld; isolate unrelated tentative reservations.
 function plannedAction(survey, config, building, kind, { productId, index } = {}, ledger) {
+  if (kind === 'stopAutoProduce') {
+    const raw=survey.rawOnWater?.building?.find(row=>row.buildingId===building.buildingId);
+    if(!factoryAutoProduceEntitled(survey)||!raw?.factory||!Object.hasOwn(raw.factory,'autoProductId')||!text(raw.factory.autoProductId)||building.level<=0||building.buildFinishTime!==0)return null;
+  }
   const targeted = { ...building };
   if (kind === 'speedUpProduce') {
     targeted.buildFinishTime = 0;
     targeted.factory = { ...building.factory, factoryQ: building.factory.factoryQ.filter((q) => q.idx === index) };
   }
-  const factories = ['gainFactory', 'startProduce', 'speedUpProduce'].includes(kind) ? [targeted] : [];
+  const factories = ['gainFactory', 'startProduce', 'speedUpProduce', 'stopAutoProduce'].includes(kind) ? [targeted] : [];
   const selectedConfig = { ...config, tables: { ...config?.tables,
     BuildingProduceCfg: { data: kind === 'startProduce' ? rows(config, 'BuildingProduceCfg').filter((r) => r.itemId === productId) : [] },
   } };
@@ -98,6 +111,7 @@ function plannedAction(survey, config, building, kind, { productId, index } = {}
     config: selectedConfig, ledger: new ResourceLedger(ledger.inventory([productId].filter(Boolean))),
     maxBuilds: kind === 'build' ? 1 : 0, maxUpgrades: kind === 'upgrade' ? 1 : 0,
     allowSpeedUp: kind === 'speedUpUpgrade' || kind === 'speedUpProduce',
+    stopAutoFactoryIds: kind === 'stopAutoProduce' ? [building.buildingId] : [],
   }).actions.find((action) => action.kind === kind && (kind !== 'speedUpProduce' || action.body.index === index));
 }
 
@@ -105,13 +119,13 @@ function candidatesFor(survey, config, ledger) {
   const candidates = [];
   for (const building of survey.buildings ?? []) {
     const choices = [
-      ['build', {}], ['upgrade', {}], ['finishUpgrade', {}], ['collectProduct', {}], ['gainFactory', {}], ['speedUpUpgrade', {}],
+      ['build', {}], ['upgrade', {}], ['finishUpgrade', {}], ['collectProduct', {}], ['gainFactory', {}], ['speedUpUpgrade', {}], ['stopAutoProduce', {}],
       ...rows(config, 'BuildingProduceCfg').filter((r) => r.buildType === building.type).map((r) => ['startProduce', { productId: r.itemId }]),
       ...(building.factory?.factoryQ ?? []).map((q) => ['speedUpProduce', { index: q.idx }]),
     ];
     for (const [kind, detail] of choices) {
       if (!isReliable(survey, building, kind)) continue;
-      if ((exactDebitKinds.has(kind) || ['gainFactory', 'collectProduct'].includes(kind))
+      if ((exactDebitKinds.has(kind) || ['gainFactory', 'collectProduct', 'stopAutoProduce'].includes(kind))
         && (survey.stockReliable !== true || survey.productionInventoryReliable !== true)) continue;
       const action = plannedAction(survey, config, building, kind, detail, ledger);
       if (!action) continue;
@@ -213,6 +227,12 @@ function verified(operation, before, after, beforeSurvey, afterSurvey) {
       || beforeSurvey.productionInventoryReliable !== true || afterSurvey.productionInventoryReliable !== true
       || costs === null || !stockMatchesDelta(beforeSurvey.stock, afterSurvey.stock, costs, [])) return false;
   }
+  if (kind === 'stopAutoProduce') {
+    const old=beforeSurvey.rawOnWater?.building?.find(row=>row.buildingId===before.buildingId),current=afterSurvey.rawOnWater?.building?.find(row=>row.buildingId===before.buildingId);
+    if(!old?.factory||!Object.hasOwn(old.factory,'autoProductId')||!text(old.factory.autoProductId)||!current?.factory||!Object.hasOwn(current.factory,'autoProductId')||current.factory.autoProductId!==''||beforeSurvey.stockReliable!==true||afterSurvey.stockReliable!==true||beforeSurvey.productionInventoryReliable!==true||afterSurvey.productionInventoryReliable!==true||!stockMatchesDelta(beforeSurvey.stock,afterSurvey.stock,[],[]))return false;
+    const normalized=water=>{const value=copy(water);value.building.sort((a,b)=>a.buildingId.localeCompare(b.buildingId));value.building.find(row=>row.buildingId===before.buildingId).factory.autoProductId='';return value;};
+    return stable(normalized(beforeSurvey.rawOnWater))===stable(normalized(afterSurvey.rawOnWater));
+  }
   if (kind === 'build' || kind === 'upgrade') return after.level > before.level
     || after.level === before.level && after.buildStartTime >= beforeSurvey.now
       && after.buildFinishTime > before.buildFinishTime && after.buildFinishTime > afterSurvey.now;
@@ -261,7 +281,7 @@ export async function executeCityAction(client, protocol, planned, {
 } = {}) {
   const detail = { actionId: planned?.actionId, actionType: planned?.actionType, target: planned?.target,
     beforeState: planned?.beforeState, resourceReservation: [], requestStatus: 'NOT_EXECUTED', afterState: null, verification: { status: 'NOT_STARTED' } };
-  let dispatched = false, sentAction = null;
+  let dispatched = false, sentAction = null, stopSurvey = null;
   const finish = (status, extra = {}) => {
     if (dispatched && !['SUCCESS', 'REJECTED', 'RATE_LIMITED', 'UNKNOWN'].includes(status)) status = 'UNKNOWN';
     if (dispatched && status !== 'SUCCESS' && status !== 'REJECTED') {
@@ -274,7 +294,13 @@ export async function executeCityAction(client, protocol, planned, {
   // Guard the existing survey's reads as well as runWorld's writes.
   const guarded = new Proxy(client, { get(target, key) {
     if (!['request', 'sendWatch'].includes(key)) { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
-    return (...args) => { active(); if (key === 'sendWatch' || args[4]?.mutate) dispatched = true; return target[key](...args); };
+    return (...args) => { active(); const writing=key==='sendWatch'||args[4]?.mutate;
+      if(writing&&planned?.actionType==='stopAutoProduce'){
+        const entitled=()=>stopSurvey&&factoryAutoProduceEntitled(stopSurvey,readGameTime(target).gameTime);if(!entitled())throw Error('自动生产权益已到期或未知，停止请求未派发');
+        const index=key==='sendWatch'?2:4,prior=args[index]?.beforeDispatch;args[index]={...args[index],beforeDispatch(){prior?.();if(!entitled())throw Error('派发前自动生产权益已失效');}};
+      }
+      if(writing)dispatched=true;return target[key](...args);
+    };
   } });
   try {
     active();
@@ -291,6 +317,7 @@ export async function executeCityAction(client, protocol, planned, {
       && !selectProductionCandidates(beforeSurvey, { policy: productionPolicy, config, candidates: productionPolicy?.cropSupply?.enabled ? [candidate] : currentView.candidates }).includes(candidate.actionId)) {
       return finish('NOT_EXECUTED', { error: '当前生产需求或队列已变化，操作已超出自动生产策略范围' });
     }
+    if(candidate.actionType==='stopAutoProduce')stopSurvey=beforeSurvey;
     detail.beforeState = candidate.beforeState;
     const output = candidate.actionType === 'gainFactory' ? candidate.beforeState.factory.finishedProducts
       : candidate.actionType === 'collectProduct' ? candidate.beforeState.product : [];

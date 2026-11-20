@@ -6,7 +6,7 @@ import { materialPackModule, validateMaterialPackParameters, confirmedMaterialPa
 import { resourceCosts } from './resource-ledger.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { surveyOrderExecution, planOrderExecution, executeOrderOperation, observeOrderProgress, observeOrderRefreshTiming, ordersProductionView } from './order-execution.mjs';
-import { surveyCityOperations, cityView, planCityOperations, executeCityAction } from './city-operations.mjs';
+import { surveyCityOperations, cityView, planCityOperations, executeCityAction, factoryAutoProduceEntitled } from './city-operations.mjs';
 import { defaultOrderRules } from './order-rules.mjs';
 import { defaultProductionPolicy, selectProductionCandidates, productionDemand } from './production-policy.mjs';
 import { ResourceLedger } from './resource-ledger.mjs';
@@ -24,7 +24,7 @@ const invalid = message => Object.assign(new Error(message), { code: 'INVALID_IN
 const defaultConfig = Object.freeze({ enabled: false });
 const modes = new Set(['Manual', 'Hybrid', 'Automatic']);
 const cityKinds = new Set(['build', 'upgrade', 'finishUpgrade', 'collectProduct', 'speedUpUpgrade']);
-const productionKinds = new Set(['startProduce', 'gainFactory', 'speedUpProduce']);
+const productionKinds = new Set(['startProduce', 'gainFactory', 'speedUpProduce', 'stopAutoProduce']);
 const completed = new WeakMap();
 const productionQueueClocks = new WeakMap();
 
@@ -53,7 +53,8 @@ function gated(row, options) {
 function kinds(id) { return id === 'city' ? cityKinds : productionKinds; }
 function domainCandidates(id, facts, options) {
   const rows=cityView(facts, options).candidates.filter(row => kinds(id).has(row.actionType));
-  return id==='production'?boundProductionCandidates(facts,options,rows):boundCityCandidates(facts,options,rows);
+  const selected=id==='production'?boundProductionCandidates(facts,options,rows):boundCityCandidates(facts,options,rows);
+  return id==='production'?selected.flatMap(row=>{if(row.actionType!=='stopAutoProduce')return [row];const expectedStopHash=productionStopHash(facts,options,row);return expectedStopHash?[{...row,parameters:{buildingId:row.target.buildingId,action:'stopAutoProduce',expectedStopHash}}]:[];}):selected;
 }
 function blockNotes(id) { return { module: id, actions: [], notes: ['模块未启用；请使用账号 ModuleSettings 显式启用'] }; }
 
@@ -141,7 +142,7 @@ export function planCoreOrders(facts, options = {}) {
 }
 function viewCityDomain(id, facts, options = {}) {
   const args = context(options,id), view = cityView(facts, args), planning=id==='production'?productionPlanningView(facts,view,args.config):null;
-  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='city'?validateCityParameters(args.parameters):id==='production'?validateProductionParameters(row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
+  const candidates = domainCandidates(id,facts,args).map(row => gated({ ...row, module: id, ...(id==='production'?{executable:true}:{}), parameters: id==='city'?validateCityParameters(args.parameters):id==='production'?validateProductionParameters(row.actionType==='stopAutoProduce'?row.parameters:row.actionType==='startProduce'&&!args.parameters?.materialSource?{buildingId:row.target.buildingId,productId:row.target.productId}:args.parameters):{} }, args));
   return id === 'city' ? { module: id, buildings: view.buildings, stock: view.stock, candidates, preparation:cityPreparationTargets(facts,args), notes: view.notes }
     : { module: id, ...planning, startPreparation:productionStartTargets(facts,args), collectionPreparation:productionCollectionTargets(facts,args), accelerationPreparation:productionAccelerationTargets(facts,args), stock: view.stock, stockReliable: facts.stockReliable===true&&facts.productionInventoryReliable===true, candidates, productionShortages: productionDemand(facts, { policy: args.productionPolicy, config: args.config }), productionPolicy: args.productionPolicy,
       productionRecommendations: selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates }), notes: view.notes };
@@ -151,6 +152,7 @@ function planCityDomain(id, facts, options = {}) {
   if (!args.moduleConfig.enabled) return blockNotes(id);
   const candidates = domainCandidates(id, facts, args);
   if (ids.some(actionId => !candidates.some(row => row.actionId === actionId))) throw invalid('选择不属于该核心业务的当前候选');
+  if(id==='production'&&candidates.some(row=>ids.includes(row.actionId)&&row.actionType==='stopAutoProduce')&&args.parameters?.action!=='stopAutoProduce')throw invalid('停止自动生产须明确原工厂及当前停止来源摘要');
   if (args.mode === 'Automatic') {
     const allowed = selectProductionCandidates(facts, { policy: args.productionPolicy, config: args.config, candidates });
     if (candidates.some(row => ids.includes(row.actionId) && row.actionType === 'startProduce' && !allowed.includes(row.actionId))) {
@@ -183,7 +185,8 @@ async function executeCore(id, client, protocol, operation, options = {}) {
       throw invalid('操作不属于该核心业务');
     }
     if(id==='city'&&(args.parameters?.buildingId||operation.parameters?.buildingId)&&(!productionSame(operation.parameters,args.parameters)||operation.target?.buildingId!==args.parameters?.buildingId||operation.actionType!==args.parameters?.action))throw invalid('城市操作与明确建筑及动作范围不一致');
-    if(id==='production'&&(args.parameters?.buildingId||operation.parameters?.buildingId)){const collecting=args.parameters?.action==='collect',accelerating=args.parameters?.action==='speedUpProduce';if(!productionSame(operation.parameters,args.parameters)||operation.actionType!==(collecting?'gainFactory':accelerating?'speedUpProduce':'startProduce')||operation.target?.buildingId!==args.parameters?.buildingId||accelerating&&operation.target?.index!==args.parameters.index||!collecting&&!accelerating&&operation.target?.productId!==args.parameters?.productId)throw invalid('生产操作参数、工厂或产品与授权范围不一致');}
+    if(id==='production'&&operation?.actionType==='stopAutoProduce'&&args.parameters?.action!=='stopAutoProduce')throw invalid('停止自动生产必须保留明确原参数');
+    if(id==='production'&&(args.parameters?.buildingId||operation.parameters?.buildingId)){const collecting=args.parameters?.action==='collect',accelerating=args.parameters?.action==='speedUpProduce',stopping=args.parameters?.action==='stopAutoProduce';if(!productionSame(operation.parameters,args.parameters)||operation.actionType!==(collecting?'gainFactory':accelerating?'speedUpProduce':stopping?'stopAutoProduce':'startProduce')||operation.target?.buildingId!==args.parameters?.buildingId||accelerating&&operation.target?.index!==args.parameters.index||!collecting&&!accelerating&&!stopping&&operation.target?.productId!==args.parameters?.productId)throw invalid('生产操作参数、工厂或产品与授权范围不一致');}
   } catch (error) {
     return operationResult('NOT_EXECUTED', { dispatched: false, unresolvedWrite: false, error: error.message });
   }
@@ -191,7 +194,7 @@ async function executeCore(id, client, protocol, operation, options = {}) {
   // post-dispatch persistence/callback failure must never become NOT_EXECUTED.
   // OrderExecution owns rule/identity/quota verification; CityAction owns
   // Automatic policy rechecks and authoritative state verification.
-  let sourceFacts=null;const guardedSource=id==='production'&&(args.parameters?.materialSource||['collect','speedUpProduce'].includes(args.parameters?.action));
+  let sourceFacts=null;const guardedSource=id==='production'&&(args.parameters?.materialSource||['collect','speedUpProduce','stopAutoProduce'].includes(args.parameters?.action));
   let sourceSurvey=guardedSource?async(c,p,o)=>{if(sourceFacts)return surveyCoreOperations(c,p,o);const f=await surveyProductionOperations(c,p,{...args,...o,parameters:args.parameters});if(!boundProductionCandidates(f,args,cityView(f,args).candidates).some(row=>row.actionId===operation.actionId))throw invalid('材料包前置、目标工厂或配方来源已变化');sourceFacts=f;return f;}:surveyCoreOperations;
   let sourceClient=guardedSource?new Proxy(client,{get(target,key){if(key!=='sendWatch'){const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}return (...values)=>{if(!sourceFacts||!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('材料包已消费、历史变化或连接来源失效');const beforeDispatch=values[2]?.beforeDispatch;values[2]={...values[2],beforeDispatch(){beforeDispatch?.();if(!boundProductionCandidates(sourceFacts,args,[operation]).length)throw invalid('派发前材料包来源失效');}};return target.sendWatch(...values);};}}):client;
   if(id==='city'&&args.parameters?.buildingId){
@@ -272,10 +275,20 @@ const productionText=v=>typeof v==='string'&&v.length>0&&v.length<=200&&v.trim()
 function productionRole(v){const x=toSnapshotJson(v);try{return (typeof v!=='number'||Number.isSafeInteger(v))&&(typeof x==='string'&&/^[1-9][0-9]*$/.test(x)||typeof x==='number'&&Number.isSafeInteger(x)&&x>0)&&BigInt(x)<(1n<<63n)?String(x):null;}catch{return null;}}
 function productionScope(client,player){const c=client.factContext,role=k=>productionOwn(player,k)&&(!productionOwn(c,k)||productionRole(c[k])===productionRole(player[k]))?productionRole(player[k]):null;return {accountId:productionText(c?.accountId)?c.accountId:null,generation:Number.isSafeInteger(c?.generation)&&c.generation>=0?c.generation:null,connectionId:productionText(c?.connectionId)?c.connectionId:null,playerId:role('playerId'),worldId:role('worldId')};}
 function productionConfigDigest({config,moduleConfig}){return productionHash({moduleConfig:settings(moduleConfig),tables:tableVersions(config,['BuildingCfg','BuildingProduceCfg','BuildingProduceParamCfg','GameParamCfg','AppointEffectCfg','AppointPosCfg','HeroCfg','FarmlandPlantCfg','SelectPackLibCfg','ItemCfg'])});}
-function productionFactsDigest(f){return productionHash({water:f.rawOnWater,items:f.rawAllItem,resources:f.rawAllResource,stock:[...f.stock],reliability:f.cityReliability,buildings:f.buildings,factories:f.factories,stockCap:f.stockCap,factorySlots:f.factorySlots,strict:f.productionInventoryReliable,stockReliable:f.stockReliable});}
+function productionFactsDigest(f){return productionHash({water:f.rawOnWater,items:f.rawAllItem,resources:f.rawAllResource,stock:[...f.stock],reliability:f.cityReliability,buildings:f.buildings,factories:f.factories,stockCap:f.stockCap,factorySlots:f.factorySlots,strict:f.productionInventoryReliable,stockReliable:f.stockReliable,autoProductionClock:f.autoProductionClock});}
 function productionAuthority(f,options){const live=productionSources.get(f),c=live?.context;return live&&live.client.connected===true&&f.have===live.have&&c&&Object.values(c).every(v=>v!==null)&&Date.now()>=live.at&&Date.now()-live.at<=30000&&productionSame(c,productionScope(live.client,live.player))&&f.stockReliable===true&&f.productionInventoryReliable===true&&f.stock instanceof Map&&live.digest===productionFactsDigest(f)&&live.dependencies===productionConfigDigest(options)?live:null;}
+function productionStopHash(f,options,row){
+ const live=productionAuthority(f,options),clock=live?readGameTime(live.client).gameTime:null;
+ if(!live||!live.available.includes('CancelFactoryAutoProduceRequest')||row?.actionType!=='stopAutoProduce'||!factoryAutoProduceEntitled(f,clock)||f.rawOnWater.autoProduceForever!==true&&(clock?.accountId!==live.context.accountId||clock.generation!==live.context.generation))return null;
+ const found=f.rawOnWater.building?.filter(raw=>raw.buildingId===row.target?.buildingId);if(found?.length!==1||!productionOwn(found[0].factory,'autoProductId')||!productionText(found[0].factory.autoProductId))return null;
+ return productionHash({context:live.context,factory:found[0],entitlement:{forever:productionOwn(f.rawOnWater,'autoProduceForever')?f.rawOnWater.autoProduceForever:null,endTime:productionOwn(f.rawOnWater,'autoProduceEndTime')?f.rawOnWater.autoProduceEndTime:null},dependencies:live.dependencies});
+}
 export function validateProductionParameters(value={}){
- if(!productionFields(value,['buildingId','productId','materialSource','action','expectedCollectionHash','index','expectedAccelerationHash']))throw invalid('生产参数仅允许空对象、原生产目标、固定材料来源或明确成品领取');
+ if(!productionFields(value,['buildingId','productId','materialSource','action','expectedCollectionHash','index','expectedAccelerationHash','expectedStopHash']))throw invalid('生产参数仅允许空对象、原生产目标、固定材料来源或明确成品领取');
+ if(value.action==='stopAutoProduce'||productionOwn(value,'expectedStopHash')){
+  if(!productionFields(value,['buildingId','action','expectedStopHash'])||Reflect.ownKeys(value).length!==3||value.action!=='stopAutoProduce'||!productionText(value.buildingId)||typeof value.expectedStopHash!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedStopHash))throw invalid('停止自动生产须明确原工厂、stopAutoProduce及当前来源摘要，不设置新产品或自动工作');
+  return {buildingId:value.buildingId,action:'stopAutoProduce',expectedStopHash:value.expectedStopHash};
+ }
  if(value.action==='speedUpProduce'||productionOwn(value,'expectedAccelerationHash')||productionOwn(value,'index')){
   if(!productionFields(value,['buildingId','action','index','expectedAccelerationHash'])||Reflect.ownKeys(value).length!==4||value.action!=='speedUpProduce'||!productionText(value.buildingId)||!Number.isSafeInteger(value.index)||value.index<0||value.index>2147483647||typeof value.expectedAccelerationHash!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedAccelerationHash))throw invalid('生产道具加速须明确工厂、原队列index及状态成本摘要');
   return {buildingId:value.buildingId,action:'speedUpProduce',index:value.index,expectedAccelerationHash:value.expectedAccelerationHash};
@@ -299,7 +312,7 @@ function productionQuote(f,options,buildingId,productId){
  const identity=productionHash({context:live.context,factory:raw[0],recipe,dependencies:live.dependencies});return {identity,costs,factory,recipe};
 }
 function boundProductionCandidates(f,options,rows){
- const parameters=validateProductionParameters(options.parameters);if(parameters.action==='speedUpProduce')return rows.filter(row=>row.actionType==='speedUpProduce'&&row.target.buildingId===parameters.buildingId&&row.target.index===parameters.index&&productionAccelerationHash(f,options,row)===parameters.expectedAccelerationHash);if(parameters.action==='collect')return rows.filter(row=>row.actionType==='gainFactory'&&row.target?.buildingId===parameters.buildingId&&productionCollectionHash(f,options,row)===parameters.expectedCollectionHash);if(!parameters.materialSource)return parameters.buildingId?rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId):rows;
+ const parameters=validateProductionParameters(options.parameters);if(parameters.action==='stopAutoProduce')return rows.filter(row=>row.actionType==='stopAutoProduce'&&row.target?.buildingId===parameters.buildingId&&productionStopHash(f,options,row)===parameters.expectedStopHash);if(parameters.action==='speedUpProduce')return rows.filter(row=>row.actionType==='speedUpProduce'&&row.target.buildingId===parameters.buildingId&&row.target.index===parameters.index&&productionAccelerationHash(f,options,row)===parameters.expectedAccelerationHash);if(parameters.action==='collect')return rows.filter(row=>row.actionType==='gainFactory'&&row.target?.buildingId===parameters.buildingId&&productionCollectionHash(f,options,row)===parameters.expectedCollectionHash);if(!parameters.materialSource)return parameters.buildingId?rows.filter(row=>row.actionType==='startProduce'&&row.target?.buildingId===parameters.buildingId&&row.target?.productId===parameters.productId):rows;
  const live=productionAuthority(f,options),quote=productionQuote(f,options,parameters.buildingId,parameters.productId);if(!live||!quote||quote.identity!==parameters.materialSource.productionIdentity||typeof live.read!=='function')return [];
  let runs;try{runs=live.read();}catch{return [];}
  const identities=parameters.materialSource.exchangeIdentities,settlement=identities?confirmedMaterialPackSequence(runs,live.context,identities,options.config):confirmedMaterialPackSettlement(runs,live.context,parameters.materialSource.exchangeIdentity,options.config);

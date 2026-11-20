@@ -208,6 +208,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
 
 // 计划：收成品 → 竣工 → 建造 → 交单 → 排产 → 余料升级 → 加速。每步都只排「客户端确实会发的请求」。
 export function planWorld(survey, {
+  stopAutoFactoryIds = [],
   config = null,
   allowSpeedUp = false,
   allowReroll = false,
@@ -354,6 +355,7 @@ export function planWorld(survey, {
   const produceRows = rowsOf(config, 'BuildingProduceCfg');
   for (const b of survey.factories) {
     if (b.factory.autoProductId) {
+      if (stopAutoFactoryIds.includes(b.buildingId)) actions.push({kind:'stopAutoProduce',costs:[],request:ACTIONS.factoryCancelAutoProduce.request,response:null,body:buildBody(ACTIONS.factoryCancelAutoProduce,{buildingId:b.buildingId}),label:'停止 '+b.buildingId+' 自动排产（当前 '+b.factory.autoProductId+'；既有队列保留）'});
       notes.push(`${b.buildingId} 已设自动生产 ${b.factory.autoProductId}，不覆盖`);
       continue;
     }

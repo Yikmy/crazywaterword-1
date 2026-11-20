@@ -239,9 +239,10 @@ CollectBuildingProductRequest{buildingId}    -> CollectBuildingProductResponse  
 FinishUpgradeBuildingRequest{buildingId}     竣工，仅在 buildFinishTime 已过时有效，无响应类型
 SetBuildingAutoWorkRequest{buildingId, isOn}    开关自动工作，无响应类型
 SetFactoryAutoProduceRequest{buildingId, productId}   设置工厂自动生产的产品，无响应类型
+CancelFactoryAutoProduceRequest{buildingId}          停止工厂自动排产，无响应类型
 ```
 
-四个无响应类型的请求由推送或通用 `OkResponse` 应答，实现上以即发即弃方式发送。
+这四个没有专用响应的请求使用原 `sendWatch` 观察；静默或通用回执不证明业务成功。当前受控生产入口只开放明确停止自动排产：在原权益有效时绑定当前工厂与来源摘要，发送一次 Cancel，再独立复读明确空 `autoProductId`、既有队列/成品与完整库存不变。缺字段、无效果或无关变化保持 UNKNOWN，不重发。设置持续自动工作/自动生产的权益与未来材料预算未闭合，仍不开放。
 
 ### 4.3 扫荡
 

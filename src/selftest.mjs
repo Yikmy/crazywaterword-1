@@ -737,7 +737,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     'BuildBuildingRequest', 'GotFreeDailyPackRequest',
     'DenyOrderRequest', 'SpeedUpFactoryProduceRequest', 'SetBuildingAutoWorkRequest',
     'QuickGotReadEmailRequest', 'DrawDailyRewardRequest', 'DrawWeeklyRewardRequest', 'MonthCardDailyRewardRequest',
-    'ChallengeResFieldRequest', 'GiveUpResFieldRequest',
+    'ChallengeResFieldRequest', 'GiveUpResFieldRequest', 'CancelFactoryAutoProduceRequest',
   ]);
   const sent = [];
   const client = {
@@ -754,9 +754,9 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     }
     if (!action.mutate) continue;
     sent.length = 0;
-    if (id === 'afkUpgrade') {
-      // The generic catalog has no authoritative badge quote; only the native adapter may supply it.
-      await assert.rejects(runAction(client, protocol, id, { level: 1 }, { allowMutate: true }), { code: 'COST_UNKNOWN' });
+    if (['afkUpgrade','buildingAutoWork','factoryAutoProduce'].includes(id)) {
+      // Generic catalog calls have no authoritative badge quote or bounded automatic consumption contract.
+      await assert.rejects(runAction(client, protocol, id, { level: 1, buildingId:'x', productId:'y', isOn:true }, { allowMutate: true }), { code: 'COST_UNKNOWN' });
       assert.equal(sent.length, 0, 'unquoted AFK upgrade must never dispatch');
       continue;
     }
