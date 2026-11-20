@@ -532,8 +532,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const release=acquire(session,'operations:TASK_REWARDS_CLOSING_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
       plans.delete(session.id);
-      const adapter=adapterFor('task-rewards'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'task-rewards').config,groups=payload.groups??[payload.targets],parameters=groups.map(targets=>targets[0]);
-      const dependencies=()=>operationDigest(parameters.map(parameters=>adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'task-rewards').config,parameters}))),dependency=dependencies();
+      const adapter=adapterFor('task-rewards'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'task-rewards').config,groups=payload.groups??[payload.targets],parameters=groups.map(targets=>targets[0]),dependencyParameters=[...new Map(groups.flat().map(p=>[p.kind,p])).values()];
+      const dependencies=()=>operationDigest(dependencyParameters.map(parameters=>adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'task-rewards').config,parameters}))),dependency=dependencies();
       const collected=[];
       for(const target of parameters){
         current(session,generation,client);

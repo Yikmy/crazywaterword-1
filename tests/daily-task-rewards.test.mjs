@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
-import { taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewTaskRewards,planTaskRewards,verifyTaskReward,taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
+import { validateTaskRewardClosingPreparation,taskRewardsModule,validateTaskRewardsParameters,surveyTaskRewards,viewTaskRewards,planTaskRewards,verifyTaskReward,taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
 import { parseDailyTaskObservation, claimableDailyTasks, claimDailies, activityRewardDefinition, dailyGiftDefinition, dailyGiftObservation, chestTiers, planChests, planDailyGift } from '../src/dailies.mjs';
 import { DAILY_TASK_REWARD_EVIDENCE, WEEKLY_BATTLE_PASS_TASK_EVIDENCE } from '../src/daily-task-rewards.mjs';
 import { trustedGameClock } from '../src/state-facts.mjs';
@@ -1199,4 +1199,26 @@ test('shared gift parser keeps strict snapshots sorted without mutating legacy s
  assert.ok(f.operation);assert.deepEqual(f.facts.daily.drawnPack,['礼包1','礼包2']);assert.deepEqual(f.facts.daily.boughtPack,['礼包1','礼包3']);
  assert.deepEqual(dailyGiftObservation(f.state.gift).drawnPack,['礼包2','礼包1']);assert.deepEqual(f.state.gift.boughtPack,['礼包3','礼包1']);
  assert.equal(verifyTaskReward(f.operation,f.facts,f.facts,null).confirmed,false);assert.equal(f.state.writes.length,0);
+});
+
+const dailyGiftGroups={groups:[[{kind:'daily',taskId:1001,expectedResetTime:2000},{kind:'daily-activity',tierId:1,expectedResetTime:2000}],[{kind:'daily-gift',packId:'赠礼'}],[{kind:'weekly-lottery-gift',packId:'1000'}],[{kind:'weekly-unique-lottery-gift',packId:'1000'}],[{kind:'weekly-chip-gift',packId:'1000'}]],maxDurationMs:60000};
+for(const outcome of ['success','gift-unknown','daily-rejected'])test('daily and free gift reward groups '+outcome+' reuse original settlement and fixed zero-spend parent budget',async t=>{
+ const f=serviceFixture(t);f.options.player.worldId='1000001';f.options.config={tables:Object.fromEntries(['DailyTaskCfg','DailyActivityRewardCfg','ItemCfg','DailyChargeGiftPackCfg','WeekLotteryPackCfg','WeekUniquePackCfg','WeekChipPackCfg'].map(n=>[n,clone(actual.tables[n])]))};f.state.daily.dailyRewardClaimed=[];f.state.week.activityTime=[{type:4,period:12,startTime:900,endTime:2000},{type:7,period:20001,startTime:900,endTime:2000},{type:6,period:1001,startTime:900,endTime:2000}];
+ const request=f.client.request.bind(f.client),watch=f.client.sendWatch.bind(f.client);f.client.request=async(n,b,r,timeout,opts)=>{if(outcome==='daily-rejected'&&n==='DrawDailyTaskRewardRequest'){f.state.onDispatch?.();opts.beforeDispatch?.();f.state.writes.push({name:n,body:clone(b)});throw Object.assign(Error('synthetic rejection'),{code:'REJECTED'});}return request(n,b,r,timeout,opts);};
+ f.client.sendWatch=async(n,b,opts)=>{if(n==='DrawDailyRewardRequest')return watch(n,b,opts);wire(n,b);f.state.onDispatch?.();opts.beforeDispatch?.();f.state.writes.push({name:n,body:clone(b)});if(outcome==='gift-unknown'&&n==='WeekLotteryFreePackRequest')return {status:'UNKNOWN'};
+  const add=(id,num)=>{const old=f.state.stock.find(v=>v.itemId===id);if(old)old.num+=num;else f.state.stock.push({itemId:id,num});};
+  if(n==='GotFreeDailyPackRequest'){f.state.gift.drawnPack.push('赠礼');f.state.resources.find(v=>v.res===4).amount+=10;}
+  else if(n==='WeekLotteryFreePackRequest'){f.state.weekly.gift[0].gotTimes=1;f.state.resources.find(v=>v.res===4).amount+=10;add('周转盘币',1);}
+  else if(n==='GotUniqueLotteryFreeRequest'){f.state.unique.gotFree=true;f.state.resources.find(v=>v.res===4).amount+=10;add('周翻牌币',1);}
+  else if(n==='WeekChipGotFreeRequest'){f.state.chip.gifts[0].paidTimes=1;add('白芯片宝箱',10);}else assert.fail(n);return {status:'UNKNOWN'};
+ };
+ const prepared=await f.service.prepareTaskRewardClosingSource(f.session,dailyGiftGroups);assert.equal(prepared.steps.length,6);assert.deepEqual(prepared.budget.resources,[]);assert.equal(prepared.budget.uids.length,6);assert.equal(f.state.writes.length,0);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());let run=await runner.start(f.session.id,prepared.graph);const count=outcome==='success'?6:outcome==='gift-unknown'?4:1;
+ for(let i=0;i<count;i++){assert.equal(run.status,'AWAITING_AUTHORIZATION');assert.deepEqual(run.plan.parameters,prepared.steps[i].parameters);await f.run(run.plan);run=await runner.resume();}
+ assert.equal(run.status,outcome==='success'?'COMPLETED':outcome==='gift-unknown'?'UNKNOWN':'FAILED');assert.equal(f.state.writes.length,count);assert.equal(f.durable.list(f.session.id).length,count);assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome==='gift-unknown');assert.equal(f.service.workflowBudget(f.session.id).state,'CLOSED');assert.deepEqual(f.service.workflowBudget(f.session.id).limits.resources,[]);
+ assert.equal(f.state.resources.find(v=>v.res===4).amount,outcome==='success'?80:outcome==='gift-unknown'?60:50);assert.equal(f.state.stock.find(v=>v.itemId==='白芯片宝箱')?.num,outcome==='success'?10:undefined);
+});
+test('daily and free gift reward groups preserve reset, current eligibility and all selected configuration dependencies',async t=>{
+ for(const groups of [[[{kind:'daily',taskId:1001}]],[[{kind:'daily',taskId:1001,expectedResetTime:2000},{kind:'daily-activity',tierId:1,expectedResetTime:2001}]],[[{kind:'daily',taskId:1001,expectedResetTime:2000}],[{kind:'daily-activity',tierId:1,expectedResetTime:2000}]],[[{kind:'weekly-activity',tierId:1}]]])assert.throws(()=>validateTaskRewardClosingPreparation({...dailyGiftGroups,groups}));
+ for(const fault of ['future-activity','config','claimed-gift']){const f=serviceFixture(t);f.options.player.worldId='1000001';f.options.config={tables:Object.fromEntries(['DailyTaskCfg','DailyActivityRewardCfg','ItemCfg','DailyChargeGiftPackCfg'].map(n=>[n,clone(actual.tables[n])]))};f.state.daily.dailyRewardClaimed=[];if(fault==='future-activity')f.state.daily.dailyActivity=19;if(fault==='claimed-gift')f.state.gift.drawnPack=['赠礼'];if(fault==='config')f.state.onRead=n=>{if(n==='DailyGiftPackRequest')f.options.config.tables.DailyActivityRewardCfg.data[0].activity++;};await assert.rejects(f.service.prepareTaskRewardClosingSource(f.session,{...dailyGiftGroups,groups:dailyGiftGroups.groups.slice(0,2)}));assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id).length,0);}
 });

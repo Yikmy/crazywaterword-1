@@ -1,7 +1,7 @@
 // W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
 import { ACTIONS, buildBody } from './actions.mjs';
-import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, activityTaskClosingFact, activityTaskClosingChoices, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
+import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, prepareDailyRewardWorkflow, activityTaskClosingFact, activityTaskClosingChoices, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
 import { taskTarget, achievementProgressCount, parseTaskObservation, taskConfigurationRow, taskQualification } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
 import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity, normalizeBudgetClaims } from './resource-ledger.mjs';
@@ -12,6 +12,7 @@ import { stableBusinessValue, businessRejectionIdentity } from './business-funct
 
 export { OPEN_RANK_TASK_KINDS };
 const moduleId = 'task-rewards', scope = { kind: 'ACCOUNT' };
+const closingGiftKinds = ['daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift'];
 const copy = value => structuredClone(value), same = (a,b) => stableBusinessValue(a) === stableBusinessValue(b);
 const hash = value => createHash('sha256').update(stableBusinessValue(value)).digest('hex');
 const own = (v,k) => v !== null && typeof v === 'object' && Object.hasOwn(v,k);
@@ -228,6 +229,7 @@ function qualificationObservations(f,parameters,choices,config) {
 }
 // Rebind only original already-collected task facts; no new source, write or future state.
 function taskClosingFact(f,p,config){
+ if(closingGiftKinds.includes(p.kind))return same(f?.parameters,p)?f:null;
  const owner=liveTaskFacts.get(f),achievement=p.kind==='achievement';
  if(p.kind==='weekly-chip-task'||OPEN_RANK_TASK_KINDS.includes(p.kind))return activityTaskClosingFact(f,p,config);
  if(!owner||owner.seal!==sealOf(f)||owner.client.connected!==true||!same(contextOf(owner.client,owner.player),f.context)||achievement!==(f.parameters?.kind==='achievement'))return null;
@@ -239,16 +241,16 @@ function taskClosingRows(f,options){
 }
 export function validateTaskRewardClosingPreparation(v){
  if(own(v,'groups')){
-  if(!fields(v,['groups','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.groups)||Object.getPrototypeOf(v.groups)!==Array.prototype||Reflect.ownKeys(v.groups).length!==v.groups.length+1||!Array.from({length:v.groups.length},(_,i)=>Object.getOwnPropertyDescriptor(v.groups,i)).every(d=>d?.enumerable&&own(d,'value'))||!v.groups.length||v.groups.length>7)throw invalid('跨来源收尾须明确1至7个原任务来源分组');
+  if(!fields(v,['groups','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.groups)||Object.getPrototypeOf(v.groups)!==Array.prototype||Reflect.ownKeys(v.groups).length!==v.groups.length+1||!Array.from({length:v.groups.length},(_,i)=>Object.getOwnPropertyDescriptor(v.groups,i)).every(d=>d?.enumerable&&own(d,'value'))||!v.groups.length||v.groups.length>12)throw invalid('跨来源收尾须明确1至12个原任务来源分组');
   const groups=v.groups.map(targets=>validateTaskRewardClosingPreparation({targets,maxDurationMs:v.maxDurationMs}).targets),targets=groups.flat();
-  const source=p=>['main','branch'].includes(p.kind)?'tasks':p.kind;
-  if(targets.length>24||new Set(groups.map(rows=>source(rows[0]))).size!==groups.length||new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId))).size!==targets.length)throw invalid('跨来源收尾共最多24项，每个原来源只允许一个分组且目标不得重复');
+  const source=p=>['main','branch'].includes(p.kind)?'tasks':['daily','daily-activity'].includes(p.kind)?'daily':p.kind;
+  if(targets.length>24||new Set(groups.map(rows=>source(rows[0]))).size!==groups.length||new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId??p.packId))).size!==targets.length)throw invalid('跨来源收尾共最多24项，每个原来源只允许一个分组且目标不得重复');
   return {groups,maxDurationMs:v.maxDurationMs};
  }
  if(!fields(v,['targets','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.targets)||v.targets.length<1||v.targets.length>24||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('任务收尾须明确1至24个当前任务及有限总时长');
- const targets=v.targets.map(row=>{const p=validateTaskRewardsParameters(row);if(!['main','branch','achievement','weekly-chip-task',...OPEN_RANK_TASK_KINDS].includes(p.kind))throw invalid('本收尾只接受当前主支线、同源成就、同轮周芯片或同模式开服任务；其他日常与活动继续原入口');return p;});
- const source=p=>p.kind==='achievement'?'achievement':p.kind==='weekly-chip-task'?'chip:'+p.round:OPEN_RANK_TASK_KINDS.includes(p.kind)?p.kind:'tasks';
- if(new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId))).size!==targets.length||targets.some(p=>source(p)!==source(targets[0])))throw invalid('任务目标不得重复，主支/成就/周芯片/开服各模式来源及芯片轮次必须隔离');
+ const targets=v.targets.map(row=>{const p=validateTaskRewardsParameters(row);if(!['main','branch','achievement','daily','daily-activity',...closingGiftKinds,'weekly-chip-task',...OPEN_RANK_TASK_KINDS].includes(p.kind)||['daily','daily-activity'].includes(p.kind)&&!own(p,'expectedResetTime'))throw invalid('本收尾仅接受原已交任务及免费礼包；日常任务/日活跃须固定服务器重置标记，其他活动继续原入口');return p;});
+ const source=p=>p.kind==='achievement'?'achievement':['daily','daily-activity'].includes(p.kind)?'daily:'+p.expectedResetTime:closingGiftKinds.includes(p.kind)?p.kind:p.kind==='weekly-chip-task'?'chip:'+p.round:OPEN_RANK_TASK_KINDS.includes(p.kind)?p.kind:'tasks';
+ if(new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId??p.packId))).size!==targets.length||targets.some(p=>source(p)!==source(targets[0])))throw invalid('任务目标不得重复，主支/成就/周芯片/开服各模式来源及芯片轮次必须隔离');
  return {targets,maxDurationMs:v.maxDurationMs};
 }
 export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,...input}={}){
@@ -262,14 +264,20 @@ export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REW
   steps.forEach((step,i)=>nodes.push({id:'reward-'+i,type:'ACTION',module:moduleId,parameters:copy(step.parameters),selection:copy(step.selection)},{id:'verify-'+i,type:'VERIFY',module:moduleId}));nodes.push({id:'stop',type:'STOP'});
   return {...p,parts,steps,budget,graph:{version:1,id:'task-rewards-groups-'+hash(p).slice(0,20),name:'明确跨来源任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确清单中的当前合格任务；每组保留原独立任务来源、活动窗口及轮次限制。准备时各组重新调查并确认相同完整库存，每项执行再调查、单次授权及原独立结算验证；变化、拒绝或UNKNOWN停止后续。累计奖励只核溢出，不增加父预算；不追加未来任务、不领取排名奖励、不跨周芯片末任务换轮，重启只读不重放。'};
  }
- const p=validateTaskRewardClosingPreparation(input),nodes=[{id:'start',type:'START'}],totals=new Map(f?.stock??[]);
- const chip=p.targets[0].kind==='weekly-chip-task',activity=chip||OPEN_RANK_TASK_KINDS.includes(p.targets[0].kind),choices=activity?activityTaskClosingChoices(f,{config,moduleConfig}):null;if(activity&&(choices.status!=='OBSERVED'||chip&&choices.round!==p.targets[0].round||p.targets.length>choices.maximumClaims))throw invalid('活动任务组合须同一当前来源；周芯片须保留至少一项未领，末任务跨轮仍缺证');
+ const p=validateTaskRewardClosingPreparation(input);
+ if(['daily','daily-activity'].includes(p.targets[0].kind)){
+  const result=prepareDailyRewardWorkflow(f,{config,moduleConfig,expectedResetTime:p.targets[0].expectedResetTime,taskIds:p.targets.filter(p=>p.kind==='daily').map(p=>p.taskId),tierIds:p.targets.filter(p=>p.kind==='daily-activity').map(p=>p.tierId),maxDurationMs:p.maxDurationMs});
+  if(!same(result.steps.map(row=>row.parameters),p.targets))throw invalid('日常分组须保留原逐任务后逐日活跃档位顺序');
+  return {...result,targets:copy(p.targets)};
+ }
+ const nodes=[{id:'start',type:'START'}],totals=new Map(f?.stock??[]);
+ const chip=p.targets[0].kind==='weekly-chip-task',gift=closingGiftKinds.includes(p.targets[0].kind),activity=chip||gift||OPEN_RANK_TASK_KINDS.includes(p.targets[0].kind),choices=activity&&!gift?activityTaskClosingChoices(f,{config,moduleConfig}):null;if(activity&&!gift&&(choices.status!=='OBSERVED'||chip&&choices.round!==p.targets[0].round||p.targets.length>choices.maximumClaims))throw invalid('活动任务组合须同一当前来源；周芯片须保留至少一项未领，末任务跨轮仍缺证');
  const steps=p.targets.map((parameters,i)=>{const facts=taskClosingFact(f,parameters,config);if(!facts)throw invalid('任务收尾原账号、连接或任务来源变化，须重新调查');const row=activity?viewDailyTaskReward(facts,{config,moduleConfig,parameters}).candidates[0]:candidate(facts,parameters,{config,moduleConfig});
   if(!row.executable)throw Object.assign(new Error('所选任务当前资格未确认：'+row.blockedReason),{code:row.blockedReason,statusCode:409});
   for(const reward of row.rewards){const next=(totals.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(next))throw invalid('所选任务累计奖励超过原安全整数余额范围');totals.set(reward.id,next);}
   const selection={unique:true};nodes.push({id:'reward-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,costs:[],rewards:copy(row.rewards),budgetClaims:copy(row.budgetClaims)};
  });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:steps.flatMap(row=>row.budgetClaims.uids)};
- return {...p,steps,budget,graph:{version:1,id:'task-rewards-closing-'+hash({p,steps}).slice(0,20),name:chip?'明确同轮周芯片任务逐项收尾':activity?'明确同模式开服任务逐档收尾':'明确当前任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:chip?'仅本次明确同轮周芯片当前已合格任务，原WeekInfo窗口/轮次/任务父UID预算固定且至少保留一个未领任务，不进入末任务跨轮。复用原任务定义、资格、typed轮次/完整已领ID回执及完整库存净入验证，每项重新调查、单次授权后继续；变化、拒绝或UNKNOWN停止，零重领/开箱/未来任务/续权，奖励不扩父预算，准备不执行。':activity?'仅同一开服模式的明确当前合格score档位，原世界/赛季/配置规则和私有活动窗口不变，原UID父预算固定对应窗口及档位。复用原候选、请求、同源进度/唯一已领档位和完整库存净入验证；每档重新调查/单次授权，窗口/资格变化、拒绝或UNKNOWN停止，不领取排名奖励、其他模式或未来任务，不新增恢复分支，奖励不扩父预算。':'仅当前明确已合格的主线/支线或同源成就，复用原任务身份、资格、配置奖励和完整库存净入验证；每项重新调查、单次授权并验证后继续。主线前移不证明原任务成功；资格不明、拒绝或UNKNOWN停止，任务/配置变化仍须原重新预览与授权，不领取未来任务、不重发或续权，奖励不扩父预算，日常/赛季活动仍走原独立入口。'};
+ return {...p,steps,budget,graph:{version:1,id:'task-rewards-closing-'+hash({p,steps}).slice(0,20),name:gift?'明确免费礼包收尾':chip?'明确同轮周芯片任务逐项收尾':activity?'明确同模式开服任务逐档收尾':'明确当前任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:gift?'仅明确已交的日赠礼或1000号周免费礼包，复用原唯一免费领取、窗口和完整库存净入验证；不购买、不开包、不推断重置或跨周重领。每项重新调查、单次授权，变化、拒绝或UNKNOWN停止；收入不扩大父预算。':chip?'仅本次明确同轮周芯片当前已合格任务，原WeekInfo窗口/轮次/任务父UID预算固定且至少保留一个未领任务，不进入末任务跨轮。复用原任务定义、资格、typed轮次/完整已领ID回执及完整库存净入验证，每项重新调查、单次授权后继续；变化、拒绝或UNKNOWN停止，零重领/开箱/未来任务/续权，奖励不扩父预算，准备不执行。':activity?'仅同一开服模式的明确当前合格score档位，原世界/赛季/配置规则和私有活动窗口不变，原UID父预算固定对应窗口及档位。复用原候选、请求、同源进度/唯一已领档位和完整库存净入验证；每档重新调查/单次授权，窗口/资格变化、拒绝或UNKNOWN停止，不领取排名奖励、其他模式或未来任务，不新增恢复分支，奖励不扩父预算。':'仅当前明确已合格的主线/支线或同源成就，复用原任务身份、资格、配置奖励和完整库存净入验证；每项重新调查、单次授权并验证后继续。主线前移不证明原任务成功；资格不明、拒绝或UNKNOWN停止，任务/配置变化仍须原重新预览与授权，不领取未来任务、不重发或续权，奖励不扩父预算，日常/赛季活动仍走原独立入口。'};
 }
 
 export function viewTaskRewards(f,options={}) {
