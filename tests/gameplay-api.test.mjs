@@ -4302,3 +4302,24 @@ for(const entry of ['tasks','loop'])for(const phase of ['plan','dispatch'])for(c
   assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+for(const outcome of ['success','unknown-1','refused-1'])test('Tasks exact farm candidates HTTP '+outcome+' use original per-item authorization and stop on unconfirmed results',async()=>{
+ const {app,state}=await farmSequenceHttp();try{
+  state.failAt=outcome;
+  const view=(await app.survey({action:'harvest'})).data.view,targets=view.candidates.filter(r=>r.executable);
+  assert.equal(targets.length,2);
+  const budget=(await app.call(farmSequenceRoute,{body:{targets:view.plots.map(p=>({buildingId:p.buildingId,productId:p.productId,plantTime:p.plantTime,ripeTime:p.ripeTime,identity:targets.find(c=>c.target.buildingId===p.buildingId).identity})),maxDurationMs:60000}})).data.graph.budget;
+  const body={entry:'tasks',tasks:targets.map(row=>({kind:'farm',parameters:row.parameters,actionId:row.actionId})),budget};
+  const prepared=await app.call('/api/workflows/prepare',{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.deepEqual(prepared.data.graph.budget,budget);assert.equal(state.writes.length,0);
+  assert.equal((await app.call('/api/workflows/start',{body:{graph:prepared.data.graph}})).status,200);
+  const count=outcome==='success'?2:1;
+  for(let i=0;i<count;i++){
+   const wait=(await waitForWorkflow(app,'AWAITING_AUTHORIZATION')).status;assert.equal(wait.plan.actions[0].actionId,targets[i].actionId);
+   const permit=await app.approve(wait.plan);assert.equal(permit.status,200,JSON.stringify(permit.data));assert.equal((await app.call('/api/operations/execute',{body:permit.data})).status,200);await app.operations.settle('A');
+   assert.equal((await app.call('/api/workflows/resume',{body:{}})).status,200);
+  }
+  const expected=outcome==='success'?'COMPLETED':outcome==='unknown-1'?'UNKNOWN':'FAILED',done=(await waitForWorkflow(app,expected)).status;
+  assert.equal(state.writes.length,count);assert.equal(app.history.list('A').length,count);assert.equal(app.history.unresolved('A'),expected==='UNKNOWN');
+  assert.equal((await app.call('/api/workflows/history?workflowRunId='+done.runId,{id:'B'})).status,404);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});

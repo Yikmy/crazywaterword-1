@@ -3716,3 +3716,14 @@ test('every gameplay page loads an unsurveyed null view without dispatching a mu
  }
  assert.deepEqual(failures,[]);assert.equal(writes(h).length,0);
 });
+
+test('Tasks candidate entry preserves original growth, farm and material targets and compiles through real registered Functions',async()=>{
+ for(const spec of [cases.find(s=>s.module==='pet'),cases.find(s=>s.actionType==='FRAGMENT-EXCHANGE'),cases.find(s=>s.module==='material-packs'),cases.find(s=>s.module==='farm'&&s.actionType==='PLANT'),cases.find(s=>s.module==='equipment-growth')]){
+  const h=await loaded(spec),before=h.requests.length;
+  const button=descendants(h.node('gp-'+spec.module+'-candidates')).find(n=>n.dataset.unifiedTaskCandidate===spec.actionId);assert.ok(button);assert.equal(button.disabled,false);button.click();
+  const draft=unifiedDraft(h);assert.equal(draft.entry,'tasks');assert.deepEqual(draft.tasks,[{kind:spec.module,parameters:spec.parameters,actionId:spec.actionId}]);assert.deepEqual(draft.budget,{resources:[],quotas:[],uids:[]});
+  const compiled=compileUnifiedExecution(draft,{modules:GAMEPLAY_MODULES});assert.deepEqual(compiled.graph.nodes.find(n=>n.type==='ACTION').selection,{actionId:spec.actionId});
+  assert.equal(h.requests.length,before);assert.equal(h.confirmations.length,0);
+  const source=h.node('wf-unified-intent').value;h.node('gp-'+spec.module+'-parameters').oninput();button.click();assert.equal(h.node('wf-unified-intent').value,source);
+ }
+});

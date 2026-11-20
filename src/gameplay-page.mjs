@@ -2282,6 +2282,11 @@ const WF_UNIFIED_KINDS = {
  main:'主线任务领奖',branch:'支线任务领奖',achievement:'成就领奖',daily:'每日任务领奖','mail-claim':'单封邮件附件','mail-read':'单封空附件邮件已读','mail-enumeration':'只读邮箱有界枚举','afk-level-reward':'挂机单档等级奖励','afk-income':'普通挂机本段收益',
  'weekly-battle-pass-task':'战令任务只读观察',
  'daily-activity':'日活跃单档领奖','daily-gift':'固定免费赠礼','weekly-lottery-gift':'周转盘免费礼包1000','weekly-unique-lottery-gift':'周翻牌免费礼包1000','weekly-chip-gift':'周芯片免费礼包1000','weekly-chip-task':'周芯片当前轮次任务领奖',...Object.fromEntries(Object.entries(GP_OPEN_RANK_LABELS).map(([kind,label])=>[kind,label+'明确score档位领奖'])),
+ city:'明确建筑操作',production:'明确工厂生产／收取／道具加速',heroes:'明确英雄／技能／专武成长',
+ 'equipment-growth':'明确装备成长／空槽穿戴','badge-growth':'明确徽章成长／空槽穿戴','antique-growth':'明确藏品成长／兑换',
+ pet:'明确海兽投喂／服役升级','formation-unlock':'明确自有图纸解锁','equipment-forge':'明确装备厂制造／收取',
+ 'material-packs':'明确自有材料包兑换',fleet:'明确舰队／货船操作',alliance:'明确联盟操作',trade:'明确海商王操作',
+ treasure:'明确世界宝藏派舰',farm:'明确单田种植／收取',formation:'明确阵容保存／切换',
  'compass-wheel':'明确龙王罗盘抽取',
  'resident-order':'明确居民订单提交（原候选actionId）','cargo-fill':'港口货轮单格装货（任务进度另查）','free-recruit':'明确英雄／古董招募（免费或自有券）','alliance-order':'联盟城市募兵订单',museum:'博物馆探险出发',stage:'有限主线战斗（不自动领奖）','free-gold':'普通免费点金','trial-challenge':'所选试炼首通（1英雄经验/2强化石/3海兽经验）','pirate-sweep':'单目标海面扫荡'
 };
@@ -2387,11 +2392,13 @@ function wfUnifiedCandidateButton(card,id,row,state) {
   } catch(error){$('gp-'+id+'-hint').textContent='加入声明失败：'+error.message;}
  };
  card.appendChild(button);
- const taskKind=id==='fleet'&&row.actionType==='cargoFill'?'cargo-fill':id==='alliance'&&row.actionType==='finishOrder'?'alliance-order':id==='museum'&&row.actionType==='startExplore'?'museum':id==='pirate-sweep'&&row.actionType==='SWEEP'?'pirate-sweep':null;
+ const legacyTaskKind=id==='fleet'&&row.actionType==='cargoFill'?'cargo-fill':id==='alliance'&&row.actionType==='finishOrder'?'alliance-order':id==='museum'&&row.actionType==='startExplore'?'museum':id==='pirate-sweep'&&row.actionType==='SWEEP'?'pirate-sweep':null;
+ const exactTask=!legacyTaskKind&&['city','production','heroes','equipment-growth','badge-growth','antique-growth','pet','formation-unlock','equipment-forge','material-packs','fleet','alliance','trade','treasure','farm','formation'].includes(id);
+ const taskKind=exactTask?id:legacyTaskKind;
  const taskKeys={'cargo-fill':['shipIndex','cargoIndex'],'alliance-order':['cityId'],museum:['stageId','heroIds','factor'],'pirate-sweep':['uid','cityId','allowLowerLevel','expectedSweep']};
  const taskParameters=taskKind==='alliance-order'?{...row.parameters,cityId:row.target?.cityId}:row.parameters;
  const requiredKeys={'cargo-fill':['shipIndex','cargoIndex'],'alliance-order':['cityId'],museum:['stageId','heroIds','factor'],'pirate-sweep':['uid','cityId']};
- const completeTask=taskKind&&explicit&&Object.keys(row.parameters).every(key=>taskKeys[taskKind].includes(key))&&requiredKeys[taskKind].every(key=>Object.hasOwn(taskParameters,key)&&taskParameters[key]!==undefined)
+ const completeTask=exactTask&&explicit||taskKind&&explicit&&Object.keys(row.parameters).every(key=>taskKeys[taskKind].includes(key))&&requiredKeys[taskKind].every(key=>Object.hasOwn(taskParameters,key)&&taskParameters[key]!==undefined)
   &&(taskKind!=='alliance-order'||Number.isInteger(taskParameters.cityId)&&taskParameters.cityId>0&&taskParameters.cityId<=2147483647&&(row.parameters.cityId===undefined||row.parameters.cityId===taskParameters.cityId));
  if(completeTask){
   const taskButton=gpEl('button','将此明确业务加入Tasks声明');taskButton.type='button';taskButton.dataset.unifiedTaskCandidate=row.actionId;
@@ -2402,7 +2409,7 @@ function wfUnifiedCandidateButton(card,id,row,state) {
     const source=$('wf-unified-intent').value,intent=source.trim()?wfUnifiedData():{entry:'tasks',tasks:[],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}};
     if(!['tasks','loop'].includes(intent.entry))throw Error('请先明确将入口改为Tasks或Loop；原步骤保留。');
     if(intent.tasks.length>=48)throw Error('Tasks步骤已达48项上限');
-    intent.tasks.push({kind:taskKind,parameters:JSON.parse(JSON.stringify(taskParameters))});wfInvalidateSettingPlans();
+    intent.tasks.push({kind:taskKind,parameters:JSON.parse(JSON.stringify(exactTask?row.parameters:taskParameters)),...(exactTask?{actionId:row.actionId}:{})});wfInvalidateSettingPlans();
     $('wf-unified-intent').value=gpJson(intent);wfUnifiedRender();wfControls();
     $('gp-'+id+'-hint').textContent='已将本次明确业务参数加入Tasks草稿；核对原目标、成本与累计预算，每项仍重新调查并单独授权。';
     $('wf-unified-form-hint').textContent='原步骤与累计预算保留；本次仅编辑声明，不证明日常完成或领奖，拒绝或UNKNOWN停止。';
@@ -2432,6 +2439,7 @@ function wfUnifiedRender() {
   const card=gpEl('div'),kind=row?.type==='WAIT'?(row.cooldown?.kind==='FACTORY_QUEUE_CLOCK'?'factory-queue-clock':row.cooldown?.kind==='TRADE_LEG_END'?'trade-leg-clock':'free-recruit-cooldown'):phase==='world'?row?.module:row?.action==='observe'?(row.kind||(phase==='dailies'?'daily':''))+'-observe':row?.kind==='mail'?'mail-'+row?.action:row?.kind||(phase==='dailies'?(row?.action==='claim'?'daily':({1002:'free-recruit',1003:'stage',1004:'afk-income',1006:'free-gold',1008:'cargo-fill',1009:'trial-challenge',1010:'pirate-sweep',1012:'alliance-order',1016:'museum'})[row?.taskId]):'');
   const target=(row?.type==='WAIT'?row?.cooldown?.maxWaitMs:undefined)??row?.actionId??row?.maxPages??row?.level??row?.emailId??row?.packId??row?.tierId??(kind==='pirate-sweep'?row?.parameters?.uid:kind==='museum'?row?.parameters?.stageId:kind==='alliance-order'?row?.parameters?.cityId:kind==='cargo-fill'?row?.parameters?.shipIndex:kind==='trial-challenge'?(row?.parameters?.raidId??1):row?.taskId)??'';
   card.appendChild(gpEl('span',phase+' 第 '+(index+1)+' 项 · '+(WF_UNIFIED_KINDS[kind]||(row?.action==='observe'&&WF_TASK_REWARD_KINDS.includes(row.kind)?WF_UNIFIED_KINDS[row.kind]+'（只读观察）':kind)||'待核对业务')+(target!==''?' · '+target:'')));
+  if(row?.actionId&&row?.parameters)card.appendChild(gpEl('p','明确业务参数：'+gpJson(row.parameters)+'。运行时重查同一候选，变化即停止；原累计预算不增加，每项仍须单独授权。'));
   if(kind==='compass-wheel')card.appendChild(gpEl('p','活动 '+(row?.parameters?.activityId??'未知')+' · '+(row?.parameters?.count??'未知')+' 次。运行时重新核对原候选、券和活动窗口，再单独授权。结算UNKNOWN即停止。'));
   if(kind==='resident-order')card.appendChild(gpEl('p','绑定原订单身份和规则摘要；每项重新调查并单独授权，订单替换或规则变化停止。仅使用初始自有材料累计预算，收益不扩额，拒绝或UNKNOWN停止。每日订单档位领奖仍需独立证据。'));
   if(kind==='stage'){gpDetails(card,'原有限主线配置',row.parameters);card.appendChild(gpEl('p','原StageRunner逐场验证，重新调查并单次授权；战败重试或停止沿原有限配置，UNKNOWN停止且不重放。战斗不证明日常完成，不自动领取任务奖励。'));}

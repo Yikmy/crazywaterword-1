@@ -7,6 +7,7 @@ import { validateFreeGoldParameters } from './free-gold.mjs';
 import { residentOrderSelection } from './order-execution.mjs';
 import { validateCompassWheelParameters } from './compass-wheel.mjs';
 import { validateWorkflow } from './workflow.mjs';
+import { validateFunctionParameters } from './function-contracts.mjs';
 import { validateTaskRewardsParameters, OPEN_RANK_TASK_KINDS } from './task-rewards.mjs';
 import { museumStartExploreSelection } from './museum.mjs';
 import { allianceOrderSelection } from './alliance.mjs';
@@ -171,6 +172,23 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(!Object.hasOwn(parameters,'kind')||phase==='dailies'&&['main','branch','achievement'].includes(parameters.kind))invalid('该分组不支持此任务观察');
         }catch{invalid('只读观察须使用原任务Function的明确完整目标');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
+      }
+      // Original professional candidates may be ordered with task rewards.
+      // Keep the exact candidate instead of widening it to a unique/future target.
+      if (phase === 'tasks' && ['city','production','heroes','equipment-growth','badge-growth','antique-growth','pet','formation-unlock','equipment-forge','material-packs','fleet','alliance','trade','treasure','farm','formation'].includes(row?.kind)) {
+        const keys = ['kind','parameters','actionId'];
+        if (!object(row) || Reflect.ownKeys(row).length !== keys.length || keys.some(key => {
+          const d = Object.getOwnPropertyDescriptor(row, key);
+          return !d?.enumerable || !Object.hasOwn(d, 'value');
+        })) invalid('Tasks业务须明确原kind、parameters及精确候选actionId');
+        module = row.kind;
+        const adapter = modules instanceof Map ? modules.get(module) : modules?.[module];
+        if (adapter?.contractVersion !== 1) invalid('Tasks业务必须使用已注册的原Function合同');
+        if (typeof row.actionId !== 'string' || !row.actionId.trim() || row.actionId.trim() !== row.actionId || row.actionId.length > 1000) invalid('Tasks业务须保留完整精确候选actionId');
+        try { parameters = validateFunctionParameters(module, adapter, row.parameters); }
+        catch { invalid('Tasks业务参数不符合原Function合同'); }
+        steps.push({phase,index,module,parameters,selection:{actionId:row.actionId}});
+        continue;
       }
       if(phase==='tasks'&&row?.kind==='resident-order'){
         exact(row,['kind','actionId']);

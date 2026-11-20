@@ -1,3 +1,4 @@
+import { GAMEPLAY_MODULES } from '../src/function-registry.mjs';
 import { compileUnifiedExecution } from '../src/loop.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1166,4 +1167,22 @@ test('Tasks business batch retains original Dailies targets and explicit Tasks r
  assert.deepEqual(compile([{taskId:1009,action:'perform'}]).graph.nodes.find(n=>n.type==='ACTION').parameters,{});
  for(const parameters of [{raidId:4},{raidId:0},{raidId:'1'},{stageId:1001},{raidId:1,stageId:0}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{kind:'trial-challenge',parameters}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
  for(const parameters of [{uid:17},{cityId:9},{uid:17,cityId:9,allowLowerLevel:'true'}])assert.throws(()=>compileUnifiedExecution({entry:'tasks',tasks:[{kind:'pirate-sweep',parameters}],budget},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
+});
+
+// FEATURE FIRST: only the newly connected Tasks candidate path.
+test('Tasks professional candidates compile through all 16 original Function contracts without widening selection or budget',()=>{
+ const ids=['city','production','heroes','equipment-growth','badge-growth','antique-growth','pet','formation-unlock','equipment-forge','material-packs','fleet','alliance','trade','treasure','farm','formation'];
+ const input={entry:'tasks',tasks:ids.map(kind=>({kind,parameters:{},actionId:kind+':exact-current'})),budget:{resources:[],quotas:[],uids:[]}},before=structuredClone(input);
+ const out=compileUnifiedExecution(input,{modules:GAMEPLAY_MODULES});
+ assert.deepEqual(out.blocked,[]);assert.deepEqual(input,before);assert.deepEqual(out.graph.budget,input.budget);
+ assert.deepEqual(out.graph.nodes.filter(n=>n.type==='ACTION').map(n=>[n.module,n.parameters,n.selection]),ids.map(id=>[id,GAMEPLAY_MODULES[id].validateParameters({}),{actionId:id+':exact-current'}]));
+});
+test('Tasks professional candidates reject missing targets, transport fields, malformed original parameters and unregistered adapters',()=>{
+ const row={kind:'pet',parameters:{action:'feed',buildingId:'1宠物培育室',jobIdx:0},actionId:'pet:exact'},base={entry:'tasks',budget:{resources:[],quotas:[],uids:[]}};
+ for(const changed of [{...row,actionId:''},{...row,actionId:' x '},{kind:row.kind,parameters:row.parameters},{...row,selection:{unique:true}},{...row,request:'PetFeedRequest'},{...row,parameters:{...row.parameters,uid:'1'}},{...row,parameters:{body:{}}}])assert.throws(()=>compileUnifiedExecution({...base,tasks:[changed]},{modules:GAMEPLAY_MODULES}));
+ assert.throws(()=>compileUnifiedExecution({...base,tasks:[row]},{modules:{pet:{id:'pet',survey(){},view(){},plan(){},verify(){}}}}));
+ let called=0;const bad={...row};Object.defineProperty(bad,'actionId',{enumerable:true,get(){called++;return 'pet:exact'}});
+ assert.throws(()=>compileUnifiedExecution({...base,tasks:[bad]},{modules:GAMEPLAY_MODULES}));assert.equal(called,0);
+ const identity='9007199254740995',target={kind:'equipment-growth',parameters:{heroId:'A',uid:identity},actionId:'equipment-growth:exact'};
+ const graph=compileUnifiedExecution({...base,tasks:[target]},{modules:GAMEPLAY_MODULES}).graph;assert.equal(graph.nodes[1].parameters.uid,identity);
 });
