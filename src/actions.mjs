@@ -364,7 +364,8 @@ export function assertPaymentAllowed(action, { allowPaid = false } = {}) {
   if((activateAntique||starAntique)&&(!fields(body,starAntique?['id','universal']:['id'])||!identifier(body.id)||starAntique&&body.universal!==false||!exactCosts(costs)||costs.length!==1||costs[0].id!==body.id+'碎片'))fail('COST_UNKNOWN','藏品成长仅允许明确藏品及其自有专用碎片，禁止万能碎片或购买补齐');
   const emptyOwnArray=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length===0&&Reflect.ownKeys(v).length===1;
   if(request==='CancelFactoryAutoProduceRequest'&&(!fields(body,['buildingId'])||!identifier(body.buildingId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','停止自动生产仅允许明确单工厂及显式零支出，不含新产品、购买或开关字段');
-  if(['SetFactoryAutoProduceRequest','SetBuildingAutoWorkRequest'].includes(request))fail('COST_UNKNOWN','持续自动工作或排产的权益、未来材料消耗及有界预算未闭合');
+  if(request==='SetFactoryAutoProduceRequest')fail('COST_UNKNOWN','持续自动排产的权益、未来材料消耗及有界预算未闭合');
+  if(request==='SetBuildingAutoWorkRequest'&&(!fields(body,['buildingId','isOn'])||body.buildingId!=='1宠物培育室'||body.isOn!==false||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','自动工作仅允许明确原培育室isOn=false、显式零资源支出；原Function须验证当前VIP权益及已开启状态，不授权持续自动支出');
   if(shipSeek&&(!fields(body,['shipId'])||!positiveInt32(body.shipId)||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','商船应聘仅允许明确单船ID、零支出和无额外英雄/购买参数');
   if(request==='QuickGotReadEmailRequest'&&body.all!==true&&(body.all!==false||!fields(body,['emailId','all'])||!Array.isArray(body.emailId)||body.emailId.length!==1||Reflect.ownKeys(body.emailId).length!==2||!exactUid(body.emailId[0])||!emptyOwnArray(Object.getOwnPropertyDescriptor(action,'costs')?.value)))fail('COST_UNKNOWN','单封邮件领取必须为精确emailId、all=false和明确零支出');
   const sweepPirate=request==='PirateSweepRequest';

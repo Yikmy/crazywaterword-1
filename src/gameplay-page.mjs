@@ -763,6 +763,9 @@ function gpPetTargetSources(view){
 }
 function gpRenderPetTarget(box,view){
  const id='pet',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ if(view?.mode==='stop-auto'){
+  const parameters=view.stopAutoPreparation,prepare=gpEl('button','准备停止当前自动培育');prepare.dataset.petStopAutoPrepare='true';prepare._blocked=parameters?.action!=='stop-auto'||parameters.buildingId!=='1宠物培育室'||typeof parameters.expectedStopHash!=='string'||!/^[a-f0-9]{64}$/.test(parameters.expectedStopHash);state.actionControls.push(prepare);box.appendChild(prepare);prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id)!==state||state.data?.view!==view||state.revision!==edit||$('gp-'+id+'-parameters').value!==source)return;$('gp-'+id+'-parameters').value=gpJson({action:'stop-auto',buildingId:parameters.buildingId,expectedStopHash:parameters.expectedStopHash});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已固定当前自动培育和VIP资格来源；请重新调查，再预览并单次授权停止。';};box.appendChild(gpEl('p','仅停止当前已经开启的自动培育，仍须当前原VIP资格。零材料支出，不取消已有任务、不领取或开启自动工作；队列或库存变化保持UNKNOWN。'));return;
+ }
  if(view?.mode==='gene-exchange'){
   const rows=(view.genePreparation||[]).filter(row=>typeof row.petId==='string'&&typeof row.sourceId==='string'&&typeof row.targetId==='string'&&Number.isSafeInteger(row.sourceNum)&&row.sourceNum>0),choice=gpEl('select'),num=gpEl('input'),prepare=gpEl('button','准备明确数量基因兑换');choice.dataset.petGeneType='true';num.dataset.petGeneQuantity='true';prepare.dataset.petGenePrepare='true';num.type='number';num.min='1';num.max='2147483647';num.step='1';num.value='1';const first=gpEl('option','请选择目标专属基因');first.value='';choice.appendChild(first);for(const row of rows){const option=gpEl('option',row.petId+' · '+row.sourceId+' 持有'+row.sourceNum+' → '+row.targetId);option.value=row.petId;choice.appendChild(option);}choice.value='';
   const live=()=>gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id)===state&&state.data?.view===view&&state.revision===edit&&$('gp-'+id+'-parameters').value===source,selected=()=>rows.find(row=>row.petId===choice.value),quantity=()=>/^[1-9][0-9]*$/.test(num.value)&&Number(num.value)<=2147483647?Number(num.value):null,sync=()=>{if(!live())return;choice._blocked=!rows.length;num._blocked=!selected();prepare._blocked=!selected()||!quantity()||quantity()>selected().sourceNum;gpControls(id);};choice._blocked=!rows.length;num._blocked=prepare._blocked=true;state.actionControls.push(choice,num,prepare);choice.onchange=num.oninput=num.onchange=sync;prepare.onclick=()=>{if(prepare.disabled||!live()||!selected()||!quantity()||quantity()>selected().sourceNum)return;$('gp-'+id+'-parameters').value=gpJson({action:'gene-exchange',petId:selected().petId,num:quantity()});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已准备目标专属基因及明确兑换数量；请重新调查同组自有包和库存，再预览并单次授权。';};box.appendChild(choice);box.appendChild(num);box.appendChild(prepare);box.appendChild(gpEl('p','仅把已持有的对应品质/物种组基因自选包1:1兑换为所选专属基因。兑换不培育、不补购，收入不扩父预算；培育仍另行调查并保持universal=false。'));sync();return;
@@ -1631,7 +1634,7 @@ function gpRenderDomain(id,view){
   const scope=viewGuard.capture(),revision=gpRevision;
   const valid=control=>!control.disabled&&gpDomainSelectable(id)&&gpSafe(scope,revision)&&gpGet(id).data?.view===view;
   const draft=parameters=>{$('gp-'+id+'-parameters').value=gpJson(parameters);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已更新海兽操作；请重新探测，再选择明确实例并预览。';};
-  for(const mode of [{action:'feed',label:'单次投喂'},{action:'level',label:'服役海兽升一级'},{action:'claim',label:'领取成熟海兽'},{action:'breed',label:'自有普通基因培育'},{action:'gene-exchange',label:'自有基因包兑换'}]){
+  for(const mode of [{action:'feed',label:'单次投喂'},{action:'level',label:'服役海兽升一级'},{action:'claim',label:'领取成熟海兽'},{action:'breed',label:'自有普通基因培育'},{action:'gene-exchange',label:'自有基因包兑换'},{action:'stop-auto',label:'停止自动培育'}]){
    const button=gpEl('button',mode.label);button.dataset.petMode=mode.action;button.disabled=!gpDomainSelectable(id);
    button.onclick=()=>{if(valid(button))draft({action:mode.action});};box.appendChild(button);s.actionControls.push(button);
   }
@@ -1641,7 +1644,7 @@ function gpRenderDomain(id,view){
    table('单级升级',['建筑','海兽 UID','当前等级','目标等级','成本','状态'],(view?.candidates||[]).filter(row=>row.actionType==='LEVEL').map(row=>[row.target.buildingId,row.target.uid,row.target.fromLevel,row.target.toLevel,operationCosts(row.costs),row.executable?'可以预览':row.blockedReason]));
   }
   table('当前成熟海兽',['培育室','海兽','星级'],(view?.rooms||[]).flatMap(room=>(room.queue?.maturePets||[]).map(p=>[room.buildingId,p.petId,p.star])));
-  if(!['level','claim','breed','gene-exchange'].includes(view?.mode)){
+  if(!['level','claim','breed','gene-exchange','stop-auto'].includes(view?.mode)){
   table('普通培育条件（只读）',['海兽','专属基因与金币','所需秒数','赛季','库存','队列','条件'],(view?.breeding?.candidates||[]).map(row=>[row.petId,operationCosts(row.costs),row.breedTime,row.seasonAvailable?'已开放':'未开放',row.stockAvailable?'足够':'不足',row.queueAvailable===null?'未知':row.queueAvailable?'有空位':'无空位',row.conditions==='MET'?'条件满足；须明确准备':row.conditions==='NOT_MET'?'条件未满足':'未知']));
   box.appendChild(gpEl('p','普通培育仅观察专属基因、金币、赛季和队列条件；'+(view?.breeding?.status==='UNKNOWN'?'来源未知：'+show(view.breeding.reason)+'。':'')+'条件满足不代表可执行；须切换普通基因培育模式，明确海兽与当前队列后重新调查授权。基因自选包可切换独立兑换模式明确目标和数量；成熟领取须切换独立模式明确当前完整列表。'));
   table('培育队列',['培育室','任务idx','海兽','星级','开始时间','完成时间'],(view?.rooms||[]).flatMap(room=>(room.queue?.breedQ||[]).map(job=>[room.buildingId,job.idx,job.petId,job.star,job.startTime,job.finishTime])));
@@ -2963,7 +2966,8 @@ function wfObservedParameterTargets(card,node,fields,live,invalidateDraft,sync,n
  }else if(node.module==='formation-unlock'){
   for(const row of gpFormationUnlockTargets(view)||[])targets.push({label:row.presetId+' / '+row.name,parameters:{presetId:row.presetId}});
  }else if(node.module==='pet'){
-  if(view?.mode==='gene-exchange'){for(const row of view.genePreparation||[])if(row.sourceNum>0)targets.push({label:row.petId+' / '+row.sourceId+' → '+row.targetId,parameters:{action:'gene-exchange',petId:row.petId}});}
+  if(view?.mode==='stop-auto'){const p=view.stopAutoPreparation;if(p?.action==='stop-auto')targets.push({label:p.buildingId+' / 停止当前自动工作',parameters:p});}
+  else if(view?.mode==='gene-exchange'){for(const row of view.genePreparation||[])if(row.sourceNum>0)targets.push({label:row.petId+' / '+row.sourceId+' → '+row.targetId,parameters:{action:'gene-exchange',petId:row.petId}});}
   else if(view?.mode==='breed'){for(const row of view.breedPreparation||[])if(row.stockAvailable===true&&row.parameters?.action==='breed')targets.push({label:row.parameters.petId+' / 当前培育队列',parameters:row.parameters});}
   else if(view?.mode==='claim'){const p=view.claimPreparation;if(p?.action==='claim'&&p.buildingId==='1宠物培育室'&&typeof p.expectedMatureHash==='string'&&/^[a-f0-9]{64}$/.test(p.expectedMatureHash))targets.push({label:p.buildingId+' / 当前完整成熟列表',parameters:p});}
   else{
