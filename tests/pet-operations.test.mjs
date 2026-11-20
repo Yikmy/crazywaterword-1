@@ -629,14 +629,19 @@ for(const action of ['feed','level'])for(const phase of ['prepare','execute'])
 });
 
 
-for(const action of ['feed','level'])for(const outcome of ['success','unknown'])
- test('browser offline Pet batch '+action+' '+outcome+' preserves explicit targets and stops safely',{skip:!process.env.CW_TEST_BROWSER,timeout:60000},async t=>{
- const f=await petBatchFixture(t,{action,count:2,http:'listen',stop:outcome==='unknown'?{index:1,kind:'unknown'}:null});
+for(const action of ['feed','level'])for(const {outcome,targetCount,failAt} of [
+ ...['success','unknown'].map(outcome=>({outcome,targetCount:2,failAt:1})),
+ ...['success','unknown','refused'].map(outcome=>({outcome,targetCount:24,failAt:24}))
+])test('browser offline Pet batch '+action+' '+(targetCount===24?'24-target '+outcome+' at final target':outcome+' preserves explicit targets and stops safely'),{skip:!process.env.CW_TEST_BROWSER,timeout:targetCount===24?240000:60000},async t=>{
+ const f=await petBatchFixture(t,{action,count:targetCount,http:'listen',stop:outcome==='success'?null:{index:failAt,kind:outcome}});
+ const beforeBuildings=structuredClone(f.state.buildings),beforePets=structuredClone(f.state.pets);
+ const observed=await f.service.surveyModule(f.session,'pet',{action});
+ const targetById=new Map(observed.view.candidates.filter(row=>row.executable).map(row=>[row.actionId,row.parameters]));
  await new Promise(resolve=>f.app.server.listen(0,'127.0.0.1',resolve));
  await withOfflineBrowser(f.app,async({evaluate,waitFor})=>{
-  const {graph,simulation}=await evaluate('('+(async({account,action})=>{
+  const {graph,simulation,selectedIds}=await evaluate('('+(async({account,action,targetCount})=>{
    const find=selector=>document.querySelector(selector),wait=async(selector,accept=element=>element&&!element.disabled)=>{
-    for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+    for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
     throw Error(selector+' '+find('#gp-pet-hint')?.textContent+' '+find('#wf-hint')?.textContent);
    };
    await wait('#account',element=>element?.value===account);
@@ -644,31 +649,61 @@ for(const action of ['feed','level'])for(const outcome of ['success','unknown'])
    const parameters=await wait('#gp-pet-parameters');parameters.value=JSON.stringify({action});parameters.dispatchEvent(new Event('input',{bubbles:true}));
    (await wait('#gp-pet-survey')).click();await wait('[data-growth-batch-target]',element=>element&&!element.disabled);
    const choices=Array.from(document.querySelectorAll('#gp-pet-facts [data-growth-batch-target]')).filter(element=>!element.disabled);
-   if(choices.length!==2||choices.some(element=>element.checked))throw Error('Expected two unselected Pet targets');
+   if(choices.length!==targetCount||choices.some(element=>element.checked))throw Error('Expected '+targetCount+' unselected Pet targets');
+   const selectedIds=choices.map(choice=>choice.dataset.growthBatchTarget);
    for(const choice of choices)choice.click();
-   const duration=await wait('#gp-pet-facts [data-growth-batch-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+   const duration=await wait('#gp-pet-facts [data-growth-batch-duration]');duration.value=targetCount===24?'180':'60';duration.dispatchEvent(new Event('input',{bubbles:true}));
    (await wait('#gp-pet-facts [data-growth-batch-prepare]')).click();
    const editor=await wait('#wf-json',element=>element?.value.includes('pet-growths-'));const graph=JSON.parse(editor.value);
    (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
    const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
-   return {graph,simulation:JSON.parse(output.textContent)};
-  }).toString()+')('+JSON.stringify({account,action})+')');
-  const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters),f.targets);
-  assert.deepEqual(graph.budget.resources,f.per.map(row=>({...row,num:row.num*2})));assert.equal(graph.budget.uids.length,action==='level'?4:2);
-  assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(f.state.writes.length,0);
-  await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
-  const count=outcome==='success'?2:1;
+   return {graph,simulation:JSON.parse(output.textContent),selectedIds};
+  }).toString()+')('+JSON.stringify({account,action,targetCount})+')');
+  assert.equal(new Set(selectedIds).size,targetCount);assert.ok(selectedIds.every(id=>targetById.has(id)));
+  const orderedTargets=selectedIds.map(id=>targetById.get(id)),targetKey=row=>JSON.stringify([row.action,row.buildingId,row.uid??null,row.jobIdx??null]);
+  assert.deepEqual(orderedTargets.map(targetKey).sort(),f.targets.map(targetKey).sort());
+  const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters),orderedTargets);
+  assert.equal(actions.length,targetCount);assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,targetCount);
+  assert.deepEqual(graph.budget.resources,f.per.map(row=>({...row,num:row.num*targetCount})));assert.equal(graph.budget.uids.length,targetCount*(action==='level'?2:1));
+  assert.equal(graph.runPolicy.maxActions,targetCount);assert.equal(graph.runPolicy.maxDurationMs,targetCount===24?180000:60000);
+  assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(f.state.writes.length,0);assert.deepEqual(f.durable.list(account),[]);
+  await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-start');if(!button||button.disabled)return false;button.click();return true;})()"),'start control');
+  const count=outcome==='success'?targetCount:failAt,attempts=targetCount===24?300:100;
   for(let i=0;i<count;i++){
-   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
-    return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
-   assert.equal(f.state.writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
-   await waitFor(()=>{const record=f.durable.list(account)[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
-   await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+   assert.equal(f.state.writes.length,i);
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-authorize');
+    if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'authorization '+i,attempts).catch(async error=>{
+     const page=await evaluate("({status:document.getElementById('wf-status').textContent,hint:document.getElementById('wf-hint').textContent})");
+     throw Error(error.message+' '+JSON.stringify({page,writes:f.state.writes.length,history:f.durable.list(account).map(row=>row.finalStatus)}),{cause:error});
+    });
+   const expected=outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS';
+   await waitFor(()=>{const record=f.durable.list(account)[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===expected;},'settlement '+i,attempts);
+   assert.equal(f.state.writes[i].durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-resume');
+    if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'resume '+i,attempts);
   }
-  const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
-  await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
-  assert.equal(await evaluate('globalThis.confirmations'),count);assert.equal(f.state.writes.length,count);
-  assert.equal(createExecutionHistory({file:f.file}).unresolved(account),outcome==='unknown');
-  assert.equal(f.service.workflowBudget(account).state,'CLOSED');assert.deepEqual(f.counts(),{clients:0,collections:0});
- },{commandTimeoutMs:20000});
+  const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
+  await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal,attempts);
+  assert.equal(await evaluate('globalThis.confirmations'),count);assert.equal(f.state.writes.length,count);assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
+  assert.deepEqual(f.state.writes.map(row=>row.body),orderedTargets.slice(0,count).map(row=>action==='level'?{buildingId:row.buildingId}:{jobIdx:row.jobIdx}));
+  const successful=outcome==='success'?targetCount:failAt-1;
+  const appliedUids=new Set(orderedTargets.slice(0,successful).map(row=>row.uid)),appliedJobs=new Set(orderedTargets.slice(0,successful).map(row=>row.jobIdx));
+  for(const row of f.per)assert.equal(f.state.stock.get(row.id),row.num*(targetCount-successful));
+  assert.equal(f.state.stock.get('GOLD'),500);assert.equal(f.state.stock.get('其他'),1);
+  assert.deepEqual(f.state.pets.find(row=>row.uid===f.originalPet.uid),f.originalPet);
+  if(action==='level'){
+   assert.deepEqual(f.state.buildings,beforeBuildings);
+   assert.deepEqual(f.state.pets,beforePets.map(row=>appliedUids.has(row.uid)?{...row,level:2,baseAttrs:[{attr:1,value:120},{attr:2,value:24},{attr:3,value:34}]}:row));
+  }else{
+   assert.deepEqual(f.state.pets,beforePets);
+   assert.deepEqual(f.state.buildings,beforeBuildings.map(row=>row.buildingId===f.room.buildingId?{...row,petBreed:{...row.petBreed,breedQ:row.petBreed.breedQ.map(job=>({...job,finishTime:job.finishTime-(appliedJobs.has(job.idx)?100:0)}))}}:row));
+  }
+  const records=f.durable.list(account);assert.equal(records.length,count);
+  assert.deepEqual(records.slice().reverse().map(row=>row.finalStatus),Array.from({length:count},(_,i)=>outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS'));
+  assert.deepEqual(records.slice().reverse().map(row=>row.workflowNodeId),actions.slice(0,count).map(row=>row.id));
+  const reopened=createExecutionHistory({file:f.file});assert.equal(reopened.unresolved(account),outcome==='unknown');assert.deepEqual(reopened.list('other-account'),[]);
+  const budget=f.service.workflowBudget(account);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);assert.deepEqual(budget.limits,graph.budget);assert.equal(budget.batches.length,count);
+  assert.deepEqual(budget.reserved.resources,f.per.map(row=>({...row,num:row.num*count})));assert.equal(budget.reserved.uids.length,count*(action==='level'?2:1));
+  assert.deepEqual(f.counts(),{clients:0,collections:0});
+ },{commandTimeoutMs:targetCount===24?45000:20000});
 });
