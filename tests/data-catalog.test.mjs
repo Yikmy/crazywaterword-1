@@ -7,12 +7,12 @@ import { collectState, ENTRY_QUERIES, formatState, summarize } from '../src/game
 
 const successful = () => ({ ok: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, {}])), failed: {}, outcomes: Object.fromEntries(ENTRY_QUERIES.map(({ name }) => [name, { status: 'SUCCESS' }])) });
 
-test('one catalog covers exactly 48 existing queries, 12 domains, 28 summary views and 20 raw-only entries', () => {
+test('one catalog covers exactly 48 existing queries, 12 domains and 48 summary views', () => {
   assert.equal(DATA_DOMAINS.length, 12); assert.equal(new Set(DATA_DOMAINS.map(({ id }) => id)).size, 12);
   assert.equal(DATA_CATALOG.length, 48); assert.equal(new Set(DATA_CATALOG.map(({ request }) => request)).size, 48);
   assert.deepEqual(DATA_CATALOG.map(({ request }) => request), ENTRY_QUERIES.map(({ name }) => name));
-  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => hasParsedView).length, 28);
-  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => !hasParsedView).length, 20);
+  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => hasParsedView).length, 48);
+  assert.equal(DATA_CATALOG.filter(({ hasParsedView }) => !hasParsedView).length, 0);
   for (const entry of DATA_CATALOG) {
     assert.equal(entry.response, entry.request.replace(/Request$/, 'Response'));
     assert.ok(entry.name); assert.equal(entry.domains[0], entry.domain);
@@ -36,7 +36,7 @@ test('related domain filters share existing queries without duplicating the glob
   assert.throws(() => exploreSnapshot(null, { domain: 'not-a-domain' }), /未知数据业务域/);
 });
 
-test('all 28 parsed views reuse summary fields and keep all 20 raw-only responses', () => {
+test('all 48 parsed views reuse summary fields and retain original responses', () => {
   const state = successful(); const result = exploreSnapshot(state);
   assert.equal(result.entries.length, 48);
   for (const entry of result.entries) {
@@ -325,4 +325,51 @@ test('activity overview consumes shared directory metadata and isolates borrowed
  const state=activityOverviewState();state.sessionFacts={activityDirectory:{...overviewContext,status:'OBSERVED',reliable:true,readOnly:true,executable:false,complete:false,source:'SCAllActivity',scope:'ACCEPTED_STREAM_DIRECTORY_METADATA_ONLY',seq:1,observedAt:overviewTime,fields:{trade:{period:7,startTime:0,endTime:100}}}};
  const before=structuredClone(state),view=activityOverview(state);assert.deepEqual(view.checklist.activityDirectory,dailyChecklist(state,{context:overviewContext}).activityDirectory);assert.equal(view.checklist.activityDirectory.status,'OBSERVED');assert.deepEqual(state,before);
  for(const key of ['accountId','generation','connectionId','playerId','worldId']){const result=activityOverview(state,{context:{...overviewContext,[key]:key==='generation'?99:'other'}});assert.equal(result.checklist.activityDirectory.status,'UNKNOWN');assert.equal(result.checklist.activityDirectory.eligible,null);}
+});
+
+
+test('remaining cached query summaries decode proven protocol fields without granting actions', async () => {
+ const {loadProtocol}=await import('../src/proto.mjs'),{toSnapshotJson}=await import('../src/game.mjs'),protocol=loadProtocol();
+ const cases=[
+  ['BadgesRequest','badges',{badge:[{uid:'9007199254740993',badgeId:'徽章甲',level:0,exp:2,star:1,attr:{attr:3,value:1.5,rating:4}}]},{count:1,list:[{uid:'9007199254740993',badgeId:'徽章甲',level:0,exp:2,star:1,attributes:{attr:3,value:1.5,rating:4}}]}],
+  ['DailyGiftPackRequest','dailyGift',{boughtPack:['付费包'],drawnPack:['赠礼'],resetTime:100,heroId:'英雄甲'},{boughtPack:['付费包'],drawnPack:['赠礼'],resetTime:100,heroId:'英雄甲'}],
+  ['GuildTechInfoRequest','guildTech',{tech:[{techId:101,level:0}]},{count:1,list:[{techId:101,level:0}]}],
+  ['GuildOrderRequest','guildOrder',{order:{requirements:[{type:0,id:'木材',num:7}],nextRefreshTime:101}},{requirements:[{type:0,id:'木材',num:7}],nextRefreshTime:101}],
+  ['MyFormationPresetRequest','formationPresets',{ids:[3,8]},{unlockedIds:[3,8]}],
+  ['SeasonTaskStageRequest','seasonTaskStage',{stage:0},{stage:0}],
+  ['LimitedBossOpenRequest','limitedBoss',{activityStartTs:100,activityEndTs:200,scheduleId:9,rewardInfo:{myTroopsNum:2,myGotRewardLevel:0},bossInfo:{bossId:7,gridIdx:6,todayStartTs:110,todayEndTs:190,leftHp:'9007199254740993',maxHp:'9007199254740995'}},{activityStartTs:100,activityEndTs:200,scheduleId:9,rewardInfo:{myTroopsNum:2,myGotRewardLevel:0},bossInfo:{bossId:7,gridIdx:6,todayStartTs:110,todayEndTs:190,leftHp:'9007199254740993',maxHp:'9007199254740995'}}],
+  ['PassStageStateRequest','passStage',{isOver:false,maxOpenStage:0},{isOver:false,maxOpenStage:0}],
+  ['WeekOrderInfoRequest','weekOrder',{gotRwdId:[1,2],order:[{type:0,id:'布料',num:3}],isGotFinal:false},{gotRewardIds:[1,2],order:[{type:0,id:'布料',num:3}],isGotFinal:false}],
+  ['RadarInfoRequest','radar',{radarInfo:{level:1,exp:2,storedNum:3,nextRefreshTime:150,events:[{uid:'9007199254740993',eventId:4,color:5,gridIdx:6,startTime:100,createTime:90,state:0,reward:{asset:[]}}],fixedEvent:{eventId:7,gridIdx:8,startTime:110,createTime:95,state:1}}},{level:1,exp:2,storedNum:3,nextRefreshTime:150,events:[{uid:'9007199254740993',eventId:4,color:5,gridIdx:6,startTime:100,createTime:90,state:0}],fixedEvent:{eventId:7,gridIdx:8,startTime:110,createTime:95,state:1}}],
+  ['EnvSkinListRequest','environmentSkins',{skins:[{objectId:'水厂',skinId:2}]},{count:1,list:[{objectId:'水厂',skinId:2}]}],
+  ['ChannelRewardInfoRequest','channelRewards',{rewardInfo:[{rewardId:'渠道甲',received:false}],wxForumCheckTimes:0},{rewards:[{rewardId:'渠道甲',received:false}],wxForumCheckTimes:0}],
+  ['LimitTicketRequest','limitTickets',{tickets:[{uid:'9007199254740993',ticketId:'券甲',startTime:100,endTime:200}]},{count:1,list:[{uid:'9007199254740993',ticketId:'券甲',startTime:100,endTime:200}]}],
+  ['SeasonCardRequest','seasonCard',{isPaid:false,gotDaily:false,customId:[1,4]},{isPaid:false,gotDaily:false,customIds:[1,4]}],
+  ['PlayerFrameRequest','playerFrames',{avatar:[{id:1,isRead:false,endTime:0}]},{count:1,list:[{id:1,isRead:false,endTime:0}]}],
+  ['ChurnInfoRequest','churn',{type:0,startTime:100,endTime:200,taskSeason:1,paidMoney:0,task:[{type:'完成订单',num:4,stats:[{level:5,color:6,num:7}]}],gotTaskId:[8],gotPaidGift:[9],paidPack:[{packId:7,times:0}]},{type:0,startTime:100,endTime:200,taskSeason:1,paidMoney:0,tasks:[{type:'完成订单',num:4,stats:[{level:5,color:6,num:7}]}],gotTaskIds:[8],gotPaidGifts:[9],paidPacks:[{packId:7,times:0}]}],
+  ['UltraOpenRequest','ultraOpen',{raidId:1,startTime:100,endTime:200},{raidId:1,startTime:100,endTime:200}],
+  ['BlackListRequest','blackList',{list:[{playerId:'9007199254740993',nickname:'玩家甲'}]},{count:1,list:[{playerId:'9007199254740993',nickname:'玩家甲'}]}],
+  ['ChatRecordRequest','chat',{message:[{timestamp:100,sender:{playerId:'9007199254740993',nickname:'成员甲',guildIdx:1,mark:1,guildTitle:'成员',chatFm:2,title:3},content:{type:0,text:'<script>chat</script>',systemMsgId:'系统甲'}}]},{count:1,list:[{timestamp:100,sender:{playerId:'9007199254740993',nickname:'成员甲',guildIdx:1,mark:1,guildTitle:'成员',chatFm:2,title:3},content:{type:0,text:'<script>chat</script>',systemMsgId:'系统甲'}}]}],
+  ['PirateKillRecordRequest','pirateKillRecords',{records:[{type:1,maxKilledLevel:8}]},{count:1,list:[{type:1,maxKilledLevel:8}]}],
+ ];
+ assert.equal(cases.length,20);
+ for(const [request,field,source,expected] of cases){
+  const codec=protocol[request.replace(/Request$/,'Response')],raw=toSnapshotJson(codec.decode(codec.encode(source).finish()));
+  const state={ok:{[request]:{}},raw:{[request]:raw},failed:{}};const row=exploreSnapshot(state).entries.find(row=>row.request===request);
+  assert.deepEqual(row.parsed,{[field]:expected},request);assert.equal(row.readOnly,true);assert.equal(row.executable,false);assert.deepEqual(row.raw,raw);
+ }
+});
+
+test('remaining cached query summaries preserve missing lists, explicit emptiness and exact-source isolation',()=>{
+ const entry=(request,response,extra={})=>exploreSnapshot({ok:{[request]:response},failed:{},...extra}).entries.find(row=>row.request===request);
+ assert.deepEqual(entry('BadgesRequest',{}).parsed,{badges:{count:null,list:null}});
+ assert.deepEqual(entry('BadgesRequest',{badge:[]}).parsed,{badges:{count:0,list:[]}});
+ assert.deepEqual(entry('BadgesRequest',Object.create({badge:[]})).parsed,{badges:{count:null,list:null}});
+ assert.deepEqual(entry('BadgesRequest',{get badge(){throw Error('must not invoke getter');}}).parsed,{badges:{count:null,list:null}});
+ for(const badge of [[,{uid:1}],Object.assign([],{extra:1})]) assert.equal(entry('BadgesRequest',{badge}).parsed.badges.count,null);
+ assert.equal(entry('BlackListRequest',{list:[{playerId:9007199254740992,nickname:'旧缓存'}]}).parsed.blackList.list[0].playerId,null);
+ assert.deepEqual(entry('SeasonCardRequest',{}).parsed,{seasonCard:{isPaid:null,gotDaily:null,customIds:null}});
+ assert.equal(entry('SeasonCardRequest',{isPaid:true},{failed:{SeasonCardRequest:'invalidated'}}).parsed,null);
+ assert.equal(entry('SeasonTaskStageRequest',{stage:9},{outcomes:{SeasonTaskStageRequest:{status:'NOT_EXECUTED'}}}).parsed,null);
+ assert.deepEqual(entry('GuildTechInfoRequest',{tech:[{techId:1,level:99}]},{raw:{GuildTechInfoRequest:{tech:[{techId:1,level:0}]}},failed:{GuildOrderRequest:'timeout'}}).parsed,{guildTech:{count:1,list:[{techId:1,level:0}]}});
 });

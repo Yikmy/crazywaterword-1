@@ -96,7 +96,7 @@ test('raw and parsed data remain visible together, failures stay null, exports a
     const response = await app.call('?account=account-A'); assert.equal(response.status, 200);
     const byName = new Map(response.data.entries.map((entry) => [entry.request, entry]));
     assert.equal(byName.get('AllItemRequest').raw.serial, '18446744073709551615'); assert.equal(byName.get('AllItemRequest').parsed.items.total, 8);
-    assert.equal(byName.get('BadgesRequest').raw.huge, '9223372036854775807'); assert.equal(byName.get('BadgesRequest').parsed, null);
+    assert.equal(byName.get('BadgesRequest').raw.huge, '9223372036854775807'); assert.deepEqual(byName.get('BadgesRequest').parsed, {badges:{count:null,list:null}});
     assert.equal(byName.get('AllHeroRequest').status, 'FAILED'); assert.equal(byName.get('AllHeroRequest').raw, null); assert.equal(byName.get('AllHeroRequest').parsed, null);
     assert.equal(byName.get('EquipsRequest').status, 'FAILED'); assert.equal(byName.get('EquipsRequest').raw, null); assert.equal(byName.get('EquipsRequest').parsed, null);
     for (const secret of [token, sign]) assert.equal(response.text.includes(secret), false); assert.ok(response.text.includes('[REDACTED]'));
@@ -274,4 +274,15 @@ test('fishing restored snapshots and explicit source failures cannot surface pri
     assert.equal(fish.parsed,null);
     assert.deepEqual(app.counts(),{creates:0,collects:1});
   } finally {await app.close();}
+});
+
+
+test('remaining cached summaries expose exact selected-account business details through original read-only API',async()=>{
+ const app=await harness();try{
+  const raw={BadgesRequest:{badge:[{uid:'9007199254740993',badgeId:'徽章甲',level:0,exp:0,star:0}]},GuildOrderRequest:{order:{requirements:[{type:0,id:'木材',num:'9007199254740995'}],nextRefreshTime:200}},RadarInfoRequest:{radarInfo:{level:1,events:[],fixedEvent:{eventId:4,gridIdx:5,state:0}}},SeasonCardRequest:{isPaid:false,gotDaily:false,customId:[]}};
+  await bindCached(app,'account-A',{ok:structuredClone(raw),raw,failed:{}},'2026-11-20T01:00:00Z');
+  const before=app.counts(),a=await app.call('?account=account-A'),b=await app.call('?account=account-B');assert.equal(a.status,200);assert.equal(b.status,200);
+  const rows=new Map(a.data.entries.map(row=>[row.request,row]));assert.equal(rows.get('BadgesRequest').parsed.badges.list[0].uid,'9007199254740993');assert.equal(rows.get('GuildOrderRequest').parsed.guildOrder.requirements[0].num,'9007199254740995');assert.deepEqual(rows.get('RadarInfoRequest').parsed.radar.events,[]);assert.equal(rows.get('RadarInfoRequest').parsed.radar.fixedEvent.eventId,4);assert.equal(rows.get('SeasonCardRequest').parsed.seasonCard.isPaid,false);assert.ok(a.data.entries.every(row=>row.readOnly===true&&row.executable===false));assert.ok(b.data.entries.every(row=>row.parsed===null&&row.raw===null));assert.deepEqual(app.counts(),before);
+  const filtered=await app.call('?account=account-A&domain=guild');assert.equal(filtered.status,200);assert.equal(filtered.data.entries.find(row=>row.request==='GuildOrderRequest').parsed.guildOrder.requirements[0].id,'木材');assert.deepEqual(app.counts(),before);
+ }finally{await app.close();}
 });

@@ -149,6 +149,13 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
 }
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
+// Cache-only projections: optional protocol defaults are not observations. Keep
+// absent fields unknown, explicit empty lists empty, and int64 identifiers exact.
+const cachedOwn = (value, key) => Object.getOwnPropertyDescriptor(value ?? {}, key)?.value;
+const cachedScalar = value => typeof value === 'bigint' ? value.toString() : value === null || ['string', 'boolean'].includes(typeof value) || typeof value === 'number' && Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value)) ? value : null;
+const cachedFields = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(keys.map(key => [key, cachedScalar(cachedOwn(value, key))])) : null;
+const cachedRows = (value, project = cachedScalar) => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && Reflect.ownKeys(value).length === value.length + 1 && Array.from({length:value.length}, (_, index) => Object.hasOwn(Object.getOwnPropertyDescriptor(value, index) ?? {}, 'value')).every(Boolean) ? value.map(project) : null;
+
 // Turns the raw response bodies into the picture a player would describe. Every number
 // here is straight from the server; nothing is inferred except the obvious sums.
 export function summarize(state, { now = Date.now() / 1000, config = null, fishingSnapshot = state } = {}) {
@@ -167,7 +174,36 @@ export function summarize(state, { now = Date.now() / 1000, config = null, fishi
   const taskCounts = taskProgressCounts(state);
   const fishing = fishingView(fishingSnapshot, { config });
 
+  // All of these are read models of the selected cache, never live eligibility.
+  const body = name => Object.hasOwn(state.failed ?? {}, name) || !Object.hasOwn(q, name) || ['FAILED', 'NOT_EXECUTED'].includes(state.outcomes?.[name]?.status) ? null : Object.hasOwn(state.raw ?? {}, name) ? state.raw[name] : q[name];
+  const list = (name, key, project) => cachedRows(cachedOwn(body(name), key), project);
+  const counted = values => ({ count: values?.length ?? null, list: values });
+  const asset = value => cachedFields(value, ['type', 'id', 'num']);
+  const badgeList = list('BadgesRequest', 'badge', value => { const row=cachedFields(value,['uid','badgeId','level','exp','star']); return row && {...row,attributes:cachedFields(cachedOwn(value,'attr'),['attr','value','rating'])}; });
+  const guildOrder = cachedOwn(body('GuildOrderRequest'), 'order');
+  const radar = cachedOwn(body('RadarInfoRequest'), 'radarInfo');
+  const churn = body('ChurnInfoRequest');
   const view = {
+    badges: body('BadgesRequest') ? counted(badgeList) : null,
+    dailyGift: body('DailyGiftPackRequest') ? {...cachedFields(body('DailyGiftPackRequest'),['resetTime','heroId']),boughtPack:list('DailyGiftPackRequest','boughtPack'),drawnPack:list('DailyGiftPackRequest','drawnPack')} : null,
+    guildTech: body('GuildTechInfoRequest') ? counted(list('GuildTechInfoRequest','tech',value=>cachedFields(value,['techId','level']))) : null,
+    guildOrder: guildOrder ? {...cachedFields(guildOrder,['nextRefreshTime']),requirements:cachedRows(cachedOwn(guildOrder,'requirements'),asset)} : null,
+    formationPresets: body('MyFormationPresetRequest') ? {unlockedIds:list('MyFormationPresetRequest','ids')} : null,
+    seasonTaskStage: cachedFields(body('SeasonTaskStageRequest'),['stage']),
+    limitedBoss: body('LimitedBossOpenRequest') ? {...cachedFields(body('LimitedBossOpenRequest'),['activityStartTs','activityEndTs','scheduleId']),rewardInfo:cachedFields(cachedOwn(body('LimitedBossOpenRequest'),'rewardInfo'),['myTroopsNum','myGotRewardLevel']),bossInfo:cachedFields(cachedOwn(body('LimitedBossOpenRequest'),'bossInfo'),['bossId','gridIdx','todayStartTs','todayEndTs','leftHp','maxHp'])} : null,
+    passStage: cachedFields(body('PassStageStateRequest'),['isOver','maxOpenStage']),
+    weekOrder: body('WeekOrderInfoRequest') ? {...cachedFields(body('WeekOrderInfoRequest'),['isGotFinal']),gotRewardIds:list('WeekOrderInfoRequest','gotRwdId'),order:list('WeekOrderInfoRequest','order',asset)} : null,
+    radar: radar ? {...cachedFields(radar,['level','exp','storedNum','nextRefreshTime']),events:cachedRows(cachedOwn(radar,'events'),value=>cachedFields(value,['uid','eventId','color','gridIdx','startTime','createTime','state'])),fixedEvent:cachedFields(cachedOwn(radar,'fixedEvent'),['eventId','gridIdx','startTime','createTime','state'])} : null,
+    environmentSkins: body('EnvSkinListRequest') ? counted(list('EnvSkinListRequest','skins',value=>cachedFields(value,['objectId','skinId']))) : null,
+    channelRewards: body('ChannelRewardInfoRequest') ? {rewards:list('ChannelRewardInfoRequest','rewardInfo',value=>cachedFields(value,['rewardId','received'])),wxForumCheckTimes:cachedScalar(cachedOwn(body('ChannelRewardInfoRequest'),'wxForumCheckTimes'))} : null,
+    limitTickets: body('LimitTicketRequest') ? counted(list('LimitTicketRequest','tickets',value=>cachedFields(value,['uid','ticketId','startTime','endTime']))) : null,
+    seasonCard: body('SeasonCardRequest') ? {...cachedFields(body('SeasonCardRequest'),['isPaid','gotDaily']),customIds:list('SeasonCardRequest','customId')} : null,
+    playerFrames: body('PlayerFrameRequest') ? counted(list('PlayerFrameRequest','avatar',value=>cachedFields(value,['id','isRead','endTime']))) : null,
+    churn: churn ? {...cachedFields(churn,['type','startTime','endTime','taskSeason','paidMoney']),tasks:cachedRows(cachedOwn(churn,'task'),value=>{const row=cachedFields(value,['type','num']);return row&&{...row,stats:cachedRows(cachedOwn(value,'stats'),stat=>cachedFields(stat,['level','color','num']))};}),gotTaskIds:cachedRows(cachedOwn(churn,'gotTaskId')),gotPaidGifts:cachedRows(cachedOwn(churn,'gotPaidGift')),paidPacks:cachedRows(cachedOwn(churn,'paidPack'),value=>cachedFields(value,['packId','times']))} : null,
+    ultraOpen: cachedFields(body('UltraOpenRequest'),['raidId','startTime','endTime']),
+    blackList: body('BlackListRequest') ? counted(list('BlackListRequest','list',value=>cachedFields(value,['playerId','nickname']))) : null,
+    chat: body('ChatRecordRequest') ? counted(list('ChatRecordRequest','message',value=>({timestamp:cachedScalar(cachedOwn(value,'timestamp')),sender:cachedFields(cachedOwn(value,'sender'),['playerId','nickname','guildIdx','mark','guildTitle','chatFm','title']),content:cachedFields(cachedOwn(value,'content'),['type','text','systemMsgId'])}))) : null,
+    pirateKillRecords: body('PirateKillRecordRequest') ? counted(list('PirateKillRecordRequest','records',value=>cachedFields(value,['type','maxKilledLevel']))) : null,
     resources: asArray(q.AllResourceRequest?.list).map((entry) => ({
       res: entry.res,
       amount: entry.amount,

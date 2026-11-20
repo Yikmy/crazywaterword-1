@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import { PAGE } from '../src/page.mjs';
-import { DATA_CATALOG, DATA_DOMAINS } from '../src/data-catalog.mjs';
+import { DATA_CATALOG, DATA_DOMAINS, exploreSnapshot } from '../src/data-catalog.mjs';
 const inline = PAGE.slice(PAGE.indexOf('<script>') + 8, PAGE.lastIndexOf('</script>'));
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 class Element {
@@ -77,8 +77,8 @@ test('Explorer renders all 48 queries and 12 domains with original and existing 
     if (entry.hasParsedView) assert.match(h.node('explorer-parsed').textContent, new RegExp(entry.request));
     else assert.match(h.node('explorer-parsed').textContent, /尚无专门解析/);
   }
-  assert.equal(DATA_CATALOG.filter((entry) => entry.hasParsedView).length, 28);
-  assert.equal(DATA_CATALOG.filter((entry) => !entry.hasParsedView).length, 20);
+  assert.equal(DATA_CATALOG.filter((entry) => entry.hasParsedView).length, 48);
+  assert.equal(DATA_CATALOG.filter((entry) => !entry.hasParsedView).length, 0);
 });
 
 test('domain and case-insensitive business/request/response search filter cached entries without more fetches', async () => {
@@ -199,4 +199,14 @@ test('fishing cache clears on failure, mismatched account and account changes, a
   await readFishing(h, overview('A'));
   assert.match(h.node('fishing-meta').textContent, /尚未采集本账号/);
   assert.equal(h.node('fishing-facts').textContent, '');
+});
+
+
+test('remaining cached summaries can be searched and displayed by exact business values without requests',async()=>{
+ const h=await boot();const raw={BadgesRequest:{badge:[{uid:'9007199254740993',badgeId:'徽章甲',level:0}]},GuildTechInfoRequest:{tech:[{techId:102,level:3}]},ChatRecordRequest:{message:[{timestamp:100,sender:{nickname:'联盟成员甲'},content:{text:'<script>payload</script>'}}]}};
+ await load(h,{accountId:'A',updatedAt:'2026-11-20T01:00:00Z',...exploreSnapshot({ok:raw,raw,failed:{}})});const count=h.requests.length;
+ for(const [search,title,text] of [['9007199254740993','徽章','徽章甲'],['102','公会科技','102'],['联盟成员甲','聊天记录','<script>payload</script>']]){
+  h.node('explorer-search').value=search;h.node('explorer-search').oninput();assert.equal(h.node('explorer-list').childElementCount,1);assert.equal(h.node('explorer-title').textContent,title);assert.ok(h.node('explorer-parsed').textContent.includes(text));assert.equal(h.node('explorer-parsed').childElementCount,0);assert.equal(h.requests.length,count);
+ }
+ h.node('explorer-search').value='never-observed';h.node('explorer-search').oninput();assert.match(h.node('explorer-title').textContent,/没有匹配/);assert.ok(h.node('explorer-list').children.every(child=>child.tagName!=='button'));assert.equal(h.requests.length,count);
 });

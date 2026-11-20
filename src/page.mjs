@@ -190,7 +190,7 @@ export const PAGE = `<!doctype html>
     <div class="bar">
       <button id="explorer-load">读取已有快照</button>
       <select id="explorer-domain" aria-label="业务域"><option value="">全部业务域</option></select>
-      <input id="explorer-search" type="search" placeholder="搜索业务名称 / Request / Response" aria-label="搜索游戏数据">
+      <input id="explorer-search" type="search" placeholder="搜索业务 / Request / Response / 已解析内容" aria-label="搜索游戏数据">
       <button id="explorer-copy" disabled>复制脱敏 JSON</button>
       <button id="explorer-export" disabled>导出脱敏 JSON</button>
     </div>
@@ -2010,7 +2010,7 @@ function explorerEntries() {
   const domain = $('explorer-domain').value;
   const search = $('explorer-search').value.trim().toLowerCase();
   return explorerData.entries.filter((entry) => (!domain || (entry.domains || [entry.domain]).includes(domain))
-    && (!search || [entry.name, entry.request, entry.response].some((value) => String(value || '').toLowerCase().includes(search))));
+    && (!search || [entry.name, entry.request, entry.response, entry.parsed == null ? '' : explorerJson(entry.parsed)].some((value) => String(value || '').toLowerCase().includes(search))));
 }
 function explorerJson(value) {
   return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item, 2);
