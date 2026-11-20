@@ -24,6 +24,8 @@ const {createOperationService}=await import('../src/operation-service.mjs');
 const {createWorkflowRunner}=await import('../src/workflow.mjs');
 const {createConsole}=await import('../src/server.mjs');
 const {saveStore}=await import('../src/accounts.mjs');
+const {createOfflineBrowser}=await import('./offline-browser-helper.mjs');
+const withOfflineBrowser=createOfflineBrowser(isolation);
 test.after(()=>{assert.equal(path.dirname(path.resolve(isolation)),path.resolve(os.tmpdir()));fs.rmSync(isolation,{recursive:true,force:true});});
 const protocol=loadProtocol(),wire=(name,body)=>protocol[name].decode(protocol[name].encode(body).finish());
 const parameters={action:'feed',buildingId:'1宠物培育室',jobIdx:0},account='pet-account',uid='9007199254740993';
@@ -522,13 +524,18 @@ for(const action of ['feed','level'])test('Pet prepared batch '+action+' rejects
 });
 
 
-for(const action of ['feed','level'])for(const outcome of ['success','unknown','refused'])
- test('Pet batch actual localhost HTTP '+action+' '+outcome+' uses original per-target authorization',{timeout:60000},async t=>{
- const f=await petBatchFixture(t,{action,count:2,http:'listen',stop:outcome==='success'?null:{index:1,kind:outcome}});
+async function petBatchHttp(f){
  await new Promise(resolve=>f.app.server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+f.app.server.address().port;
  const get=async(route,id=account)=>{const response=await fetch(base+route+(route.includes('?')?'&':'?')+'account='+encodeURIComponent(id),{headers:{connection:'close'}});return {status:response.status,data:await response.json()};};
  const info=await get('/api/gameplay?module=pet');assert.equal(info.status,200);const csrf=info.data.csrfToken;assert.ok(csrf);
  const post=async(route,body,{id=account,authorized=true}={})=>{const response=await fetch(base+route+'?account='+encodeURIComponent(id),{method:'POST',headers:{connection:'close',origin:base,'content-type':'application/json',...(authorized?{'x-cw-csrf':csrf}:{})},body:JSON.stringify(body)});return {status:response.status,data:await response.json()};};
+ return {get,post};
+}
+
+for(const action of ['feed','level'])for(const outcome of ['success','unknown','refused'])
+ test('Pet batch actual localhost HTTP '+action+' '+outcome+' uses original per-target authorization',{timeout:60000},async t=>{
+ const f=await petBatchFixture(t,{action,count:2,http:'listen',stop:outcome==='success'?null:{index:1,kind:outcome}});
+ const {get,post}=await petBatchHttp(f);
  const route='/api/gameplay/pet/growth/prepare';assert.equal((await post(route,f.input,{authorized:false})).status,403);
  const prepared=await post(route,f.input);assert.equal(prepared.status,200,JSON.stringify(prepared.data));
  assert.equal(prepared.data.accountId,account);assert.deepEqual(prepared.data.budget.resources,f.per.map(row=>({...row,num:row.num*2})));
@@ -553,4 +560,115 @@ for(const action of ['feed','level'])for(const outcome of ['success','unknown','
  const budget=f.service.workflowBudget(account);assert.equal(budget.state,'CLOSED');assert.deepEqual(budget.limits,prepared.data.budget);
  assert.equal((await get('/api/workflows/history?workflowRunId='+runId,'other-account')).status,404);
  assert.deepEqual(f.counts(),{clients:0,collections:0});
+});
+
+
+for(const action of ['feed','level'])for(const outcome of ['success','unknown','refused'])
+ test('Pet batch 24-target localhost HTTP '+action+' '+outcome+' at final target',{timeout:240000},async t=>{
+ const f=await petBatchFixture(t,{action,count:24,http:'listen',stop:outcome==='success'?null:{index:24,kind:outcome}});
+ const {get,post}=await petBatchHttp(f),input={...f.input,maxDurationMs:180000};
+ const prepared=await post('/api/gameplay/pet/growth/prepare',input);assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+ assert.deepEqual(prepared.data.budget.resources,f.per.map(row=>({...row,num:row.num*24})));
+ assert.equal(prepared.data.budget.uids.length,action==='level'?48:24);const graph=prepared.data.graph,actions=graph.nodes.filter(row=>row.type==='ACTION');
+ assert.equal(actions.length,24);assert.equal(graph.nodes.filter(row=>row.type==='VERIFY').length,24);assert.deepEqual(actions.map(row=>row.parameters),f.targets);
+ const simulation=await post('/api/workflows/simulate',{graph});assert.equal(simulation.data.requestsSent,0);assert.equal(f.state.writes.length,0);
+ assert.equal((await post('/api/workflows/start',{graph})).status,200);let runId;
+ for(let i=0;i<24;i++){
+  let pending;for(let attempt=0;attempt<100;attempt++){pending=(await get('/api/workflows')).data.status;if(pending.status==='AWAITING_AUTHORIZATION')break;await new Promise(resolve=>setTimeout(resolve,20));}
+  assert.equal(pending.status,'AWAITING_AUTHORIZATION',JSON.stringify(pending));runId??=pending.runId;assert.equal(pending.runId,runId);assert.equal(pending.currentNode,actions[i].id);
+  assert.equal(f.state.writes.length,i);const plan=pending.plan,authorization=await post('/api/operations/authorize',{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});
+  assert.equal(authorization.status,200,JSON.stringify(authorization.data));assert.equal((await post('/api/operations/execute',authorization.data)).status,200);
+  await f.service.settle(account);const record=f.durable.list(account)[0],result=i===23?(outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED'):'SUCCESS';
+  assert.equal(record.finalStatus,result,record.stopReason);assert.equal(record.workflowId,runId);assert.equal(record.workflowNodeId,actions[i].id);
+  assert.equal(f.state.writes[i].durable.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
+  assert.notEqual((await post('/api/operations/execute',authorization.data)).status,200);await post('/api/workflows/resume',{});
+ }
+ const final=(await get('/api/workflows')).data.status;assert.equal(final.status,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED',JSON.stringify(final));
+ assert.equal(f.state.writes.length,24);assert.equal(f.durable.list(account).length,24);
+ for(const row of f.per)assert.equal(f.state.stock.get(row.id),outcome==='success'?0:row.num);
+ assert.equal(createExecutionHistory({file:f.file}).unresolved(account),outcome==='unknown');
+ const budget=f.service.workflowBudget(account);assert.equal(budget.state,'CLOSED');assert.equal(budget.resumable,false);
+ assert.deepEqual(budget.limits,prepared.data.budget);assert.equal(budget.batches.length,24);
+ assert.equal((await get('/api/workflows/history?workflowRunId='+runId,'other-account')).status,404);assert.deepEqual(f.counts(),{clients:0,collections:0});
+});
+
+
+for(const action of ['feed','level'])for(const phase of ['prepare','execute'])
+ for(const change of ['account','player','world','generation','connection','client','disconnect','abort','config'])
+ test('Pet batch localhost HTTP '+action+' '+phase+' rejects changed '+change+' before dispatch',{timeout:30000},async t=>{
+ const f=await petBatchFixture(t,{action,count:2,http:'listen'}),{get,post}=await petBatchHttp(f),route='/api/gameplay/pet/growth/prepare';
+ let permit;
+ if(phase==='execute'){
+  const prepared=await post(route,f.input);assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+  assert.equal((await post('/api/workflows/start',{graph:prepared.data.graph})).status,200);
+  let pending;for(let attempt=0;attempt<100;attempt++){pending=(await get('/api/workflows')).data.status;if(pending.status==='AWAITING_AUTHORIZATION')break;await new Promise(resolve=>setTimeout(resolve,20));}
+  assert.equal(pending.status,'AWAITING_AUTHORIZATION',JSON.stringify(pending));const plan=pending.plan;
+  permit=await post('/api/operations/authorize',{batchId:plan.batchId,planHash:plan.planHash,approvedActionIds:plan.actions.map(row=>row.actionId),resourceBudget:plan.resourceBudget,confirm:true});
+  assert.equal(permit.status,200,JSON.stringify(permit.data));
+ }
+ const client=f.client;let hit=false;
+ f.state.onRead=name=>{
+  if(hit||name!=='AllPetRequest')return;hit=true;
+  if(change==='account')client.factContext.accountId='other-account';
+  if(change==='player')f.session.player.playerId='18';
+  if(change==='world')f.session.player.worldId='10';
+  if(change==='generation')client.factContext.generation=++f.session.generation;
+  if(change==='connection')client.factContext.connectionId=f.session.connectionId='replaced';
+  if(change==='client')f.session.client={...client};
+  if(change==='disconnect'){if(action==='level')client.state='CLOSED';else client.connected=false;}
+  if(change==='abort')f.session.abort.abort();
+  if(change==='config'){if(action==='level')f.config.tables.PetLevelCfg.data[1].cost[1]++;else f.config.tables.PetParamCfg.data[0].paramValue++;}
+ };
+ try{
+  if(phase==='prepare'){const reply=await post(route,f.input);assert.notEqual(reply.status,200,JSON.stringify(reply.data));assert.equal(f.durable.list(account).length,0);}
+  else{const reply=await post('/api/operations/execute',permit.data);if(reply.status===200)await f.service.settle(account);
+   assert.notEqual(f.service.status(account).finalStatus,'SUCCESS');assert.notEqual((await post('/api/operations/execute',permit.data)).status,200);}
+  assert.equal(hit,true);assert.equal(f.state.writes.length,0);assert.equal(createExecutionHistory({file:f.file}).unresolved(account),false);
+  assert.deepEqual(f.counts(),{clients:0,collections:0});
+ }finally{f.session.client=client;}
+});
+
+
+for(const action of ['feed','level'])for(const outcome of ['success','unknown'])
+ test('browser offline Pet batch '+action+' '+outcome+' preserves explicit targets and stops safely',{skip:!process.env.CW_TEST_BROWSER,timeout:60000},async t=>{
+ const f=await petBatchFixture(t,{action,count:2,http:'listen',stop:outcome==='unknown'?{index:1,kind:'unknown'}:null});
+ await new Promise(resolve=>f.app.server.listen(0,'127.0.0.1',resolve));
+ await withOfflineBrowser(f.app,async({evaluate,waitFor})=>{
+  const {graph,simulation}=await evaluate('('+(async({account,action})=>{
+   const find=selector=>document.querySelector(selector),wait=async(selector,accept=element=>element&&!element.disabled)=>{
+    for(let i=0;i<120;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+    throw Error(selector+' '+find('#gp-pet-hint')?.textContent+' '+find('#wf-hint')?.textContent);
+   };
+   await wait('#account',element=>element?.value===account);
+   (await wait('#tabs button[data-tab="heroes"]')).click();(await wait('#gp-pet-load')).click();
+   const parameters=await wait('#gp-pet-parameters');parameters.value=JSON.stringify({action});parameters.dispatchEvent(new Event('input',{bubbles:true}));
+   (await wait('#gp-pet-survey')).click();await wait('[data-growth-batch-target]',element=>element&&!element.disabled);
+   const choices=Array.from(document.querySelectorAll('#gp-pet-facts [data-growth-batch-target]')).filter(element=>!element.disabled);
+   if(choices.length!==2||choices.some(element=>element.checked))throw Error('Expected two unselected Pet targets');
+   for(const choice of choices)choice.click();
+   const duration=await wait('#gp-pet-facts [data-growth-batch-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+   (await wait('#gp-pet-facts [data-growth-batch-prepare]')).click();
+   const editor=await wait('#wf-json',element=>element?.value.includes('pet-growths-'));const graph=JSON.parse(editor.value);
+   (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
+   const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
+   return {graph,simulation:JSON.parse(output.textContent)};
+  }).toString()+')('+JSON.stringify({account,action})+')');
+  const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters),f.targets);
+  assert.deepEqual(graph.budget.resources,f.per.map(row=>({...row,num:row.num*2})));assert.equal(graph.budget.uids.length,action==='level'?4:2);
+  assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(f.state.writes.length,0);
+  await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
+  const count=outcome==='success'?2:1;
+  for(let i=0;i<count;i++){
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
+    return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
+   assert.equal(f.state.writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
+   await waitFor(()=>{const record=f.durable.list(account)[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
+   await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+  }
+  const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
+  await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+  assert.equal(await evaluate('globalThis.confirmations'),count);assert.equal(f.state.writes.length,count);
+  assert.equal(createExecutionHistory({file:f.file}).unresolved(account),outcome==='unknown');
+  assert.equal(f.service.workflowBudget(account).state,'CLOSED');assert.deepEqual(f.counts(),{clients:0,collections:0});
+ },{commandTimeoutMs:20000});
 });
