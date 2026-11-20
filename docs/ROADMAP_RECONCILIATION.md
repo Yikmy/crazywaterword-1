@@ -1,5 +1,8 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
+2026-11-21 FEATURE FIRST续批（父 `fd87f18`）：原BIZ-A07/BIZ-R07新增停止当前装备厂自动锻造，经原equipment-forge Function/Service/API/专业页/Tasks/Workflow单次许可执行。原GameClient私有连续月卡查询、有效期与固定MonthCardCfg自动锻造效果共同证明资格，只允许当前明确auto=true改false，完整队列/所有装备/库存保持，零支出并占原父UID。自动启动及持续未来支出不开放，BIZ-A07仍PARTIAL；R7 IN_PROGRESS、R8 NOT_RUN。
+
+
 2026-11-21 FEATURE FIRST续批（父 `fd9664d`）：原BIZ-A07/BIZ-R08新增停止当前海兽自动培育，原pet Function/API/专业页/Tasks/Workflow直接复用；原私有连续VIP登录/更新事实与VipLevelCfg效果共同证明写资格，明确当前auto=true，仅发SetBuildingAutoWorkRequest {buildingId,isOn:false}。零支出，完整队列/成熟列表/海兽和库存保持，原父UID/许可/History/UNKNOWN不变。装备厂月卡停止、自动启动及徽章封顶结算仍未完成，R7 IN_PROGRESS、R8 NOT_RUN。
 
 2026-11-21 FEATURE FIRST续批（父 `4eb8929`）：原BIZ-H05/BIZ-R09徽章卸下已接原badge-growth Function/API/专业页/Tasks及有限逐件准备Workflow。明确原英雄和已佩戴UID、观察到的原槽位作计划守卫，原TakeOffBadgeRequest只发送heroId/UID、零资源支出；完整Badges/AllHero及库存确认只卸下目标、池含残余经验/其他槽位保持。原父UID/History/取消/UNKNOWN直接复用；替换继承和返还仍缺证，R7 IN_PROGRESS、R8 NOT_RUN。
@@ -404,8 +407,8 @@ CrazyWater Platform
 | P3-3 | 战斗分析 | EXISTING_UI：保守统计及同角色/世界/关卡持久历史比较；缺分析保持未知 | C208；W08 | IMPLEMENTED_OFFLINE / E |
 | P3-4 | 自动换阵 | PARTIAL：明确顺序及匹配历史胜率选择、确认战败换阵和原有限授权已接；缺样本不补造，完整原DoD与真实验收未全 | C209；W08 | INTEGRATION_INCOMPLETE / E |
 | P3-5 | 阵容管理 | PARTIAL：完整队伍预设/普通图纸解锁/极限来源复制已有；其他模式未全 | C211–215；W08 | BLOCKED_EVIDENCE / E |
-| P3-6 | 英雄列表 | PARTIAL：原成长/穿戴卸下/Pet子集保持；Pet专业子页新增停止当前自动培育的明确资格/状态选择，原候选和Tasks同源，完整分支未全 | C221–230；W06/W07 | BLOCKED_EVIDENCE / E |
-| P3-7 | 英雄操作 | PARTIAL：原成长/穿戴/Pet入口保持；新增原私有VIP资格和当前自动状态绑定的停止自动培育，经原API/Tasks/Workflow单次许可，原队列及库存保持；其他高级分支仍缺 | C221–230；W06/W07 | BLOCKED_EVIDENCE / E |
+| P3-6 | 英雄列表 | PARTIAL：原成长/穿戴卸下/Pet子集保持；Pet专业子页新增停止当前自动培育的明确资格/状态选择，原候选和Tasks同源，完整分支未全 ；装备厂专业子页新增月卡资格下停止当前自动锻造，明确目标/状态摘要后重新调查、单次原授权，原Tasks/Workflow同源 | C221–230；W06/W07 | BLOCKED_EVIDENCE / E |
+| P3-7 | 英雄操作 | PARTIAL：原成长/穿戴/Pet入口保持；新增原私有VIP资格和当前自动状态绑定的停止自动培育，经原API/Tasks/Workflow单次许可，原队列及库存保持；其他高级分支仍缺 ；装备厂专业子页新增月卡资格下停止当前自动锻造，明确目标/状态摘要后重新调查、单次原授权，原Tasks/Workflow同源 | C221–230；W06/W07 | BLOCKED_EVIDENCE / E |
 | P4-1 | 联盟成员/求助单 | EXISTING_UI：精确玩家/请求/订单/福利及商船明细 | C301/C302；W09 | IMPLEMENTED_OFFLINE / E |
 | P4-2 | 捐赠配置 | PARTIAL：member/item规则和Fort捐赠已有；互助额度/冷却缺源 | C303/C304；W09 | BLOCKED_EVIDENCE / E |
 | P4-3 | 自动求助配置 | PARTIAL：原求助配置保留；无权威阈值/额度/冷却，不产可执行候选 | C305；W09 | BLOCKED_EVIDENCE / E |
@@ -1754,6 +1757,18 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 
 海兽停止自动工作切片IMPLEMENTED_OFFLINE/REAL_UNVERIFIED；BIZ-A07全范围仍PARTIAL，原表末列FUNCTION_ONLY/E仍是f997536历史快照，当前功能接线以本段及原行新注记为准。装备厂月卡停止和持续自动工作/排产等不被本项替代，原C228封顶/替换等缺证保持；95C仍53 EXISTING_FUNCTION/40 PARTIAL/2 PROTOCOL_ONLY，273 Inventory仍189 EXISTING_FUNCTION/78 PARTIAL/6 PROTOCOL_ONLY。原95C/42P/16M/22W和DAG、历史末列保持，R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE；未push/merge。
 
+2026-11-21 FEATURE FIRST续批（父 `fd87f18`）：原BIZ-A07装备厂停止自动锻造接入原业务链。
+
+生产修改只有原四个文件：equipment-forge.mjs扩展stop-auto调查/候选/规划/原verify，actions.mjs允许明确已知编号装备厂的isOn=false且显式零支出，function-contracts.mjs扩展原参数/Inventory/依赖合同，gameplay-page.mjs增加当前合格目标选择、冻结摘要和原Workflow观察目标。没有新增Service/Adapter/Registry/恢复框架或测试文件。复用原GameClient私有readMonthCards与pirate-quota.mjs原月卡行/角色/连接验证器；采集前通过原MonthCardRequest查询，完整业务采集期间保持同源，WeakMap原客户端绑定防伪造DTO/公开reader替换。旧make/pick的四表依赖及身份不变，新stop-auto才使用MonthCardCfg和connectionId。经原通用survey/plan/authorize/execute API、专业页、Tasks编译与Workflow接线，不新增路由。
+
+权威证据为原固定v76包/主game.js（SHA256 4fd1f03034b78b0ea0d80590ce1082aa805529b91b2ef99ced9ca2d9f00c2444 / a6046fcc2ad7a3424282e9f8b51073656f5ae8d48742129743560bf958266c54）和原固定配置0809253d78b00a81ebb78ab9fc8b94668372f6b8a08430144710325a165da762。EquipFactoryPop._onBtnAuto明确要求MonthCardModel.effect(装备工厂自动锻造)>0；MonthCardModel按当前serverTime过滤endTime<=now（-1永久除外）并累加效果，WelfareUtil映射普通/高级月卡，配置只有高级月卡授予本效果。模块哈希已记FORGE_STOP_AUTO_EVIDENCE（EquipFactoryPop 77e418e20255c3d72c41b7cc064d63ec7e61beafc8bda232fa3247326128a63f；MonthCardModel 5fcf22ef42392b52ac22f4fb249a9dbe03d662415ff8a603973eb74b333e4b63；WelfareUtil cf5be6b8c251281c22de85375e2bdd02fd78512e1c53f69f5e70877ad1624092；FactoryUtil 16876641162829bbb4f3f7037b578e21b77483096720df1a2758c20f18cc3a60）。原协议SetBuildingAutoWorkRequest只有buildingId/isOn，无专用响应；不把auto字段本身或只读月卡投影当写资格。
+
+仅允许明确原装备厂已建成、auto自有true字段、完整显式idle或可信最新时间之前不会成熟的原队列。私有当前角色/月卡/连接、固定正效果、完整建筑/装备及配置生成expectedStopHash；时钟不可靠、过期/边界不确定、资格变化、混合参数或缺父UID均零派发。原forge-auto-work父UID、零资源支出、许可/History/UNKNOWN/取消机制复用，派发瞬间再次复核。结果必须独立OnWater仅原auto true改false，原整个队列、其他建筑、完整装备池/佩戴和库存保持；无效果或任何资产/队列冲突为UNKNOWN，重启/重试不放行，不取消在产批次，不开启自动工作，不推算未来收入或支出。
+
+必要新增7项通过（现有测试文件）：月卡高级/普通/无卡/永久/到期/临界、运行队列、精确关闭与完整状态保持；私有来源/连接/角色/原状态/队列/配置/可信时钟/父UID及派发瞬间资格失效零派发；伪造事实/公开reader和混合参数拒绝；无效果或队列/装备/其他厂/库存冲突UNKNOWN；原Tasks→Service→Workflow成功/UNKNOWN/拒绝三条单许可路径和派发前持久History/父UID保留；专业页面VM明确一个目标、冻结摘要、重新调查并加入原Tasks且零自动授权执行。18项直接兼容通过（旧制造/收取/单次配方准备、原支付安全/元数据合同、海兽停止），不累计重叠轮次。日志保留于原系统TEMP：cw-forge-stop-auto-verified.log（12项含7新增+5兼容）、cw-forge-stop-auto-compat-final.log（13项兼容）；早期cw-forge-stop-auto-initial.log、-retry1.log、-retry2.log、-compat.log、-metadata.log及中间-final.log均保留。早期失败是新增夹具错误调用注册表/客户端时钟清理、遗漏父预算、只读connected赋值、Map/Set误用和旧元数据期望；按原生产合同修正夹具/期望，没有为PASS修改或放宽安全规则。原四个生产源语法检查及git diff --check通过。仅合成Codec/GameClient传输/Service/Workflow和页面VM，未跑本批实际HTTP监听/Edge、130文件集合、全平台离线模拟或真实游戏，不将上述作为真实游戏验收。
+
+账本变化仅在原BIZ-A07/BIZ-R07、P3-6/P3-7行补当前接线事实，不改原ID/历史末列。停止装备厂自动锻造切片IMPLEMENTED_OFFLINE/REAL_UNVERIFIED；BIZ-A07全范围仍PARTIAL，开启持续自动/未来预算、通用材料和其他缺证原功能保留。95C仍53 EXISTING_FUNCTION/40 PARTIAL/2 PROTOCOL_ONLY，273 Inventory仍189 EXISTING_FUNCTION/78 PARTIAL/6 PROTOCOL_ONLY；原95C/42P/16M/22W、DAG及f997536历史分类保持。R7 IN_PROGRESS，R8 NOT_RUN，Goal ACTIVE；未push/merge。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
@@ -1884,7 +1899,7 @@ profile中的测试是继承的相关测试族索引，不能把整个族通过�
 | BIZ-A04 | 生产：收取工厂成品 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 | IMPLEMENTED_OFFLINE / E |
 | BIZ-A05 | 城市：收取建筑产物 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 | IMPLEMENTED_OFFLINE / E |
 | BIZ-A06 | 城市：确认已到期建筑竣工 | C116 | EXISTING_FUNCTION | src/core-operation-adapters.mjs；tests/operation-adapters-integration.test.mjs | G | 工厂成品与竣工受控执行；原生批量农田结算另有缺证 | IMPLEMENTED_OFFLINE / E |
-| BIZ-A07 | 城市：切换自动工作 | 非C:自动工作 | PARTIAL | src/pet-operations.mjs；src/actions.mjs；src/function-contracts.mjs；src/gameplay-page.mjs；原CLI保留 | C | 2026-11-21新增海兽停止自动工作受控链：原私有连续VIP及VipLevelCfg宠物自动培育效果>0，明确唯一培育室当前auto=true和完整队列摘要，经原pet Function/API/专业页/Tasks/Workflow零支出改false；原队列/成熟/海兽/库存保持。装备厂月卡停止尚未接入；自动启动/持续材料支出仍未闭合，不把auto观察当写资格 | FUNCTION_ONLY / E |
+| BIZ-A07 | 城市：切换自动工作 | 非C:自动工作 | PARTIAL | src/pet-operations.mjs；src/equipment-forge.mjs；src/actions.mjs；src/function-contracts.mjs；src/gameplay-page.mjs；原CLI保留 | C | 2026-11-21新增海兽停止自动工作受控链：原私有连续VIP及VipLevelCfg宠物自动培育效果>0，明确唯一培育室当前auto=true和完整队列摘要，经原pet Function/API/专业页/Tasks/Workflow零支出改false；原队列/成熟/海兽/库存保持。装备厂停止现已接同一原链：私有MonthCardResponse角色/连接、固定高级月卡效果及可信时钟证明尚有效，明确原装备厂当前auto=true和完整状态摘要，仅改false，原队列/装备/库存不变；原forge-auto-work父UID与零支出许可绑定。自动启动/持续材料支出仍未闭合，不把auto观察当写资格 | FUNCTION_ONLY / E |
 | BIZ-A08 | 生产：设置自动生产产品 | C114 | PARTIAL | src/app.mjs；src/writer-ownership.mjs；tests/cli-safety.test.mjs | C | 2026-11-20明确单工厂停止分支已沿原production Function/API/专业页/Tasks/Workflow离线实现(D)，开启/换产品的权益和持续消耗有界合同仍缺(F)，原条目仍PARTIAL/REAL_UNVERIFIED；末列为f997536历史审计快照。 旧自动生产开关及产品设定不等于Production单次排产 | FUNCTION_ONLY / E |
 | BIZ-A09 | 日常：领取单条任务奖励 | C503 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确日常taskId单次领取已接；不推定周期 | IMPLEMENTED_OFFLINE / E |
 | BIZ-A10 | 成就：领取奖励 | 非C:成就领奖 | EXISTING_FUNCTION | src/task-rewards.mjs；tests/task-rewards.test.mjs | G | 明确成就ID、配置奖励映射与独立复读已接 | IMPLEMENTED_OFFLINE / E |
@@ -1966,7 +1981,7 @@ profile中的测试是继承的相关测试族索引，不能把整个族通过�
 | BIZ-R04 | 贸易货船补货/返航领奖（当前DATA_ONLY） | C131 C132 C133 C134 | PARTIAL | src/fleet.mjs；tests/fleet.test.mjs | G | 专业缺货、装货、明确单船自有道具加速、独立到港领取已有；全范围受D6和证据限制 | IMPLEMENTED_OFFLINE / E |
 | BIZ-R05 | 联盟商船补货与应聘船长（当前未接） | 非C:联盟商船 | PARTIAL | src/alliance.mjs；tests/alliance.test.mjs | G | 单船补货、应聘船长及私有状态修订已接；收益、补购、隐藏占用缺 | BLOCKED_EVIDENCE / E |
 | BIZ-R06 | 联盟福利礼包领取（当前未接） | 非C:联盟福利 | EXISTING_FUNCTION | allianceView/verifyAlliance; src/alliance.mjs | G | 领取现有福利需权威时间/库存/回包复读 | IMPLEMENTED_OFFLINE / E |
-| BIZ-R07 | 装备厂制造/收取（当前只有装备DATA） | 非C:装备厂 | PARTIAL | src/equipment-forge.mjs；tests/equipment-forge.test.mjs | G | 自有配方MAKE和到期单批PICK已有；本批明确允许配方内按闲置＋在产部位数量及品质准备一份，固定队列/数量护栏，经同Service/API/专业页/Workflow和父预算，收取确认后才制造；普通材料切片OFFLINE_VERIFIED，通用实际扣取顺序/混用成本仍缺证，缺队列不当空闲 ；本批1至24个不同装备厂同种明确单份MAKE或成熟PICK接原API/专业页/逐厂Workflow，原队列及同部位计数守卫，累计仅初始自有材料父预算，旧单厂兼容，R7/R8 NOT_RUN | BLOCKED_EVIDENCE / E |
+| BIZ-R07 | 装备厂制造/收取（当前只有装备DATA） | 非C:装备厂 | PARTIAL | src/equipment-forge.mjs；tests/equipment-forge.test.mjs | G | 自有配方MAKE和到期单批PICK已有；本批明确允许配方内按闲置＋在产部位数量及品质准备一份，固定队列/数量护栏，经同Service/API/专业页/Workflow和父预算，收取确认后才制造；普通材料切片OFFLINE_VERIFIED，通用实际扣取顺序/混用成本仍缺证，缺队列不当空闲 ；本批1至24个不同装备厂同种明确单份MAKE或成熟PICK接原API/专业页/逐厂Workflow，原队列及同部位计数守卫，累计仅初始自有材料父预算，旧单厂兼容，R7/R8 NOT_RUN ；2026-11-21原Function新增stop-auto停止当前自动锻造，私有有效月卡效果>0和当前状态摘要受控，独立OnWater仅auto true改false、全部队列/装备/库存保持，经原API/专业页/Tasks/Workflow/父UID/History；开启持续自动及通用材料仍未完成 | BLOCKED_EVIDENCE / E |
 | BIZ-R08 | 海兽培育/成熟收取/材料投喂（当前DATA_ONLY） | 非C:海兽培育 | PARTIAL | src/pet-operations.mjs；tests/pet-operations.test.mjs | G | 原BREED/FEED/CLAIM/服役LEVEL及独立基因包GENE-EXCHANGE保持；新增经私有连续VIP和原配置效果验证的STOP-AUTO，只停止当前自动培育，不取消任务或扩父预算；原三原子入口离线实现，完整恢复和真实验收未齐，原范围PARTIAL | BLOCKED_EVIDENCE / E |
 | BIZ-R09 | 徽章/装备/专武完整养成（当前DATA_ONLY） | C225 C226 C227 C228 C229 C230 | PARTIAL | src/hero-operations.mjs；src/equipment-growth.mjs；src/badge-growth.mjs；tests/equipment-growth.test.mjs | G | 原专武激活成长、装备/徽章成长和空槽穿戴保持；装备及徽章均支持原英雄已佩戴UID明确卸下回闲置池，徽章固定原槽位并保持残余经验；替换继承/返还等完整成长未全 | BLOCKED_EVIDENCE / E |
 | BIZ-R10 | 挂机、邮件及升级依赖计划（当前底层Action已在） | C511 非C:挂机依赖计划 | PARTIAL | src/mail.mjs；src/afk-level-rewards.mjs；tests/mail-claim.test.mjs；tests/afk-level-rewards.test.mjs | G | 单封读领、等级奖励、普通物品/徽章收益及其后明确1/5/10级升级已有；有限原收益→升级准备/API/UI已有；其他实例收益、邮件实例附件及完整范围未齐；UNKNOWN零重放 | BLOCKED_EVIDENCE / E |

@@ -834,6 +834,13 @@ function gpForgeTargetSources(view){
 }
 function gpRenderForgeTarget(box,view){
  const id='equipment-forge',state=gpGet(id),scope=viewGuard.capture(),revision=gpRevision,edit=state.revision,source=$('gp-'+id+'-parameters').value;
+ for(const [action,text]of [['stop-auto','停止当前自动锻造'],['make-pick','返回制造／收取']]){const mode=gpEl('button',text);mode.dataset.forgeMode=action;state.actionControls.push(mode);box.appendChild(mode);mode.onclick=()=>{if(mode.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id)!==state||state.data?.view!==view||state.revision!==edit||$('gp-'+id+'-parameters').value!==source)return;$('gp-'+id+'-parameters').value=gpJson(action==='stop-auto'?{action}:{});gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已选择原装备厂动作；请重新调查当前月卡资格和原队列，再准备明确目标。';};}
+ if(view?.mode==='stop-auto'){
+  const rows=(view.stopAutoPreparation||[]).filter(p=>p?.action==='stop-auto'&&typeof p.buildingId==='string'&&typeof p.expectedStopHash==='string'&&/^[a-f0-9]{64}$/.test(p.expectedStopHash)),select=gpEl('select'),prepare=gpEl('button','准备停止所选装备厂自动锻造');select.dataset.forgeStopAutoTarget='true';prepare.dataset.forgeStopAutoPrepare='true';
+  const empty=gpEl('option','请选择当前合格且已开启的装备厂');empty.value='';select.appendChild(empty);for(const [i,p]of rows.entries()){const option=gpEl('option',p.buildingId);option.value=String(i);select.appendChild(option);}select.value='';for(const control of [select,prepare]){control._blocked=!rows.length;state.actionControls.push(control);box.appendChild(control);}
+  prepare.onclick=()=>{if(prepare.disabled||!gpDomainSelectable(id)||!gpSafe(scope,revision)||gpGet(id)!==state||state.data?.view!==view||state.revision!==edit||$('gp-'+id+'-parameters').value!==source||select.value==='')return;const p=rows[Number(select.value)];if(!p)return;$('gp-'+id+'-parameters').value=gpJson(p);gpInvalidate(id,true);gpRenderCandidates(id);gpControls(id);$('gp-'+id+'-hint').textContent='已冻结所选装备厂、当前月卡和完整状态摘要；重新调查预览后单独授权。';};
+  box.appendChild(gpEl('p','仅列有效月卡有自动锻造权益、当前明确开启的装备厂；只停止且零支出，原队列、全部装备及库存须保持。不自动开始，不取消在产批次。'));return;
+ }
  let parameters;try{parameters=gpParse('gp-'+id+'-parameters');if(Object.keys(parameters).some(key=>!['action','buildingId','makeId','allowUniversal'].includes(key))||parameters.allowUniversal===true)throw Error('guarded parameters');}catch{box.appendChild(gpEl('p','当前草稿含队列或数量前置约束；请保留并使用原有限组合准备入口，此单次表单不改写约束。'));return;}
  const {rows,recipes}=gpForgeTargetSources(view);
  const mode=gpEl('select'),building=gpEl('select'),recipe=gpEl('select'),prepare=gpEl('button','准备单次装备厂目标');mode.dataset.forgeTargetMode='true';building.dataset.forgeTargetBuilding='true';recipe.dataset.forgeTargetRecipe='true';prepare.dataset.forgeTargetPrepare='true';
@@ -2350,7 +2357,7 @@ const WF_UNIFIED_KINDS = {
  'daily-activity':'日活跃单档领奖','daily-gift':'固定免费赠礼','weekly-lottery-gift':'周转盘免费礼包1000','weekly-unique-lottery-gift':'周翻牌免费礼包1000','weekly-chip-gift':'周芯片免费礼包1000','weekly-chip-task':'周芯片当前轮次任务领奖',...Object.fromEntries(Object.entries(GP_OPEN_RANK_LABELS).map(([kind,label])=>[kind,label+'明确score档位领奖'])),
  city:'明确建筑操作',production:'明确工厂生产／收取／道具加速',heroes:'明确英雄／技能／专武成长',
  'equipment-growth':'明确装备成长／空槽穿戴','badge-growth':'明确徽章成长／空槽穿戴','antique-growth':'明确藏品成长／兑换',
- pet:'明确海兽投喂／服役升级','formation-unlock':'明确自有图纸解锁','equipment-forge':'明确装备厂制造／收取',
+ pet:'明确海兽投喂／服役升级','formation-unlock':'明确自有图纸解锁','equipment-forge':'明确装备厂制造／收取／停止自动锻造',
  'material-packs':'明确自有材料包兑换',fleet:'明确舰队／货船操作',alliance:'明确联盟操作',trade:'明确海商王操作',
  treasure:'明确世界宝藏派舰',farm:'明确单田种植／收取',formation:'明确阵容保存／切换',
  'compass-wheel':'明确罗盘抽取或累计领奖',
@@ -2974,8 +2981,10 @@ function wfObservedParameterTargets(card,node,fields,live,invalidateDraft,sync,n
   const {level,rows,choices}=gpPetTargetSources(view);for(const row of rows||[])for(const target of choices(row.buildingId))targets.push({label:row.buildingId+' / '+target.label,parameters:{action:level?'level':'feed',buildingId:row.buildingId,...(level?{uid:target.value}:{jobIdx:Number(target.value)})}});
   }
  }else if(node.module==='equipment-forge'){
-  const parameters=node.parameters||{};if(Object.keys(parameters).some(key=>!['action','buildingId','makeId','allowUniversal'].includes(key))||parameters.allowUniversal===true){card.appendChild(gpEl('p','本Forge节点含队列、数量前置约束或其他成长合同；保留原组合参数，不以单次目标覆盖。'));return;}
+  const parameters=node.parameters||{};if(parameters.action==='stop-auto'){for(const p of view.stopAutoPreparation||[])if(p?.action==='stop-auto')targets.push({label:p.buildingId+' / 停止当前自动锻造',parameters:p});}
+  else {if(Object.keys(parameters).some(key=>!['action','buildingId','makeId','allowUniversal'].includes(key))||parameters.allowUniversal===true){card.appendChild(gpEl('p','本Forge节点含队列、数量前置约束或其他成长合同；保留原组合参数，不以单次目标覆盖。'));return;}
   const {rows,recipes}=gpForgeTargetSources(view);if(!['make','pick'].includes(parameters.action))return;for(const row of rows||[]){if(parameters.action==='pick')targets.push({label:row.buildingId+' / 单次收取',parameters:{action:'pick',buildingId:row.buildingId}});else for(const recipe of recipes||[])targets.push({label:row.buildingId+' / 配方 '+recipe.makeId,parameters:{action:'make',buildingId:row.buildingId,makeId:recipe.makeId,allowUniversal:false}});}
+  }
  }else if(node.module==='equipment-growth'||node.module==='badge-growth'){
   const parameters=node.parameters||{},badge=node.module==='badge-growth',source=badge?gpBadgeTargetSources(view):gpEquipmentTargetSources(view),action=parameters.action;
   if(Object.keys(parameters).some(key=>!(badge?['heroId','uid','action','pos']:['heroId','uid','action']).includes(key))||action!==undefined&&!(badge?['put-on','star','take-off']:['initial-level','refine','put-on','star','take-off']).includes(action))return;

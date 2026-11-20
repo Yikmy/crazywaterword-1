@@ -9,9 +9,17 @@ import { createOperationService } from '../src/operation-service.mjs';
 import { createExecutionHistory } from '../src/execution-history.mjs';
 import { createWorkflowRunner } from '../src/workflow.mjs';
 import { loadProtocol } from '../src/proto.mjs';
+import { GameClient } from '../src/client.mjs';
+import { createCodec } from '../src/codec.mjs';
+import { surveyEquipmentForge, viewEquipmentForge, planEquipmentForge } from '../src/equipment-forge.mjs';
+import { executeBusinessOperation } from '../src/business-functions.mjs';
+import { createRunBudgetContext } from '../src/resource-ledger.mjs';
+import { assertPaymentAllowed } from '../src/actions.mjs';
+import { compileUnifiedExecution } from '../src/loop.mjs';
 
 // Actual registered adapter/Service/History/Workflow, fixed local real codecs,
-// synthetic transport, isolated temporary persistence. No GameClient or Runtime.
+// synthetic transport, isolated temporary persistence. Stop-auto uses GameClient
+// with a closed synthetic socket solely to attest private month-card facts. No Runtime.
 const moduleId='equipment-forge',protocol=loadProtocol();
 const wire=(name,value)=>protocol[name].decode(protocol[name].encode(value).finish());
 const config=()=>({tables:{BuildingCfg:{data:[{buildingType:'装备厂'}]},BuildingEquipMakeCfg:{data:[{makeId:1001,type:'武器',libId:1,seconds:1800,season:1,costItem:[['材料',4],['GOLD',20]]}]},EquipMakeLibCfg:{data:[{libId:1,equipId:'蓝武器1',rate:100},{libId:1,equipId:'蓝武器2',rate:100}]},EquipCfg:{data:[{id:'蓝武器1',type:'武器'},{id:'蓝武器2',type:'武器'}]}}});
@@ -32,11 +40,11 @@ function fixture({enabled=true,apply=true,historyFile}={}){
       gameClock:{read(){return {status:'TRUSTED',reliable:true,nowMs:state.nowMs,earliestMs:state.nowMs,latestMs:state.nowMs,accountId,generation:client.factContext.generation};}},
       markUnverifiedWrite(name,body){this.uncertainWrites.set(JSON.stringify({name,body}),true);},confirmWatchedWrite(name,body){this.uncertainWrites.delete(JSON.stringify({name,body}));},
       mutate(name,body){state.writes.push({name,body:structuredClone(body),durableBeforeWrite:structuredClone(journal.at(-1))});const b=state.buildings.find(v=>v.buildingId===body.buildingId);let reply={equipId:b.equipMaking.equipId};
-        if(state.apply){if(name==='MakeEquipRequest'){b.equipMaking=making({finishTime:2000});state.stock.set('材料',state.stock.get('材料')-4);state.stock.set('GOLD',state.stock.get('GOLD')-20);}if(name==='PickMadeEquipRequest'){state.bag.push(equip((9007199254740995n+BigInt(state.writes.length)).toString(),{equipId:b.equipMaking.equipId,star:b.equipMaking.star,level:3,refineLv:2}));b.equipMaking=idle();}}
+        if(state.apply){if(name==='SetBuildingAutoWorkRequest')b.auto=body.isOn;if(name==='MakeEquipRequest'){b.equipMaking=making({finishTime:2000});state.stock.set('材料',state.stock.get('材料')-4);state.stock.set('GOLD',state.stock.get('GOLD')-20);}if(name==='PickMadeEquipRequest'){state.bag.push(equip((9007199254740995n+BigInt(state.writes.length)).toString(),{equipId:b.equipMaking.equipId,star:b.equipMaking.star,level:3,refineLv:2}));b.equipMaking=idle();}}
         state.onWrite?.(name,body);return reply;},
       async request(name,body,response,_timeout,opts){wire(name,body);if(opts?.mutate)return wire(response,this.mutate(name,body));state.reads.push(name);await state.onRead?.(name);
         if(name==='OnWaterRequest')return wire(response,{building:state.buildings});if(name==='AllItemRequest')return wire(response,{items:[...state.stock].filter(([id])=>id!=='GOLD').map(([itemId,num])=>({itemId,num}))});if(name==='AllResourceRequest')return wire(response,{list:[{res:3,amount:state.stock.get('GOLD')}]});if(name==='EquipsRequest')return wire(response,{equip:state.bag});if(name==='AllHeroRequest')return wire(response,{heroes:state.heroes});throw Error('Unexpected synthetic forge read '+name);},
-      async sendWatch(name,body){wire(name,body);this.mutate(name,body);return {status:'UNKNOWN'};},
+      async sendWatch(name,body,opts){opts?.beforeDispatch?.();wire(name,body);this.mutate(name,body);return {status:'UNKNOWN'};},
     };
     const result={id:accountId,client,state:'READY',player:{playerId:accountId==='account-A'?'1001':'1002',worldId:1000001,level:2},generation:1,connectionId:'offline-forge-'+accountId,abort:new AbortController(),busy:null,loop:{running:false},synthetic:state};
     if(enabled)moduleSettings.save(accountId,moduleId,{enabled:true});sessions.set(accountId,result);return result;
@@ -177,4 +185,42 @@ for(const action of ['make','pick'])for(const unconfirmed of [false,true])test('
   assert.equal(state.stock.get('材料'),action==='make'?(unconfirmed?4:0):96);
   assert.equal(state.bag.length,action==='pick'?(unconfirmed?25:26):2);
  }finally{await f.cleanup();}
+});
+
+
+async function stopAutoFixture(t,{apply=true,cards=[{type:2,endTime:-1}],queue=idle()}={}){
+ const f=fixture({apply}),target=f.session('account-A',queue),state=target.synthetic,old=target.client,codec=createCodec(protocol);let socket,seq=1;
+ class Socket{constructor(){socket=this;this.readyState=1;}send(){}close(){this.readyState=3;}receive(name,body){this.onmessage?.({data:codec.encode(name,seq++,body)});}}
+ const client=new GameClient({protocol,accountId:target.id,generation:1,WebSocketImpl:Socket});client.factContext=old.factContext={...old.factContext,connectionId:target.connectionId};client.on('error',()=>{});
+ const originalClock=client.gameClock;const ready=client.connect({});socket.onopen();socket.receive('LoginResponse',{result:0,initSeqNo:12,playerInfo:{playerId:target.player.playerId,worldId:String(target.player.worldId)}});await ready;t.after(()=>{client.gameClock=originalClock;client.stop();});
+ state.cards=structuredClone(cards);for(const b of state.buildings)b.auto=true;
+ for(const key of ['mutate','sendWatch','gameClock'])client[key]=old[key];
+ client.request=async function(name,body,response,timeout,opts){if(name==='MonthCardRequest'){const result=GameClient.prototype.request.call(this,name,body,response,timeout,opts);socket.receive('MonthCardResponse',{cardItem:state.cards});return result;}return old.request.call(this,name,body,response,timeout,opts);};target.client=client;
+ f.config(c=>{c.tables.MonthCardCfg={data:[{id:'普通月卡',effectList:[['第二生产位',1]]},{id:'高级月卡',effectList:[['装备工厂自动锻造',1]]}]};});
+ let gameConfig;f.config(c=>gameConfig=c);
+ const options=p=>({config:gameConfig,player:target.player,moduleConfig:{enabled:true},parameters:p});
+ const draft={action:'stop-auto'},initial=await surveyEquipmentForge(client,protocol,options(draft)),parameters=viewEquipmentForge(initial,options(draft)).stopAutoPreparation[0]??draft;
+ const facts=await surveyEquipmentForge(client,protocol,options(parameters)),operation=planEquipmentForge(facts,options(parameters)).actions[0];
+ return {...f,target,state,client,socket,initial,parameters,facts,operation,options,run:(op=operation,extra={})=>{const scope={...client.factContext,runId:'forge-auto-run'},limits=op.budgetClaims,budget={scope,runBudget:createRunBudgetContext({scope,limits}),batchId:'forge-auto-batch',limits,ledger:null};return executeBusinessOperation(client,protocol,op,{adapter:GAMEPLAY_MODULES[moduleId],...options(parameters),allowMutate:true,budget,...extra});}};
+}
+
+test('forge stop auto attests advanced month card and changes only current auto flag with original exact parent UID',async t=>{
+ const f=await stopAutoFixture(t);try{assert.ok(f.operation);assert.deepEqual(f.operation.action,{request:'SetBuildingAutoWorkRequest',response:null,body:{buildingId:'1装备厂',isOn:false}});assert.deepEqual(f.operation.budgetClaims,{resources:[],quotas:[],uids:[{type:'forge-auto-work',id:'1装备厂'}]});const before=structuredClone(f.state.buildings),bag=structuredClone(f.state.bag),stock=[...f.state.stock];const result=await f.run();assert.equal(result.status,'SUCCESS',JSON.stringify(result));before[0].auto=false;assert.deepEqual(f.state.buildings,before);assert.deepEqual(f.state.bag,bag);assert.deepEqual([...f.state.stock],stock);assert.equal(f.state.writes.length,1);assert.equal(protocol.SetBuildingAutoWorkResponse,undefined);}finally{await f.cleanup();}
+ for(const cards of [[],[{type:1,endTime:-1}],[{type:2,endTime:0}],[{type:2,endTime:1000}]]){const b=await stopAutoFixture(t,{cards});try{assert.equal(b.operation,undefined);}finally{await b.cleanup();}}
+ const future=await stopAutoFixture(t,{cards:[{type:2,endTime:1001}]});try{assert.ok(future.operation);future.state.nowMs=1001000;assert.equal((await future.run()).dispatched,false);}finally{await future.cleanup();}
+ const active=await stopAutoFixture(t,{queue:making({finishTime:2000})});try{assert.ok(active.operation);assert.equal((await active.run()).status,'SUCCESS');}finally{await active.cleanup();}
+});
+
+test('forge stop auto refuses forged facts, public cards, drift, expiry, mixed parameters and missing finite parent',async t=>{
+ for(const mode of ['card','disconnect','connection','world','off','queue','config','clock','parent','forged','late-card']){const f=await stopAutoFixture(t);try{if(mode==='card')f.state.cards=[{type:2,endTime:0}];if(mode==='disconnect')f.socket.readyState=3;if(mode==='connection')f.client.factContext.connectionId='different';if(mode==='world')f.target.player.worldId=1000002;if(mode==='off')f.state.buildings[0].auto=false;if(mode==='queue')f.state.buildings[0].equipMaking=making({finishTime:1000});if(mode==='config')f.config(c=>c.tables.MonthCardCfg.data[1].effectList[0][1]=0);if(mode==='clock')f.client.gameClock={read:()=>({status:'UNKNOWN'})};if(mode==='forged'){assert.equal(planEquipmentForge(structuredClone(f.facts),f.options(f.parameters)).actions.length,0);f.socket.receive('SCEWorldOrderDelivery',{monthCard:{endTime:0}});f.client.readMonthCards=()=>({...f.facts.autoWorkSource,status:'CURRENT'});assert.equal(planEquipmentForge(f.facts,f.options(f.parameters)).actions.length,0);continue;}let extra=mode==='late-card'?{onStage:stage=>{if(stage==='DISPATCH_INTENT')f.socket.receive('SCEWorldOrderDelivery',{monthCard:{endTime:0}});}}:{};if(mode==='parent'){const scope={...f.client.factContext,runId:'missing-forge-auto'},limits={resources:[],quotas:[],uids:[]};extra={budget:{scope,runBudget:createRunBudgetContext({scope,limits}),batchId:'bad',limits,ledger:null}};}const result=await f.run(f.operation,extra);assert.equal(result.dispatched,false,mode+JSON.stringify(result));assert.equal(f.state.writes.length,0);}finally{await f.cleanup();}}
+ for(const parameters of [{action:'stop-auto',makeId:1},{action:'stop-auto',allowUniversal:false},{action:'stop-auto',expectedQueue:idle()},{action:'stop-auto',expectedStopHash:'bad'}])assert.throws(()=>GAMEPLAY_MODULES[moduleId].validateParameters(parameters));
+ const good={request:'SetBuildingAutoWorkRequest',body:{buildingId:'24装备厂',isOn:false},costs:[]};assert.doesNotThrow(()=>assertPaymentAllowed(good));for(const extra of [{body:{buildingId:'1食品厂',isOn:false}},{body:{...good.body,isOn:true}},{body:{...good.body,makeId:1}},{costs:undefined},{costs:[{id:'GOLD',num:1}]}])assert.throws(()=>assertPaymentAllowed({...good,...extra}));
+});
+
+test('forge stop auto never confirms no effect or collateral queue, equipment, peer or stock changes',async t=>{
+ for(const mode of ['no-effect','queue','equipment','peer','stock']){const f=await stopAutoFixture(t,{apply:mode!=='no-effect'});try{f.state.onWrite=()=>{if(mode==='queue')f.state.buildings[0].equipMaking=making({finishTime:2000});if(mode==='equipment')f.state.bag[0].level++;if(mode==='peer')f.state.buildings[1].auto=false;if(mode==='stock')f.state.stock.set('材料',29);};const result=await f.run();assert.equal(result.status,'UNKNOWN',mode+JSON.stringify(result));assert.equal(result.unresolvedWrite,true);assert.equal(f.state.writes.length,1);}finally{await f.cleanup();}}
+});
+
+for(const outcome of ['success','unknown','rejected'])test('forge stop auto original Tasks Service Workflow '+outcome+' retains durable dispatch, authorization and parent',async t=>{
+ const f=await stopAutoFixture(t,{apply:outcome!=='unknown'});try{if(outcome==='rejected')f.state.onWrite=()=>{throw Object.assign(Error('explicit synthetic refusal'),{code:'REJECTED'});};const tasks={entry:'tasks',tasks:[{kind:moduleId,parameters:f.parameters,actionId:f.operation.actionId}],budget:f.operation.budgetClaims},graph=compileUnifiedExecution(tasks,{modules:GAMEPLAY_MODULES}).graph,runner=f.runner(f.target),first=await runner.start(f.target.id,graph);assert.equal(first.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);assert.deepEqual(first.plan.resourceBudget,[]);const result=await f.execute(f.target,first.plan),expected=outcome==='success'?'SUCCESS':outcome==='unknown'?'UNKNOWN':'REJECTED';assert.equal(result.record.finalStatus,expected,JSON.stringify(result.record));assert.equal(f.state.writes.length,1);assert.equal(f.state.writes[0].durableBeforeWrite.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.deepEqual(result.record.runBudget.reserved.uids,[{type:'forge-auto-work',id:f.parameters.buildingId}]);assert.equal((await runner.resume()).status,outcome==='success'?'COMPLETED':outcome==='rejected'?'FAILED':expected);if(outcome==='unknown')await assert.rejects(f.displayed(f.target,f.parameters));assert.equal(f.state.writes.length,1);}finally{await f.cleanup();}
 });
