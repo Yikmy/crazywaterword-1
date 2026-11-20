@@ -3640,7 +3640,7 @@ for(const mode of ['budget-tamper','late-editor'])test('browser offline alliance
 });
 
 
-async function tradeMultiBuyHttpFixture(outcome='success',{count=2}={}){
+async function tradeMultiBuyHttpFixture(outcome='success',{count=2,failAt=1}={}){
  const config=structuredClone(tradeSellHttpConfig),template=config.tables.TradeGoodsCfg.data.find(row=>row.goodsId===1001);
  assert.ok(template);config.tables.TradeGoodsCfg.data=Array.from({length:count},(_,i)=>({...structuredClone(template),goodsId:1001+i,capacity:1,maxCount:100}));
  const app=await harness({includeTrade:true,configOverride:config});let client;
@@ -3653,8 +3653,8 @@ async function tradeMultiBuyHttpFixture(outcome='success',{count=2}={}){
     assert.equal(name,'TradeBuyRequest');options.beforeDispatch?.();
     assert.equal(app.history.list('A')[0].actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');
     writes.push(structuredClone(body));
-    if(outcome==='refused')throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
-    if(outcome==='success'){state.info.player.coins-=2*body.buyNum;state.info.player.goods.push({pid:98+writes.length,goodsId:body.goodsId,num:body.buyNum,buyPrice:2,cityId:1});}
+    if(outcome==='refused'&&writes.length===failAt)throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});
+    if(outcome==='success'||writes.length!==failAt){state.info.player.coins-=2*body.buyNum;state.info.player.goods.push({pid:98+writes.length,goodsId:body.goodsId,num:body.buyNum,buyPrice:2,cityId:1});}
     return heroWire(response,{player:state.info.player});
    }
    await state.onRead?.(name);
@@ -3698,16 +3698,19 @@ for(const outcome of ['success','unknown','refused'])test('trade multi-buy HTTP 
 });
 
 
-for(const outcome of ['success','unknown'])test('browser offline trade multi-buy '+(outcome==='success'?'settles both goods':'stops on first UNKNOWN'),{
- skip:!process.env.CW_TEST_BROWSER,timeout:60000
+for(const {outcome,targetCount,failAt} of [
+ ...['success','unknown'].map(outcome=>({outcome,targetCount:2,failAt:1})),
+ ...['success','unknown','refused'].map(outcome=>({outcome,targetCount:24,failAt:24}))
+])test('browser offline trade multi-buy '+(targetCount===24?'executes 24 targets '+outcome+' at final target':outcome==='success'?'settles both goods':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:targetCount===24?600000:60000
 },async()=>{
- const {app,client,state,writes}=await tradeMultiBuyHttpFixture(outcome);
+ const {app,client,state,writes}=await tradeMultiBuyHttpFixture(outcome,{count:targetCount,failAt});
  try{
   await withOfflineBrowser(app,async({evaluate,waitFor})=>{
-   const {graph,simulation}=await evaluate('('+(async()=>{
+   const {graph,simulation}=await evaluate('('+(async(targetCount)=>{
     const find=selector=>document.querySelector(selector);
     const wait=async(selector,accept=element=>element&&!element.disabled)=>{
-     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     for(let i=0;i<(targetCount===24?300:150);i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
      throw Error(selector+' '+find('#gp-trade-hint')?.textContent+' '+find('#wf-hint')?.textContent);
     };
     await wait('#account',element=>element?.value==='A');
@@ -3716,34 +3719,46 @@ for(const outcome of ['success','unknown'])test('browser offline trade multi-buy
     parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
     await wait('[data-trade-buy-batch-target]',element=>element&&!element.disabled);
     const choices=Array.from(document.querySelectorAll('[data-trade-buy-batch-target]')),quantities=Array.from(document.querySelectorAll('[data-trade-buy-batch-quantity]'));
-    if(choices.length!==2||quantities.length!==2||choices.some(element=>element.checked||element.disabled)||quantities.some(element=>element.value!==''))throw Error('Expected two unselected goods and empty quantities');
-    for(let i=0;i<2;i++){choices[i].click();quantities[i].value='1';quantities[i].dispatchEvent(new Event('input',{bubbles:true}));}
-    const duration=await wait('[data-trade-buy-batch-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    if(choices.length!==targetCount||quantities.length!==targetCount||choices.some(element=>element.checked||element.disabled)||quantities.some(element=>element.value!==''))throw Error('Expected '+targetCount+' unselected goods and empty quantities');
+    for(let i=0;i<targetCount;i++){choices[i].click();quantities[i].value='1';quantities[i].dispatchEvent(new Event('input',{bubbles:true}));}
+    const duration=await wait('[data-trade-buy-batch-duration]');duration.value=targetCount===24?'480':'60';duration.dispatchEvent(new Event('input',{bubbles:true}));
     (await wait('[data-trade-buy-batch-prepare]')).click();
     const editor=await wait('#wf-json',element=>element?.value.includes('trade-buys-'));const graph=JSON.parse(editor.value);
     (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
     return {graph,simulation:JSON.parse(output.textContent)};
-   }).toString()+')()');
-   const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.goodsId),[1001,1002]);
-   assert.deepEqual(graph.budget.resources,[{id:'TRADE_COINS:7',num:4}]);assert.equal(graph.budget.quotas.length,2);assert.equal(graph.budget.uids.length,2);
+   }).toString()+')('+JSON.stringify(targetCount)+')');
+   const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.goodsId),Array.from({length:targetCount},(_,i)=>1001+i));
+   assert.deepEqual(graph.budget.resources,[{id:'TRADE_COINS:7',num:2*targetCount}]);assert.equal(graph.budget.quotas.length,targetCount);assert.equal(graph.budget.uids.length,targetCount);
+   assert.equal(graph.runPolicy.maxActions,targetCount);assert.equal(graph.runPolicy.maxDurationMs,targetCount===24?480000:60000);
    assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
-   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
-   const count=outcome==='success'?2:1;
+   await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-start');if(!button||button.disabled)return false;button.click();return true;})()"),'start control');
+   const count=outcome==='success'?targetCount:failAt;
    for(let i=0;i<count;i++){
-    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
-     return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
-    assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
-    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
-    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+    assert.equal(writes.length,i);
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-authorize');
+     if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'authorization '+i,targetCount===24?300:100).catch(async error=>{
+     const page=await evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};return {status:status.status,node:status.currentNode,reason:status.reason,hint:document.getElementById('wf-hint').textContent,pending:typeof wfPending==='undefined'?null:wfPending,connected:typeof snapshot==='undefined'?null:snapshot?.connected,busy:typeof snapshot==='undefined'?null:snapshot?.busy,planBatch:typeof wfPlan==='undefined'?null:wfPlan?.batchId};})()`);
+     const server=(await app.call('/api/workflows')).data.status;
+     throw Error(error.message+' '+JSON.stringify({page,server:{status:server.status,node:server.currentNode,reason:server.reason},writes:writes.length,history:app.history.list('A').map(row=>row.finalStatus)}),{cause:error});
+    });
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i,targetCount===24?300:100);
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-resume');
+     if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'resume '+i,targetCount===24?300:100);
    }
-   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
-   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+   const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal,targetCount===24?300:100);
    assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes,Array.from({length:count},(_,i)=>({cityId:1,goodsId:1001+i,buyNum:1})));
-   assert.equal(state.info.player.coins,outcome==='success'?96:100);assert.equal(state.info.player.goods.length,outcome==='success'?2:0);
+   const successful=outcome==='success'?targetCount:failAt-1;assert.equal(state.info.player.coins,100-2*successful);
+   assert.deepEqual(state.info.player.goods,Array.from({length:successful},(_,i)=>({pid:99+i,goodsId:1001+i,num:1,buyPrice:2,cityId:1})));
+   const records=app.history.list('A');assert.equal(records.length,count);
+   assert.deepEqual(records.slice().reverse().map(row=>row.finalStatus),Array.from({length:count},(_,i)=>outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS'));
+   assert.deepEqual(records.slice().reverse().map(row=>row.workflowNodeId),actions.slice(0,count).map(row=>row.id));
+   assert.deepEqual(app.operations.workflowBudget('A').limits,graph.budget);assert.equal(app.operations.workflowBudget('A').batches.length,count);
+   assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
-  });
+  },{commandTimeoutMs:targetCount===24?45000:10000});
  }finally{client.stop();await app.close();}
 });
 
@@ -3899,16 +3914,19 @@ for(const outcome of ['success','unknown','refused'])test('trade multi-sale HTTP
 });
 
 
-for(const outcome of ['success','unknown'])test('browser offline trade multi-sale '+(outcome==='success'?'settles both holdings':'stops on first UNKNOWN'),{
- skip:!process.env.CW_TEST_BROWSER,timeout:60000
+for(const {outcome,targetCount,failAt} of [
+ ...['success','unknown'].map(outcome=>({outcome,targetCount:2,failAt:1})),
+ ...['success','unknown','refused'].map(outcome=>({outcome,targetCount:24,failAt:24}))
+])test('browser offline trade multi-sale '+(targetCount===24?'executes 24 targets '+outcome+' at final target':outcome==='success'?'settles both holdings':'stops on first UNKNOWN'),{
+ skip:!process.env.CW_TEST_BROWSER,timeout:targetCount===24?600000:60000
 },async()=>{
- const {app,client,state,writes}=await tradeMultiSaleHttpFixture(outcome);
+ const {app,client,state,writes}=await tradeMultiSaleHttpFixture(outcome,{count:targetCount,failAt});
  try{
   await withOfflineBrowser(app,async({evaluate,waitFor})=>{
-   const {graph,simulation}=await evaluate('('+(async()=>{
+   const {graph,simulation}=await evaluate('('+(async(targetCount)=>{
     const find=selector=>document.querySelector(selector);
     const wait=async(selector,accept=element=>element&&!element.disabled)=>{
-     for(let i=0;i<150;i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
+     for(let i=0;i<(targetCount===24?300:150);i++){const element=find(selector);if(accept(element))return element;await new Promise(resolve=>setTimeout(resolve,100));}
      throw Error(selector+' '+find('#gp-trade-hint')?.textContent+' '+find('#wf-hint')?.textContent);
     };
     await wait('#account',element=>element?.value==='A');
@@ -3917,34 +3935,46 @@ for(const outcome of ['success','unknown'])test('browser offline trade multi-sal
     parameters.dispatchEvent(new Event('input',{bubbles:true}));(await wait('#gp-trade-survey')).click();
     await wait('[data-trade-sale-batch-target]',element=>element&&!element.disabled);
     const choices=Array.from(document.querySelectorAll('[data-trade-sale-batch-target]'));
-    if(choices.length!==2||choices.some(element=>element.checked||element.disabled))throw Error('Expected two unselected holdings');
+    if(choices.length!==targetCount||choices.some(element=>element.checked||element.disabled))throw Error('Expected '+targetCount+' unselected holdings');
     for(const choice of choices)choice.click();
-    const duration=await wait('[data-trade-sale-batch-duration]');duration.value='60';duration.dispatchEvent(new Event('input',{bubbles:true}));
+    const duration=await wait('[data-trade-sale-batch-duration]');duration.value=targetCount===24?'480':'60';duration.dispatchEvent(new Event('input',{bubbles:true}));
     (await wait('[data-trade-sale-batch-prepare]')).click();
     const editor=await wait('#wf-json',element=>element?.value.includes('trade-sales-'));const graph=JSON.parse(editor.value);
     (await wait('#tabs button[data-tab="workflow"]')).click();(await wait('#wf-simulate')).click();
     const output=await wait('#wf-result',element=>element?.textContent.includes('"requestsSent"'));
     return {graph,simulation:JSON.parse(output.textContent)};
-   }).toString()+')()');
-   const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.pid),[1,2]);
-   assert.deepEqual(graph.budget.resources,[]);assert.equal(graph.budget.quotas.length,2);assert.equal(graph.budget.uids.length,2);
+   }).toString()+')('+JSON.stringify(targetCount)+')');
+   const actions=graph.nodes.filter(row=>row.type==='ACTION');assert.deepEqual(actions.map(row=>row.parameters.pid),Array.from({length:targetCount},(_,i)=>i+1));
+   assert.deepEqual(graph.budget.resources,[]);assert.equal(graph.budget.quotas.length,targetCount);assert.equal(graph.budget.uids.length,targetCount);
+   assert.equal(graph.runPolicy.maxActions,targetCount);assert.equal(graph.runPolicy.maxDurationMs,targetCount===24?480000:60000);
    assert.equal(simulation.requestsSent,0);assert.equal(simulation.runtimeCreated,false);assert.equal(writes.length,0);
-   await waitFor(()=>evaluate("!document.getElementById('wf-start').disabled"),'start control');await evaluate("document.getElementById('wf-start').click()");
-   const count=outcome==='success'?2:1;
+   await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-start');if(!button||button.disabled)return false;button.click();return true;})()"),'start control');
+   const count=outcome==='success'?targetCount:failAt;
    for(let i=0;i<count;i++){
-    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};
-     return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
-    assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
-    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
-    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+    assert.equal(writes.length,i);
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-authorize');
+     if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'authorization '+i,targetCount===24?300:100).catch(async error=>{
+     const page=await evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};return {status:status.status,node:status.currentNode,reason:status.reason,hint:document.getElementById('wf-hint').textContent,pending:typeof wfPending==='undefined'?null:wfPending,connected:typeof snapshot==='undefined'?null:snapshot?.connected,busy:typeof snapshot==='undefined'?null:snapshot?.busy,planBatch:typeof wfPlan==='undefined'?null:wfPlan?.batchId};})()`);
+     const server=(await app.call('/api/workflows')).data.status;
+     throw Error(error.message+' '+JSON.stringify({page,server:{status:server.status,node:server.currentNode,reason:server.reason},writes:writes.length,history:app.history.list('A').map(row=>row.finalStatus)}),{cause:error});
+    });
+    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i,targetCount===24?300:100);
+    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{},button=document.getElementById('wf-resume');
+     if(status.currentNode!==${JSON.stringify(actions[i].id)}||status.status!=='AWAITING_AUTHORIZATION'||button.disabled)return false;button.click();return true;})()`),'resume '+i,targetCount===24?300:100);
    }
-   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
-   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
+   const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
+   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal,targetCount===24?300:100);
    assert.equal(await evaluate('globalThis.confirmations'),count);assert.deepEqual(writes,Array.from({length:count},(_,i)=>({cityId:1,pid:i+1,sellNum:1})));
-   assert.equal(state.info.player.coins,outcome==='success'?204:100);assert.equal(state.info.player.goods.length,outcome==='success'?0:2);
+   const successful=outcome==='success'?targetCount:failAt-1;assert.equal(state.info.player.coins,100+52*successful);
+   assert.deepEqual(state.info.player.goods,Array.from({length:targetCount},(_,i)=>({pid:i+1,goodsId:1001+i,num:1,buyPrice:50,cityId:2})).slice(successful));
+   const records=app.history.list('A');assert.equal(records.length,count);
+   assert.deepEqual(records.slice().reverse().map(row=>row.finalStatus),Array.from({length:count},(_,i)=>outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS'));
+   assert.deepEqual(records.slice().reverse().map(row=>row.workflowNodeId),actions.slice(0,count).map(row=>row.id));
+   assert.deepEqual(app.operations.workflowBudget('A').limits,graph.budget);assert.equal(app.operations.workflowBudget('A').batches.length,count);
+   assert.deepEqual(app.history.list('B'),[]);assert.deepEqual(await evaluate('globalThis.pageErrors'),[]);
    assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');
    assert.equal(app.operations.workflowBudget('A').state,'CLOSED');assert.deepEqual(app.counts(),{clients:0,collections:0});
-  });
+  },{commandTimeoutMs:targetCount===24?45000:10000});
  }finally{client.stop();await app.close();}
 });
 
