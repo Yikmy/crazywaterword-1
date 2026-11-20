@@ -44,7 +44,7 @@ function harness() {
     fetch: (url, options = {}) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject, settled: false })),
     setInterval: () => 1, clearInterval() {}, window: { confirm(text) { confirmations.push(text); return confirm; } }, prompt: () => null,
   });
-  new vm.Script(inline.replace('Object.assign(globalThis,{addStageTaskDeclaration,', 'Object.assign(globalThis,{gpGet,gpControls,gpRenderDomain,gpRenderPlan,gpAuthorize,addStageTaskDeclaration,'), { filename: 'assembled-page-inline.js' }).runInContext(context);
+  new vm.Script(inline.replace('Object.assign(globalThis,{addStageTaskDeclaration,', 'Object.assign(globalThis,{GP_MODULES,gpGet,gpControls,gpRenderDomain,gpRenderPlan,gpAuthorize,addStageTaskDeclaration,'), { filename: 'assembled-page-inline.js' }).runInContext(context);
   const matches = (entry, path, module) => {
     const url = new URL(entry.url, 'http://localhost');
     return url.pathname === path && (module === undefined || url.searchParams.get('module') === module);
@@ -3703,4 +3703,16 @@ for(const action of ['feed','level'])test('Pet batch PAGE '+action+' accepts 24 
  h.respond(route,{...payload,accountId:'A',steps,budget,graph,resumable:false,requiresFreshPlan:true,requiresAuthorization:true});await pending;
  assert.deepEqual(JSON.parse(h.node('wf-json').value),graph);
  assert.equal(writes(h,'/api/operations/authorize').length,0);assert.equal(writes(h,'/api/operations/execute').length,0);assert.equal(h.confirmations.length,0);
+});
+
+
+test('every gameplay page loads an unsurveyed null view without dispatching a mutation',async()=>{
+ const h=await boot(),modules=Array.from(h.run('GP_MODULES')),failures=[];
+ for(const module of modules){
+  const loading=h.node('gp-'+module+'-load').click();
+  h.respond('/api/gameplay',{accountId:'A',module,csrfToken:'synthetic-csrf-A',config:{enabled:true},status:{running:false,blocked:false},view:null},{module});
+  await loading;const hint=h.node('gp-'+module+'-hint').textContent;
+  if(hint.includes('读取失败'))failures.push(module+': '+hint);
+ }
+ assert.deepEqual(failures,[]);assert.equal(writes(h).length,0);
 });

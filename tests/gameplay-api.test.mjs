@@ -4050,3 +4050,27 @@ for(const action of ['make','pick'])for(const outcome of ['success','unknown'])t
   assert.equal(createExecutionHistory({file:app.history.storagePath}).unresolved('A'),outcome==='unknown');assert.equal(app.operations.workflowBudget('A').state,'CLOSED');
  });}finally{client.stop();await app.close();}
 });
+
+
+test('browser offline museum first load accepts empty cache then surveys', {skip:!process.env.CW_TEST_BROWSER,timeout:45000},async()=>{
+ const app=await harness({includeMuseum:true,testProtocol:heroWireProtocol,configOverride:structuredClone(museumDailyCfg)}),session=app.ready('A');
+ try{
+  const initial=await app.call('/api/gameplay?module=museum');assert.equal(initial.data.view,null);
+  assert.equal((await app.call('/api/gameplay/config',{body:{module:'museum',config:{enabled:true,exploration:true,collection:true}}})).status,200);
+  await withOfflineBrowser(app,async({evaluate,waitFor})=>{
+   await waitFor(()=>evaluate("document.getElementById('account')?.value==='A'"),'account');
+   await evaluate("document.querySelector('#tabs button[data-tab=\"museum\"]').click()");
+   await waitFor(()=>evaluate("!document.getElementById('gp-museum-load').disabled"),'load');
+   await evaluate("document.getElementById('gp-museum-load').click()");
+   await waitFor(()=>evaluate("document.getElementById('gp-museum-hint').textContent.includes('已读取本账号缓存')"),'empty cache loaded');
+   await waitFor(()=>evaluate("!document.getElementById('gp-museum-survey').disabled"),'survey enabled');
+   assert.match(await evaluate("document.getElementById('gp-museum-facts').textContent"),/没有具备可靠来源/);
+   await evaluate("document.getElementById('gp-museum-survey').click()");
+   await waitFor(()=>app.requests.some(row=>row.name==='MuseumInfoRequest'),'museum survey');
+   await waitFor(()=>evaluate("!document.getElementById('gp-museum-survey').disabled"),'survey settled');
+   assert.doesNotMatch(await evaluate("document.getElementById('gp-museum-hint').textContent"),/失败/);
+   assert.equal(app.history.list('A').length,0);assert.equal(await evaluate('globalThis.confirmations||0'),0);
+   assert.deepEqual(app.counts(),{clients:0,collections:0});
+  });
+ }finally{session.client.stop();await app.close();}
+});
