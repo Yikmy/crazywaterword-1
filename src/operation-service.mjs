@@ -532,10 +532,16 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
     const release=acquire(session,'operations:TASK_REWARDS_CLOSING_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
       plans.delete(session.id);
-      const adapter=adapterFor('task-rewards'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'task-rewards').config,parameters=payload.targets[0];
-      const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'task-rewards').config,parameters})),dependency=dependencies();
-      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters,signal:session.abort.signal});current(session,generation,client);
-      if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('任务收尾准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+      const adapter=adapterFor('task-rewards'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'task-rewards').config,groups=payload.groups??[payload.targets],parameters=groups.map(targets=>targets[0]);
+      const dependencies=()=>operationDigest(parameters.map(parameters=>adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'task-rewards').config,parameters}))),dependency=dependencies();
+      const collected=[];
+      for(const target of parameters){
+        current(session,generation,client);
+        if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('任务收尾准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+        collected.push(await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:target,signal:session.abort.signal}));current(session,generation,client);
+        if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('任务收尾准备期间账号、角色、世界、连接或配置变化','CANCELLED');
+      }
+      const facts=payload.groups?collected:collected[0];
       const result=prepareTaskRewardClosingWorkflow(facts,{config,moduleConfig,...payload});return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
     }finally{release();}
   }

@@ -3727,3 +3727,17 @@ test('Tasks candidate entry preserves original growth, farm and material targets
   const source=h.node('wf-unified-intent').value;h.node('gp-'+spec.module+'-parameters').oninput();button.click();assert.equal(h.node('wf-unified-intent').value,source);
  }
 });
+
+test('grouped task rewards professional page accumulates explicit source groups, prepares original graph and clears account drafts',async()=>{
+ const row=kind=>({parameters:{kind,taskId:kind==='main'?1:1001},rewards:[{id:'塑料',num:1}],budgetClaims:{resources:[],quotas:[],uids:[{type:'task-reward',id:kind+':'+(kind==='main'?1:1001)}]},costs:[],executable:true,blockedReason:null});
+ const spec=kind=>({module:'task-rewards',parameters:row(kind).parameters,actionId:'task-rewards:'+kind,actionType:'CLAIM',costs:[],blockedReason:'UNKNOWN',facts:{rewardClosing:{targets:[row(kind)]}}}),main=spec('main'),h=await loaded(main);
+ const controls=key=>descendants(h.node('gp-task-rewards-facts')).filter(n=>n.dataset[key]);
+ controls('taskRewardClosingTarget')[0].checked=true;controls('taskRewardClosingTarget')[0].onchange();controls('taskRewardGroupAdd')[0].click();assert.match(h.node('gp-task-rewards-facts').textContent,/main 1/);
+ h.node('gp-task-rewards-parameters').value=JSON.stringify({kind:'achievement',taskId:1001});h.node('gp-task-rewards-parameters').oninput();const survey=h.node('gp-task-rewards-survey').click();await tick();h.respond('/api/gameplay/survey',data(spec('achievement')));await survey;
+ controls('taskRewardClosingTarget')[0].checked=true;controls('taskRewardClosingTarget')[0].onchange();controls('taskRewardGroupAdd')[0].click();assert.match(h.node('gp-task-rewards-facts').textContent,/achievement 1001/);
+ const before=writes(h).length,prepare=controls('taskRewardGroupsPrepare')[0],pending=prepare.click();await tick();const request=h.pending('/api/gameplay/task-rewards/closing/prepare');assert.ok(request);const payload=JSON.parse(request.options.body);delete payload.accountId;delete payload.csrfToken;assert.deepEqual(payload.groups,[[row('main').parameters],[row('achievement').parameters]]);
+ const make=targets=>{const steps=targets.map(p=>({...row(p.kind),parameters:p,selection:{unique:true}})),nodes=[{id:'start',type:'START'},...steps.flatMap((step,i)=>[{id:'reward-'+i,type:'ACTION',module:'task-rewards',parameters:step.parameters,selection:step.selection},{id:'verify-'+i,type:'VERIFY',module:'task-rewards'}]),{id:'stop',type:'STOP'}],budget={resources:[],quotas:[],uids:steps.flatMap(s=>s.budgetClaims.uids)};return {targets,maxDurationMs:payload.maxDurationMs,steps,budget,resumable:false,requiresFreshPlan:true,requiresAuthorization:true,graph:{version:1,id:'synthetic-rewards',name:'synthetic rewards',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:payload.maxDurationMs,maxActions:steps.length,modules:['task-rewards']}}};};
+ const combined=make(payload.groups.flat()),parts=payload.groups.map(make);delete combined.targets;h.respond('/api/gameplay/task-rewards/closing/prepare',{...combined,accountId:'A',groups:payload.groups,parts,limitation:'synthetic grouped preparation'});await pending;
+ assert.equal(JSON.parse(h.node('wf-json').value).nodes.length,6);assert.equal(h.confirmations.length,0);assert.equal(writes(h).length,before+1);assert.equal(h.node('wf-authorize').disabled,true);
+ h.run("selectAccount('B')");const count=writes(h).length;prepare.click();assert.equal(writes(h).length,count);assert.equal(h.node('gp-task-rewards-facts').textContent,'');
+});

@@ -4,7 +4,7 @@ import { ACTIONS, buildBody } from './actions.mjs';
 import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, activityTaskClosingFact, activityTaskClosingChoices, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
 import { taskTarget, achievementProgressCount, parseTaskObservation, taskConfigurationRow, taskQualification } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
-import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity, normalizeBudgetClaims } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -238,6 +238,13 @@ function taskClosingRows(f,options){
  return choices.flatMap(parameters=>{const source=taskClosingFact(f,parameters);if(!source)return [];const row=candidate(source,parameters,options);return [{parameters:copy(parameters),rewards:copy(row.rewards),budgetClaims:copy(row.budgetClaims),costs:[],executable:row.executable,blockedReason:row.blockedReason}];});
 }
 export function validateTaskRewardClosingPreparation(v){
+ if(own(v,'groups')){
+  if(!fields(v,['groups','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.groups)||Object.getPrototypeOf(v.groups)!==Array.prototype||Reflect.ownKeys(v.groups).length!==v.groups.length+1||!Array.from({length:v.groups.length},(_,i)=>Object.getOwnPropertyDescriptor(v.groups,i)).every(d=>d?.enumerable&&own(d,'value'))||!v.groups.length||v.groups.length>7)throw invalid('跨来源收尾须明确1至7个原任务来源分组');
+  const groups=v.groups.map(targets=>validateTaskRewardClosingPreparation({targets,maxDurationMs:v.maxDurationMs}).targets),targets=groups.flat();
+  const source=p=>['main','branch'].includes(p.kind)?'tasks':p.kind;
+  if(targets.length>24||new Set(groups.map(rows=>source(rows[0]))).size!==groups.length||new Set(targets.map(p=>p.kind+':'+(p.taskId??p.tierId))).size!==targets.length)throw invalid('跨来源收尾共最多24项，每个原来源只允许一个分组且目标不得重复');
+  return {groups,maxDurationMs:v.maxDurationMs};
+ }
  if(!fields(v,['targets','maxDurationMs'])||Reflect.ownKeys(v).length!==2||!dense(v.targets)||v.targets.length<1||v.targets.length>24||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('任务收尾须明确1至24个当前任务及有限总时长');
  const targets=v.targets.map(row=>{const p=validateTaskRewardsParameters(row);if(!['main','branch','achievement','weekly-chip-task',...OPEN_RANK_TASK_KINDS].includes(p.kind))throw invalid('本收尾只接受当前主支线、同源成就、同轮周芯片或同模式开服任务；其他日常与活动继续原入口');return p;});
  const source=p=>p.kind==='achievement'?'achievement':p.kind==='weekly-chip-task'?'chip:'+p.round:OPEN_RANK_TASK_KINDS.includes(p.kind)?p.kind:'tasks';
@@ -245,6 +252,16 @@ export function validateTaskRewardClosingPreparation(v){
  return {targets,maxDurationMs:v.maxDurationMs};
 }
 export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,...input}={}){
+ if(own(input,'groups')){
+  const p=validateTaskRewardClosingPreparation(input);
+  if(!dense(f)||f.length!==p.groups.length||!f.every(facts=>facts?.stockReliable===true&&facts.stock instanceof Map&&same(facts.context,f[0].context)&&same([...facts.stock].sort(),[...f[0].stock].sort())))throw invalid('跨来源收尾须保持同账号、角色、世界、连接、代次及完整初始库存，变化须重新调查');
+  // Each original group keeps its own private source proof, window and limits.
+  const parts=p.groups.map((targets,i)=>prepareTaskRewardClosingWorkflow(f[i],{config,moduleConfig,targets,maxDurationMs:p.maxDurationMs})),steps=parts.flatMap(part=>part.steps),totals=new Map(f[0].stock);
+  for(const step of steps)for(const reward of step.rewards){const n=(totals.get(reward.id)??0)+reward.num;if(!Number.isSafeInteger(n))throw invalid('跨来源累计奖励超过原安全整数余额范围');totals.set(reward.id,n);}
+  const budget=normalizeBudgetClaims({resources:[],quotas:[],uids:parts.flatMap(part=>part.budget.uids)}),nodes=[{id:'start',type:'START'}];
+  steps.forEach((step,i)=>nodes.push({id:'reward-'+i,type:'ACTION',module:moduleId,parameters:copy(step.parameters),selection:copy(step.selection)},{id:'verify-'+i,type:'VERIFY',module:moduleId}));nodes.push({id:'stop',type:'STOP'});
+  return {...p,parts,steps,budget,graph:{version:1,id:'task-rewards-groups-'+hash(p).slice(0,20),name:'明确跨来源任务奖励逐项收尾',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅明确清单中的当前合格任务；每组保留原独立任务来源、活动窗口及轮次限制。准备时各组重新调查并确认相同完整库存，每项执行再调查、单次授权及原独立结算验证；变化、拒绝或UNKNOWN停止后续。累计奖励只核溢出，不增加父预算；不追加未来任务、不领取排名奖励、不跨周芯片末任务换轮，重启只读不重放。'};
+ }
  const p=validateTaskRewardClosingPreparation(input),nodes=[{id:'start',type:'START'}],totals=new Map(f?.stock??[]);
  const chip=p.targets[0].kind==='weekly-chip-task',activity=chip||OPEN_RANK_TASK_KINDS.includes(p.targets[0].kind),choices=activity?activityTaskClosingChoices(f,{config,moduleConfig}):null;if(activity&&(choices.status!=='OBSERVED'||chip&&choices.round!==p.targets[0].round||p.targets.length>choices.maximumClaims))throw invalid('活动任务组合须同一当前来源；周芯片须保留至少一项未领，末任务跨轮仍缺证');
  const steps=p.targets.map((parameters,i)=>{const facts=taskClosingFact(f,parameters,config);if(!facts)throw invalid('任务收尾原账号、连接或任务来源变化，须重新调查');const row=activity?viewDailyTaskReward(facts,{config,moduleConfig,parameters}).candidates[0]:candidate(facts,parameters,{config,moduleConfig});

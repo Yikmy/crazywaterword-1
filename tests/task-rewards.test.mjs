@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProtocol } from '../src/proto.mjs';
 import { loadConfig } from '../src/config.mjs';
-import { taskRewardsModule, validateTaskRewardsConfig, validateTaskRewardsParameters, surveyTaskRewards, viewTaskRewards, planTaskRewards, verifyTaskReward, taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
+import { prepareTaskRewardClosingWorkflow, validateTaskRewardClosingPreparation, taskRewardsModule, validateTaskRewardsConfig, validateTaskRewardsParameters, surveyTaskRewards, viewTaskRewards, planTaskRewards, verifyTaskReward, taskRewardsDependencyVersions } from '../src/task-rewards.mjs';
 import { createRunBudgetContext } from '../src/resource-ledger.mjs';
 import { executeBusinessOperation } from '../src/business-functions.mjs';
 import { createWorkflowRunner, validateWorkflow } from '../src/workflow.mjs';
@@ -340,4 +340,28 @@ for(const kind of ['main','branch'])test('legacy and Function keep malformed tar
  const legacy=await surveyTasks(f.client,protocol,{config,water:{}}),observed=kind==='main'?legacy.main:legacy.branch.find(r=>r.taskId===taskId);
  assert.deepEqual(candidate.qualification,observed.qualification);assert.equal(observed.qualification.completion,'UNKNOWN');assert.equal(observed.qualification.claimable,null);assert.equal(candidate.executable,false);
  assert.equal(planTaskRewards(facts,{...options,selections:[candidate.actionId]}).actions.length,0);assert.equal(legacy.plan.some(r=>r.kind===kind&&r.id===taskId),false);assert.equal(f.state.writes.length,0);
+});
+
+const groupedRewards={groups:[[{kind:'main',taskId:1}],[{kind:'achievement',taskId:1001}]],maxDurationMs:60000};
+test('grouped task rewards keep each original source contract and reject duplicate, oversized or accessor groups',()=>{
+ assert.deepEqual(validateTaskRewardClosingPreparation(groupedRewards),groupedRewards);
+ for(const groups of [[],[[{kind:'main',taskId:1}],[{kind:'branch',taskId:8001}]],[[{kind:'weekly-chip-task',round:1,taskId:1}],[{kind:'weekly-chip-task',round:2,taskId:2}]],[[{kind:'daily',taskId:1001}]],new Array(2)])assert.throws(()=>validateTaskRewardClosingPreparation({...groupedRewards,groups}));
+ let called=0;const groups=[[]];Object.defineProperty(groups,0,{enumerable:true,get(){called++;return groupedRewards.groups[0]}});assert.throws(()=>validateTaskRewardClosingPreparation({...groupedRewards,groups}));assert.equal(called,0);
+ assert.throws(()=>validateTaskRewardClosingPreparation({...groupedRewards,targets:groupedRewards.groups[0]}));
+});
+for(const outcome of ['success','unknown','rejected'])test('grouped task rewards Service and Workflow '+outcome+' preserve per-item authorization and durable original settlement',async t=>{
+ const f=serviceFixture(t,{apply:outcome==='success',watchStatus:outcome==='rejected'?'REJECTED':'UNKNOWN'}),prepared=await f.service.prepareTaskRewardClosingSource(f.session,groupedRewards);
+ assert.equal(prepared.parts.length,2);assert.equal(prepared.graph.nodes.length,6);assert.deepEqual(prepared.graph.budget,{resources:[],quotas:[],uids:[{type:'task-reward',id:'main:1'},{type:'task-reward',id:'achievement:1001'}]});assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id).length,0);
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:f.service,claim:(_id,runId,options)=>f.service.claimWorkflow(f.session,runId,options),getSession:id=>id===f.session.id?f.session:null});t.after(()=>runner.stop());
+ let result=await runner.start(f.session.id,prepared.graph),count=outcome==='success'?2:1;
+ for(let i=0;i<count;i++){assert.equal(result.status,'AWAITING_AUTHORIZATION');assert.deepEqual(result.plan.parameters,groupedRewards.groups[i][0]);await f.run(result.plan);result=await runner.resume();}
+ assert.equal(result.status,outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED');assert.equal(f.state.writes.length,count);assert.equal(f.durable.list(f.session.id).length,count);assert.equal(createExecutionHistory({file:f.file}).unresolved(f.session.id),outcome==='unknown');
+ assert.equal(f.state.reads.includes('MainTaskInfoRequest'),true);assert.equal(f.state.reads.includes('AchievementInfoRequest'),true);assert.equal(f.service.workflowBudget(f.session.id).state,'CLOSED');
+});
+test('grouped task rewards preparation refuses source inventory changes, cancellation and cross-source aggregate overflow without writes',async t=>{
+ for(const fault of ['inventory','cancel']){const f=serviceFixture(t);f.state.onRead=n=>{if(n==='AchievementInfoRequest'){if(fault==='inventory')f.state.stock.set('unrelated',8);else f.session.abort.abort();}};await assert.rejects(f.service.prepareTaskRewardClosingSource(f.session,groupedRewards));assert.equal(f.state.writes.length,0);assert.equal(f.durable.list(f.session.id).length,0);}
+ const f=fake(),config=cfg();f.state.resources.find(r=>r.res===4).amount=Number.MAX_SAFE_INTEGER-20;
+ config.tables.MainTaskCfg.data.find(r=>r.taskId===1).reward=[['RUBY',1]];
+ const refreshed=await Promise.all(groupedRewards.groups.map(targets=>surveyTaskRewards(f.client,protocol,opts(config,{parameters:targets[0]}))));
+ assert.throws(()=>prepareTaskRewardClosingWorkflow(refreshed,{config,moduleConfig:enabled,...groupedRewards}),/累计奖励/);assert.equal(f.state.writes.length,0);
 });

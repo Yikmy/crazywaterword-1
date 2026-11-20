@@ -4323,3 +4323,13 @@ for(const outcome of ['success','unknown-1','refused-1'])test('Tasks exact farm 
   assert.equal((await app.call('/api/workflows/history?workflowRunId='+done.runId,{id:'B'})).status,404);assert.deepEqual(app.counts(),{clients:0,collections:0});
  }finally{await app.close();}
 });
+
+test('grouped task rewards HTTP uses original prepare route and rejects ambiguous payloads before querying',async()=>{
+ const config={tables:{MainTaskCfg:{data:[{taskId:1,type:'登录游戏',params:[1],reward:[['塑料',1]]}]},BranchTaskCfg:{data:[]},AchievementTaskCfg:{data:[{taskId:1001,reward:['塑料',2]}]},ItemCfg:{data:[{id:'塑料'}]}}},app=await harness({includeWorkflowTasks:true,configOverride:config,testProtocol:heroWireProtocol});
+ try{const session=app.ready('A'),reads=[];session.player={playerId:'1',worldId:'17'};session.connectionId='grouped-tasks-A';session.client.factContext={accountId:'A',generation:session.generation,connectionId:session.connectionId};session.client.request=async(n,b,r)=>{reads.push(n);heroWire(n,b);const value={MainTaskInfoRequest:{task:{taskId:1,progress:1,rewardClaimed:false},branch:[]},AchievementInfoRequest:{task:[{id:1001,progress:'1',targetProgress:'1',rewardClaimed:false}]},AllItemRequest:{items:[]},AllResourceRequest:{list:[]}}[n];assert.ok(value,n);return heroWire(r,value);};
+  await app.call('/api/gameplay?module=task-rewards');assert.equal((await app.call('/api/gameplay/config',{body:{module:'task-rewards',config:{enabled:true}}})).status,200);
+  const body={groups:[[{kind:'main',taskId:1}],[{kind:'achievement',taskId:1001}]],maxDurationMs:60000},route='/api/gameplay/task-rewards/closing/prepare';
+  for(const [input,authorized,status]of [[body,false,403],[{...body,targets:body.groups[0]},true,400],[{...body,groups:[]},true,400],[{...body,request:'DrawMainTaskRewardRequest'},true,400]])assert.equal((await app.call(route,{body:input,authorized})).status,status);
+  assert.equal(reads.length,0);const prepared=await app.call(route,{body});assert.equal(prepared.status,200,JSON.stringify(prepared.data));assert.deepEqual(prepared.data.groups,body.groups);assert.equal(prepared.data.graph.nodes.length,6);assert.deepEqual(prepared.data.graph.budget.resources,[]);assert.deepEqual(app.history.list('A'),[]);assert.deepEqual(app.counts(),{clients:0,collections:0});
+ }finally{await app.close();}
+});
