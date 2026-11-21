@@ -1,11 +1,11 @@
 import { readTradeActivitySnapshot } from './client.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
-import { ResourceLedger, RESOURCE_NAMES } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES, resourceCosts } from './resource-ledger.mjs';
 import { stockMatchesDelta } from './naval-facts.mjs';
 import { parseReceivedOrderReward } from './order-rewards.mjs';
 import { assertPaymentAllowed } from './actions.mjs';
 import { PIRATE_QUOTA_EVIDENCE } from './pirate-quota.mjs';
-// W18 / C521-C524: current-port observation, exact buy/non-loss sale and single Radar leg and owned-item speed.
+// W18 / C521-C524 / BIZ-R13: original trade observation, controlled single writes and current rewards.
 import { createHash } from 'node:crypto';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -22,14 +22,16 @@ const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETER
 const live=new WeakMap(),tables=['TradeGoodsCfg','TradeShipCfg','ModuleOpenCfg','ActivityTradeCfg','ItemCfg'];
 export const TRADE_EVIDENCE=Object.freeze({source:'Fixed v76 TradeUtil.ts / TradeModel.ts / TradeSellPop.ts / TradeBuyPop.ts / TradeCityShop.ts / TradeUtil.canTrade / TradeMessageView.ts / TradeSpeedPop.ts',scope:'CURRENT_PORT_RESPONSE_ONLY',semantics:'TradeShipCfg supplies capacity and profitMargin. Non-loss sale preview = buyPrice*num + ceil((price-buyPrice)*num*(10000+profitMargin)/10000). Buy quantity is bounded by maxCount-stock, remaining capacity and coins/price; exact price*num debit. Preview is not income or eligibility.',realGame:'REAL_UNVERIFIED'});
 const isPass=p=>p?.action==='claim-pass';
-const tablesFor=p=>isPass(p)?[...tables,'TradePassCfg']:tables;
+const rewardSpecs=Object.freeze({'claim-achievement':{key:'gotAchieveRwdId',table:'TradeAchieveRewardCfg',id:'rewardId',threshold:'target',request:'GotTradeAchievementRequest',response:'GotTradeAchievementResponse',label:'成就奖励'},'claim-report':{key:'gotReportRwdId',table:'TradeDayRewardCfg',id:'id',threshold:'roleNum',request:'GotTradeReportRequest',response:'GotTTradeReportResponse',label:'情报奖励'}});
+const isPrefixReward=p=>Object.hasOwn(rewardSpecs,p?.action??'');
+const tablesFor=p=>isPass(p)?[...tables,'TradePassCfg']:isPrefixReward(p)?[...tables,rewardSpecs[p.action].table]:tables;
 export function validateTradeParameters(v={}){
- if(plain(v,['action'])&&isPass(v))return {action:'claim-pass'};
+ if(plain(v,['action'])&&(isPass(v)||isPrefixReward(v)))return {action:v.action};
  if(plain(v,[])&&Reflect.ownKeys(v).length===0)return {};
  if(plain(v,['action','cityId','mvToCityId','num'])&&v.action==='speed'&&['cityId','mvToCityId','num'].every(k=>positive(get(v,k))))return {action:'speed',cityId:v.cityId,mvToCityId:v.mvToCityId,num:v.num};
  if(plain(v,['action','cityId','mvToCityId'])&&v.action==='move'&&positive(get(v,'cityId'))&&positive(get(v,'mvToCityId'))&&v.cityId!==v.mvToCityId)return {action:'move',cityId:v.cityId,mvToCityId:v.mvToCityId};
  if(plain(v,['action','goodsId','cityId','num','expectedPeriod','expectedBuyHash'])&&v.action==='buy'&&['goodsId','cityId','num'].every(k=>own(v,k)&&positive(v[k]))){const guarded=own(v,'expectedPeriod')||own(v,'expectedBuyHash');if(guarded&&(!positive(get(v,'expectedPeriod'))||typeof get(v,'expectedBuyHash')!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedBuyHash)))throw invalid('买入守卫须同时明确原活动期数和原报价摘要');return {action:'buy',goodsId:v.goodsId,cityId:v.cityId,num:v.num,...(guarded?{expectedPeriod:v.expectedPeriod,expectedBuyHash:v.expectedBuyHash}:{})};}
- if(!plain(v,['action','pid','cityId','num','expectedPeriod','expectedSaleHash'])||v.action!=='sell'||!['pid','cityId','num'].every(k=>own(v,k)&&positive(v[k])))throw invalid('海商王只接受空观察参数，或 sell 与明确正int32 pid/cityId/num；buy须明确goodsId/cityId/num；move须明确不同的cityId/mvToCityId；speed须明确当前cityId/mvToCityId/num；禁止自动数量或原始请求');
+ if(!plain(v,['action','pid','cityId','num','expectedPeriod','expectedSaleHash'])||v.action!=='sell'||!['pid','cityId','num'].every(k=>own(v,k)&&positive(v[k])))throw invalid('海商王只接受空观察参数，或 sell 与明确正int32 pid/cityId/num；buy须明确goodsId/cityId/num；move须明确不同的cityId/mvToCityId；speed须明确当前cityId/mvToCityId/num；领奖使用claim-pass、claim-achievement或claim-report且不附加字段；禁止自动数量或原始请求');
  const guarded=own(v,'expectedPeriod')||own(v,'expectedSaleHash');if(guarded&&(!positive(get(v,'expectedPeriod'))||typeof get(v,'expectedSaleHash')!=='string'||! /^[a-f0-9]{64}$/.test(v.expectedSaleHash)))throw invalid('出售守卫须同时明确原活动期数与64位原报价身份摘要');
  return {action:'sell',pid:v.pid,cityId:v.cityId,num:v.num,...(guarded?{expectedPeriod:v.expectedPeriod,expectedSaleHash:v.expectedSaleHash}:{})};
 }
@@ -67,7 +69,7 @@ const stockState=(stock,exclude)=>[...stock].filter(([id])=>id!==exclude).filter
 function ownState(f){const info=infoOf(f.first),claims=Object.fromEntries(['gotAchieveRwdId','gotReportRwdId','guildReportNum'].map(k=>[k,get(f.first,k)]));return info.period&&info.balances&&info.goods&&info.cargo&&Object.values(claims).every(uint)&&f.stockReliable?{context:copy(f.context),period:info.period,cargo:info.cargo,player:{...info.balances,goods:info.goods},claims,inventory:stockState(f.stock,f.currencyId)}:null;}
 function digest(f){return hash({context:f.context,parameters:f.parameters,first:f.first,last:f.last,city:f.city,radar:f.radar,...(isPass(f.parameters)?{passFirst:f.passFirst,passLast:f.passLast,pass:f.pass}:{}),clock:f.clock,notes:f.notes,configEvidence:f.configEvidence,activity:f.activity,activityStable:f.activityStable,sourceAt:f.sourceAt,playerLevel:f.playerLevel,available:f.available,inventory:f.inventory,state:f.state,stock:[...f.stock],stockReliable:f.stockReliable,currencyId:f.currencyId});}
 export async function surveyTrade(client,protocol,{player,config,parameters={},signal,stop,timeout=15000}={}){
- parameters=validateTradeParameters(parameters);if(isPass(parameters))return surveyTradePass(client,protocol,{player,config,parameters,signal,stop,timeout});const opts={signal,stop},context=contextOf(client,player),notes=[],sourceAt=[],activity=readTradeActivitySnapshot(client,context),playerLevel=get(player,'level');
+ parameters=validateTradeParameters(parameters);if(isPass(parameters)||isPrefixReward(parameters))return surveyTradePass(client,protocol,{player,config,parameters,signal,stop,timeout});const opts={signal,stop},context=contextOf(client,player),notes=[],sourceAt=[],activity=readTradeActivitySnapshot(client,context),playerLevel=get(player,'level');
  const active=()=>{assertExecutionActive(client,opts);if(!same(context,contextOf(client,player)))throw Object.assign(new Error('海商王观察期间账号、角色、世界或连接变化'),{code:'CANCELLED'});};
  const read=async(name,body={})=>{active();const response=name.replace(/Request$/,'Response');if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return null;}try{const value=await awaitExecution(client.request(name,body,response,timeout,{signal}),client,opts);active();sourceAt.push({name,at:Date.now()});return toSnapshotJson(value);}catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return null;}};
  active();const first=await read('TradeInfoRequest'),info=infoOf(first),start=clockOf(client,context);
@@ -134,7 +136,7 @@ function observationTrade(f,{config=f?.configEvidence}={}){
 const saleRequest='TradeSellRequest',saleResponse='TradeSellResponse';
 const saleCostSource='Fixed v76 TradeSellPop._onSellProp: exact cityId/pid/sellNum; no resource debit. Non-loss preview formula verified against TradeShipCfg. No purchase, route, reward claim or RUBY.';
 function tradeAuthority(f,{settlement=false}={}){
- const state=live.get(f);if(!current(f)||!state||!f.state||f.stockReliable!==true||!same(ownState(f),f.state)||!f.activityStable||state.player.level!==f.playerLevel||!positive(f.playerLevel)||f.sourceAt.length!==(isPass(f.parameters)?6:f.parameters.action==='speed'?4:5)||f.sourceAt.some(r=>!Number.isFinite(r.at)||r.at>Date.now()||Date.now()-r.at>30000))return false;
+ const state=live.get(f);if(!current(f)||!state||!f.state||f.stockReliable!==true||!same(ownState(f),f.state)||!f.activityStable||state.player.level!==f.playerLevel||!positive(f.playerLevel)||f.sourceAt.length!==(isPass(f.parameters)?6:isPrefixReward(f.parameters)?4:f.parameters.action==='speed'?4:5)||f.sourceAt.some(r=>!Number.isFinite(r.at)||r.at>Date.now()||Date.now()-r.at>30000))return false;
  const time=clockOf(state.client,f.context);if(!time||!f.clock.end||time.earliestMs<f.clock.end.earliestMs||time.latestMs<f.clock.end.latestMs)return false;
  const activity=readTradeActivitySnapshot(state.client,f.context),project=a=>settlement?{source:a.source,status:a.status,reliable:a.reliable,period:a.period,accountId:a.accountId,playerId:a.playerId,worldId:a.worldId,generation:a.generation,connectionId:a.connectionId}:a;
  return activity.status==='OBSERVED'&&activity.reliable===true&&same(project(f.activity),project(activity));
@@ -296,7 +298,7 @@ function selectedTradeCandidate(f,options,view,parameters){
   (parameters.action==='buy'?buyCandidate:saleCandidate)(f,options,view);
 }
 export function viewTrade(f,options={}){
- const parameters=validateTradeParameters(options.parameters??f?.parameters??{});if(isPass(parameters))return viewTradePass(f,{...options,parameters});const view=observationTrade(f,options);
+ const parameters=validateTradeParameters(options.parameters??f?.parameters??{});if(isPass(parameters))return viewTradePass(f,{...options,parameters});if(isPrefixReward(parameters))return viewTradePrefixReward(f,{...options,parameters});const view=observationTrade(f,options);
  view.salePreparation=tradeSaleTargets(f,view);view.buyPreparation=tradeBuyTargets(f,view);
  view.cooldownObservation=tradeLegClockObservation(f);view.route=routeObservation(f);view.speed={policy:speedPolicy(options.config??f?.configEvidence),owned:f?.stockReliable?f.stock.get(tradeSpeedItem)??0:null,arrivalConfirmed:false};
  if(parameters.action){const speeding=parameters.action==='speed',moving=parameters.action==='move',buy=parameters.action==='buy';view.candidates=[selectedTradeCandidate(f,options,view,parameters)];view.blocked=view.blocked.filter(row=>row.actionType!==(speeding?'SPEED':moving?'MOVE':buy?'BUY':'SELL'));}
@@ -307,12 +309,13 @@ export function planTrade(f,{parameters=f?.parameters??{},selections=[],ledger=n
  if(!same(parameters,f?.parameters??{}))return {module:'trade',actions:[],notes:[]};
  // A plan needs only the selected candidate, not all preparable market/holding
  // hashes. Both paths still use the same observation and candidate checks.
- const candidate=isPass(parameters)?passCandidate(f,options):parameters.action?selectedTradeCandidate(f,{...options,parameters},observationTrade(f,options),parameters):null;
+ const candidate=isPrefixReward(parameters)?prefixRewardCandidate(f,options):isPass(parameters)?passCandidate(f,options):parameters.action?selectedTradeCandidate(f,{...options,parameters},observationTrade(f,options),parameters):null;
  const row=candidate?.executable&&selections.includes(candidate.actionId)?candidate:null;
- return {module:'trade',actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[isPass(parameters)?'仅原活动当前全部已达标未领免费档位；typed回执与独立双复读/库存共同确认，零支出，父档位UID固定，不购买、激活付费或补级。':'行情预览不是到账；仅明确单次买入、非亏损卖出、Radar 单航段或自有道具保持未来终点的加速可生成候选，其他交易分支保持独立。']};
+ return {module:'trade',actions:row&&ledger.reserve(row.costs)?[row]:[],notes:[isPrefixReward(parameters)?'空请求只授权当前明确未领且已达标范围；专用回执终点和连续档位奖励、独立TradeInfo/完整库存必须精确一致，不借用未来进度或推定日界。':isPass(parameters)?'仅原活动当前全部已达标未领免费档位；typed回执与独立双复读/库存共同确认，零支出，父档位UID固定，不购买、激活付费或补级。':'行情预览不是到账；仅明确单次买入、非亏损卖出、Radar 单航段或自有道具保持未来终点的加速可生成候选，其他交易分支保持独立。']};
 }
 export function verifyTrade(operation,before,after,result){
  const no=reason=>({confirmed:false,reason});
+ if(isPrefixReward(before?.parameters))return verifyTradePrefixReward(operation,before,after,result);
  if(isPass(before?.parameters))return verifyTradePass(operation,before,after,result);
  if(!tradeAuthority(before,{settlement:true})||!tradeAuthority(after)||!same(before.context,after.context)||!same(before.configEvidence,after.configEvidence))return no('贸易写前/写后事实、当前连接或活动来源不可靠');
  if(before.parameters.action==='speed')return verifySpeed(operation,before,after,result);
@@ -367,16 +370,19 @@ function passOf(raw){
 }
 async function surveyTradePass(client,protocol,{player,config,parameters,signal,stop,timeout}){
  const context=contextOf(client,player),opts={signal,stop},sourceAt=[],notes=[],activity=readTradeActivitySnapshot(client,context),start=clockOf(client,context);
- const active=()=>{assertExecutionActive(client,opts);if(!same(context,contextOf(client,player)))throw Object.assign(new Error('海商王战令调查期间身份变化'),{code:'CANCELLED'});};
+ const active=()=>{assertExecutionActive(client,opts);if(!same(context,contextOf(client,player)))throw Object.assign(new Error('海商王奖励调查期间身份变化'),{code:'CANCELLED'});};
  const read=async(name,body={})=>{active();const response=name.replace(/Request$/,'Response');if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return null;}try{const value=await awaitExecution(client.request(name,body,response,timeout,{signal}),client,opts);active();sourceAt.push({name,at:Date.now()});return toSnapshotJson(value);}catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push(name+': STATE_UNKNOWN');return null;}};
- const first=await read('TradeInfoRequest'),passFirst=await read('BattlePassRequest',{type:3}),items=await read('AllItemRequest'),resources=await read('AllResourceRequest'),passLast=await read('BattlePassRequest',{type:3}),last=await read('TradeInfoRequest');active();const end=clockOf(client,context),inventory={items,resources},stock=parseOperationInventory(items,resources);
+ const first=await read('TradeInfoRequest'),passFirst=isPass(parameters)?await read('BattlePassRequest',{type:3}):null,items=await read('AllItemRequest'),resources=await read('AllResourceRequest'),passLast=isPass(parameters)?await read('BattlePassRequest',{type:3}):null,last=await read('TradeInfoRequest');active();const end=clockOf(client,context),inventory={items,resources},stock=parseOperationInventory(items,resources);
  const f={module:'trade',parameters,context,first,last,passFirst,passLast,pass:passOf(passFirst),city:null,radar:null,clock:{start,end},notes,activity,activityStable:same(activity,readTradeActivitySnapshot(client,context)),sourceAt,playerLevel:positive(player?.level)?player.level:null,available:Object.keys(protocol??{}),inventory,...stock,configEvidence:{tables:Object.fromEntries(tablesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))}};
  f.state=ownState(f);live.set(f,{client,player,digest:digest(f)});return f;
 }
+function configuredTradeReward(config,pairs){
+ const items=config?.tables?.ItemCfg?.data,known=new Set(Object.values(RESOURCE_NAMES));if(!dense(items)||!dense(pairs)||!pairs.length)return null;for(const r of items)if(typeof r?.id==='string')known.add(r.id);
+ const rewards=[];for(const pair of pairs){if(!dense(pair)||pair.length!==2||!known.has(pair[0])||!positive(pair[1])||rewards.some(r=>r.id===pair[0]))return null;rewards.push({id:pair[0],num:pair[1]});}return rewards;
+}
 function passDefinition(f,config){
- const raw=config?.tables?.TradePassCfg?.data,items=config?.tables?.ItemCfg?.data,known=new Set(Object.values(RESOURCE_NAMES));if(!dense(raw)||!dense(items))return null;for(const r of items)if(typeof r?.id==='string')known.add(r.id);
- const rows=raw.filter(r=>r.period===f?.state?.period),defs=[];let lastId=0,lastScore=0;
- for(const r of rows){if(!positive(r.rwdId)||r.rwdId<=lastId||!positive(r.reqScore)||r.reqScore<=lastScore||!dense(r.freeReward)||!r.freeReward.length)return null;const rewards=[];for(const pair of r.freeReward){if(!dense(pair)||pair.length!==2||!known.has(pair[0])||!positive(pair[1])||rewards.some(a=>a.id===pair[0]))return null;rewards.push({id:pair[0],num:pair[1]});}defs.push({id:r.rwdId,reqScore:r.reqScore,rewards});lastId=r.rwdId;lastScore=r.reqScore;}
+ const raw=config?.tables?.TradePassCfg?.data;if(!dense(raw))return null;const rows=raw.filter(r=>r.period===f?.state?.period),defs=[];let lastId=0,lastScore=0;
+ for(const r of rows){const rewards=configuredTradeReward(config,r.freeReward);if(!positive(r.rwdId)||r.rwdId<=lastId||!positive(r.reqScore)||r.reqScore<=lastScore||!rewards)return null;defs.push({id:r.rwdId,reqScore:r.reqScore,rewards});lastId=r.rwdId;lastScore=r.reqScore;}
  return defs.length?defs:null;
 }
 function passPolicy(f,config){
@@ -401,4 +407,32 @@ function verifyTradePass(op,b,a,result){
  if(!got||!same(got,row.expectedState.pass)||!same(a.pass,row.expectedState.pass)||received.status!=='PARSED'||!same(received.assets.map(r=>({id:r.id,num:r.num})).sort((x,y)=>x.id.localeCompare(y.id)),row.rewards)||received.assets.some(r=>r.type!==(Object.values(RESOURCE_NAMES).includes(r.id)?1:0)))return no('TRADE_FREE_PASS_TYPED_TIERS_OR_REWARDS_NOT_CONFIRMED');
  const before=copy(b.state),after=copy(a.state);delete before.inventory;delete after.inventory;if(!same(before,after)||!same(b.first,a.first)||!stockMatchesDelta(b.stock,a.stock,[],row.rewards))return no('TRADE_FREE_PASS_TRADE_OR_EXACT_REWARD_NET_IN_CHANGED');
  return {confirmed:true,reason:'原typed免费战令完整已领表及奖励与独立双重战令复读一致，全部当前免费档位精确转已领、付费仍未激活；贸易/船舱/其他状态保持且完整库存精确净入',afterState:{context:copy(a.context),trade:copy(a.state),pass:copy(a.pass)},responseEvidence:{type:3,tiers:copy(row.target.tiers),rewards:copy(row.rewards)}};
+}
+
+export const TRADE_PREFIX_REWARD_EVIDENCE=Object.freeze({requirement:'BIZ-R13',source:'v76 TradeAchieveItem.refreshItem/_onBtnGot and TradeMessageView._openRewardPop + TradeUtil.checkReportReward; cumulative got IDs and explicit current profit/report thresholds; empty request is not a selectable tier',achievementSha256:'e003368b1ee61c087ebeb304814ee4a4be2eb0fc58e086fd1193df491e75d18b',messageSha256:'386d1815e5b80675891eb9d9e3e50805070ace559fd8aceed22c80930ab1057e',utilSha256:'eedbff9b648729ae72f28e8a64d2216159cceff778fa7670ad5d082ac5de73fa',scope:'TYPED_CURRENT_CLAIMED_PREFIX_WITHIN_EXPLICIT_CURRENT_ELIGIBLE_TIERS_ONLY',realGame:'REAL_UNVERIFIED'});
+function prefixRewardPolicy(f,config){
+ const spec=rewardSpecs[f?.parameters?.action],raw=config?.tables?.[spec?.table]?.data,period=f?.state?.period;if(!spec||!dense(raw))return null;
+ const rows=spec.table==='TradeAchieveRewardCfg'?raw.filter(r=>r.id===period):raw,claimed=f?.state?.claims?.[spec.key],progress=spec.key==='gotAchieveRwdId'?f?.state?.player?.profit:f?.state?.claims?.guildReportNum,defs=[];let lastId=0,lastTarget=0;
+ for(const r of rows){const id=get(r,spec.id),target=get(r,spec.threshold),rewards=configuredTradeReward(config,r.rewards);if(!positive(id)||id!==lastId+1||!positive(target)||target<=lastTarget||!rewards)return null;defs.push({id,target,rewards});lastId=id;lastTarget=target;}
+ if(!defs.length||!uint(claimed)||claimed>lastId||!Number.isInteger(progress))return null;
+ const tiers=defs.filter(r=>r.id>claimed&&r.target<=progress),prefixes=[];if(tiers.length&&tiers[0].id!==claimed+1)return null;
+ for(let i=0;i<tiers.length;i++){let rewards;try{rewards=resourceCosts(tiers.slice(0,i+1).flatMap(r=>r.rewards)).sort((a,b)=>a.id.localeCompare(b.id));}catch{return null;}prefixes.push({throughId:tiers[i].id,tiers:tiers.slice(0,i+1).map(r=>r.id),rewards});}
+ return {spec,claimed,progress,definitions:defs,tiers,prefixes};
+}
+function prefixRewardCandidate(f,{config=f?.configEvidence,moduleConfig={enabled:false}}={},settlement=false){
+ const policy=prefixRewardPolicy(f,config),spec=rewardSpecs[f?.parameters?.action],window=f?.activity?.period,owner=live.get(f),time=owner?clockOf(owner.client,f.context):null,minimum=configRow(config,'ModuleOpenCfg','moduleId','海商王')?.playerLevel;
+ const target={kind:f?.parameters?.action??null,period:f?.state?.period??null,startTime:window?.startTime??null,endTime:window?.endTime??null,fromId:policy?.claimed??null,maximumThroughId:policy?.tiers.at(-1)?.id??null,progress:policy?.progress??null},action={request:spec?.request,response:spec?.response,body:{}},costs=[];
+ let reason=!validateTradeConfig(moduleConfig).enabled?'TRADE_DISABLED':!tradeAuthority(f,{settlement})?'TRADE_AUTHORITY_UNKNOWN':!same(tablesFor(f.parameters).map(n=>config?.tables?.[n]??null),tablesFor(f.parameters).map(n=>f.configEvidence.tables[n]))?'TRADE_CONFIG_CHANGED':!same(f.first,f.last)?'TRADE_REWARD_CHANGED_DURING_READ':!positive(minimum)||f.playerLevel<minimum?'TRADE_MODULE_LOCKED':!policy?'TRADE_REWARD_CURRENT_PREFIX_OR_CONFIG_UNKNOWN':!policy.tiers.length?'TRADE_REWARD_NO_REACHED_UNCLAIMED_TIERS':!positive(window?.period)||window.period!==f.state.period||![f.clock.start,f.clock.end,time].every(c=>c&&c.earliestMs>=window.startTime*1000&&c.latestMs<window.endTime*1000)?'TRADE_REWARD_WINDOW_OR_CLOCK_UNKNOWN':![action.request,action.response].every(n=>f.available.includes(n))?'PROTOCOL_UNAVAILABLE':null;
+ if(!reason)try{assertPaymentAllowed({...action,costs});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}
+ return {module:'trade',actionId:'trade:'+f?.parameters?.action+':'+hash(target),actionType:spec?.key==='gotAchieveRwdId'?'CLAIM-ACHIEVEMENT':'CLAIM-REPORT',parameters:copy(f?.parameters??{}),target,identity:hash({context:f?.context,state:f?.state,config:f?.configEvidence}),beforeState:copy(f?.state??null),expectedState:{rule:'CURRENT_TYPED_CONTIGUOUS_PREFIX',fromId:policy?.claimed??null,allowedPrefixes:copy(policy?.prefixes??[])},costs,costSource:TRADE_PREFIX_REWARD_EVIDENCE.source,budgetClaims:{resources:[],quotas:[],uids:policy?.tiers.map(r=>({type:spec?.key==='gotAchieveRwdId'?'trade-achievement-reward':'trade-report-reward',id:[target.period,target.startTime,target.endTime,r.id].join(':')}))??[]},executable:reason===null,blockedReason:reason,label:'海商王当前'+(spec?.label??'奖励')+' '+(policy?.tiers.map(r=>r.id).join('、')||'无可领档位'),...(reason===null?{action}:{})};
+}
+function viewTradePrefixReward(f,options){const row=prefixRewardCandidate(f,options),policy=prefixRewardPolicy(f,options.config??f?.configEvidence);return {module:'trade',mode:f?.parameters?.action,period:f?.state?.period??null,rewardProgress:policy?.progress??null,rewardClaimedId:policy?.claimed??null,rewardTiers:copy(policy?.definitions??null),allowedPrefixes:copy(policy?.prefixes??[]),candidates:[row],blocked:row.executable?[]:[row],notes:[...(f?.notes??[]),'空请求不指定单档；仅确认专用回执在当前达标未领范围内返回的连续档位及精确奖励净入。不假定一定一次领完，不推定日界或跨期重领。'],evidence:TRADE_PREFIX_REWARD_EVIDENCE};}
+function verifyTradePrefixReward(op,b,a,result){
+ const no=reason=>({confirmed:false,reason});if(!tradeAuthority(b,{settlement:true})||!tradeAuthority(a)||!same(b.context,a.context)||!same(b.configEvidence,a.configEvidence)||!same(a.first,a.last)||a.sourceAt.some((r,i)=>r.at<b.sourceAt[i].at))return no('TRADE_REWARD_AUTHORITY_OR_POST_READ_UNKNOWN');
+ const row=prefixRewardCandidate(b,{config:b.configEvidence,moduleConfig:{enabled:true}},true);if(!row.executable||['module','actionId','actionType','parameters','target','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(op[k],row[k])))return no('TRADE_REWARD_CURRENT_PLAN_MISMATCH');
+ const spec=rewardSpecs[b.parameters.action],through=get(result,spec.key),prefix=row.expectedState.allowedPrefixes.find(r=>r.throughId===through),received=parseReceivedOrderReward({reward:result?.reward});
+ if(!prefix||!positive(through)||a.state.claims[spec.key]!==through||received.status!=='PARSED'||!same(received.assets.map(r=>({id:r.id,num:r.num})).sort((x,y)=>x.id.localeCompare(y.id)),prefix.rewards)||received.assets.some(r=>r.type!==(Object.values(RESOURCE_NAMES).includes(r.id)?1:0)))return no('TRADE_REWARD_TYPED_CURRENT_PREFIX_OR_ASSETS_NOT_CONFIRMED');
+ const expected=copy(b.state),observed=copy(a.state);expected.claims[spec.key]=through;delete expected.inventory;delete observed.inventory;const raw=copy(b.first);raw[spec.key]=through;
+ if(!same(expected,observed)||!same(raw,a.first)||!stockMatchesDelta(b.stock,a.stock,[],prefix.rewards))return no('TRADE_REWARD_EXACT_NET_IN_OR_NON_TARGET_CHANGED');
+ return {confirmed:true,reason:'原专用回执已领终点与独立TradeInfo一致，严格位于写前达标未领连续范围；该前缀配置奖励完整库存精确净入，原进度/其他奖励标记/船舱/贸易/其他状态保持',afterState:copy(a.state),responseEvidence:{claimedKey:spec.key,fromId:row.target.fromId,throughId:through,tiers:copy(prefix.tiers),rewards:copy(prefix.rewards)}};
 }
