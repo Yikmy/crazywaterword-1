@@ -92,7 +92,7 @@ export async function surveyMail(client,protocol,{config,parameters={},player,si
 // mailbox revision/snapshot token; even matching totals cannot prove atomicity.
 // Each subsequent claim/read must freshly survey its exact page and email ID.
 async function surveyMailbox(client,protocol,{parameters,player,signal,stop,timeout}){
- const context=contextOf(client,player),options={signal,stop},pages=[],sourceFacts=[],seen=new Set();
+ const context=contextOf(client,player),options={signal,stop},pages=[],rawPages=[],sourceFacts=[],seen=new Set();
  const active=()=>{assertExecutionActive(client,options);if(!same(context,contextOf(client,player)))throw Object.assign(new Error('邮件枚举期间账号或连接改变'),{code:'CANCELLED'});};active();
  const known=identifier(context.accountId)&&identifier(context.connectionId)&&context.generation!==null&&context.playerId!==null&&context.worldId!==null;
  let total=null,expectedPages=null,reason=null,complete=false;
@@ -102,7 +102,7 @@ async function surveyMailbox(client,protocol,{parameters,player,signal,stop,time
   active();let raw,sourceAt;
   try{raw=await awaitExecution(client.request('EmailBoxRequest',{pageNo},'EmailBoxResponse',timeout,{signal}),client,options);sourceAt=Date.now();}
   catch(error){if(executionOutcome(error)==='CANCELLED')throw error;reason='MAIL_PAGE_READ_FAILED';break;}
-  active();const page=mailPage(raw,{pageNo});pages.push(page);
+  active();const page=mailPage(raw,{pageNo});pages.push(page);rawPages.push(toSnapshotJson(raw));
   sourceFacts.push(createStateFact(page,{accountId:context.accountId,generation:context.generation,source:'EmailBoxResponse',sourceAt,scope:{kind:'ENTITY',key:'mail-page:'+pageNo},reliable:page.status==='AVAILABLE'}));
   if(page.status!=='AVAILABLE'){reason='MAIL_LIST_OR_ID_UNKNOWN';break;}
   if(page.totalReported===null){reason='MAIL_TOTAL_UNKNOWN';break;}
@@ -118,7 +118,7 @@ async function surveyMailbox(client,protocol,{parameters,player,signal,stop,time
  const mailbox={scope:'OBSERVED_MAILBOX_PAGES',status:complete?'COMPLETE':pages.length?'PARTIAL':'UNKNOWN',allPagesComplete:complete,atomicSnapshot:false,
   totalReported:total,pageSize:mailPageSize,expectedPages,readPages:pages.length,maxPages:parameters.maxPages,reason,pages,
   emails:pages.flatMap(page=>page.emails.map(row=>({...row,pageNo:page.pageNo})))};
- return {module:moduleId,parameters,context,page:pages[0]??mailPage(null),mailbox,sourceFacts,notes:reason?[reason]:[],stockReliable:false,stock:null};
+ const f={module:moduleId,parameters,context,page:pages[0]??mailPage(null),mailbox,sourceFacts,notes:reason?[reason]:[],stockReliable:false,stock:null};if(known)privatePages.set(f,{client,player,rawPages,digest:hash(f)});return f;
 }
 const hash=value=>createHash('sha256').update(stableBusinessValue(value)).digest('hex');
 const copy=value=>structuredClone(value);
@@ -189,35 +189,37 @@ function mailActionId(o,p){return 'mail:'+(p.action==='read'?'READ':'CLAIM')+':'
 // Claims still use the original full-page and inventory comparison, one emailId per request.
 function mailPreparationHash(o,p,config,context){return hash({context,pageNo:p.pageNo,emailId:p.emailId,action:p.action,total:o.total,immutable:o.immutable,target:o.target,rewards:o.rewards,ItemCfg:config?.tables?.ItemCfg??null});}
 function mailPreparationTargets(f,{config}={}){
- const live=privatePages.get(f),c=f?.context;
- if(!live||live.digest!==hash(f)||!same(c,contextOf(live.client,live.player))||f.page?.status!=='AVAILABLE'||f.page.pageCount>mailPageSize||!uint(f.page.totalReported)||factsFreshnessPolicy(f.sourceFact,{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:{kind:'ENTITY',key:'mail-page:'+f.page.pageNo}}).status!=='FRESH')return [];
- return f.page.emails.flatMap(row=>{
+ const live=privatePages.get(f),c=f?.context;if(!live||live.digest!==hash(f)||!same(c,contextOf(live.client,live.player)))return [];
+ const enumerated=f.parameters?.action==='enumerate',pages=enumerated?f.mailbox?.pages:[f.page],raw=enumerated?live.rawPages:[live.raw],facts=enumerated?f.sourceFacts:[f.sourceFact];
+ if(enumerated&&(f.mailbox?.status!=='COMPLETE'||f.mailbox.allPagesComplete!==true)||!Array.isArray(pages)||!pages.length||pages.some((page,i)=>page?.status!=='AVAILABLE'||page.pageCount>mailPageSize||!uint(page.totalReported)||!raw?.[i]||factsFreshnessPolicy(facts?.[i],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope:{kind:'ENTITY',key:'mail-page:'+page.pageNo}}).status!=='FRESH'))return [];
+ return pages.flatMap((page,i)=>page.emails.flatMap(row=>{
   const action=row.read===false&&row.attachment?.hasAttachment===false&&typeof row.got==='boolean'?'read':row.got===false&&row.attachment?.hasAttachment===true?'claim':null;
-  if(!action)return [];const p={pageNo:f.page.pageNo,emailId:row.emailId,action},o=claimObservation(live.raw,p,config);
+  if(!action)return [];const p={pageNo:page.pageNo,emailId:row.emailId,action},o=claimObservation(raw[i],p,config);
   if(!o)return [];return [{...p,expectedMailHash:mailPreparationHash(o,p,config,c),selection:{actionId:mailActionId(o,p)},rewards:copy(o.rewards),subject:row.subject}];
- });
+ }));
 }
 export function validateMailPreparation(v){
- if(!fields(v,['pageNo','mails','maxDurationMs'])||Reflect.ownKeys(v).length!==3||!uint(v.pageNo)||!dense(v.mails)||v.mails.length<1||v.mails.length>mailPageSize||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('邮件组合须明确同一页的1至10封邮件及有限总时长');
- const mails=v.mails.map(row=>{if(!fields(row,['action','emailId','expectedMailHash'])||Reflect.ownKeys(row).length!==3)throw invalid('所选邮件须明确动作、ID及原状态摘要');const p=validateMailParameters({...row,pageNo:v.pageNo});return {action:p.action,emailId:p.emailId,expectedMailHash:p.expectedMailHash};});
- if(new Set(mails.map(row=>row.emailId)).size!==mails.length)throw invalid('邮件组合不得重复邮件ID');return {pageNo:v.pageNo,mails,maxDurationMs:v.maxDurationMs};
+ const enumerated=Object.hasOwn(v??{},'maxPages'),limit=enumerated?24:mailPageSize;
+ if(!fields(v,enumerated?['maxPages','mails','maxDurationMs']:['pageNo','mails','maxDurationMs'])||Reflect.ownKeys(v).length!==3||(enumerated?!Number.isInteger(v.maxPages)||v.maxPages<1||v.maxPages>maxEnumerationPages:!uint(v.pageNo))||!dense(v.mails)||v.mails.length<1||v.mails.length>limit||!Number.isSafeInteger(v.maxDurationMs)||v.maxDurationMs<1||v.maxDurationMs>86400000)throw invalid('邮件组合须明确同页1至10封，或有界完整枚举后的跨页1至24封及有限总时长');
+ const mails=v.mails.map(row=>{if(!fields(row,enumerated?['pageNo','action','emailId','expectedMailHash']:['action','emailId','expectedMailHash'])||Reflect.ownKeys(row).length!==(enumerated?4:3)||enumerated&&(!uint(row.pageNo)||row.pageNo>=v.maxPages))throw invalid('所选邮件须明确原来源页、动作、ID及原状态摘要');const p=validateMailParameters({...row,pageNo:enumerated?row.pageNo:v.pageNo});return {...(enumerated?{pageNo:p.pageNo}:{}),action:p.action,emailId:p.emailId,expectedMailHash:p.expectedMailHash};});
+ if(new Set(mails.map(row=>row.emailId)).size!==mails.length)throw invalid('邮件组合不得重复邮件ID');return {...(enumerated?{maxPages:v.maxPages}:{pageNo:v.pageNo}),mails,maxDurationMs:v.maxDurationMs};
 }
 export function prepareMailWorkflow(f,{config,moduleConfig=MAIL_DEFAULT_CONFIG,...input}={}){
  const p=validateMailPreparation(input);if(!validateMailConfig(moduleConfig).enabled)throw invalid('邮件模块尚未启用');
- if(f?.parameters?.action||f?.parameters?.pageNo!==p.pageNo)throw invalid('邮件组合须重新读取所选单页');
+ const enumerated=Object.hasOwn(p,'maxPages');if(enumerated?f?.parameters?.action!=='enumerate'||f.parameters.maxPages!==p.maxPages||f.mailbox?.allPagesComplete!==true:f?.parameters?.action||f?.parameters?.pageNo!==p.pageNo)throw invalid('邮件组合须重新读取原所选页，跨页须同一上限完整枚举');
  const targets=mailPreparationTargets(f,{config}),nodes=[{id:'start',type:'START'}],steps=p.mails.map((selected,i)=>{
-  const row=targets.find(row=>row.emailId===selected.emailId&&row.action===selected.action&&row.expectedMailHash===selected.expectedMailHash);
+  const row=targets.find(row=>row.pageNo===(enumerated?selected.pageNo:p.pageNo)&&row.emailId===selected.emailId&&row.action===selected.action&&row.expectedMailHash===selected.expectedMailHash);
   if(!row)throw invalid('所选邮件状态、附件、配置或身份已改变，或附件未有完整合同；请重新读取');
   const parameters={pageNo:p.pageNo,...selected},selection=copy(row.selection);nodes.push({id:'mail-'+i,type:'ACTION',module:moduleId,parameters,selection},{id:'verify-'+i,type:'VERIFY',module:moduleId});return {parameters,selection,rewards:copy(row.rewards),costs:[]};
  });nodes.push({id:'stop',type:'STOP'});
  const budget={resources:[],quotas:[],uids:p.mails.map(row=>({type:'mail',id:row.emailId}))};
- return {...p,steps,budget,graph:{version:1,id:'mail-selected-'+hash({p,steps}).slice(0,20),name:'明确邮件逐封读领',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅处理本页明确选择的普通附件和完整空附件未读邮件，每封沿原Function重新调查、单次授权及完整库存独立验证；状态变化、拒绝或UNKNOWN停止。不使用all=true，不含实例附件、不删除邮件、不扩大预算、不恢复执行。准备只读，不授予写权限。'};
+ return {...p,steps,budget,graph:{version:1,id:'mail-selected-'+hash({p,steps}).slice(0,20),name:'明确邮件逐封读领',nodes,edges:nodes.slice(1).map((node,i)=>({from:nodes[i].id,to:node.id})),budget,runPolicy:{maxDurationMs:p.maxDurationMs,maxActions:steps.length,modules:[moduleId]}},resumable:false,requiresFreshPlan:true,requiresAuthorization:true,limitation:'仅处理原所选页或完整有界枚举后明确选择的普通附件和完整空附件未读邮件，每封沿原Function重新调查、单次授权及完整库存独立验证；状态变化、拒绝或UNKNOWN停止。不使用all=true，不含实例附件、不删除邮件、不扩大预算、不恢复执行。准备只读，不授予写权限。'};
 }
 
 export function viewMail(facts,options={}) {
  const claim=privateClaims.has(facts),candidate=claim?claimCandidate(facts,options):null;
  return {module:moduleId,page:copy(facts?.page??mailPage(null)),...(facts?.mailbox?{mailbox:copy(facts.mailbox),pageProvenance:copy(facts.sourceFacts.map(f=>f.provenance))}:{}),provenance:copy(facts?.sourceFact?.provenance??facts?.sourceFacts?.page?.provenance??null),candidates:candidate?[candidate]:[],mailPreparation:mailPreparationTargets(facts,options),
-  notes:[...(facts?.notes??[]),'普通读取只展示所选页；明确枚举按固定客户端每页10封逐页观察，页数上限内总数稳定、数量匹配且ID唯一才标为分页覆盖完成，不证明原子快照一致。普通单页可明确选择多封普通附件或完整空附件未读邮件，准备原Workflow逐封重新调查、授权和验证；不使用all=true批量请求，实例附件继续冻结。']};
+  notes:[...(facts?.notes??[]),'普通读取只展示所选页；明确枚举按固定客户端每页10封逐页观察，页数上限内总数稳定、数量匹配且ID唯一才标为分页覆盖完成，不证明原子快照一致。普通单页最多明确选择10封；完整有界枚举后可跨页明确选择最多24封普通附件或完整空附件未读邮件，准备原Workflow逐封重新调查、授权和验证；不使用all=true批量请求，实例附件继续冻结。']};
 }
 export function planMail(facts,{parameters={},selections=[],ledger=new ResourceLedger(facts?.stockReliable?facts.stock:null),...options}={}) {
  const p=validateMailParameters(parameters);

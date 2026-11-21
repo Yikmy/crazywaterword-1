@@ -1003,9 +1003,9 @@ function gpRenderMuseumBusinessTarget(box,view){
 
 function gpMailWorkflowGraph(data,payload,view,accountId){
  const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item),same=(a,b)=>canonical(a)===canonical(b),graph=data.graph;
- if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||data.pageNo!==payload.pageNo||data.maxDurationMs!==payload.maxDurationMs||!same(data.mails,payload.mails)||!Array.isArray(data.steps)||data.steps.length!==payload.mails.length)throw Error('邮件组合账号、来源页、目标或时长不匹配');
+ if(data.accountId!==accountId||data.resumable!==false||data.requiresFreshPlan!==true||data.requiresAuthorization!==true||data.pageNo!==payload.pageNo||data.maxPages!==payload.maxPages||data.maxDurationMs!==payload.maxDurationMs||!same(data.mails,payload.mails)||!Array.isArray(data.steps)||data.steps.length!==payload.mails.length)throw Error('邮件组合账号、来源页、目标或时长不匹配');
  const nodes=[{id:'start',type:'START'}];payload.mails.forEach((target,i)=>{
-  const source=view.mailPreparation?.find(row=>row.pageNo===payload.pageNo&&row.emailId===target.emailId&&row.action===target.action&&row.expectedMailHash===target.expectedMailHash),step=data.steps[i],parameters={pageNo:payload.pageNo,...target};
+  const source=view.mailPreparation?.find(row=>row.pageNo===(target.pageNo??payload.pageNo)&&row.emailId===target.emailId&&row.action===target.action&&row.expectedMailHash===target.expectedMailHash),step=data.steps[i],parameters={pageNo:payload.pageNo,...target};
   if(!source||!same(step?.parameters,parameters)||!same(step?.selection,source.selection)||!same(step?.rewards,source.rewards)||!same(step?.costs,[]))throw Error('邮件组合原身份、状态、附件或顺序已改变');
   nodes.push({id:'mail-'+i,type:'ACTION',module:'mail',parameters,selection:source.selection},{id:'verify-'+i,type:'VERIFY',module:'mail'});
  });nodes.push({id:'stop',type:'STOP'});const budget={resources:[],quotas:[],uids:payload.mails.map(row=>({type:'mail',id:row.emailId}))};
@@ -1073,22 +1073,22 @@ function gpRenderDailyRewardClosing(box,view){
 }
 
 function gpRenderMailBatch(box,view){
- const s=gpGet('mail'),scope=viewGuard.capture(),revision=gpRevision,source=$('gp-mail-parameters').value,section=gpEl('div'),targets=view?.mailPreparation||[];s.mailBatchControls=[];box.appendChild(section);section.appendChild(gpEl('h4','明确同页多封读领'));
- if(!targets.length){section.appendChild(gpEl('p','请读取指定单页；只列出本页有完整普通附件或完整空附件合同的明确未处理邮件，未知及实例附件不产生组合目标。'));return;}
+ const s=gpGet('mail'),scope=viewGuard.capture(),revision=gpRevision,source=$('gp-mail-parameters').value,section=gpEl('div'),targets=view?.mailPreparation||[],enumerated=Boolean(view?.mailbox),limit=enumerated?24:10;s.mailBatchControls=[];box.appendChild(section);section.appendChild(gpEl('h4',enumerated?'明确跨页多封读领':'明确同页多封读领'));
+ if(!targets.length){section.appendChild(gpEl('p','请读取指定单页或完成有界邮箱枚举；只列出有完整普通附件或完整空附件合同的明确未处理邮件，不完整枚举、未知及实例附件不产生组合目标。'));return;}
  const live=()=>gpSafe(scope,revision)&&gpGet('mail')===s&&s.data?.view===view&&Array.from(box.children).includes(section)&&$('gp-mail-parameters').value===source,editable=()=>live()&&gpDomainSelectable('mail')&&!s.targetDraftPending&&s.data?.config?.enabled===true&&wfEditorEditable();
  const control=input=>{input._mailBatchLive=editable;input.disabled=!editable();s.mailBatchControls.push(input);return input;},changed=input=>{if(input.disabled||!editable())return;gpInvalidate('mail',false);wfInvalidateSettingPlans();$('gp-mail-hint').textContent='邮件组合草稿已改变，旧计划和授权失效；重新准备会重新读取所选页。';};
- const checks=targets.map(row=>{const check=control(gpEl('input'));check.type='checkbox';check.checked=false;check.dataset.mailBatchTarget=row.emailId;check.onchange=()=>changed(check);const label=gpEl('label',(row.action==='read'?'空附件标记已读 ':'普通附件领取 ')+row.emailId+' · '+(row.subject||'无主题')+' · '+(row.rewards.map(item=>item.id+' × '+item.num).join('；')||'库存不变')+' ');label.appendChild(check);section.appendChild(label);return {check,row};});
+ const checks=targets.map(row=>{const check=control(gpEl('input'));check.type='checkbox';check.checked=false;check.dataset.mailBatchTarget=row.emailId;check.onchange=()=>changed(check);const label=gpEl('label',(row.action==='read'?'空附件标记已读 ':'普通附件领取 ')+row.emailId+' · 第'+row.pageNo+'页 · '+(row.subject||'无主题')+' · '+(row.rewards.map(item=>item.id+' × '+item.num).join('；')||'库存不变')+' ');label.appendChild(check);section.appendChild(label);return {check,row};});
  const duration=control(gpEl('input'));duration.type='number';duration.min='1';duration.max='86400';duration.step='1';duration.value='300';duration.dataset.mailBatchDuration='true';duration.setAttribute('aria-label','邮件组合总时长秒');duration.oninput=()=>changed(duration);duration.onchange=()=>changed(duration);section.appendChild(duration);
- const chosen=()=>checks.filter(({check})=>check.checked).map(({row})=>({action:row.action,emailId:row.emailId,expectedMailHash:row.expectedMailHash})),prepare=control(gpEl('button','准备原Workflow逐封读领'));prepare.type='button';prepare.dataset.mailBatchPrepare='true';section.appendChild(prepare);
+ const chosen=()=>checks.filter(({check})=>check.checked).map(({row})=>({... (enumerated?{pageNo:row.pageNo}:{}),action:row.action,emailId:row.emailId,expectedMailHash:row.expectedMailHash})),prepare=control(gpEl('button','准备原Workflow逐封读领'));prepare.type='button';prepare.dataset.mailBatchPrepare='true';section.appendChild(prepare);
  prepare.onclick=async()=>{
   if(!editable())return;const mails=chosen(),text=duration.value,seconds=Number(text),pageNo=view.page?.pageNo;
-  if(!mails.length||mails.length>10||! /^[1-9][0-9]*$/.test(text)||!Number.isSafeInteger(seconds)||seconds>86400){$('gp-mail-hint').textContent='请明确选择本页1至10封邮件及1至86400秒总时长。';return;}
-  const payload={pageNo,mails,maxDurationMs:seconds*1000},requestScope=viewGuard.begin('mail-prepare'),editor=captureStageRecommendationEditor(),edit=++s.revision,choice=JSON.stringify(mails),config=s.data.config;
+  if(!mails.length||mails.length>limit||! /^[1-9][0-9]*$/.test(text)||!Number.isSafeInteger(seconds)||seconds>86400){$('gp-mail-hint').textContent='请明确选择1至'+limit+'封邮件及1至86400秒总时长。';return;}
+  const payload={...(enumerated?{maxPages:view.mailbox.maxPages}:{pageNo}),mails,maxDurationMs:seconds*1000},requestScope=viewGuard.begin('mail-prepare'),editor=captureStageRecommendationEditor(),edit=++s.revision,choice=JSON.stringify(mails),config=s.data.config;
   const active=()=>gpSafe(requestScope,revision)&&live()&&s.revision===edit&&s.data?.config===config&&snapshot?.connected&&!snapshot?.busy&&editor.current()&&duration.value===text&&JSON.stringify(chosen())===choice;
   s.plan=null;s.selected.clear();gpClear($('gp-mail-plan-view'));s.pending=true;gpControls('mail');
   try{const data=await operationMutation('/api/gameplay/mail/prepare',payload,requestScope);if(!active())return;editor.accept(gpMailWorkflowGraph(data,payload,view,requestScope.account));$('wf-hint').textContent='已载入明确邮件逐封读领；每封独立调查、单次授权并验证，拒绝或UNKNOWN停止。';$('gp-mail-hint').textContent=data.limitation;}
   catch(error){if(active())$('gp-mail-hint').textContent=error.message;}finally{if(gpGet('mail')===s&&s.revision===edit){s.pending=false;gpControls('mail');}}
- };section.appendChild(gpEl('p','不默认选择、不使用all=true；同页最多10封，每封只发送原单封请求。准备重新读取本页，每封执行仍重新读取邮件及完整库存；状态变化、拒绝或UNKNOWN停止。实例附件继续冻结，不删除邮件。'));
+ };section.appendChild(gpEl('p','不默认选择、不使用all=true；同页最多10封，完整有界枚举后跨页最多24封；每封只发送原单封请求。准备重新读取原所选页或同上限完整枚举，每封执行仍重新读取邮件及完整库存；状态变化、拒绝或UNKNOWN停止。实例附件继续冻结，不删除邮件。'));
 }
 
 function gpTradeSaleWorkflowGraph(data,payload,view,accountId,buy=false){

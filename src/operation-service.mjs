@@ -578,7 +578,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       plans.delete(session.id);
       const adapter=adapterFor('mail'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'mail').config;
       const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'mail').config})),dependency=dependencies();
-      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:{pageNo:payload.pageNo},signal:session.abort.signal});current(session,generation,client);
+      const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters:Object.hasOwn(payload,'maxPages')?{action:'enumerate',maxPages:payload.maxPages}:{pageNo:payload.pageNo},signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('邮件准备期间账号、角色、世界、连接或配置变化','CANCELLED');
       const result=prepareMailWorkflow(facts,{config,moduleConfig,...payload});
       return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
