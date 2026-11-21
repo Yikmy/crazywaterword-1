@@ -754,10 +754,10 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     }
     if (!action.mutate) continue;
     sent.length = 0;
-    if (['afkUpgrade','buildingAutoWork','factoryAutoProduce'].includes(id)) {
-      // Generic catalog calls have no authoritative badge quote or bounded automatic consumption contract.
+    if (['afkUpgrade','buildingAutoWork','factoryAutoProduce','monthCardDaily'].includes(id)) {
+      // Generic catalog calls have no authoritative quote, private month-card eligibility, or bounded automatic consumption contract.
       await assert.rejects(runAction(client, protocol, id, { level: 1, buildingId:'x', productId:'y', isOn:true }, { allowMutate: true }), { code: 'COST_UNKNOWN' });
-      assert.equal(sent.length, 0, 'unquoted AFK upgrade must never dispatch');
+      assert.equal(sent.length, 0, 'unquoted catalog action must never dispatch');
       continue;
     }
     await runAction(client, protocol, id, { buildingId: 'x', productId: 'y', taskId: 1, index: 1, gridIdx: 1, useNum: 1, level: 1, isOn: true, id: 1 }, { allowMutate: true });

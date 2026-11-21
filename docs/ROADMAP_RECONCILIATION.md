@@ -1989,6 +1989,8 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 - 96201fa为月卡权益（BIZ-A15/C513、W16）；06f39db/2816c4b/e5e243f为原海商王当前免费战令/成就情报/公会任务（BIZ-R13、P6-3/PRO-008/W18）；c8e583d为邮件跨页（C511/BIZ-A11/R10、W16）；9397a88为周战令当前免费档（C516、P6-2/W17）。具体原Function、Service/API/UI/Workflow及必要测试、缺证边界均由上方各批原交付证据承接，已交子能力不回退。
 - 原R7：130个既定test文件、4并发、安装Edge启用；原七排除为capture-cli、capture-recovery-process、capture-system、capture-transaction、mitm-ca-query、mitm-proxy、proxy-backup。旧044ef4c manifest只用来核文件集合，不用旧PASS支撑本次HEAD。当前仍137个test文件，本轮固定SHA后保存全量命令、manifest、源/测试哈希、完整日志及退出码；失败保留并按原范围修复，不新增Gate或测试框架。
 
+2026-11-21 当前HEAD全量准备首错（`51d5d97`）：原自检在通用目录monthCardDaily调用因新月卡合同缺显式零成本而COST_UNKNOWN，130文件全量尚未启动。保留原证据C:/Users/zyk-o/AppData/Local/Temp/cw-r7-51d5d97-kem99lg9/manifest.json、selftest.log、selftest-exit-code.txt=1。src/selftest.mjs将此原目录无资格调用纳入既有“拒绝且零派发”分支，与afkUpgrade/自动生产同合同；不修改src/actions.mjs或原月卡Function安全条件，真实权益仍须原私有来源和Service单次许可。旧manifest的excluded为文件名，首轮集合预检补tests目录后确认仍恰为原130/7；预检未启动子进程，原因已写manifest。后继修复SHA须重新完整自检及130文件，不累加本轮任何专项PASS。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
