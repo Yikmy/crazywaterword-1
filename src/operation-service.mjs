@@ -249,8 +249,8 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   }
   function cacheModule(session, id, facts, options) {
     const accountId=session.id;
-    // Fleet embeds the live config API; its historical projection only needs observed facts.
-    const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([key,value])=>typeof value!=='function'&&!(id==='fleet'&&key==='config'))));
+    // Fleet and Treasure embed the live config API; historical projections only need observed facts.
+    const cachedFacts=clone(Object.fromEntries(Object.entries(facts).filter(([key,value])=>typeof value!=='function'&&!(['fleet','treasure'].includes(id)&&key==='config'))));
     const raw = adapterFor(id).view(facts, options);
     const safe = { ...raw, ...(raw.fort?{fort:{...raw.fort,candidates:(raw.fort.candidates??[]).map(({action,...row})=>({...row,executable:Boolean(action)&&row.executable!==false}))}}:{}), candidates: (raw.candidates ?? []).map(projectModuleCandidate), surveyedAt: now(), source: '显式只读采集；缓存不代表实时状态' };
     const observation={context:executionContext(session),identity:observationIdentity(session),client:session.client};

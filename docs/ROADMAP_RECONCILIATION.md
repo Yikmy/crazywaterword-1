@@ -2006,6 +2006,18 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 - 修改原tests/offline-browser-helper.mjs：保持原唯一profile范围校验与进程路径筛选，只在Stop-Process后等待该进程退出，失败仍抛错；原同路径删除改await fs.promises.rm，原recursive/force/maxRetries=20/retryDelay=100不变，使退出/Socket回调可继续处理。原15秒进程清理上限、server连接finally释放和删除错误保留，无吞错/放宽业务断言/新框架。生产源码、API/UI/Workflow、业务Function及权限/父预算/UNKNOWN合同均无改动。
 - 必要验证：原失败用例1/1 PASS（edge-cleanup-targeted.log），相邻原buy UNKNOWN及sale SUCCESS两项2/2 PASS（edge-cleanup-adjacent.log），均0取消/跳过/todo，日志与退出码同本轮证据目录。语法/diff检查通过。后继干净SHA须原自检与原130完整重跑；当前R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。原95C/42P/273 Inventory/16M/22W、1507原行与分类均不变，原功能不回退。
 
+2026-11-22 CURRENT HEAD真实冒烟与宝藏入口修复（父 `59ed407`）：
+
+- 原R7在59ed4071b9e9f2ded8946df57219c2e3b179ff6f完整同次通过：selftest29组，原130文件10149/10149，零失败/取消/跳过/todo，退出码0，2871496.0977ms，HEAD及源/测试哈希未变。证据已按字节归档work/e2e/20261121-head-consolidation/cw-r7-59ed407-rti96ugq；首轮51d5自检失败、38eac全量7失败、7d620全量EPERM1失败的原日志/退出码及失败profile保留，未拼接专项PASS。
+- Owner指定凨囩8702/历史区服2001015541；首批旧下载凭证一次登录因result2 timestamp expired失败，未重试。经Owner另批下一次单次登录及原工具3分钟有界采集，取得所选账号新普通凭证，系统代理恢复原127.0.0.1:7897，捕获停止/无待恢复事务，凭证不打印。真实获批单账号E01/E02读取范围PASS：玩家190323075588702、世界2001015541、等级17，1次登录/原世界列表/固定48查询各1次均成功及缓存投影零请求；原完整E01双账号/切服和E02完整真实多页/导出未齐，仍PARTIAL。
+- Owner明确批准1材料厂2→3单次升级与GOLD2400/蓝图9/粗铁5预算，并随后整体批准“一切E2E冒烟测试”。真实E03仅升级启动一次，原Function/Service/Workflow/父预算/History独立CONFIRMED/SUCCESS；GOLD647297→644897、蓝图146→137、粗铁7→2，RUBY不变。目标仍2级，服务器建设区间1795277834→1795285165（实际7331秒，终点2026-11-22 02:19:25上海时间），没有加速/竣工或重放，完整E03仍PARTIAL。
+- 真实E05/E06明确1海水厂淡水一次生产、仅其成品一次收取，原各一次单次许可和独立验证均SUCCESS；木材/塑料各2200→2195，淡水23→24，GOLD/RUBY不变，原父预算分别5+5和零，均CLOSED/SUCCESS，收入不扩预算，无自动/加速/购买/其他目标。真实E15赠礼领取一次零成本和原唯一free-daily-gift UID，完整库存/原标记/英雄复读共同确认RUBY13217→13227，其他保持。真实业务写共4次，原各组全范围未齐，仍PARTIAL。
+- E20原city/production只读SURVEY联合图零预算完成；E22原Console重开读取3笔真实History及Workflow历史，私有事实/计划/Runtime未恢复，Explorer48均NOT_EXECUTED；均零业务写。真实终止清理及原模块设置恢复通过；完整跨域写/调度、硬崩溃、中途取消/迟到和A/B真实隔离变体未齐，不由离线或子集PASS替代。
+- 24个其余原静态Function真实只读调查，23个返回观察，Treasure原入口HTTP400：cacheModule克隆facts.config中的实际配置API方法resourceName失败；全部零业务写、未启用模块且清理通过。原Service历史缓存只为Fleet排除config，Treasure同样带实时配置对象；本批仅在原同一排除边界纳入Treasure，不改变原实时Function配置、原资格/候选/成本/预算/UID/授权、派遣/验证/UNKNOWN合同。用户可用变化：原Treasure专业页/API/Workflow只读调查可使用真实配置，不再因配置方法克隆异常中止。原PRO-009/BIZ-R11/W14/W15已有派遣子集不重建，争夺/战果/领奖缺证继续BLOCKED_EVIDENCE。
+- 生产源码仅src/operation-service.mjs一个缓存条件和说明；原tests/treasure.test.mjs新增唯一必要边界，先复现同样DataCloneError，修复后绿，并确认原调查/计划仍允许原合规候选且零派发。受影响原treasure/operation-service/function-contracts完整3文件174/174，0失败/取消/跳过/todo；日志保留work/e2e/20261121-head-consolidation/treasure-runtime-config-cache-fix。没有新文件测试框架/Gate/恢复链或Registry，不改变原客户端/协议。
+- 所有真实请求、原History、父预算、独立读响应与清理均在work/e2e/20261121-head-consolidation各原运行目录。先前临时只读调用漏列TradeInfoRequest的停止记录和解释亦保留，后仅补原源码已存在的查询，不计作真实业务失败或通过。
+- 原95C/42P/273 Inventory/16M/22W及1507原表行身份、实现分类和历史审计列不变；不回退已交32提交。源码修复后新SHA须原selftest+130文件/七排除/Edge重新完整R7，原真实验收记录固定59ed407不伪装为新SHA全验。真实采集后账号库已含正常凭证，新R7运行数据根隔离至本次TEMP，保留原130/7范围及命令方式，离线用例不接触实际账号库；不新增阶段或框架。R7继承旧SHA证据、后继SHA待验，R8PARTIAL，Goal ACTIVE。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。

@@ -134,6 +134,11 @@ function treasureServiceFixture(t,{outcome='SUCCESS',file=null,mutateWrite=null,
  t.after(async()=>{session.abort.abort();await service.settle(session.id);if(dir){assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});}});
  return {session,service,history,client,state,journal,plan,authorize,run,file,before,moduleConfig,currentConfig};
 }
+test('treasure Service caches observed facts with live runtime config methods without retaining the config API',async t=>{
+ const f=treasureServiceFixture(t);f.currentConfig.resourceName=id=>String(id);f.currentConfig.itemName=id=>String(id);
+ const observed=await f.service.surveyModule(f.session,'treasure',{});assert.equal(observed.view.reliability.treasures,true);assert.equal(observed.view.treasures[0].uid,7);assert.equal(Object.hasOwn(observed.view,'config'),false);assert.doesNotThrow(()=>structuredClone(observed));
+ const plan=await f.plan();assert.equal(plan.actions.length,1);assert.deepEqual(plan.actions[0].costs,[{id:'汽油',num:500}]);assert.equal(typeof f.currentConfig.resourceName,'function');assert.equal(typeof f.currentConfig.itemName,'function');assert.equal(f.state.writes.length,0);
+});
 for(const outcome of ['SUCCESS','UNKNOWN','REJECTED'])test('original Service persists declared treasure debit and authoritative result '+outcome,async t=>{
  const f=treasureServiceFixture(t,{outcome}),record=await f.run();assert.equal(record.finalStatus,outcome);assert.equal(f.state.writes.length,1);assert.deepEqual(f.state.writes[0].body,{uid:7,fleetBuildingIds:['fleet-a']});
  const intent=f.journal.find(row=>row.actions[0].stages?.some(stage=>stage.stage==='DISPATCH_INTENT'));assert.ok(intent);assert.equal(intent.actions[0].dispatchEvidence.state,'MAY_HAVE_DISPATCHED');assert.deepEqual(intent.runBudget.reserved.resources,[{id:'汽油',num:500}]);assert.deepEqual(record.resourceBudget,[{id:'汽油',num:500}]);
