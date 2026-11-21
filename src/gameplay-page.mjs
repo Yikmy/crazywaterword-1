@@ -1729,7 +1729,7 @@ function gpRenderDomain(id,view){
   gpRenderEquipmentTarget(box,view);
   gpRenderGrowthBatch(box,view,id);
   table('已佩戴装备单次成长',['英雄','UID','装备','等级','星级','精炼等级'],(view?.heroes||[]).flatMap(hero=>(hero.equips||[]).map(equip=>[hero.heroId,equip.uid,equip.equipId,equip.level,equip.star,equip.refineLv])));
-  table('当前自有闲置装备',['UID','装备','等级','星级','精炼等级'],(view.bag||[]).map(row=>[row.uid,row.equipId,row.level,row.star,row.refineLv]));
+  table('当前自有闲置装备',['UID','装备','等级','星级','精炼等级'],(view?.bag||[]).map(row=>[row.uid,row.equipId,row.level,row.star,row.refineLv]));
   if(view?.candidates?.some(row=>['SAVE-REROLL','DISCARD-REROLL','REROLL'].includes(row.actionType)))table('装备当前洗炼结果',['归属','UID','当前生效属性','待选属性'],[...(view.heroes||[]).flatMap(hero=>(hero.equips||[]).map(row=>[hero.heroId,row.uid,gpJson(row.attr),gpJson(row.rerollAttrs)])),...(view.bag||[]).map(row=>['闲置',row.uid,gpJson(row.attr),gpJson(row.rerollAttrs)])]);
   if(view?.candidates?.some(row=>row.actionType==='PUT-ON')){
    table('空槽穿戴候选',['英雄','装备种类','装备','UID','状态'],view.candidates.filter(row=>row.actionType==='PUT-ON'&&row.beforeState?.equipment).map(row=>[row.target.heroId,row.target.type,row.beforeState.equipment.equipId,row.target.uid,row.executable?'可以预览':row.blockedReason]));

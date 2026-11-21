@@ -1991,6 +1991,14 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 
 2026-11-21 当前HEAD全量准备首错（`51d5d97`）：原自检在通用目录monthCardDaily调用因新月卡合同缺显式零成本而COST_UNKNOWN，130文件全量尚未启动。保留原证据C:/Users/zyk-o/AppData/Local/Temp/cw-r7-51d5d97-kem99lg9/manifest.json、selftest.log、selftest-exit-code.txt=1。src/selftest.mjs将此原目录无资格调用纳入既有“拒绝且零派发”分支，与afkUpgrade/自动生产同合同；不修改src/actions.mjs或原月卡Function安全条件，真实权益仍须原私有来源和Service单次许可。旧manifest的excluded为文件名，首轮集合预检补tests目录后确认仍恰为原130/7；预检未启动子进程，原因已写manifest。后继修复SHA须重新完整自检及130文件，不累加本轮任何专项PASS。
 
+2026-11-21 当前HEAD原R7首轮全量及必要修复（父 `38eac37`）：
+
+- 原自检29组PASS后，原130文件/七既定排除、安装Edge、4并发完整同次运行终止：10149项，10142 PASS、7 FAIL、0取消/跳过/todo，退出码1，2471730.64ms。测试SHA为38eac371494f0e1eab8a3731d8b910fa7d428371，结束SHA相同，运行期间所有原生产/测试哈希未变。原证据保留C:/Users/zyk-o/AppData/Local/Temp/cw-r7-38eac37-_i_v1url的manifest.json、command.json、execution.json、tests.log、exit-code.txt、selftest.log与selftest-exit-code.txt。首轮保持FAILED，不由后续专项PASS改写。
+- 用户可用修复：src/gameplay-page.mjs原闲置装备表使用view?.bag，使专业页尚未调查的null视图正常载入，无隐式调查、授权或业务写；既有装备成长/洗炼/卸下及原API/Workflow接线保持。
+- 其余6失败为旧测试预期落后于已交付功能：原非法枚举样本breed改为仍非法buy，补断言原Function拒绝breed混入feed字段；Pet只读观察仍不产生执行权限，同时精确核全部14个已交付草稿控件；原任务合同精确包含月卡BIZ-A15；原Workflow只读目标表包含周战令免费档和月卡。修改现有farm-forge-full-page/function-contracts/workflow测试，保留零写、严格参数、父预算、隔离、持久历史、重启不恢复许可及原未知能力阻止等安全断言，不新增框架或测试文件。
+- 必要重跑：原7失败用例7/7 PASS（affected-fixes-first.log）；三个受影响原完整文件1664/1664 PASS，0取消/跳过/todo，退出码0，13841.3483ms（affected-files.log、affected-files-exit-code.txt）。上述均在首轮证据目录，不能累加为全量通过。首轮失败重现完整日志failed-case-reproduction.log保留。
+- 原范围及账本：95C/42P/273 Inventory/16M/22W、1507原行身份、原实现分类和历史审计列不变；本批不新增业务范围、不回退32提交已交能力。后继干净SHA须重新原自检与完整130文件验收，R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。读取证据一度因自动审批服务502未执行，沿原审批路径重试成功，无绕过。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
