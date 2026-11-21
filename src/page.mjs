@@ -1312,6 +1312,7 @@ async function operationMutation(path, payload, scope) {
     '/api/formations/named/rename',
     '/api/formations/named/save',
     '/api/gameplay/afk/upgrade/prepare',
+    '/api/gameplay/afk/rewards/prepare',
     '/api/gameplay/alliance/aid/cancel/prepare',
     '/api/gameplay/alliance/fort/prepare',
     '/api/gameplay/alliance/orders/prepare',
