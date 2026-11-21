@@ -57,6 +57,7 @@ export function validateTaskRewardsConfig(v={}) {
 export function validateTaskRewardsParameters(v={}) {
   if(!fields(v,['kind','taskId','tierId','packId','round','expectedResetTime','cardType']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
   if(!Reflect.ownKeys(v).length)return {};
+  if(v.kind==='weekly-battle-pass-free-rewards'){if(Reflect.ownKeys(v).length!==1)throw invalid('周战令免费奖励仅接受明确kind，不指定档位/每日任务/购买');return {kind:v.kind};}
   if(v.kind==='month-card-gift'){if(['taskId','tierId','packId','round','expectedResetTime'].some(k=>own(v,k))||own(v,'cardType')&&![1,2].includes(v.cardType))throw invalid('月卡每日权益只接受明确普通/高级cardType=1/2，不指定日界、奖励或购买');return {kind:v.kind,...(own(v,'cardType')?{cardType:v.cardType}:{})};}
   if(own(v,'cardType'))throw invalid('cardType仅用于月卡每日权益');
   const period=own(v,'expectedResetTime')?{expectedResetTime:v.expectedResetTime}:{};
@@ -100,7 +101,7 @@ function snapshot(inputs,context,parameters) {
 export async function surveyTaskRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateTaskRewardsParameters(parameters);
   if(parameters.kind==='month-card-gift')return surveyMonthCardReward(client,protocol,{config,player,parameters,signal,stop,timeout});
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(parameters.kind))return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task','weekly-battle-pass-free-rewards'].includes(parameters.kind))return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
   const options={signal,stop},context=contextOf(client,player),notes=[],readSources=sourcesFor(parameters);
   const active=()=>assertExecutionActive(client,options); active();
   const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
@@ -293,7 +294,7 @@ export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REW
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{});
   if(p.kind==='month-card-gift'){const choices=own(p,'cardType')?[p]:[1,2].map(cardType=>({kind:p.kind,cardType}));return {module:moduleId,monthCards:copy(f?.monthCards??null),candidates:choices.map(parameters=>monthCardCandidate(f,parameters,options)),notes:[...(f?.notes??[])],evidence:MONTH_CARD_REWARD_EVIDENCE};}
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task','weekly-battle-pass-free-rewards'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
   ];
@@ -302,14 +303,14 @@ export function viewTaskRewards(f,options={}) {
 export function planTaskRewards(f,{parameters={},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
   parameters=validateTaskRewardsParameters(parameters);
   if(!dense(selections)||selections.length>1||selections.some(id=>!identifier(id)))throw invalid('任务奖励每批仅允许一个精确 actionId');
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(parameters.kind))return planDailyTaskReward(f,{...options,parameters,selections,ledger,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task','weekly-battle-pass-free-rewards'].includes(parameters.kind))return planDailyTaskReward(f,{...options,parameters,selections,ledger,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const rows=viewTaskRewards(f,{...options,parameters}).candidates,selected=rows.find(row=>row.executable&&selections.includes(row.actionId));
   return {module:moduleId,actions:selected&&ledger.reserve(selected.costs)?[selected]:[],notes:[]};
 }
 export function verifyTaskReward(operation,before,after,response) {
   const no=reason=>({confirmed:false,reason});
   if(operation?.parameters?.kind==='month-card-gift')return verifyMonthCardReward(operation,before,after,response);
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(operation?.parameters?.kind))return verifyDailyTaskReward(operation,before,after,response);
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task','weekly-battle-pass-free-rewards'].includes(operation?.parameters?.kind))return verifyDailyTaskReward(operation,before,after,response);
   if(response!==null&&response!==undefined)return no('任务领取没有专用成功响应');
   if(!authority(before)||!authority(after)||!same(before.context,after.context))return no('前后账号、库存或任务权威不可靠');
   const p=operation?.parameters;
@@ -324,7 +325,7 @@ export function verifyTaskReward(operation,before,after,response) {
 export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {
   parameters=validateTaskRewardsParameters(parameters);
   if(parameters.kind==='month-card-gift')return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(['MonthCardCfg','ItemCfg'].map(name=>[name,copy(config?.tables?.[name]??null)]))};
-  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(parameters.kind))return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig),parameters});
+  if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task','weekly-battle-pass-free-rewards'].includes(parameters.kind))return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig),parameters});
   return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))};
 }
 export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503','C513','C515','C516','C517']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,
