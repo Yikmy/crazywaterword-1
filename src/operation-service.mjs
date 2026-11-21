@@ -646,7 +646,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
   async function prepareEquipmentGrowthSource(session,payload){
     payload=validateEquipmentGrowthPreparation(payload);const release=acquire(session,'operations:EQUIPMENT_GROWTHS_PREPARE'),generation=session.generation,client=session.client,identity=observationIdentity(session,client);
     try{
-      plans.delete(session.id);const adapter=adapterFor('equipment-growth'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'equipment-growth').config,parameters=payload.targets[0].action?{action:payload.targets[0].action}:{};
+      plans.delete(session.id);const adapter=adapterFor('equipment-growth'),config=getConfig(),moduleConfig=moduleSettings.get(session.id,'equipment-growth').config,parameters={...(payload.targets[0].action?{action:payload.targets[0].action}:{}),...(payload.targets[0].ownership?{ownership:payload.targets[0].ownership}:{})};
       const dependencies=()=>operationDigest(adapter.dependencyVersions({config:getConfig(),moduleConfig:moduleSettings.get(session.id,'equipment-growth').config,parameters})),dependency=dependencies();
       const facts=await adapter.survey(client,protocol,{config,moduleConfig,player:session.player,parameters,signal:session.abort.signal});current(session,generation,client);
       if(identity!==observationIdentity(session,client)||dependency!==dependencies())throw error('装备组合准备期间账号、角色、世界、连接或配置变化','CANCELLED');
