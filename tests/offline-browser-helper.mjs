@@ -72,7 +72,7 @@ export function createOfflineBrowser(root){
   if(!relative||relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw Error('Browser profile escaped its test directory');
   try{
    if(process.platform==='win32'){
-    const script="$p=$env:CW_TEST_PROFILE_PATH; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq $env:CW_TEST_BROWSER_PROCESS -and $_.CommandLine -and $_.CommandLine.Contains($p) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+    const script="$p=$env:CW_TEST_PROFILE_PATH; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq $env:CW_TEST_BROWSER_PROCESS -and $_.CommandLine -and $_.CommandLine.Contains($p) } | ForEach-Object { $owned=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if($owned){ Stop-Process -InputObject $owned -Force -ErrorAction SilentlyContinue; if(-not $owned.WaitForExit(10000)){ throw 'Owned browser process did not exit' } } }";
     const cleanup=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{stdio:'ignore',windowsHide:true,env:{...process.env,CW_TEST_PROFILE_PATH:target,CW_TEST_BROWSER_PROCESS:path.basename(process.env.CW_TEST_BROWSER)}});
     const timeout=new AbortController();let code;
     try{code=await Promise.race([new Promise((resolve,reject)=>{cleanup.once('exit',resolve);cleanup.once('error',reject);}),delay(15000,undefined,{signal:timeout.signal}).then(()=>{cleanup.kill();throw Error('Browser process cleanup timed out');})]);}
@@ -83,7 +83,8 @@ export function createOfflineBrowser(root){
    // The local test server must release connections even if browser cleanup fails.
    app.server.closeAllConnections();
   }
-  fs.rmSync(target,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  // Let pending process/socket close callbacks run while Windows releases profile handles.
+   await fs.promises.rm(target,{recursive:true,force:true,maxRetries:20,retryDelay:100});
  }
 };
 }

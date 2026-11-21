@@ -1999,6 +1999,13 @@ W19/C604/C606通用cooldown/gameDay仍缺各领域权威策略来源，policyCov
 - 必要重跑：原7失败用例7/7 PASS（affected-fixes-first.log）；三个受影响原完整文件1664/1664 PASS，0取消/跳过/todo，退出码0，13841.3483ms（affected-files.log、affected-files-exit-code.txt）。上述均在首轮证据目录，不能累加为全量通过。首轮失败重现完整日志failed-case-reproduction.log保留。
 - 原范围及账本：95C/42P/273 Inventory/16M/22W、1507原行身份、原实现分类和历史审计列不变；本批不新增业务范围、不回退32提交已交能力。后继干净SHA须重新原自检与完整130文件验收，R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。读取证据一度因自动审批服务502未执行，沿原审批路径重试成功，无绕过。
 
+2026-11-21 原R7第二次完整运行及Edge清理修复（父 `7d620ab`）：
+
+- SHA 7d620abe0f50769a8f4cf0ab4fe671368c48a203原自检29组PASS，原130文件/七既定排除、安装Edge、4并发完整运行终止：10149项，10148 PASS、1 FAIL、0取消/跳过/todo，退出码1，2494013.8822ms。结束SHA相同，源/测试哈希未变。原始manifest、command、execution、tests.log和退出码保留C:/Users/zyk-o/AppData/Local/Temp/cw-r7-7d620ab-5vzyk3k4；上一轮38eac37的7失败原证据继续保留。本轮FAILED，不将专项累加成通过。
+- 唯一失败为原browser offline trade multi-buy settles both goods在finally清理临时profile时fs.rmSync抛Windows EPERM。失败profile C:/Users/zyk-o/AppData/Local/Temp/cw-gameplay-api-4jXJNy/browser-TtkFht保留；事后只读检查没有匹配该profile的Edge进程，残留148目录/326 Archive文件，无只读属性。此事后观察不证明失败瞬间无占用；原PowerShell Stop-Process未等待OS退出即可开始同步删除，存在退出/句柄释放竞态。
+- 修改原tests/offline-browser-helper.mjs：保持原唯一profile范围校验与进程路径筛选，只在Stop-Process后等待该进程退出，失败仍抛错；原同路径删除改await fs.promises.rm，原recursive/force/maxRetries=20/retryDelay=100不变，使退出/Socket回调可继续处理。原15秒进程清理上限、server连接finally释放和删除错误保留，无吞错/放宽业务断言/新框架。生产源码、API/UI/Workflow、业务Function及权限/父预算/UNKNOWN合同均无改动。
+- 必要验证：原失败用例1/1 PASS（edge-cleanup-targeted.log），相邻原buy UNKNOWN及sale SUCCESS两项2/2 PASS（edge-cleanup-adjacent.log），均0取消/跳过/todo，日志与退出码同本轮证据目录。语法/diff检查通过。后继干净SHA须原自检与原130完整重跑；当前R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。原95C/42P/273 Inventory/16M/22W、1507原行与分类均不变，原功能不回退。
+
 ### 12.5 文档对齐提交1536835的文件边界与校验（历史）
 
 本轮仅修改README.md、docs/PHASE_4_RECONCILIATION.md及本文件，不新增玩法、源码、测试、编号、目录或报告。原5份未跟踪输入保留。当前表覆盖M0–M15、95C、42P、8S、273Inventory及原W/R/E/X；文档校验与功能测试、真实验收分别记录。本轮不重跑Node全套，不把历史PASS累计为本轮测试。最后提交为本行所在文档提交（父fc68c50）。实际静态校验PASS：M16/C95/P42/S8/Inventory273、原W22/R8/E24/X18、原ID和能力名保持、135个源码/测试路径存在、5份原输入指纹不变；git diff --check通过。离线静态导入确认26模块/27合同/48查询（28解析、20原始），未创建Client/Runtime。
