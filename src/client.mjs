@@ -316,7 +316,7 @@ function parseMonthCards(body) {
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) return null;
     const row = descriptor.value, type = vipValue(row, 'type'), endTime = vipValue(row, 'endTime');
     if (![1, 2].includes(type) || seen.has(type) || endTime !== -1 && !vipLevel(endTime)) return null;
-    seen.add(type); cards.push({ type, endTime });
+    seen.add(type); cards.push({ type, endTime, ...(vipOwn(row,'gotDailyReward') && typeof vipValue(row,'gotDailyReward') === 'boolean' ? {gotDailyReward:vipValue(row,'gotDailyReward')} : {}) });
   }
   return cards.sort((a, b) => a.type - b.type);
 }
@@ -658,7 +658,7 @@ export class GameClient extends EventEmitter {
     else if (state?.anchored && (!this.connected || state.socket !== this.socket)) invalidateMonthCards(this, 'MONTH_CARD_CONNECTION_NOT_CURRENT', true);
     const current = monthCardsCurrentConnection(this, state) && state.cards !== null;
     return { status: current ? 'CURRENT' : 'UNKNOWN', reliable: current,
-      cards: current ? state.cards.map(row => ({ ...row })) : null, source: current ? 'MonthCardResponse' : null,
+      cards: current ? state.cards.map(({type,endTime}) => ({type,endTime})) : null, source: current ? 'MonthCardResponse' : null,
       sourceAt: current ? state.sourceAt : null, reason: current ? null : state?.reason ?? 'MONTH_CARD_LOGIN_BASELINE_UNKNOWN',
       accountId: vipText(context.accountId) ? context.accountId : null, generation: vipGeneration(context.generation) ? context.generation : null,
       connectionId: vipText(context.connectionId) ? context.connectionId : null,
@@ -833,6 +833,7 @@ export class GameClient extends EventEmitter {
       const entry = onDispatch?.(seq);
       transportEntered = true;
       if (name === 'MonthCardRequest') monthCardRefreshDispatched(this, entry);
+      if (name === 'MonthCardDailyRewardRequest') invalidateMonthCards(this, 'MONTH_CARD_DAILY_REWARD_REQUIRES_QUERY', false, true);
       this.socket.send(frame);
       return seq;
     } catch(error) {
@@ -855,6 +856,7 @@ export class GameClient extends EventEmitter {
     this.emit('frame', { dir: 'out', name, seq: 0, bytes: frame, body });
     this.assertTransport();
     if (name === 'MonthCardRequest') monthCardRefreshDispatched(this);
+    if (name === 'MonthCardDailyRewardRequest') invalidateMonthCards(this, 'MONTH_CARD_DAILY_REWARD_REQUIRES_QUERY', false, true);
     this.socket.send(frame);
     return true;
   }
@@ -1269,4 +1271,12 @@ export class GameClient extends EventEmitter {
     if (!this.socket && !this.loginAttempt && ['FAILED', 'CLOSED', 'REJECTED', 'EXPIRED', 'STOPPED'].includes(this.state)) return;
     this.finishConnection('STOPPED', new Error('client stopped'), 'stop');
   }
+}
+
+// Read the existing correlated, login-anchored MonthCard owner directly. Public
+// readMonthCards remains the entitlement-only projection for existing callers.
+export function readMonthCardRewardSnapshot(client){
+  const state=liveMonthCards.get(client),context=vipContext(client),current=monthCardsCurrentConnection(client,state)&&state.cards!==null;
+  return {status:current?'CURRENT':'UNKNOWN',reliable:Boolean(current),cards:current?state.cards.map(row=>({...row})):null,source:current?'MonthCardResponse':null,sourceAt:current?state.sourceAt:null,epoch:current?state.epoch:null,
+    ...context,playerId:current?state.identity.playerId:null,worldId:current?state.identity.worldId:null};
 }

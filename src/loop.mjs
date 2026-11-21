@@ -173,6 +173,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
         }catch{invalid('只读观察须使用原任务Function的明确完整目标');}
         steps.push({type:'SURVEY',phase,index,module:'task-rewards',parameters});continue;
       }
+      if(['tasks','dailies'].includes(phase)&&row?.kind==='month-card-gift'){exact(row,phase==='tasks'?['kind','cardType']:['kind','cardType','action']);if(![1,2].includes(row.cardType)||phase==='dailies'&&row.action!=='claim')invalid('月卡权益须明确cardType=1/2及日常claim，不购买或推定周期');parameters=validateTaskRewardsParameters({kind:row.kind,cardType:row.cardType});steps.push({phase,index,module:'task-rewards',parameters,selection});continue;}
       // Original professional candidates may be ordered with task rewards.
       // Keep the exact candidate instead of widening it to a unique/future target.
       if (phase === 'tasks' && ['city','production','heroes','equipment-growth','badge-growth','antique-growth','pet','formation-unlock','equipment-forge','material-packs','fleet','alliance','trade','treasure','farm','formation'].includes(row?.kind)) {

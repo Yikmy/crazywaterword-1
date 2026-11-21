@@ -1,6 +1,8 @@
 // W16/C502/C503/BIZ-A10: exact task reward IDs; the shared executor owns writes.
 import { createHash } from 'node:crypto';
-import { ACTIONS, buildBody } from './actions.mjs';
+import { readMonthCardRewardSnapshot } from './client.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
+import { ACTIONS, buildBody, assertPaymentAllowed } from './actions.mjs';
 import { surveyDailyTaskReward, viewDailyTaskReward, planDailyTaskReward, verifyDailyTaskReward, dailyTaskRewardDependencyVersions, prepareDailyRewardWorkflow, activityTaskClosingFact, activityTaskClosingChoices, OPEN_RANK_TASK_KINDS } from './daily-task-rewards.mjs';
 import { taskTarget, achievementProgressCount, parseTaskObservation, taskConfigurationRow, taskQualification } from './tasks.mjs';
 import { parseOperationInventory } from './hero-operations.mjs';
@@ -53,8 +55,10 @@ export function validateTaskRewardsConfig(v={}) {
   return {enabled:v.enabled??false};
 }
 export function validateTaskRewardsParameters(v={}) {
-  if(!fields(v,['kind','taskId','tierId','packId','round','expectedResetTime']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
+  if(!fields(v,['kind','taskId','tierId','packId','round','expectedResetTime','cardType']))throw invalid('任务奖励仅接受明确任务或日活跃档位');
   if(!Reflect.ownKeys(v).length)return {};
+  if(v.kind==='month-card-gift'){if(['taskId','tierId','packId','round','expectedResetTime'].some(k=>own(v,k))||own(v,'cardType')&&![1,2].includes(v.cardType))throw invalid('月卡每日权益只接受明确普通/高级cardType=1/2，不指定日界、奖励或购买');return {kind:v.kind,...(own(v,'cardType')?{cardType:v.cardType}:{})};}
+  if(own(v,'cardType'))throw invalid('cardType仅用于月卡每日权益');
   const period=own(v,'expectedResetTime')?{expectedResetTime:v.expectedResetTime}:{};
   if(own(v,'expectedResetTime')&&(!['daily','daily-activity'].includes(v.kind)||!positive(v.expectedResetTime)))throw invalid('expectedResetTime仅用于明确日常任务或日活跃，须为服务器原正int32重置秒');
   if(v.kind==='weekly-chip-task'){if(!own(v,'kind')||!own(v,'round')||!positive(v.round)||!own(v,'taskId')||!positive(v.taskId)||own(v,'packId')||own(v,'tierId'))throw invalid('周芯片领奖须明确正整数round与taskId');return {kind:v.kind,round:v.round,taskId:v.taskId};}
@@ -95,6 +99,7 @@ function snapshot(inputs,context,parameters) {
 }
 export async function surveyTaskRewards(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
   parameters=validateTaskRewardsParameters(parameters);
+  if(parameters.kind==='month-card-gift')return surveyMonthCardReward(client,protocol,{config,player,parameters,signal,stop,timeout});
   if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(parameters.kind))return surveyDailyTaskReward(client,protocol,{config,player,parameters,signal,stop,timeout});
   const options={signal,stop},context=contextOf(client,player),notes=[],readSources=sourcesFor(parameters);
   const active=()=>assertExecutionActive(client,options); active();
@@ -124,16 +129,21 @@ function authority(f) {
   if(!same(state,f.state)||!same(f.tasks,state?.tasks)||!same([...f.stock].sort(),[...parsed.stock].sort()))return false;
   return Object.entries(sourcesFor(f.parameters)).every(([key,source])=>f.sourceFacts?.[key]?.provenance?.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH');
 }
-function definition(config,kind,taskId,task) {
-  const row=taskConfigurationRow(config,kind,taskId),target=kind==='achievement'?task?.targetProgress:taskTarget(row),rewards=kind==='achievement'?(dense(row?.reward)&&row.reward.length===2?[row.reward]:null):row?.reward;
+function configuredRewards(config,rewards){
   const itemRows=config?.tables?.ItemCfg?.data,known=new Set(Object.values(RESOURCE_NAMES));
   if(dense(itemRows))for(const item of itemRows)if(own(item,'id')&&identifier(item.id))known.add(item.id);
-  if((kind==='achievement'?(achievementProgressCount(target)===null||BigInt(target)<=0n):!Number.isSafeInteger(target)||target<=0)||!dense(rewards)||!rewards.length)return null;
+  if(!dense(rewards)||!rewards.length)return null;
   const seen=new Set(),parsed=[];
   for(const pair of rewards) {
     if(!dense(pair)||pair.length!==2||!known.has(pair[0])||seen.has(pair[0])||!Number.isSafeInteger(pair[1])||pair[1]<=0)return null;
     seen.add(pair[0]);parsed.push({id:pair[0],num:pair[1]});
   }
+  return parsed;
+}
+function definition(config,kind,taskId,task) {
+  const row=taskConfigurationRow(config,kind,taskId),target=kind==='achievement'?task?.targetProgress:taskTarget(row),rewards=kind==='achievement'?(dense(row?.reward)&&row.reward.length===2?[row.reward]:null):row?.reward;
+  if((kind==='achievement'?(achievementProgressCount(target)===null||BigInt(target)<=0n):!Number.isSafeInteger(target)||target<=0))return null;
+  const parsed=configuredRewards(config,rewards);if(!parsed)return null;
   return {kind,taskId,target,rewards:parsed,description:typeof row.desc==='string'?row.desc:''};
 }
 // Durable state uses the same normalized task rows and full-inventory projection.
@@ -282,6 +292,7 @@ export function prepareTaskRewardClosingWorkflow(f,{config,moduleConfig=TASK_REW
 
 export function viewTaskRewards(f,options={}) {
   const p=validateTaskRewardsParameters(options.parameters??{});
+  if(p.kind==='month-card-gift'){const choices=own(p,'cardType')?[p]:[1,2].map(cardType=>({kind:p.kind,cardType}));return {module:moduleId,monthCards:copy(f?.monthCards??null),candidates:choices.map(parameters=>monthCardCandidate(f,parameters,options)),notes:[...(f?.notes??[])],evidence:MONTH_CARD_REWARD_EVIDENCE};}
   if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(p.kind))return viewDailyTaskReward(f,{...options,parameters:p,moduleConfig:validateTaskRewardsConfig(options.moduleConfig)});
   const choices=own(p,'taskId')?[p]:[
     ...(f?.tasks?.main?[{kind:'main',taskId:f.tasks.main.taskId}]:[]),...(f?.tasks?.branch??[]).map(row=>({kind:'branch',taskId:row.taskId})),
@@ -297,6 +308,7 @@ export function planTaskRewards(f,{parameters={},selections=[],ledger=new Resour
 }
 export function verifyTaskReward(operation,before,after,response) {
   const no=reason=>({confirmed:false,reason});
+  if(operation?.parameters?.kind==='month-card-gift')return verifyMonthCardReward(operation,before,after,response);
   if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(operation?.parameters?.kind))return verifyDailyTaskReward(operation,before,after,response);
   if(response!==null&&response!==undefined)return no('任务领取没有专用成功响应');
   if(!authority(before)||!authority(after)||!same(before.context,after.context))return no('前后账号、库存或任务权威不可靠');
@@ -311,8 +323,53 @@ export function verifyTaskReward(operation,before,after,response) {
 }
 export function taskRewardsDependencyVersions({config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,parameters={}}={}) {
   parameters=validateTaskRewardsParameters(parameters);
+  if(parameters.kind==='month-card-gift')return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(['MonthCardCfg','ItemCfg'].map(name=>[name,copy(config?.tables?.[name]??null)]))};
   if(['daily','daily-activity','daily-gift','weekly-lottery-gift','weekly-unique-lottery-gift','weekly-chip-gift','weekly-chip-task',...OPEN_RANK_TASK_KINDS,'weekly-battle-pass-task'].includes(parameters.kind))return dailyTaskRewardDependencyVersions({config,moduleConfig:validateTaskRewardsConfig(moduleConfig),parameters});
   return {moduleConfig:validateTaskRewardsConfig(moduleConfig),tables:Object.fromEntries(configNames.map(name=>[name,copy(config?.tables?.[name]??null)]))};
 }
 export const taskRewardsModule=Object.freeze({id:moduleId,label:'任务奖励',capabilities:Object.freeze(['C502','C503','C513','C515','C516','C517']),defaultConfig:TASK_REWARDS_DEFAULT_CONFIG,
   validateConfig:validateTaskRewardsConfig,validateParameters:validateTaskRewardsParameters,survey:surveyTaskRewards,view:viewTaskRewards,plan:planTaskRewards,verify:verifyTaskReward,rejectionIdentity:businessRejectionIdentity,dependencyVersions:taskRewardsDependencyVersions});
+
+const monthCardNames={1:'普通月卡',2:'高级月卡'},monthCardSources={cards:'MonthCardResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
+export const MONTH_CARD_REWARD_EVIDENCE=Object.freeze({requirement:'BIZ-A15',source:'v76 MonthCardItem.refreshButtonState/_btnGotReward; MonthCardCfg.dayReward; explicit active current gotDailyReward=false to true and independent full inventory',panelSha256:'f297b8d45ad33363a6667243fed6d1065b8ca4e9ddf28808cd5f5a4bb37cdd06',modelSha256:'5fcf22ef42392b52ac22f4fb249a9dbe03d662415ff8a603973eb74b333e4b63',request:'MonthCardDailyRewardRequest',response:null,scope:'CURRENT_UNCLAIMED_OWNED_CARD_INSTANCE_ONCE_NO_PURCHASE_OR_ASSUMED_DAILY_EPOCH',realGame:'REAL_UNVERIFIED'});
+function monthCardRows(raw){
+  if(!own(raw,'cardItem')||!dense(raw.cardItem)||raw.cardItem.length>2)return null;
+  const rows=[];
+  for(const row of raw.cardItem){if(![1,2].includes(row?.type)||!own(row,'type')||!own(row,'endTime')||row.endTime!==-1&&(!Number.isInteger(row.endTime)||row.endTime<0||row.endTime>2147483647)||own(row,'gotDailyReward')&&typeof row.gotDailyReward!=='boolean')return null;rows.push({type:row.type,endTime:row.endTime,...(own(row,'gotDailyReward')?{gotDailyReward:row.gotDailyReward}:{})});}
+  return new Set(rows.map(r=>r.type)).size===rows.length?rows.sort((a,b)=>a.type-b.type):null;
+}
+function monthCardClock(client,context){
+  let c;try{c=client.gameClock?.read(context);}catch{return null;}
+  return c?.status==='TRUSTED'&&c.reliable===true&&c.source==='PingResponse.serverTimestamp'&&c.accountId===context.accountId&&c.generation===context.generation&&['earliestMs','nowMs','latestMs'].every(k=>Number.isFinite(c[k])&&c[k]>=0&&c[k]<=Number.MAX_SAFE_INTEGER)&&c.earliestMs<=c.nowMs&&c.nowMs<=c.latestMs?{earliestMs:c.earliestMs,nowMs:c.nowMs,latestMs:c.latestMs}:null;
+}
+async function surveyMonthCardReward(client,protocol,{config,player,parameters,signal,stop,timeout}){
+ const context=contextOf(client,player),notes=[],active=()=>assertExecutionActive(client,{signal,stop});active();
+ const rows=await Promise.all(Object.entries(monthCardSources).map(async([key,response])=>{const request=response.replace(/Response$/,'Request');active();try{if(!protocol?.[request]||!protocol?.[response])throw Error('protocol');const value=await awaitExecution(client.request(request,{},response,timeout,{signal}),client,{signal,stop});return [key,toSnapshotJson(value),Date.now()];}catch(error){if(executionOutcome(error)==='CANCELLED')throw error;notes.push(request+': STATE_UNKNOWN');return [key,null,null];}}));
+ active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('月卡权益采集期间身份改变'),{code:'CANCELLED'});
+ const inputs=Object.fromEntries(rows.map(([key,value])=>[key,value])),monthCards=monthCardRows(inputs.cards),inventory=parseOperationInventory(inputs.items,inputs.resources),native=readMonthCardRewardSnapshot(client);
+ const sourceFacts=Object.fromEntries(rows.map(([key,value,sourceAt])=>[key,createStateFact(value,{accountId:context.accountId,generation:context.generation,source:monthCardSources[key],sourceAt,scope,reliable:key==='cards'?monthCards!==null:inventory.stockReliable})]));
+ const f={module:moduleId,parameters,context,inputs,sourceFacts,monthCards,...inventory,configEvidence:{tables:Object.fromEntries(['MonthCardCfg','ItemCfg'].map(name=>[name,copy(config?.tables?.[name]??null)]))},available:Object.keys(protocol??{}),notes};
+ liveTaskFacts.set(f,{client,player,native,clock:monthCardClock(client,context),seal:sealOf(f)});return f;
+}
+function monthCardAuthority(f,{settlement=false}={}){
+ const live=liveTaskFacts.get(f),c=f?.context,native=live&&readMonthCardRewardSnapshot(live.client);
+ if(!live||live.seal!==sealOf(f)||live.client.connected!==true||!same(contextOf(live.client,live.player),c)||!identifier(c?.accountId)||!identifier(c?.connectionId)||!Number.isSafeInteger(c.generation)||c.generation<0||!c.playerId||!c.worldId||native?.status!=='CURRENT'||native.reliable!==true||!['accountId','generation','connectionId','playerId','worldId'].every(k=>native[k]===c[k])||!same(live.native.cards,f.monthCards)||live.native.status!=='CURRENT'||!same(monthCardRows(f.inputs.cards),f.monthCards))return false;
+ if(!settlement&&!same(native,live.native))return false;
+ if(!Object.entries(monthCardSources).every(([key,source])=>f.sourceFacts[key]?.provenance.source===source&&same(f.sourceFacts[key].value,f.inputs[key])&&factsFreshnessPolicy(f.sourceFacts[key],{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH'))return false;
+ const inventory=parseOperationInventory(f.inputs.items,f.inputs.resources);return inventory.stockReliable&&f.stockReliable===true&&f.stock instanceof Map&&same([...f.stock].sort(),[...inventory.stock].sort());
+}
+function monthCardCandidate(f,p,{config,moduleConfig=TASK_REWARDS_DEFAULT_CONFIG,settlement=false}={}){
+ moduleConfig=validateTaskRewardsConfig(moduleConfig);const live=liveTaskFacts.get(f),card=f?.monthCards?.find(r=>r.type===p.cardType),rows=config?.tables?.MonthCardCfg?.data,found=dense(rows)?rows.filter(r=>r.id===monthCardNames[p.cardType]):[],rewards=found.length===1?configuredRewards(config,found[0].dayReward):null,clock=live?(settlement?live.clock:monthCardClock(live.client,f.context)):null;
+ const target={kind:'month-card-gift',cardType:p.cardType??null,endTime:card?.endTime??null},action={request:'MonthCardDailyRewardRequest',response:null,body:{type:p.cardType}},budgetClaims={resources:[],quotas:[],uids:card?[{type:'month-card-reward',id:card.type+':'+card.endTime}]:[]};let reason=null;
+ if(![1,2].includes(p.cardType))reason='EXPLICIT_MONTH_CARD_TYPE_REQUIRED';else if(!moduleConfig.enabled)reason='TASK_REWARDS_MODULE_DISABLED';else if(!monthCardAuthority(f,{settlement})||!same(config?.tables?.MonthCardCfg,f.configEvidence?.tables?.MonthCardCfg)||!same(config?.tables?.ItemCfg,f.configEvidence?.tables?.ItemCfg))reason='MONTH_CARD_PRIVATE_AUTHORITY_UNKNOWN';else if(!card||!own(card,'gotDailyReward')||card.gotDailyReward!==false)reason='CURRENT_UNCLAIMED_MONTH_CARD_REQUIRED';else if(card.endTime!==-1&&(!clock||clock.latestMs>=card.endTime*1000))reason='MONTH_CARD_ACTIVE_EXPIRY_NOT_PROVEN';else if(!rewards)reason='MONTH_CARD_FIXED_DAILY_REWARDS_UNKNOWN';else if(!f.available.includes(action.request)||f.available.includes('MonthCardDailyRewardResponse'))reason='PROTOCOL_UNAVAILABLE';else{try{assertPaymentAllowed({...action,costs:[]});}catch(error){reason=error.code??'COST_NOT_ALLOWED';}}
+ const expected=card?f.monthCards.map(r=>r.type===card.type?{...copy(r),gotDailyReward:true}:copy(r)):null;
+ return {module:moduleId,actionId:'task-rewards:MONTH-CARD:'+hash(target),actionType:'MONTH-CARD-REWARD',parameters:p,target,identity:card?hash({context:f.context,cards:f.monthCards,config:f.configEvidence}):null,beforeState:{context:copy(f?.context??null),cards:copy(f?.monthCards??null)},expectedState:{context:copy(f?.context??null),cards:expected},costs:[],costSource:MONTH_CARD_REWARD_EVIDENCE.source,budgetClaims,rewards:copy(rewards),executable:reason===null,blockedReason:reason,label:(monthCardNames[p.cardType]??'月卡')+'当前每日权益',...(reason===null?{action}:{})};
+}
+function verifyMonthCardReward(op,b,a,response){
+ const no=reason=>({confirmed:false,reason});if(response!==null&&response!==undefined)return no('MONTH_CARD_NO_DEDICATED_RESPONSE');if(!monthCardAuthority(b,{settlement:true})||!monthCardAuthority(a)||!same(b.context,a.context)||!same(b.configEvidence,a.configEvidence))return no('MONTH_CARD_AUTHORITY_OR_CONFIG_CHANGED');
+ let p;try{p=validateTaskRewardsParameters(op.parameters);}catch{return no('MONTH_CARD_PARAMETERS_INVALID');}const canonical=monthCardCandidate(b,p,{config:b.configEvidence,moduleConfig:{enabled:true},settlement:true});
+ if(!canonical.executable||['module','actionId','actionType','parameters','target','identity','beforeState','expectedState','costs','costSource','budgetClaims','rewards','action'].some(k=>!same(op[k],canonical[k])))return no('MONTH_CARD_PLAN_MISMATCH');
+ if(liveTaskFacts.get(a).native.epoch!==liveTaskFacts.get(b).native.epoch+1)return no('MONTH_CARD_UNRELATED_ENTITLEMENT_CHANGE');
+ if(Object.keys(monthCardSources).some(k=>a.sourceFacts[k].provenance.sourceAt<b.sourceFacts[k].provenance.sourceAt)||!same(a.monthCards,canonical.expectedState.cards))return no('MONTH_CARD_EXACT_CLAIM_OR_PEERS_NOT_CONFIRMED');if(!stockMatchesDelta(b.stock,a.stock,[],canonical.rewards))return no('MONTH_CARD_EXACT_DAILY_REWARD_NET_IN_NOT_CONFIRMED');
+ return {confirmed:true,reason:'原私有MonthCard独立复读确认指定当前卡仅未领改已领、有效期及其他卡保持，固定日奖励完整库存精确净入；无购买、无推定日界及重放',afterState:{cards:copy(a.monthCards),inventory:stockState(a.stock)},responseEvidence:null};
+}
