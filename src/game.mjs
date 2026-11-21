@@ -111,7 +111,14 @@ export function collectState(client, protocol, { timeout = 15000, onResult = nul
     let pirateReadStartClock = null, pirateReadEndClock = null;
     const notify = (name, body, error) => { for (const listener of job.listeners) { try { listener(name, body, error); } catch {} } };
     // ENTRY_SIGNALS remain protocol evidence; data refresh never sends them.
-    await Promise.all(ENTRY_QUERIES.map(async (query) => {
+    // Yield between dispatches so synchronous NAS ownership checks cannot starve
+    // queued Pong/response callbacks. Outstanding reads still settle concurrently.
+    let dispatchTurn = Promise.resolve();
+    await Promise.all(ENTRY_QUERIES.map(async (query, index) => {
+      if (index > 0) {
+        dispatchTurn = dispatchTurn.then(() => new Promise(resolve => setImmediate(resolve)));
+        await dispatchTurn;
+      }
       const response = responseNameOf(query.name);
       const startedAt = new Date().toISOString();
       const finish = (status, error = null) => { outcomes[query.name] = { status, response, startedAt, updatedAt: new Date().toISOString(), error }; };

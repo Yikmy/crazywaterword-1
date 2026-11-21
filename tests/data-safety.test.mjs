@@ -151,3 +151,26 @@ test('known secret redaction tolerates unpaired Unicode surrogates and still mas
     assert.equal(safe.token, '[REDACTED]'); assert.equal(safe.error, 'echo [REDACTED]');
   }
 });
+
+
+test('collection lets queued responses run between dispatches while all reads remain concurrent', async () => {
+  const calls = [];
+  let release, allDispatched, firstResponseTurnCount = null;
+  const gate = new Promise(resolve => { release = resolve; });
+  const dispatched = new Promise(resolve => { allDispatched = resolve; });
+  const client = { async request(name) {
+    calls.push(name);
+    setImmediate(() => { firstResponseTurnCount ??= calls.length; });
+    if (calls.length === ENTRY_QUERIES.length) allDispatched();
+    await gate;
+    return {};
+  } };
+  const collection = collectState(client, protocol);
+  try {
+    await dispatched;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, ENTRY_QUERIES.map(query => query.name));
+    assert.ok(firstResponseTurnCount < ENTRY_QUERIES.length, 'queued receive/heartbeat work must run before the full query burst finishes');
+  } finally { release(); await collection; }
+  assert.equal(Object.keys((await collection).ok).length, ENTRY_QUERIES.length);
+});

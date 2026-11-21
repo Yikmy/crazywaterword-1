@@ -1,5 +1,14 @@
 # CrazyWater Platform — 全路线图对账与工程总计划
 
+2026-11-22 CURRENT HEAD收敛（父 `599a171`）：用户可继续使用原固定48项显式采集；原collectState在相邻请求派发之间交还事件循环，避免NAS同步所有权检查连续占用同一轮而饿住Pong/响应处理。只改src/game.mjs，仍按原顺序、每项一次、同客户端single-flight、各响应并发等待；ENTRY_QUERIES/ENTRY_SIGNALS、原API/Explorer专业页/Tasks/Workflow入口、账号代次检查、一秒Ping超时和所有成本/父预算/UID/许可/History/UNKNOWN合同均不修改。关联C004/C501/C502、M1/W03及DAT-001–048/DEX原已交采集子能力；不是重新实现，也不把读观察升级为写资格。一个原data-safety文件必要边界先红后绿，证明排队接收回调能在派发完整48项前运行，同时所有读取仍在共同响应闸门释放前派发完；原9文件相关345/345通过，0失败/取消/跳过，6.15秒，不累加为R7。
+
+父599a171已完成原selftest29组及原130文件/七排除/Edge/4并发同次完整R7：10150/10150 PASS，0fail/cancelled/skipped/todo，2381885.4987ms；始末SHA一致、源/测试哈希未变、真实受控账号库哈希未变。完整原日志归档work/e2e/20261121-head-consolidation/cw-r7-599a171-detached-lm3xagdw。素材未同步的既有条件检查仍SKIPPED，map-1缺证保留。本批源码修复后必须以新SHA重新运行原R7，不能拿父提交结果代替。
+
+Owner已明确“批准一切E2E冒烟测试”，沿原安全合同和各次有限预算执行，不再逐项重复索取同范围批准。真实59ed407已确认原单账号48读取、1材料厂升级启动、单份淡水生产及仅其成品领取、一次免费赠礼；共4次业务写，后续无新增业务写。599a171原空闲Console自身PID硬终止、原同机死PID恢复、4条真实成功History重开已通过限定E22子范围，0游戏请求。宝藏只读两次CANCELLED未确认修复实际结果，原400首错保留；后续409为原UNKNOWN门禁，不冒充新的宝藏配置错误。
+
+599a171单次普通免费点金在业务派发前遇到原History原子保存失败，持久NOT_DISPATCHED屏障及原UNKNOWN结果、关闭父预算原样保留；新连接原专用复核返回STILL_UNKNOWN/SCOPE_MISMATCH，未确认、未重发、未释放或修改原保护。隔离字节副本调用原History两次保存通过，无底层文件错误，尚不能宣称真实保存故障已定位/修复。后续真实固定48显式刷新捕获FAILED/ping timeout，本批派发调度针对已离线复现的事件循环饥饿；真实历史未决仍阻断业务调查/写入，不能绕过。原E01–E24全部合同和原95C/42P/273Inventory/16M/22W保持；完整R8未通过、Goal ACTIVE。
+
+
 2026-11-21 CURRENT HEAD CONSOLIDATION：只读确认原分支codex/phase-4-alliance-integration、HEAD 9397a88ef4ed539d618e43afd27762febc61a7c6；f997536至该HEAD共32提交、26个生产文件有改动，已交付子能力按本账本现有证据保留，不重审为未实现。先收敛此前已在施工且必要测试通过的原BIZ-A02/BIZ-R10连续已达标挂机等级奖，再固定新SHA执行本轮新增生产代码回归与原R7全量。原130文件、七排除及R8单独授权边界不变；本条不宣称R7通过。
 
 2026-11-21 FEATURE FIRST续批（父 `c8e583d`）：原C516周战令当前免费档位领取接原task-rewards Function、费用合同、API、专业页、Tasks/Dailies/Loop及Workflow。固定WeekInfo type1及原93期/3440档配置，明确activePay=false；原WeekInfo/战令Info前后复读包围完整库存与可信Ping，空请求不选档或保证全领，只确认当前已达标未领范围的实际免费档位变化和精确奖励净入，积分/每日任务/付费及其他状态保持。全部潜在档位父UID、零支出、History/取消/UNKNOWN复用；每日任务仍只读，不购买/补级/混领或推定周期重领。完整C516/W17仍PARTIAL/REAL_UNVERIFIED，R7 IN_PROGRESS、R8 NOT_RUN、Goal ACTIVE。
