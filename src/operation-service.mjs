@@ -731,7 +731,7 @@ export function createOperationService({ protocol, getConfig = () => null, loadR
       const result=prepareAfkUpgradeWorkflow(facts,{config,moduleConfig,...payload});return {accountId:session.id,...result,graph:validateWorkflow(result.graph,{modules}).workflow};
     }finally{release();}
   }
-  function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config']); adapterFor(payload.module); const saved=moduleSettings.save(accountId,payload.module,payload.config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
+  function saveModuleConfig(accountId, payload) { assertWriter(); exact(payload,['module','config','enabledOnly']); adapterFor(payload.module); if(Object.hasOwn(payload,'enabledOnly')&&payload.enabledOnly!==true)throw error('开关更新模式须明确true','INVALID_PARAMETERS',400);let config=payload.config;if(payload.enabledOnly===true){exact(config,['enabled']);if(typeof config?.enabled!=='boolean')throw error('开关更新只接受明确enabled布尔值','INVALID_PARAMETERS',400);config={...moduleSettings.get(accountId,payload.module).config,enabled:config.enabled};}const saved=moduleSettings.save(accountId,payload.module,config); plans.delete(accountId); moduleCache.delete(accountId); return {accountId,module:payload.module,...saved}; }
   function assertWorkflowDeadline(session, runId) {
     const parent = workflowBudgets.get(session.id);
     if (parent?.runId === runId && parent.expiresAt !== null && clock() >= Date.parse(parent.expiresAt)) {

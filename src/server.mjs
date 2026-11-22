@@ -918,7 +918,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
         if(namedFormationRoute){fields(route.endsWith('/save')?['name']:route.endsWith('/rename')?['id','name','expectedRevision']:['id','expectedRevision']);}
         if(route==='POST /api/formations/named/rename'){json(operations.renameNamedFormation(id,payload));return;}
         if(route==='POST /api/formations/named/delete'){json(operations.deleteNamedFormation(id,payload));return;}
-        if (route==='POST /api/gameplay/config') {fields(['module','config']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
+        if (route==='POST /api/gameplay/config') {fields(['module','config','enabledOnly']);if(sessions.get(id)?.busy)throw Object.assign(new Error('账号任务运行期间不能修改玩法配置'),{code:'ACCOUNT_BUSY',statusCode:409});json(operations.saveModuleConfig(id,payload));return;}
         if (route==='POST /api/workflows/save') {fields(['graph']);workflowStore.save(id,payload.graph);json(workflowView(id));return;}
         if (route==='POST /api/workflows/prepare') { json({accountId:id,...compileUnifiedExecution(payload,{modules:operations.modules})});return; }
         if (route==='POST /api/workflows/simulate') {fields(['graph']);json({accountId:id,...simulateWorkflow(payload.graph,{modules:operations.modules})});return;}
