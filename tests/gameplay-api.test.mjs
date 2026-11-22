@@ -3215,8 +3215,7 @@ for(const {outcome,shipCount,failAt} of [
     await evaluate("document.getElementById('wf-authorize').click()");
     await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&
      record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i);
-    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);
-    await evaluate("document.getElementById('wf-resume').click()");
+    await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-resume');if(!button||button.disabled)return false;button.click();return true;})()"),'resume '+i);
    }
    const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;
@@ -3465,7 +3464,7 @@ for(const {outcome,techCount,failAt} of [
      return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
     assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
     await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome!=='success'&&i+1===failAt?outcome==='unknown'?'UNKNOWN':'REJECTED':'SUCCESS');},'settlement '+i);
-    await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+    await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-resume');if(!button||button.disabled)return false;button.click();return true;})()"),'resume '+i);
    }
    const terminal=outcome==='success'?'COMPLETED':outcome==='unknown'?'UNKNOWN':'FAILED';
    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);
@@ -4160,7 +4159,7 @@ for(const action of ['make','pick'])for(const outcome of ['success','unknown'])t
    await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent,status=text?JSON.parse(text):{};return status.currentNode===${JSON.stringify(actions[i].id)}&&status.status==='AWAITING_AUTHORIZATION'&&!document.getElementById('wf-authorize').disabled;})()`),'authorization '+i);
    assert.equal(writes.length,i);await evaluate("document.getElementById('wf-authorize').click()");
    await waitFor(()=>{const record=app.history.list('A')[0];return record?.workflowNodeId===actions[i].id&&record.finalStatus===(outcome==='success'?'SUCCESS':'UNKNOWN');},'settlement '+i);
-   await waitFor(()=>evaluate("!document.getElementById('wf-resume').disabled"),'resume '+i);await evaluate("document.getElementById('wf-resume').click()");
+   await waitFor(()=>evaluate("(() => {const button=document.getElementById('wf-resume');if(!button||button.disabled)return false;button.click();return true;})()"),'resume '+i);
   }
   const terminal=outcome==='success'?'COMPLETED':'UNKNOWN';
   await waitFor(()=>evaluate(`(() => {const text=document.getElementById('wf-status').textContent;return text&&JSON.parse(text).status===${JSON.stringify(terminal)};})()`),'terminal '+terminal);

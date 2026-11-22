@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { queryCurrentUserRoot, createCaManager } from '../tools/mitm-ca.mjs';
+import { X509Certificate } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { queryCurrentUserRoot, createCaManager, resolveOpenSsl } from '../tools/mitm-ca.mjs';
 
 const A = 'A'.repeat(40), B = 'B'.repeat(40);
 const report = (status, changes = {}) => ({ status, thumbprint: A, store: 'Root', location: 'CurrentUser', storeOpened: true,
@@ -97,4 +99,62 @@ test('query errors prevent certificate installation or deletion and preserve own
   assert.throws(() => manager.uninstallCa({ thumbprint: A, owned: true }), { code: 'CA_STORE_QUERY_ERROR' });
   assert.ok(calls.every(call => call.program !== 'certutil'));
   assert.equal(fs.readdirSync(dir).some(name => name.startsWith('.install-')), false);
+});
+
+test('local CA status validates the actual CA and key before it reads trust', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-ca-inspect-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let reads = 0;
+  let trust = 'FOUND';
+  let thumbprint;
+  const manager = createCaManager({ dir, runner(program, args) {
+    if (!/[\\/]powershell\.exe$/i.test(program)) {
+      return execFileSync(resolveOpenSsl(), args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
+    }
+    reads++;
+    const script = Buffer.from(args[4], 'base64').toString('utf16le');
+    assert.ok(script.includes("$target = '" + thumbprint + "'"));
+    assert.match(script, /OpenFlags\]::ReadOnly/);
+    return JSON.stringify(report(trust, { thumbprint }));
+  } });
+  const inspectError = (code) => {
+    const result = manager.inspectCa();
+    assert.equal(result.status, 'ERROR');
+    assert.equal(result.code, code);
+  };
+
+  assert.equal(manager.inspectCa().status, 'NOT_CONFIGURED');
+  assert.deepEqual(fs.readdirSync(dir), []);
+  manager.initCa();
+  const certBytes = fs.readFileSync(manager.CA_CRT);
+  const keyBytes = fs.readFileSync(manager.CA_KEY);
+  const certificate = new X509Certificate(certBytes);
+  thumbprint = certificate.fingerprint.replaceAll(':', '');
+  const files = fs.readdirSync(dir);
+  const result = manager.inspectCa();
+  assert.equal(result.status, 'FOUND', result.error);
+  assert.equal(result.location, 'CurrentUser');
+  assert.equal(result.store, 'Root');
+  assert.equal(result.name, certificate.subject);
+  assert.equal(result.thumbprint, thumbprint);
+  assert.equal(result.fingerprint256, certificate.fingerprint256);
+  assert.deepEqual(fs.readdirSync(dir), files);
+  assert.ok(fs.readFileSync(manager.CA_CRT).equals(certBytes));
+  assert.ok(fs.readFileSync(manager.CA_KEY).equals(keyBytes));
+
+  trust = 'ABSENT';
+  assert.equal(manager.inspectCa().status, 'ABSENT');
+  assert.equal(reads, 2);
+  fs.writeFileSync(manager.CA_CRT, 'invalid certificate');
+  inspectError('CA_CERT_UNREADABLE');
+  fs.unlinkSync(manager.CA_CRT);
+  inspectError('CA_CERT_MISSING');
+  fs.writeFileSync(manager.CA_CRT, certBytes);
+  fs.unlinkSync(manager.CA_KEY);
+  inspectError('CA_KEY_MISSING');
+  fs.writeFileSync(manager.CA_KEY, 'invalid key');
+  inspectError('CA_KEY_UNREADABLE');
+  fs.copyFileSync(path.join(dir, 'leaf.key'), manager.CA_KEY);
+  inspectError('CA_KEY_MISMATCH');
+  assert.equal(reads, 2, 'invalid local material must not cause a store lookup');
 });

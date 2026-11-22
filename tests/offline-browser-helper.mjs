@@ -26,7 +26,13 @@ export function createOfflineBrowser(root){
  try{
   const port=await waitFor(()=>{
    const file=path.join(profile,'DevToolsActivePort');
-   return fs.existsSync(file)&&Number(fs.readFileSync(file,'utf8').split('\n')[0]);
+   try {
+    return Number(fs.readFileSync(file,'utf8').split('\n')[0]);
+   } catch (error) {
+    // Edge can create the file before Windows lets another process read it.
+    if (error.code === 'ENOENT' || error.code === 'EBUSY') return false;
+    throw error;
+   }
   },'browser startup');
   const page=await waitFor(async()=>{
    const response=await fetch('http://127.0.0.1:'+port+'/json/list');

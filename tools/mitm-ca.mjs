@@ -109,6 +109,47 @@ export function createCaManager({ dir = CA_DIR, runner = execFileSync, opensslPa
     if (result.status === 'ERROR') throw Object.assign(new Error('Unable to inspect current-user certificate trust store: ' + result.error), { code: 'CA_STORE_QUERY_ERROR', query: result });
     return result.status === 'FOUND';
   }
+  function inspectCa() {
+    const status = { path: crt, exists: false, name: CA_CN, store: 'Root', location: 'CurrentUser', thumbprint: null, fingerprint256: null };
+    const fail = (code, error) => ({ ...status, status: 'ERROR', code, error });
+    let certificate;
+    try {
+      const certificateBytes = fs.readFileSync(crt);
+      status.exists = true;
+      certificate = new crypto.X509Certificate(certificateBytes);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        try { fs.lstatSync(key); }
+        catch (keyError) {
+          if (keyError.code === 'ENOENT') return { ...status, status: 'NOT_CONFIGURED' };
+          return fail('CA_KEY_UNREADABLE', 'CA private key could not be inspected');
+        }
+        return fail('CA_CERT_MISSING', 'CA certificate is missing but the private key exists');
+      }
+      return fail('CA_CERT_UNREADABLE', 'CA certificate could not be read or parsed');
+    }
+    status.name = certificate.subject;
+    status.thumbprint = normalizeThumbprint(certificate.fingerprint);
+    status.fingerprint256 = certificate.fingerprint256;
+    const now = Date.now();
+    if (!certificate.ca || !(Date.parse(certificate.validFrom) <= now && now < Date.parse(certificate.validTo))) {
+      return fail('CA_CERT_INVALID', 'Certificate is not a CA or is outside its validity period');
+    }
+
+    let privateKey;
+    let keyBytes;
+    try {
+      keyBytes = fs.readFileSync(key);
+      privateKey = crypto.createPrivateKey(keyBytes);
+    } catch (error) {
+      return error.code === 'ENOENT'
+        ? fail('CA_KEY_MISSING', 'CA private key is missing')
+        : fail('CA_KEY_UNREADABLE', 'CA private key could not be read or parsed');
+    } finally { keyBytes?.fill(0); }
+    if (!certificate.checkPrivateKey(privateKey)) return fail('CA_KEY_MISMATCH', 'Certificate and private key do not match');
+
+    return { ...status, ...queryCa(status.thumbprint) };
+  }
   function initCa({ force = false } = {}) {
     fs.mkdirSync(dir, { recursive: true });
     if (fs.existsSync(crt) && !force) {
@@ -183,18 +224,22 @@ export function createCaManager({ dir = CA_DIR, runner = execFileSync, opensslPa
     owned.delete(thumbprint);
     return false;
   }
-  return { CA_DIR: dir, CA_KEY: key, CA_CRT: crt, CA_CN, initCa, leafFor, caFingerprint, queryCa, isInstalled, installCa, uninstallCa };
+  return { CA_DIR: dir, CA_KEY: key, CA_CRT: crt, CA_CN, initCa, leafFor, caFingerprint, queryCa, isInstalled, inspectCa, installCa, uninstallCa };
 }
 
 const defaults = createCaManager();
-export const { initCa, leafFor, caFingerprint, queryCa, isInstalled, installCa, uninstallCa } = defaults;
+export const { initCa, leafFor, caFingerprint, queryCa, isInstalled, inspectCa, installCa, uninstallCa } = defaults;
 function main() {
   const [cmd, arg] = process.argv.slice(2);
   if (cmd === 'init') console.log(initCa({ force: arg === '--force' }));
   else if (cmd === 'leaf') { const { keyPath, certPath, cached } = leafFor(arg); console.log({ keyPath, certPath, cached }); }
   else if (cmd === 'install') console.log(installCa());
   else if (cmd === 'uninstall') { console.error('No current-process ownership receipt. Use capture-credentials.mjs --recover for transaction-owned CA cleanup.'); process.exitCode = 1; }
-  else if (cmd === 'status') { const result = queryCa(arg); console.log({ path: CA_CRT, exists: fs.existsSync(CA_CRT), ...result }); if (result.status === 'ERROR') process.exitCode = 1; }
+  else if (cmd === 'status') {
+    const result = arg === undefined ? inspectCa() : { path: CA_CRT, exists: fs.existsSync(CA_CRT), ...queryCa(arg) };
+    console.log(result);
+    if (result.status === 'ERROR') process.exitCode = 1;
+  }
   else console.log('usage: mitm-ca.mjs init [--force] | leaf <host> | install | uninstall | status');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
