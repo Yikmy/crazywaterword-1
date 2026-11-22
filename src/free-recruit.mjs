@@ -1,12 +1,15 @@
 // W16: explicit hero/antique free, single-ticket or fixed owned-ticket batches.
 // The shared executor owns authorization, persistence, budgets and transport.
 import { createHash } from 'node:crypto';
+import { parseReceivedOrderReward } from './order-rewards.mjs';
+import { stockMatchesDelta } from './naval-facts.mjs';
+import { assertPaymentAllowed } from './actions.mjs';
 import { configuredRewardSeason } from './dailies.mjs';
 import { heroDerivedStateReliable } from './equipment-growth.mjs';
 import { parseAntiqueOwnership, readAntiqueGrowthCatalog, antiqueSuitsConfirmed } from './antique-growth.mjs';
 import { buildDailyDriverBody } from './actions.mjs';
 import { parseOperationInventory, parseOperationHero } from './hero-operations.mjs';
-import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity } from './resource-ledger.mjs';
+import { ResourceLedger, RESOURCE_NAMES, safeResourceQuantity, resourceCosts } from './resource-ledger.mjs';
 import { assertExecutionActive, awaitExecution, executionOutcome } from './execution.mjs';
 import { createStateFact, factsFreshnessPolicy } from './state-facts.mjs';
 import { toSnapshotJson } from './game.mjs';
@@ -23,7 +26,9 @@ const dense=v=>Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.l
 const invalid=message=>Object.assign(new Error(message),{code:'INVALID_PARAMETERS',statusCode:400});
 const configNames=['ModuleOpenCfg','HeroCfg','ItemCfg'];
 const taskConfigNames=['HeroRecruitTaskCfg','AntiqueRecruitTaskCfg'];
-const configNamesFor=p=>p?.recruit==='antique'?[...configNames,'AntiqueBaseCfg','AntiqueFragReturnCfg','AntiqueSuitCfg']:configNames;
+const recruitmentConfigNamesFor=p=>p?.recruit==='antique'?[...configNames,'AntiqueBaseCfg','AntiqueFragReturnCfg','AntiqueSuitCfg']:configNames;
+const taskRewardTable=p=>p?.recruit==='antique'?'AntiqueRecruitTaskCfg':'HeroRecruitTaskCfg';
+const configNamesFor=p=>p?.action==='claim-task'?[...recruitmentConfigNamesFor(p),taskRewardTable(p)]:recruitmentConfigNamesFor(p);
 const sourcesFor=p=>p?.recruit==='antique'?{...sources,antiques:'AllAntiqueResponse'}:sources;
 const sources={recruit:'RecruitInfoResponse',heroes:'AllHeroResponse',city:'OnWaterResponse',items:'AllItemResponse',resources:'AllResourceResponse'};
 const liveFacts=new WeakMap(),costSource='Fixed v76 HeroRecruitItem and RecruitUtil; exactly way=RECRUIT_FREE(1), zero ticket or resource debit';
@@ -37,7 +42,7 @@ export const FREE_RECRUIT_EVIDENCE=Object.freeze({
  batchDispatchModuleByteOffset:3609201,batchCostModuleByteOffset:5533184,
  antiqueObservationModuleByteOffset:265838,
  antiqueObservationSemantics:'AntiqueRecruitItem uses RecruitInfo.antique, the same free marker comparison, and owned 藏品券 costs 1/10/50; explicit AntiqueRecruitRequest type=1/way uses its own typed new-antique/configured conversion branch and independent AllAntique ownership; original growth catalog and derived-suit validation are reused',
- taskSemantics:'RecruitTaskItem displays times >= configured times and gotId >= id independently; RecruitUtil.seasonTasks uses ordered season groups. GotHeroRecruitTaskRequest/GotAntiqueRecruitTaskRequest are empty and share GotRecruitTaskResponse(gotId,reward); exact target/season and recovery attribution remain unproven, observation only',
+ taskSemantics:'RecruitTaskItem displays times >= configured times and gotId >= id independently; RecruitUtil.seasonTasks uses ordered season groups. GotHeroRecruitTaskRequest/GotAntiqueRecruitTaskRequest are empty and share GotRecruitTaskResponse(gotId,reward); ordinary rows remain observation only; explicit claim-task independently binds current world/config season, full live state, dual RecruitInfo cursor and every currently eligible reward UID; empty request does not select a tier, typed receipt and exact inventory must confirm a current reached prefix; recovery remains unchanged',
  advertisingSemantics:'RecruitView._onBtnAdRecruit calls recruitAdv only after AdvUtils.playAdv success; RECRUIT_ADV(5) is advertising, never ordinary free authorization',
  realGame:'REAL_UNVERIFIED'
 });
@@ -53,6 +58,7 @@ export function heroRecruitCosts(way) {
  return ownedRecruitCosts(way,'抽卡券');
 }
 export function validateFreeRecruitParameters(v={}) {
+ if(own(v,'action')){if(!fields(v,['action','recruit'])||v.action!=='claim-task'||!own(v,'recruit')||!['hero','antique'].includes(v.recruit))throw invalid('累计招募奖励须明确action=claim-task及recruit=hero或antique，不能混入支付或招募次数');return {action:'claim-task',recruit:v.recruit};}
  if(!fields(v,['payment','count','recruit'])||own(v,'recruit')&&!['hero','antique'].includes(v.recruit)||own(v,'payment')&&!['free','ticket'].includes(v.payment)||own(v,'count')&&(v.payment!=='ticket'||![1,10,50].includes(v.count)))throw invalid('默认英雄免费单次；古董须明确recruit=antique，自有券须明确payment=ticket与count=1、10或50');
  return {...(v.recruit==='antique'?{recruit:'antique'}:{}),...(v.payment==='ticket'?{payment:'ticket',...(v.count>1?{count:v.count}:{})}:{})};
 }
@@ -102,22 +108,27 @@ function snapshot(inputs,context,parameters={}) {
  const recruit=parseRecruit(inputs?.recruit,parameters),antiques=parameters.recruit==='antique'?parseAntiqueOwnership(inputs?.antiques):null,heroes=parseHeroes(inputs?.heroes),broadcast=parseBroadcast(inputs?.city),inventory=parseOperationInventory(inputs?.items,inputs?.resources);
  return recruit&&heroes&&broadcast&&inventory.stockReliable&&(parameters.recruit!=='antique'||antiques)?{context,recruit,heroes,broadcast,inventory:stockState(inventory.stock),...(parameters.recruit==='antique'?{antiques}:{})}:null;
 }
-const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,taskConfigEvidence:f.taskConfigEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
+const digest=f=>hash({parameters:f.parameters,context:f.context,configEvidence:f.configEvidence,taskConfigEvidence:f.taskConfigEvidence,inputs:f.inputs,sourceFacts:f.sourceFacts,taskConfirmation:f.taskConfirmation,state:f.state,stock:[...f.stock].sort(),stockReliable:f.stockReliable,available:f.available,startClock:f.startClock,endClock:f.endClock});
 export async function surveyFreeRecruit(client,protocol,{config,player,parameters={},signal,stop,timeout=15000}={}) {
  parameters=validateFreeRecruitParameters(parameters);
  const readSources=sourcesFor(parameters),tables=configNamesFor(parameters);
  const opts={signal,stop},context=contextOf(client,player),notes=[],startClock=clockOf(client,context);
  const active=()=>assertExecutionActive(client,opts);active();
- const observations=await Promise.all(Object.entries(readSources).map(async([key,response])=>{
+ const observe=async([key,response])=>{
   const name=response.replace(/Response$/,'Request');active();
   if(!protocol?.[name]||!protocol?.[response]){notes.push(name+': PROTOCOL_UNAVAILABLE');return[key,null,null];}
   try{const value=await awaitExecution(client.request(name,{},response,timeout,{signal}),client,opts);return[key,value,Date.now()];}
   catch(e){if(executionOutcome(e)==='CANCELLED')throw e;notes.push(name+': STATE_UNKNOWN');return[key,null,null];}
- }));
+ };
+ // Only claims bracket the original full source set with completed RecruitInfo reads.
+ const openingRecruit=parameters.action==='claim-task'?await observe(['recruit',readSources.recruit]):null;
+ const observations=await Promise.all(Object.entries(readSources).map(entry=>entry[0]==='recruit'&&openingRecruit?openingRecruit:observe(entry)));
  active();if(!same(context,contextOf(client,player)))throw Object.assign(new Error('招募采集期间账号或连接变化'),{code:'CANCELLED'});
+ let taskConfirmation;
+ if(parameters.action==='claim-task'){const body=await awaitExecution(client.request('RecruitInfoRequest',{},'RecruitInfoResponse',timeout,{signal}),client,opts);active();taskConfirmation=createStateFact(toSnapshotJson(body),{accountId:context.accountId,generation:context.generation,source:'RecruitInfoResponse',sourceAt:Date.now(),scope,reliable:parseRecruit(body,parameters)!==null});}
  const endClock=clockOf(client,context),raw=Object.fromEntries(observations.map(([k,v])=>[k,v])),inputs=toSnapshotJson(raw),recruit=parseRecruit(raw.recruit,parameters),heroes=parseHeroes(raw.heroes),broadcast=parseBroadcast(raw.city),inventory=parseOperationInventory(raw.items,raw.resources);
  const sourceFacts=Object.fromEntries(observations.map(([k,,sourceAt])=>[k,createStateFact(inputs[k],{accountId:context.accountId,generation:context.generation,source:readSources[k],sourceAt,scope,reliable:k==='recruit'?recruit!==null:k==='heroes'?heroes!==null:k==='city'?broadcast!==null:k==='antiques'?parseAntiqueOwnership(raw.antiques)!==null:inventory.stockReliable})]));
- const f={module:moduleId,parameters,context,taskConfigEvidence:{tables:Object.fromEntries(taskConfigNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},configEvidence:{tables:Object.fromEntries(tables.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context,parameters),available:Object.keys(protocol??{}),notes,startClock,endClock};
+ const f={module:moduleId,parameters,context,taskConfigEvidence:{tables:Object.fromEntries(taskConfigNames.map(n=>[n,copy(config?.tables?.[n]??null)]))},configEvidence:{tables:Object.fromEntries(tables.map(n=>[n,copy(config?.tables?.[n]??null)]))},inputs,sourceFacts,...inventory,state:snapshot(inputs,context,parameters),available:Object.keys(protocol??{}),notes,startClock,endClock,...(parameters.action==='claim-task'?{taskConfirmation}:{})};
  liveFacts.set(f,{client,player,digest:digest(f)});return f;
 }
 
@@ -182,6 +193,7 @@ export function freeRecruitContractParts(before,parameters={}) {
 }
 function candidate(f,{config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}) {
  parameters=validateFreeRecruitParameters(parameters);
+ if(parameters.action==='claim-task')return recruitTaskCandidate(f,{config,moduleConfig,parameters});
  const antique=parameters.recruit==='antique',key=antique?'antique':'hero',ticketId=antique?'藏品券':'抽卡券',prefix=antique?'antique:':'';
  const ticket=parameters.payment==='ticket',count=ticket?(parameters.count??1):1,way=ticket?({1:2,10:3,50:4})[count]:1,costs=ownedRecruitCosts(way,ticketId),tables=configNamesFor(parameters);
  const matches=same(tables.map(n=>config?.tables?.[n]??null),tables.map(n=>f?.configEvidence?.tables?.[n]??null)),defs=matches?catalog(f?.configEvidence,parameters):null;
@@ -295,7 +307,7 @@ export function summarizeRecruitTaskObservations(view) {
 
 export function viewFreeRecruit(f,options={}) {
  validateFreeRecruitParameters(options.parameters??f?.parameters??{});
- return {module:moduleId,cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),taskObservations:recruitTaskObservations(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，古董写入须显式recruit=antique并重新调查完整藏品/配置，再独立授权；只读条件不构成许可。广告、潜水和购买仍关闭，未知结果不重放。']};
+ return {module:moduleId,...(f?.parameters?.action==='claim-task'?{mode:'claim-task',allowedPrefixes:copy(recruitTaskPolicy(f,options.config??f.configEvidence)?.prefixes??[])}:{}),cooldownObservation:recruitCooldownObservation(f),antiqueObservation:antiqueRecruitObservation(f,options),taskObservations:recruitTaskObservations(f,options),recruit:copy(f?.state?.recruit??null),broadcast:copy(f?.state?.broadcast??null),candidates:[candidate(f,options)],notes:[...(f?.notes??[]),f?.parameters?.action==='claim-task'?'本次仅领取当前已达标未领的累计奖励；先调查当前配置季、已领游标与完整库存，再单次授权。请求不指定档位，以专用回执及独立完整净入确认；不发起招募，不预领未来档位，不代表日常1002完成，UNKNOWN停止。':'默认免费单次 way=1；显式 ticket 仅在免费冷却明确未到时扣自有抽卡券1张，绝不自动切换。显式 count=10或50分别固定扣券10或50张，不按余额自动选批量。各模式复用同一回执及独立完整英雄/库存验证，古董写入须显式recruit=antique并重新调查完整藏品/配置，再独立授权；只读条件不构成许可。广告、潜水和购买仍关闭，未知结果不重放。']};
 }
 export function planFreeRecruit(f,{parameters=f?.parameters??{},selections=[],ledger=new ResourceLedger(f?.stockReliable===true?f.stock:null),...options}={}) {
  validateFreeRecruitParameters(parameters);
@@ -341,6 +353,7 @@ export function verifyFreeRecruitOutcome(operation,before,after,settlement,clock
  return {confirmed:true,afterState:copy(a),reason:'明确'+count+'次'+(antique?'古董':'英雄')+'回执、独立招募状态及完整库存精确净入共同确认',responseEvidence:{freeEndTimeSeconds:data.freeEndTimeSeconds,received:count===1?copy(settlement.received[0]):copy(settlement.received)}};
 }
 export function verifyFreeRecruit(operation,before,after,result) {
+ if(before?.parameters?.action==='claim-task')return verifyRecruitTaskReward(operation,before,after,result);
  const no=reason=>({confirmed:false,reason});
  if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.parameters,after.parameters)||!currentClock(before)||!currentClock(after)||!same(before.configEvidence,after.configEvidence))return no('招募前后账号、可信时钟、配置或库存不可靠');
  const canonical=candidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
@@ -351,3 +364,44 @@ export function verifyFreeRecruit(operation,before,after,result) {
 }
 export function freeRecruitDependencyVersions({config,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters={}}={}) {return {moduleConfig:validateFreeRecruitConfig(moduleConfig),tables:Object.fromEntries(configNamesFor(parameters).map(n=>[n,copy(config?.tables?.[n]??null)]))};}
 export const freeRecruitModule=Object.freeze({id:moduleId,label:'英雄/古董免费或自有券招募',capabilities:Object.freeze(['BIZ-D02']),defaultConfig:FREE_RECRUIT_DEFAULT_CONFIG,validateConfig:validateFreeRecruitConfig,validateParameters:validateFreeRecruitParameters,survey:surveyFreeRecruit,view:viewFreeRecruit,plan:planFreeRecruit,verify:verifyFreeRecruit,rejectionIdentity:businessRejectionIdentity,dependencyVersions:freeRecruitDependencyVersions});
+
+
+export const RECRUIT_TASK_REWARD_EVIDENCE=Object.freeze({
+ source:'Fixed v76 RecruitTaskItem.refreshItem/_onBtnGot; RecruitUtil.seasonTasks; explicit typed GotRecruitTaskResponse.gotId/reward and independent RecruitInfo task cursor',
+ itemSha256:'ebf9a28558e83412364ea535b6d0adb3bdecf2273537b077a5260a4c0cf4f32e',utilSha256:'4f2a3ad4eadf9affa3ff56e8e6c67b814557b06ac19b33451c010af0b9d037b2',scope:'ONLY_CURRENT_REACHED_UNCLAIMED_CONFIGURED_SEASON_PREFIX_NO_RECRUITMENT_OR_FUTURE_TIERS',realGame:'REAL_UNVERIFIED'
+});
+function taskReadStable(f) {
+ const fact=f?.taskConfirmation,c=f?.context;
+ return fact?.provenance?.reliability==='RELIABLE'&&fact.provenance.source==='RecruitInfoResponse'&&same(fact.value,f.inputs.recruit)&&
+  fact.provenance.sourceAt>=f.sourceFacts.recruit.provenance.sourceAt&&factsFreshnessPolicy(fact,{accountId:c.accountId,generation:c.generation,maxAgeMs:30000,scope}).status==='FRESH';
+}
+function recruitTaskPolicy(f,config) {
+ const observation=recruitTaskObservations(f,{config}).find(row=>row.kind===f?.parameters?.recruit);
+ if(observation?.status!=='OBSERVED')return null;
+ const tiers=observation.tasks.filter(row=>row.observedRequirementsMet),prefixes=[];
+ for(let i=0;i<tiers.length;i++){
+  let rewards;try{rewards=resourceCosts(tiers.slice(0,i+1).flatMap(row=>row.rewards)).sort((a,b)=>a.id.localeCompare(b.id));}catch{return null;}
+  prefixes.push({throughId:tiers[i].id,tiers:tiers.slice(0,i+1).map(row=>row.id),rewards});
+ }
+ return {observation,tiers,prefixes};
+}
+function recruitTaskCandidate(f,{config=f?.configEvidence,moduleConfig=FREE_RECRUIT_DEFAULT_CONFIG,parameters=f?.parameters??{}}={}) {
+ const policy=recruitTaskPolicy(f,config),defs=catalog(config,parameters),kind=parameters.recruit,target={recruit:kind,season:policy?.observation.season??null,configuredSeason:policy?.observation.configuredSeason??null,progress:policy?.observation.progress??null,fromId:policy?.observation.claimedThroughId??null,maximumThroughId:policy?.tiers.at(-1)?.id??null};
+ const action={request:kind==='antique'?'GotAntiqueRecruitTaskRequest':'GotHeroRecruitTaskRequest',response:'GotRecruitTaskResponse',body:{}},costs=[];
+ let reason=!validateFreeRecruitConfig(moduleConfig).enabled?'MODULE_DISABLED':!authority(f)||!same(parameters,f.parameters)?'RECRUIT_TASK_AUTHORITY_UNKNOWN':!same(configNamesFor(parameters).map(n=>config?.tables?.[n]??null),configNamesFor(parameters).map(n=>f?.configEvidence?.tables?.[n]??null))?'RECRUIT_CONFIG_CHANGED':!taskReadStable(f)?'RECRUIT_TASK_CHANGED_DURING_READ':!defs||f.context.playerLevel<defs.requiredLevel?'RECRUIT_MODULE_LOCKED':!currentClock(f)?'TRUSTED_CLOCK_UNKNOWN':!policy?'RECRUIT_TASK_CONFIG_OR_CURSOR_UNKNOWN':!policy.tiers.length?'RECRUIT_TASK_NO_REACHED_UNCLAIMED_TIERS':![action.request,action.response].every(name=>f.available.includes(name))?'PROTOCOL_UNAVAILABLE':null;
+ if(!reason)try{assertPaymentAllowed({...action,costs});}catch(e){reason=e.code??'COST_NOT_ALLOWED';}
+ return {module:moduleId,actionId:'recruit-task:'+kind+':'+hash(target),actionType:'CLAIM-TASK',parameters:copy(parameters),target,identity:hash({context:f?.context,state:f?.state,config:f?.configEvidence,taskConfig:f?.taskConfigEvidence}),beforeState:copy(f?.state??null),expectedState:{rule:'CURRENT_TYPED_RECRUIT_TASK_PREFIX',fromId:target.fromId,allowedPrefixes:copy(policy?.prefixes??[])},costs,costSource:RECRUIT_TASK_REWARD_EVIDENCE.source,budgetClaims:{resources:[],quotas:[],uids:policy?.tiers.map(row=>({type:'recruit-task-reward',id:[kind,target.season,target.configuredSeason,row.id].join(':')}))??[]},requiredLevel:defs?.requiredLevel??null,executable:reason===null,blockedReason:reason,label:(kind==='antique'?'古董':'英雄')+'当前累计招募奖励 '+(policy?.tiers.map(row=>row.id).join('、')||'无可领档位'),...(reason?{}:{action})};
+}
+function verifyRecruitTaskReward(operation,before,after,result) {
+ const no=reason=>({confirmed:false,reason});
+ if(!authority(before)||!authority(after)||!same(before.context,after.context)||!same(before.parameters,after.parameters)||!same(before.configEvidence,after.configEvidence)||!same(before.taskConfigEvidence,after.taskConfigEvidence)||!taskReadStable(before)||!taskReadStable(after)||!currentClock(before)||!currentClock(after))return no('累计招募奖励前后事实、配置、上下文或双读游标未知');
+ const row=recruitTaskCandidate(before,{config:before.configEvidence,moduleConfig:{enabled:true}});
+ if(!row.executable||['module','actionId','actionType','parameters','target','identity','beforeState','expectedState','costs','costSource','budgetClaims','action'].some(k=>!same(operation?.[k],row[k])))return no('累计招募原当前范围合同不一致');
+ if(Object.keys(sourcesFor(before.parameters)).some(k=>after.sourceFacts[k].provenance.sourceAt<before.sourceFacts[k].provenance.sourceAt)||after.taskConfirmation.provenance.sourceAt<before.taskConfirmation.provenance.sourceAt)return no('累计招募独立复读早于原来源');
+ const through=own(result,'gotId')?result.gotId:null,prefix=row.expectedState.allowedPrefixes.find(r=>r.throughId===through),received=parseReceivedOrderReward({reward:result?.reward}),kind=before.parameters.recruit;
+ if(!prefix||received.status!=='PARSED'||!same(received.assets.map(r=>({id:r.id,num:r.num})).sort((a,b)=>a.id.localeCompare(b.id)),prefix.rewards)||received.assets.some(r=>r.type!==(Object.values(RESOURCE_NAMES).includes(r.id)?1:0)))return no('累计招募专用回执终点或奖励不属于写前已达标范围');
+ const expected=copy(before.state),observed=copy(after.state);expected.recruit[kind].task.gotId=through;delete expected.inventory;delete observed.inventory;
+ const raw=copy(before.inputs.recruit);raw[kind].task.gotId=through;
+ if(!same(expected,observed)||!same(raw,after.inputs.recruit)||!stockMatchesDelta(before.stock,after.stock,[],prefix.rewards))return no('累计招募完整库存未精确净入、计数或非目标状态改变');
+ return {confirmed:true,afterState:copy(after.state),reason:'原typed已领游标、独立RecruitInfo双读与当前配置奖励完整库存精确净入共同确认；仅当前已达标前缀，无招募、跨季或未来奖励',responseEvidence:{recruit:kind,season:row.target.season,configuredSeason:row.target.configuredSeason,fromId:row.target.fromId,throughId:through,tiers:copy(prefix.tiers),rewards:copy(prefix.rewards)}};
+}

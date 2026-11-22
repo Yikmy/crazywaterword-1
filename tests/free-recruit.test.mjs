@@ -556,3 +556,62 @@ test('Tasks recruit integration compiler rejects implicit or unsupported busines
  for(const row of [{kind:'free-recruit'},{kind:'free-recruit',parameters:null},{kind:'free-recruit',parameters:[]},{kind:'free-recruit',parameters:{count:10}},{kind:'free-recruit',parameters:{payment:'ticket',count:20}},{kind:'free-recruit',parameters:{recruit:'unknown'}},{kind:'free-recruit',parameters:{request:'RecruitStartRequest'}},{kind:'free-recruit',parameters:{},action:'perform'}])assert.throws(()=>compile(row),{code:'WORKFLOW_INVALID'});
  const daily=compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1002}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});assert.deepEqual(daily.graph.nodes.find(n=>n.type==='ACTION').parameters,{});assert.throws(()=>compileUnifiedExecution({entry:'dailies',dailies:[{taskId:1002,parameters:{recruit:'antique'}}],budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES}),{code:'WORKFLOW_INVALID'});
 });
+
+
+function taskRewardFixture({kind='hero',through=2,apply=true}={}) {
+ const f=fixture({antique:kind==='antique'}),send=f.client.request.bind(f.client),id=f.state.stock[0].itemId;
+ f.options.parameters={action:'claim-task',recruit:kind};f.options.player.worldId='1000001';
+ for(const name of ['HeroRecruitTaskCfg','AntiqueRecruitTaskCfg'])f.options.config.tables[name]={data:[{season:1,id:1,times:10,reward:[[id,2]]},{season:1,id:2,times:20,reward:[[id,3]]},{season:1,id:3,times:30,reward:[[id,4]]}]};
+ f.state.recruit[kind].task={times:20,gotId:0};
+ f.client.request=async(n,b,r,t,opts)=>{
+  if(opts?.mutate){assert.equal(n,kind==='antique'?'GotAntiqueRecruitTaskRequest':'GotHeroRecruitTaskRequest');wire(n,b);opts.beforeDispatch?.();f.state.onDispatch?.();f.state.writes.push({name:n,body:clone(b)});const num=through===1?2:through===2?5:9;if(apply){f.state.recruit[kind].task.gotId=through;f.state.stock[0].num+=num;}await f.state.onWrite?.();return wire(r,{gotId:through,reward:{asset:[{type:0,id,num}]}});}
+  return send(n,b,r,t,opts);
+ };
+ return f;
+}
+for(const kind of ['hero','antique'])for(const through of [1,2])test('current recruit-task '+kind+' confirms only typed current prefix '+through,async()=>{
+ const f=taskRewardFixture({kind,through}),before=await surveyFreeRecruit(f.client,protocol,f.options),row=viewFreeRecruit(before,f.options).candidates[0];assert.ok(row.executable,JSON.stringify(row));
+ const operation=planFreeRecruit(before,{...f.options,selections:[row.actionId]}).actions[0];assert.deepEqual(operation.costs,[]);assert.equal(operation.actionType,'CLAIM-TASK');assert.deepEqual(operation.budgetClaims.uids,[1,2].map(id=>({type:'recruit-task-reward',id:kind+':1:1:'+id})));assert.equal(f.state.reads.filter(n=>n==='RecruitInfoRequest').length,2);
+ const reply=await f.client.request(operation.action.request,{},operation.action.response,1000,{mutate:true}),after=await surveyFreeRecruit(f.client,protocol,f.options),result=verifyFreeRecruit(operation,before,after,reply);assert.equal(result.confirmed,true,result.reason);assert.deepEqual(result.responseEvidence.tiers,Array.from({length:through},(_,i)=>i+1));assert.equal(f.state.writes.length,1);
+});
+test('current recruit-task rejects unearned receipt, missing net income and sibling change',async()=>{
+ for(const mode of ['future','no-effect','sibling']){const f=taskRewardFixture({through:mode==='future'?3:2,apply:mode!=='no-effect'}),before=await surveyFreeRecruit(f.client,protocol,f.options),row=viewFreeRecruit(before,f.options).candidates[0],op=planFreeRecruit(before,{...f.options,selections:[row.actionId]}).actions[0];assert.ok(op);const reply=await f.client.request(op.action.request,{},op.action.response,1000,{mutate:true});if(mode==='sibling')f.state.recruit.antique.task.gotId=1;const after=await surveyFreeRecruit(f.client,protocol,f.options);assert.equal(verifyFreeRecruit(op,before,after,reply).confirmed,false,mode);}
+});
+test('current recruit-task changed during dual read or copied facts never grant authority',async()=>{
+ const f=taskRewardFixture();let reads=0;f.state.onRead=n=>{if(n==='RecruitInfoRequest'&&++reads===2)f.state.recruit.hero.task.gotId=1;};const facts=await surveyFreeRecruit(f.client,protocol,f.options);assert.equal(viewFreeRecruit(facts,f.options).candidates[0].executable,false);assert.equal(viewFreeRecruit(clone(facts),f.options).candidates[0].executable,false);assert.equal(f.state.writes.length,0);
+});
+test('current recruit-task mode has exact D6 zero cost and cannot perform daily1002',()=>{
+ for(const name of ['GotHeroRecruitTaskRequest','GotAntiqueRecruitTaskRequest']){assert.doesNotThrow(()=>assertPaymentAllowed({request:name,body:{},costs:[]}));for(const action of [{request:name,body:{id:1},costs:[]},{request:name,body:{}},{request:name,body:{},costs:[{id:'RUBY',num:1}]}])assert.throws(()=>assertPaymentAllowed(action));}
+ assert.deepEqual(validateFreeRecruitParameters({action:'claim-task',recruit:'hero'}),{action:'claim-task',recruit:'hero'});for(const p of [{action:'claim-task'},{action:'claim-task',recruit:'hero',payment:'free'},{action:'claim-task',recruit:'antique',count:1}])assert.throws(()=>validateFreeRecruitParameters(p));
+ assert.throws(()=>compileUnifiedExecution({entry:'dailies',tasks:[],dailies:[{taskId:1002,parameters:{action:'claim-task',recruit:'hero'}}],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}}));
+ const compiled=compileUnifiedExecution({entry:'tasks',tasks:[{kind:'free-recruit',parameters:{action:'claim-task',recruit:'hero'}}],dailies:[],world:[],rounds:1,everyMs:0,budget:{resources:[],quotas:[],uids:[]}},{modules:GAMEPLAY_MODULES});assert.equal(compiled.graph.nodes.find(n=>n.type==='ACTION').parameters.action,'claim-task');
+});
+
+
+for(const outcome of ['success','refused','unknown'])test('current recruit-task original Service Workflow retains UID/history '+outcome,async t=>{
+ const f=taskRewardFixture({apply:outcome==='success'}),dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-recruit-task-')),durable=createExecutionHistory({file:path.join(dir,'history.json')}),journal=[];
+ const history={...durable,put(record){journal.push(clone(record));return durable.put(record);}},session={id:'synthetic-A',client:f.client,player:f.options.player,generation:3,connectionId:'offline-recruit',state:'READY',abort:new AbortController(),loop:{running:false},busy:null};
+ const service=createOperationService({protocol,modules:GAMEPLAY_MODULES,history,moduleSettings:{get:()=>({config:{enabled:true}})},getConfig:()=>f.options.config,loadRules:()=>({config:{}}),loadProduction:()=>({config:{}})});
+ if(outcome==='refused')f.state.onWrite=()=>{throw Object.assign(Error('synthetic refusal'),{code:'REJECTED'});};
+ f.state.onDispatch=()=>{const record=journal.at(-1);assert.equal(record.actions[0].stages.at(-1).stage,'DISPATCH_INTENT');assert.equal(record.runBudget.reserved.uids.length,2);};
+ const surveyed=await service.surveyModule(session,'free-recruit',f.options.parameters),row=surveyed.view.candidates[0];assert.ok(row.executable);
+ const graph={version:1,id:'recruit-task-flow',name:'Current recruit task',budget:row.budgetClaims,nodes:[{id:'s',type:'START'},{id:'claim',type:'ACTION',module:'free-recruit',parameters:f.options.parameters,selection:{actionId:row.actionId}},{id:'v',type:'VERIFY',module:'free-recruit'},{id:'z',type:'STOP'}],edges:[{from:'s',to:'claim'},{from:'claim',to:'v'},{from:'v',to:'z'}]};
+ const runner=createWorkflowRunner({modules:GAMEPLAY_MODULES,operations:service,claim:(_id,runId,options)=>service.claimWorkflow(session,runId,options),getSession:id=>id===session.id?session:null});t.after(async()=>{runner.stop();session.abort.abort();await service.settle(session.id);fs.rmSync(dir,{recursive:true,force:true});});
+ let state=await runner.start(session.id,graph);assert.equal(state.status,'AWAITING_AUTHORIZATION');assert.equal(f.state.writes.length,0);const p=state.plan,permit=service.authorize(session,{batchId:p.batchId,planHash:p.planHash,approvedActionIds:p.actions.map(a=>a.actionId),resourceBudget:[],confirm:true});service.execute(session,permit);await service.settle(session.id);state=await runner.resume();
+ const expected=outcome==='success'?'SUCCESS':outcome==='refused'?'REJECTED':'UNKNOWN',record=durable.list(session.id)[0];assert.equal(record.finalStatus,expected);assert.equal(f.state.writes.length,1);assert.equal(state.status,outcome==='success'?'COMPLETED':outcome==='refused'?'FAILED':'UNKNOWN');assert.equal(service.workflowBudget(session.id).state,'CLOSED');assert.equal(service.workflowBudget(session.id).reserved.uids.length,2);assert.throws(()=>service.execute(session,permit));assert.equal(createExecutionHistory({file:history.storagePath}).unresolved(session.id),outcome==='unknown');
+});
+
+
+test('current recruit-task original fixed config retains all current season tier identities',async()=>{
+ for(const kind of ['hero','antique']){const f=taskRewardFixture({kind}),name=kind==='hero'?'HeroRecruitTaskCfg':'AntiqueRecruitTaskCfg';for(const table of ['HeroRecruitTaskCfg','AntiqueRecruitTaskCfg'])f.options.config.tables[table]=clone(actual.tables[table]);const rows=actual.tables[name].data.filter(row=>row.season===1);f.state.recruit[kind].task.times=Math.max(...rows.map(row=>row.times));const facts=await surveyFreeRecruit(f.client,protocol,f.options),view=viewFreeRecruit(facts,f.options),row=view.candidates[0];assert.ok(row.executable,JSON.stringify(row));assert.equal(row.budgetClaims.uids.length,rows.length);assert.deepEqual(row.expectedState.allowedPrefixes.at(-1).tiers,rows.map(row=>row.id));assert.deepEqual(row.costs,[]);assert.equal(f.state.writes.length,0);}
+});
+test('current recruit-task source/config/enable changes reject dispatch qualification',async()=>{
+ for(const fault of ['config','disabled','context']){const f=taskRewardFixture(),facts=await surveyFreeRecruit(f.client,protocol,f.options);if(fault==='config')f.options.config.tables.HeroRecruitTaskCfg.data[0].reward[0][1]++;if(fault==='disabled')f.options.moduleConfig.enabled=false;if(fault==='context')f.client.factContext.connectionId='changed';const row=viewFreeRecruit(facts,f.options).candidates[0];assert.equal(row.executable,false,fault);assert.equal(planFreeRecruit(facts,{...f.options,selections:[row.actionId]}).actions.length,0);assert.equal(f.state.writes.length,0);}
+});
+
+
+test('current recruit-task opening and closing observations enclose full inventory reads',async()=>{
+ const f=taskRewardFixture();let release,opening=true;const gate=new Promise(resolve=>release=resolve);f.state.onRead=async name=>{if(name==='RecruitInfoRequest'&&opening){opening=false;await gate;}};
+ const pending=surveyFreeRecruit(f.client,protocol,f.options);try{await new Promise(setImmediate);assert.deepEqual(f.state.reads,['RecruitInfoRequest']);}finally{release();}
+ const facts=await pending;assert.equal(f.state.reads.at(-1),'RecruitInfoRequest');assert.equal(f.state.reads.filter(n=>n==='RecruitInfoRequest').length,2);assert.ok(facts.sourceFacts.recruit.provenance.sourceAt<=facts.sourceFacts.items.provenance.sourceAt);assert.ok(facts.taskConfirmation.provenance.sourceAt>=facts.sourceFacts.items.provenance.sourceAt);assert.equal(viewFreeRecruit(facts,f.options).candidates[0].executable,true);assert.equal(f.state.writes.length,0);
+});

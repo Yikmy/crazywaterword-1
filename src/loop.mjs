@@ -212,7 +212,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
       }
       if(phase==='tasks'&&row?.kind==='free-recruit'){
         exact(row,['kind','parameters']);if(!Object.hasOwn(row,'parameters')||!object(row.parameters))invalid('Tasks招募须明确原Function业务参数，免费单次使用空对象');
-        try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募仅支持明确英雄或古董、免费单次及自有1/10/50券的原参数');}
+        try{parameters=validateFreeRecruitParameters(row.parameters);}catch{invalid('Tasks招募须使用原英雄/古董招募或当前累计奖励的明确参数');}
         steps.push({phase,index,module:'free-recruit',parameters,selection});continue;
       }
       if(phase==='tasks'&&['cargo-fill','alliance-order','museum','pirate-sweep'].includes(row?.kind)){
@@ -308,7 +308,7 @@ export function compileUnifiedExecution(input, { modules } = {}) {
           if(!module){blocked.push({phase,index,reason:'DAILY_ACTION_CONTRACT_UNVERIFIED',taskId:row.taskId});continue;}
           parameters=row.parameters??{};
           if(module==='trial-challenge')parameters=validateTrialChallengeParameters(parameters);
-          if(module==='free-recruit'){parameters=validateFreeRecruitParameters(parameters);if(parameters.recruit==='antique')invalid('日常1002仅代表英雄招募，古董请用原Workflow独立ACTION');}
+          if(module==='free-recruit'){parameters=validateFreeRecruitParameters(parameters);if(parameters.recruit==='antique'||parameters.action==='claim-task')invalid('日常1002仅代表英雄招募；古董或累计奖励请用原Workflow独立ACTION');}
           if(module==='afk-level-rewards')try{parameters=validateAfkLevelRewardsParameters(row.parameters);if(parameters.action!=='income')invalid('必须明确income');}catch{invalid('日常1004普通挂机收益须明确action=income、当前等级和完整区间');}
           if(module==='fleet')try{selection=fleetCargoFillSelection(parameters);}catch{invalid('日常1008仅支持明确货轮和货格的单次装货；任务进度需独立观察');}
           if(module==='alliance')try{selection=allianceOrderSelection(parameters);}catch{invalid('日常1012仅支持明确城市的联盟订单');}
