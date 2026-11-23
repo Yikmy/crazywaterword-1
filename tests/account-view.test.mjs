@@ -375,3 +375,59 @@ test('core operation resource view uses same batch balance projection and cancel
  h.run('operationsPlan='+JSON.stringify(plan)+';renderOperationPlan(operationsPlan);$("ops-authorize-execute").disabled=false;globalThis.resourceConfirmText="";window.confirm=text=>{resourceConfirmText=text;return false;}');assert.match(h.node('ops-budget').textContent,/计划调查时持有/);assert.match(h.node('ops-budget').textContent,/预计余量（非结算）/);
  const before=h.requests.length;await h.node('ops-authorize-execute').onclick();assert.equal(h.requests.length,before);assert.match(h.run('resourceConfirmText'),/wood 持有 100，本批消耗 40，预计余量 60/);assert.match(h.run('resourceConfirmText'),/不是实际结算/);
 });
+
+
+const updateRevision = 'a'.repeat(64), updatedRevision = 'b'.repeat(64);
+const updateAccount = (revision = updateRevision) => ({ id: 'A', title: 'Selected A', credentialRevision: revision, status: { connected: false, state: 'STOPPED', busy: null, looping: false } });
+async function credentialUpdateBoot() {
+  const h = harness();
+  h.respond('/api/accounts', undefined, { activeId: 'A', accounts: [updateAccount(), { id: 'B', title: 'B' }], csrfToken: 'synthetic-csrf' });
+  await tick(); h.respond('/api/overview', 'A', { ...overview('A'), status: { connected: false, state: 'STOPPED', busy: null } }); await tick();
+  h.node('account-import-json').value = JSON.stringify({ ...importCredential, login: { eworldParams: { ...importCredential.login.eworldParams, openId: 'A' } } });
+  return h;
+}
+const updateReceipt = () => ({ ok: true, created: false, updated: true, account: updateAccount(updatedRevision) });
+
+test('selected account credential update requires an exact confirmed revision and independently rereads it without connecting', async () => {
+  assert.match(PAGE, /id="account-update"/);
+  const h = await credentialUpdateBoot(); assert.equal(h.node('account-update').disabled, false);
+  const work = h.node('account-update').onclick(), request = h.pending('/api/accounts/import'), body = JSON.parse(request.options.body);
+  assert.deepEqual(body.update, { accountId: 'A', credentialRevision: updateRevision }); assert.equal(body.confirm, true); assert.equal('label' in body, false);
+  assert.equal(h.node('account-import-json').value, ''); assert.equal(h.node('account-update').disabled, true);
+  await h.node('account-update').onclick(); assert.equal(h.requests.filter(row => row.url === '/api/accounts/import').length, 1);
+  h.respond('/api/accounts/import', undefined, updateReceipt()); await tick();
+  h.respond('/api/accounts', 'A', { activeId: 'A', accounts: [updateAccount(updatedRevision)], csrfToken: 'synthetic-csrf' }); await work;
+  assert.match(h.node('account-import-hint').textContent, /已更新所选账号/); assert.equal(h.run('current'), 'A');
+  assert.equal(h.requests.some(row => /\/api\/(connect|refresh|operations|workflows)/.test(row.url)), false);
+  assert.equal(h.node('account-import-json').value, ''); assert.doesNotMatch(h.node('account-import-hint').textContent, /synthetic-import-secret/);
+});
+
+test('credential update cannot submit without exact account, disconnected source and explicit confirmation', async () => {
+  const h = await credentialUpdateBoot(), before = h.requests.length;
+  h.run('window.confirm = () => false'); await h.node('account-update').onclick(); assert.equal(h.requests.length, before);
+  h.run('window.confirm = () => true'); h.node('account-import-json').value = JSON.stringify(importCredential);
+  await h.node('account-update').onclick(); assert.equal(h.requests.length, before); assert.match(h.node('account-import-hint').textContent, /同一账号/);
+  h.run("accounts[0].status.connected = true; accountImportControls()"); assert.equal(h.node('account-update').disabled, true);
+  h.run("accounts[0].status.connected = false; delete accounts[0].credentialRevision; accountImportControls()"); assert.equal(h.node('account-update').disabled, true);
+});
+
+test('unconfirmed credential update never resubmits or treats an unchanged local revision as success', async () => {
+  for (const mode of ['network', 'bad-receipt', 'unchanged-list']) {
+    const h = await credentialUpdateBoot(), work = h.node('account-update').onclick(), request = h.pending('/api/accounts/import');
+    if (mode === 'network') { request.settled = true; request.reject(Error('synthetic-import-secret')); }
+    else { h.respond('/api/accounts/import', undefined, mode === 'bad-receipt' ? { ...updateReceipt(), created: true } : updateReceipt()); }
+    await tick();
+    if (mode === 'unchanged-list') h.respond('/api/accounts', 'A', { activeId: 'A', accounts: [updateAccount()], csrfToken: 'synthetic-csrf' });
+    await work; assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-update').disabled, true);
+    await h.node('account-update').onclick(); assert.equal(h.requests.filter(row => row.url === '/api/accounts/import').length, 1);
+    assert.doesNotMatch(h.node('account-import-hint').textContent, /synthetic-import-secret/);
+  }
+});
+
+test('late credential update response cannot publish success after account switch or restore a secret draft', async () => {
+  const h = await credentialUpdateBoot(), work = h.node('account-update').onclick();
+  h.node('account-import-json').value = 'synthetic-import-secret'; h.run("selectAccount('B'); selectAccount('A')");
+  h.respond('/api/accounts/import', undefined, updateReceipt()); await work;
+  assert.equal(h.node('account-import-json').value, ''); assert.equal(h.node('account-import-hint').textContent, '');
+  assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-update').disabled, true);
+});

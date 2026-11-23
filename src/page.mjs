@@ -417,10 +417,11 @@ export const PAGE = `<!doctype html>
     <div id="accounts"></div>
 
     <h2>导入本地账号</h2>
-    <p class="dim">显式粘贴普通凭证 JSON（url/login 或 wsUrl/body）。仅新增本地记录，重复账号拒绝覆盖；原始登录帧不会导入。首个账号会成为本地默认账号，连接仍需单独点击。</p>
+    <p class="dim">粘贴普通凭证 JSON（url/login 或 wsUrl/body）。新增会拒绝重复账号；更新只替换当前所选账号的凭证，请先停止任务、断开并重新读取本地账号列表。更新保留备注和账号资料，保存后连接仍需单独点击。</p>
     <textarea id="account-import-json" aria-label="普通账号凭证 JSON" autocomplete="off" spellcheck="false" rows="5" style="width:100%"></textarea>
-    <div class="bar"><input id="account-import-label" aria-label="导入账号备注" maxlength="100" placeholder="可选备注">
+    <div class="bar"><input id="account-import-label" aria-label="新增账号备注" maxlength="100" placeholder="仅新增时使用的备注">
       <button id="account-import" type="button" disabled>确认新增本地账号</button>
+      <button id="account-update" type="button" disabled>更新所选账号凭证</button>
       <button id="account-import-read" type="button">重新读取本地账号列表</button></div>
     <span id="account-import-hint" class="dim" aria-live="polite"></span>
 
@@ -559,7 +560,7 @@ function renderAccountSelect() {
   $('connect').disabled = snapshot.connected || !current;
   $('disconnect').disabled = !snapshot.connected && snapshot.state !== 'CONNECTING';
   $('refresh-data').disabled = !snapshot.connected || Boolean(stagesData?.runner?.running || stagesData?.runner?.inFlight || operationsLocked());
-  stageControls(); operationControls();
+  stageControls(); operationControls(); accountImportControls();
 }
 function selectAccount(id) {
   current = id || null;
@@ -606,13 +607,17 @@ async function switchAccount(id) {
 function accountImportControls() {
   $('account-import').disabled = !accountImportCsrf || accountImportPending || accountImportUncertain;
   $('account-import-read').disabled = accountImportPending;
+  const account = accounts.find(entry => entry.id === current), status = account?.status;
+  $('account-update').disabled = !accountImportCsrf || accountImportPending || accountImportUncertain
+    || !account || !/^[a-f0-9]{64}$/.test(account.credentialRevision ?? '') || !['IDLE', 'STOPPED'].includes(status?.state)
+    || status.connected || status.busy || status.looping || snapshot.connected || snapshot.state === 'CONNECTING';
 }
 $('account-import-read').onclick = async () => {
   const scope = viewGuard.begin('accounts-edit');
   try { await loadAccounts(false, scope); }
   catch { if (viewGuard.current(scope)) $('account-import-hint').textContent = '本地账号列表读取失败，请重新读取后核查。'; }
 };
-$('account-import').onclick = async () => {
+async function submitAccountImport(update = false) {
   if (!accountImportCsrf || accountImportPending || accountImportUncertain) return;
   let credential;
   try {
@@ -622,31 +627,45 @@ $('account-import').onclick = async () => {
     if (!credential || typeof credential !== 'object' || Array.isArray(credential)) throw Error('invalid');
   } catch { $('account-import-hint').textContent = '请输入有效的普通凭证 JSON 对象（不超过64KiB）。'; return; }
   const expectedId = (credential.login || credential.body)?.eworldParams?.openId;
+  const target = update ? accounts.find(entry => entry.id === current) : null;
+  if (update && ($('account-update').disabled || !target || expectedId !== target.id)) {
+    credential = null; $('account-import-hint').textContent = '请读取所选账号的最新资料、停止任务并断开，且凭证必须属于同一账号。'; return;
+  }
   const label = $('account-import-label').value;
   if (label.length > 100) { $('account-import-hint').textContent = '备注最多100字。'; return; }
-  if (!window.confirm('将这份凭证新增到本地账号存储？重复账号会拒绝；保存后仍需单独连接。')) return;
+  if (!window.confirm(update ? '更新所选账号 ' + target.title + '（' + target.id + '）的凭证？保留备注和账号资料，保存后请单独连接。' : '将这份凭证新增到本地账号存储？重复账号会拒绝；保存后仍需单独连接。')) return;
   const scope = viewGuard.begin('accounts-edit');
   accountImportPending = true; accountImportControls();
   $('account-import-json').value = ''; $('account-import-label').value = '';
   $('account-import-hint').textContent = '正在保存本地账号…';
   try {
-    const response = await fetch('/api/accounts/import', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-cw-csrf': accountImportCsrf }, body: JSON.stringify({ credential, label, confirm: true }) });
+    const response = await fetch('/api/accounts/import', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-cw-csrf': accountImportCsrf }, body: JSON.stringify(update ? { credential, confirm: true, update: { accountId: target.id, credentialRevision: target.credentialRevision } } : { credential, label, confirm: true }) });
     credential = null;
     viewGuard.assert(scope);
     if (!response.ok) {
-      if (![400, 403, 409].includes(response.status)) throw Error('save result uncertain');
+      if (![400, 403, 404, 409].includes(response.status)) throw Error('save result uncertain');
       // Never render server text that could contain imported credentials.
-      $('account-import-hint').textContent = response.status === 409 ? '账号已存在，未覆盖原凭证。' : '导入被拒绝，请核对普通凭证与当前页面。';
+      $('account-import-hint').textContent = update ? '更新被拒绝，请重新读取账号、核对凭证并停止任务和断开后再明确提交。' : response.status === 409 ? '账号已存在，未覆盖原凭证。' : '导入被拒绝，请核对普通凭证与当前页面。';
       return;
     }
+    const receipt = update ? await response.json() : null;
+    viewGuard.assert(scope);
+    if (update && (receipt?.ok !== true || receipt.created !== false || receipt.updated !== true || receipt.account?.id !== target.id
+      || !/^[a-f0-9]{64}$/.test(receipt.account?.credentialRevision ?? ''))) throw Error('update receipt unconfirmed');
     await loadAccounts(false, scope);
+    // First-account add intentionally selects the saved account; update must keep its exact selection.
+    if (update) viewGuard.assert(scope);
     if (typeof expectedId !== 'string' || !accounts.some(account => account.id === expectedId)) throw Error('saved account not confirmed');
-    $('account-import-hint').textContent = '已新增本地账号；连接需单独点击。';
+    if (update && !accounts.some(account => account.id === target.id && account.credentialRevision === receipt.account.credentialRevision)) throw Error('updated revision not confirmed');
+    if (update) { selectAccount(target.id); renderAccounts(); }
+    $('account-import-hint').textContent = update ? '已更新所选账号凭证；连接需单独点击。' : '已新增本地账号；连接需单独点击。';
   } catch {
     accountImportUncertain = true;
     if (viewGuard.current(scope)) $('account-import-hint').textContent = '保存结果未确认；请重新读取本地账号列表核查，不会自动重交。';
   } finally { credential = null; accountImportPending = false; accountImportControls(); }
-};
+}
+$('account-import').onclick = () => submitAccountImport(false);
+$('account-update').onclick = () => submitAccountImport(true);
 $('account').onchange = () => switchAccount($('account').value);
 $('connect').onclick = async () => {
   const scope = viewGuard.begin('connection');

@@ -139,6 +139,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
     return [...knownSecrets];
   }
 
+  // Opaque compare-and-set token for explicit local credential replacement; never a game permit.
+  const credentialRevision = account => createHash('sha256').update(JSON.stringify([
+    account.id, account.url, account.login, account.loginFrameHex ?? null, account.capturedAt ?? null,
+  ])).digest('hex');
   const operationCsrf = randomUUID();
   const stageFunction=createStageFunction({ getSession:(client,player)=>[...sessions.values()].find(session=>session.client===client&&session.player===player),prepareRunner:prepareStageRunner,assertFormationReady:(session,requested)=>operations.assertFormationReady(session,requested,{alreadyLocked:true}) });
   const history = operationOptions.history ?? createExecutionHistory({ secrets, assertWriter: () => writerOwnership.assertOwned() });
@@ -859,18 +863,49 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           let payload;
           try {
             payload = jsonBody();
-            if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !['credential', 'label', 'confirm'].includes(key)) || payload.confirm !== true
+            if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !['credential', 'label', 'confirm', 'update'].includes(key)) || payload.confirm !== true
               || (payload.label !== undefined && (typeof payload.label !== 'string' || payload.label.length > 100))) throw Error('invalid');
+            if (Object.hasOwn(payload, 'update')) {
+              const update = payload.update;
+              if (!update || Array.isArray(update) || Object.keys(update).length !== 2 || Object.keys(update).some(key => !['accountId', 'credentialRevision'].includes(key))
+                || typeof update.accountId !== 'string' || !update.accountId || update.accountId.trim() !== update.accountId || update.accountId.length > 512
+                || typeof update.credentialRevision !== 'string' || !/^[a-f0-9]{64}$/.test(update.credentialRevision) || Object.hasOwn(payload, 'label')) throw Error('invalid');
+            }
             validateCredentials(payload.credential);
           } catch { json({ error: '导入需确认、有效的普通账号凭证及可选的100字以内备注', code: 'INVALID_INPUT' }, 400); return; }
           const supplied = payload.credential;
           const login = supplied.login || supplied.body;
           const store = loadStore();
-          if (store.accounts.some(account => account.id === login.eworldParams.openId)) { json({ error: '账号已存在；本入口不会覆盖原凭证', code: 'ACCOUNT_EXISTS' }, 409); return; }
-          // Import only the normal login envelope; a supplied raw frame cannot override its identity.
-          const { account } = upsertAccount(store, { url: supplied.url || supplied.wsUrl, login, source: 'local-import' }, { label: payload.label?.trim() || null });
+          const update = payload.update;
+          if (update) {
+            const previous = store.accounts.find(account => account.id === update.accountId);
+            if (!previous) { json({ error: '所选账号不存在，请重新读取本地账号列表', code: 'ACCOUNT_NOT_FOUND' }, 404); return; }
+            if (login.eworldParams.openId !== previous.id) { json({ error: '凭证不属于所选账号', code: 'ACCOUNT_ID_MISMATCH' }, 400); return; }
+            if (credentialRevision(previous) !== update.credentialRevision) { json({ error: '凭证已变化，请重新读取本地账号列表', code: 'CREDENTIAL_CHANGED' }, 409); return; }
+            const session = sessions.get(previous.id), stage = session?.stageRunner?.getStatus();
+            if (session && (session.client || !['IDLE', 'STOPPED'].includes(session.state) || session.connectionPromise || session.collectionPromise || session.busy
+              || session.workflowOwner || session.loop?.running || stage?.running || stage?.inFlight)
+              || operations.running(previous.id) || workflowState(previous.id).status.running) {
+              json({ error: '请先停止任务并断开所选账号，再更新凭证', code: 'ACCOUNT_BUSY' }, 409); return;
+            }
+          } else if (store.accounts.some(account => account.id === login.eworldParams.openId)) {
+            json({ error: '账号已存在；新增入口不会覆盖原凭证', code: 'ACCOUNT_EXISTS' }, 409); return;
+          }
+          // Both modes import only the normal login envelope. Update preserves label/lastSeen/activeId.
+          secrets(); // Retain redaction of old credentials after replacement.
+          const { account } = upsertAccount(store, { url: supplied.url || supplied.wsUrl, login, source: 'local-import' }, update ? {} : { label: payload.label?.trim() || null });
           saveStore(store);
-          json({ ok: true, created: true, account: describeAccount(account, { active: store.activeId === account.id }) }, 201); return;
+          if (update) {
+            const session = sessions.get(account.id);
+            if (session) {
+              cancelSession(session, 'STOPPED');
+              session.snapshot = null; session.snapshotAt = null; session.snapshotStale = false;
+              session.snapshotDailyReset = null; session.snapshotContext = null;
+              taskSnapshotBindings.delete(session);
+            }
+          }
+          json({ ok: true, created: !update, ...(update ? { updated: true } : {}),
+            account: { ...describeAccount(account, { active: store.activeId === account.id }), credentialRevision: credentialRevision(account) } }, update ? 200 : 201); return;
         }
       }
       if (operationRoute || gameplayRoute || stageRoute || namedFormationRoute || extremeFormationRoute || stageRecommendationRoute) {
@@ -1133,6 +1168,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, protocol: supp
           csrfToken: operationCsrf,
           accounts: store.accounts.map((account) => ({
             ...describeAccount(account, { active: account.id === store.activeId }),
+            credentialRevision: credentialRevision(account),
             status: accountStatus(sessionFor(account.id)),
           })),
         });

@@ -951,3 +951,124 @@ test('directory HTTP public snapshot restore cannot substitute for a current col
   assert.equal(app.sent.length,sent);assert.equal(app.collects,1);
  }finally{await app.close();}
 });
+
+
+// Original local import also supports an explicit, disconnected, exact-account replacement.
+async function credentialUpdateContext(app, id = 'account-A') {
+  const headers = await importContext(app), listed = await app.call('/api/accounts', { account: null });
+  const account = listed.data.accounts.find(row => row.id === id);
+  return { headers, update: { accountId: id, credentialRevision: account.credentialRevision } };
+}
+const refreshedCredential = id => ({ ...credential(id), login: { eworldParams: { openId: id, token: 'synthetic-refreshed-token', sign: 'synthetic-refreshed-sign', timestamp: 2 } } });
+
+test('explicit credential update preserves account metadata, other accounts and UNKNOWN while invalidating the old view', async () => {
+  const { createExecutionHistory } = await import('../src/execution-history.mjs'), file = path.join(sandbox, 'credential-update-history.json');
+  const history = createExecutionHistory({ file });
+  history.put({ accountId: 'account-A', runId: 'credential-update-unknown', module: 'orders', finalStatus: 'UNKNOWN',
+    authorizationSummary: { planHash: 'hash', actionIds: ['one'] }, actions: [{ actionId: 'one', requestStatus: 'UNKNOWN', result: 'UNKNOWN', dispatchEvidence: { version: 1, contract: 'business-write-ahead-v1', state: 'NOT_DISPATCHED' } }] });
+  const app = await harness({ operationOptions: { history } });
+  try {
+    const store = loadStore(); store.activeId = 'account-B'; store.accounts[0].label = 'Keep label'; store.accounts[0].addedAt = 'original-added';
+    store.accounts[0].lastSeen = { nickname: 'Keep nickname', worldId: '9007199254740993' }; saveStore(store);
+    const before = loadStore(), historyBefore = fs.readFileSync(file, 'utf8'), { headers, update } = await credentialUpdateContext(app);
+    assert.match(update.credentialRevision, /^[a-f0-9]{64}$/);
+    const session = app.sessions.get('account-A'), generation = session.generation, abort = session.abort;
+    session.snapshot = snapshot(); session.snapshotAt = 'old'; session.snapshotContext = { accountId: 'account-A' };
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, update, credential: refreshedCredential('account-A') } });
+    assert.equal(response.status, 200); assert.equal(response.data.created, false); assert.equal(response.data.updated, true);
+    assert.notEqual(response.data.account.credentialRevision, update.credentialRevision);
+    const after = loadStore(), a = after.accounts[0];
+    assert.equal(after.activeId, 'account-B'); assert.deepEqual(after.accounts[1], before.accounts[1]);
+    for (const key of ['id', 'label', 'addedAt', 'lastSeen']) assert.deepEqual(a[key], before.accounts[0][key]);
+    assert.deepEqual(a.login, refreshedCredential('account-A').login); assert.equal(a.loginFrameHex, null);
+    assert.equal(a.source, 'local-import'); assert.equal(session.generation, generation + 1); assert.equal(abort.signal.aborted, true);
+    assert.equal(session.snapshot, null); assert.equal(session.snapshotContext, null); assert.equal(session.state, 'STOPPED');
+    assert.equal(history.unresolved('account-A'), true); assert.equal(fs.readFileSync(file, 'utf8'), historyBefore);
+    assert.equal(app.clients.length, 0); assert.equal(app.collects, 0);
+    const listed = await app.call('/api/accounts', { account: null });
+    assert.equal(listed.data.accounts.find(row => row.id === 'account-A').credentialRevision, response.data.account.credentialRevision);
+    for (const secret of [token, sign, frame, 'synthetic-refreshed-token', 'synthetic-refreshed-sign']) assert.ok(!response.text.includes(secret));
+  } finally { await app.close(); }
+});
+
+test('credential update rejects mismatched identity, stale version and malformed scope without overwriting', async () => {
+  const app = await harness();
+  try {
+    const { headers, update } = await credentialUpdateContext(app), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    const body = { confirm: true, update, credential: refreshedCredential('account-A') };
+    const cases = [
+      [{ ...body, credential: refreshedCredential('account-B') }, 400, 'ACCOUNT_ID_MISMATCH'],
+      [{ ...body, update: { ...update, credentialRevision: '0'.repeat(64) } }, 409, 'CREDENTIAL_CHANGED'],
+      [{ ...body, update: { ...update, accountId: 'Keep label' } }, 404, 'ACCOUNT_NOT_FOUND'],
+      [{ ...body, update: { ...update, accountId: 'account-C' } }, 404, 'ACCOUNT_NOT_FOUND'],
+      [{ ...body, update: null }, 400], [{ ...body, update: { ...update, replace: true } }, 400],
+      [{ ...body, update: { accountId: 'account-A' } }, 400], [{ ...body, label: 'no rename here' }, 400],
+      [{ ...body, confirm: false }, 400],
+    ];
+    for (const [payload, status, code] of cases) {
+      const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: payload });
+      assert.equal(response.status, status); if (code) assert.equal(response.data.code, code);
+      assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    }
+    const noCsrf = await app.call('/api/accounts/import', { method: 'POST', account: null, body }); assert.equal(noCsrf.status, 403);
+    const foreign = await app.call('/api/accounts/import', { method: 'POST', account: null, headers: { ...headers, origin: 'http://evil.invalid' }, body }); assert.equal(foreign.status, 403);
+    assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
+
+test('credential replacement never interrupts a client, task, workflow or stage', async () => {
+  const app = await harness();
+  try {
+    const { headers, update } = await credentialUpdateContext(app), session = app.sessions.get('account-A'), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    const variants = [ { client: { connected: false } }, { state: 'CONNECTING' }, { connectionPromise: Promise.resolve() },
+      { collectionPromise: Promise.resolve() }, { busy: 'operations:SURVEY' }, { workflowOwner: 'workflow-held' },
+      { loop: { ...session.loop, running: true } }, { stageRunner: { getStatus: () => ({ running: false, inFlight: true }) } } ];
+    for (const fields of variants) {
+      const original = Object.fromEntries(Object.keys(fields).map(key => [key, session[key]])); Object.assign(session, fields);
+      try {
+        const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, update, credential: refreshedCredential('account-A') } });
+        assert.equal(response.status, 409); assert.equal(response.data.code, 'ACCOUNT_BUSY'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+      } finally { Object.assign(session, original); }
+    }
+    assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
+
+test('stale credential replacement cannot overwrite a later explicit update or silently add an account', async () => {
+  const app = await harness();
+  try {
+    const { headers, update } = await credentialUpdateContext(app), body = { confirm: true, update, credential: refreshedCredential('account-A') };
+    assert.equal((await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body })).status, 200);
+    const saved = fs.readFileSync(ACCOUNTS_PATH, 'utf8');
+    const second = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body });
+    assert.equal(second.status, 409); assert.equal(second.data.code, 'CREDENTIAL_CHANGED'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), saved);
+    const add = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, credential: refreshedCredential('account-A') } });
+    assert.equal(add.status, 409); assert.equal(add.data.code, 'ACCOUNT_EXISTS'); assert.equal(loadStore().accounts.length, 2);
+    assert.equal(app.clients.length, 0);
+    assert.equal((await app.connect()).status, 200); assert.deepEqual(app.clients[0].login, refreshedCredential('account-A').login);
+    assert.equal(app.clients.length, 1); assert.equal(app.clients[0].connectCalls, 1);
+  } finally { await app.close(); }
+});
+
+test('credential replacement storage failure retains original credential, generation and cached view', async () => {
+  const app = await harness(), temp = ACCOUNTS_PATH + '.tmp';
+  try {
+    const { headers, update } = await credentialUpdateContext(app), session = app.sessions.get('account-A'), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8'), generation = session.generation;
+    session.snapshot = snapshot(); const oldSnapshot = session.snapshot; fs.mkdirSync(temp);
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, update, credential: refreshedCredential('account-A') } });
+    assert.notEqual(response.status, 200); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before);
+    assert.equal(session.generation, generation); assert.equal(session.snapshot, oldSnapshot); assert.equal(app.clients.length, 0);
+    for (const secret of [token, sign, 'synthetic-refreshed-token', 'synthetic-refreshed-sign']) assert.ok(!response.text.includes(secret));
+  } finally { fs.rmdirSync(temp); await app.close(); }
+});
+
+test('credential replacement retains writer ownership enforcement', async () => {
+  let owned = false;
+  const writerOwnership = { claim() { owned = true; }, assertOwned() { if (!owned) throw Object.assign(Error('writer lost'), { statusCode: 409, code: 'WRITER_LOST' }); }, release() { owned = false; } };
+  const app = await harness({ writerOwnership });
+  try {
+    const { headers, update } = await credentialUpdateContext(app), before = fs.readFileSync(ACCOUNTS_PATH, 'utf8'); owned = false;
+    const response = await app.call('/api/accounts/import', { method: 'POST', account: null, headers, body: { confirm: true, update, credential: refreshedCredential('account-A') } });
+    assert.equal(response.status, 409); assert.equal(response.data.code, 'WRITER_LOST'); assert.equal(fs.readFileSync(ACCOUNTS_PATH, 'utf8'), before); assert.equal(app.clients.length, 0);
+  } finally { await app.close(); }
+});
