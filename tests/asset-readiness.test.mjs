@@ -219,9 +219,10 @@ test('missing unregistered or source-less runtime assets cannot bypass the retai
 
 test('retained map loads the existing grid projection and mutated or malformed grids degrade without accepting a new baseline',()=>{
  const f=fixture();try{
-  f.write(2,JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},cityInfo:[{cityId:17}],mapData:[10017,0]}]]]));
+  f.write(2,JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1,tileWidth:100,tileHeight:75},cityInfo:[{cityId:17}],mapData:[10017,0]}]]]));
   const retained=preserveManifest(f),map=loadMapAsset(1,{root:f.root});
   assert.equal(map.width,2);assert.equal(map.height,1);assert.equal(map.scenarioId,1);assert.equal(map.fieldCount,1);
+  assert.equal(map.tileWidth,100);assert.equal(map.tileHeight,75);
   assert.deepEqual(map.fieldAt(0),{gridIdx:0,resType:1,cityId:17});assert.equal(map.fieldAt(1),null);
   assert.equal(map.file,path.join(f.root,f.assets[2].path));
   for(const value of ['{bad',JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},mapData:[0]}]]]),JSON.stringify([null,null,null,null,null,[[null,null,{mapInfo:{width:2,height:1},mapData:[20017,0]}]]])]){

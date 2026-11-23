@@ -574,6 +574,8 @@ export function loadMapAsset(scenarioId, { root = path.resolve(import.meta.dirna
     scenarioId: scenarioId > 0 ? scenarioId : 1,
     width: mapInfo?.width ?? 0,
     height: mapInfo?.height ?? 0,
+    tileWidth: mapInfo?.tileWidth,
+    tileHeight: mapInfo?.tileHeight,
     cityInfo,
     fieldCount: mapData.reduce((n, v) => n + (Math.floor(v / 10000) % 10 ? 1 : 0), 0),
     fieldAt(gridIdx) {
