@@ -643,7 +643,7 @@ async function submitAccountImport(update = false) {
     credential = null;
     viewGuard.assert(scope);
     if (!response.ok) {
-      if (![400, 403, 404, 409].includes(response.status)) throw Error('save result uncertain');
+      if (!(update ? [400, 403, 404, 409] : [400, 403, 409]).includes(response.status)) throw Error('save result uncertain');
       // Never render server text that could contain imported credentials.
       $('account-import-hint').textContent = update ? '更新被拒绝，请重新读取账号、核对凭证并停止任务和断开后再明确提交。' : response.status === 409 ? '账号已存在，未覆盖原凭证。' : '导入被拒绝，请核对普通凭证与当前页面。';
       return;
@@ -657,7 +657,7 @@ async function submitAccountImport(update = false) {
     if (update) viewGuard.assert(scope);
     if (typeof expectedId !== 'string' || !accounts.some(account => account.id === expectedId)) throw Error('saved account not confirmed');
     if (update && !accounts.some(account => account.id === target.id && account.credentialRevision === receipt.account.credentialRevision)) throw Error('updated revision not confirmed');
-    if (update) { selectAccount(target.id); renderAccounts(); }
+    if (update) { selectAccount(target.id); renderAccounts(); subscribe(); }
     $('account-import-hint').textContent = update ? '已更新所选账号凭证；连接需单独点击。' : '已新增本地账号；连接需单独点击。';
   } catch {
     accountImportUncertain = true;

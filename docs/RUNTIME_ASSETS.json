@@ -24,17 +24,26 @@
       "role": "map",
       "path": "work/cdn/world_map.world_map1.json",
       "required": true,
-      "source": null,
-      "sha256": null,
-      "size": null
+      "source": "https://dhyaoj-cdn.khlgamen.com/HotUpdateRes/wx/remote/world_map/import/12/12732911-b326-4fb3-95f4-fa162d429fe4.0e71d.json; cache config.cda1a sha256=6d74215f553d76151c40040ef213faa3e41d9c3f49a60def8e23fb9620cce8f1",
+      "sha256": "665ae38ac436a674140a0842820b7c1ffda1440aebaf7d493e235eee92f22565",
+      "size": 567493
+    },
+    {
+      "id": "map-2",
+      "role": "map",
+      "path": "work/cdn/world_map.world_map2.json",
+      "required": true,
+      "source": "https://dhyaoj-cdn.khlgamen.com/HotUpdateRes/wx/remote/world_map/import/35/35c075b0-cc7e-40e8-9bfb-3980888c9fcc.f6c46.json; cache config.cda1a sha256=6d74215f553d76151c40040ef213faa3e41d9c3f49a60def8e23fb9620cce8f1",
+      "sha256": "7e8d0addf66038df328bd5715bd99195a7041c752ba73a9cbab848ae82b8e551",
+      "size": 1932655
     }
   ],
-  "observedAt": "2026-11-11",
+  "observedAt": "2026-11-23T05:13:52.128Z",
   "codeBaseline": "7aef482eda751bb3d9e9ae88b3b5bf282dfec4ec",
-  "provenanceNote": "Preserved local baseline only. Exact protocol/config bytes retained in the recorded portable archive; map-1 remains missing. Original package/CDN versions remain unrecorded. Archive metadata is a retained record, not a current file check. Never discover account caches, fetch, or execute assets automatically.",
+  "provenanceNote": "Original protocol/config exact retained bytes and unrecorded upstream versions preserved. Official cached world_map config.cda1a maps both world_map1/2 to explicit UUID/import versions. Exact map bytes retained; no inferred client package version or game RPC.",
   "recoveryArchive": {
     "path": "work/runtime-assets.cwassets.gz",
-    "sha256": "6fc273f772e236c8f5f1028e59a456f3104e791f4dbddcc34c7e435043fff0ce",
-    "size": 1901461
+    "sha256": "253f6f3c1479f722ba2c93a661a1592306f29f521cb4e7deab55c1d83e49c887",
+    "size": 2134400
   }
 }

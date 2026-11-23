@@ -276,10 +276,12 @@ test('HTTP success alone does not confirm import when independent local list lac
   assert.equal(h.requests.filter(r => r.url === '/api/accounts/import').length, 1);
 });
 test('server error leaves import uncertain without reading or resubmitting automatically', async () => {
-  const h = await importBoot(); const work = h.node('account-import').onclick(); const request = h.pending('/api/accounts/import');
-  request.settled = true; request.resolve({ ok: false, status: 500 }); await work;
-  assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-import').disabled, true);
-  assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-import-json').value, '');
+  for (const status of [404, 500]) {
+    const h = await importBoot(); const work = h.node('account-import').onclick(); const request = h.pending('/api/accounts/import');
+    request.settled = true; request.resolve({ ok: false, status }); await work;
+    assert.match(h.node('account-import-hint').textContent, /未确认/); assert.equal(h.node('account-import').disabled, true);
+    assert.equal(h.pending('/api/accounts'), undefined); assert.equal(h.node('account-import-json').value, '');
+  }
 });
 
 test('worlds PAGE displays exact recorded identities as readonly facts and clears pending old rows',async()=>{
@@ -398,6 +400,7 @@ test('selected account credential update requires an exact confirmed revision an
   h.respond('/api/accounts/import', undefined, updateReceipt()); await tick();
   h.respond('/api/accounts', 'A', { activeId: 'A', accounts: [updateAccount(updatedRevision)], csrfToken: 'synthetic-csrf' }); await work;
   assert.match(h.node('account-import-hint').textContent, /已更新所选账号/); assert.equal(h.run('current'), 'A');
+  assert.equal(h.streams.length, 2); assert.equal(h.streams[0].closed, true); assert.equal(h.streams[1].url, '/api/events?account=A');
   assert.equal(h.requests.some(row => /\/api\/(connect|refresh|operations|workflows)/.test(row.url)), false);
   assert.equal(h.node('account-import-json').value, ''); assert.doesNotMatch(h.node('account-import-hint').textContent, /synthetic-import-secret/);
 });
